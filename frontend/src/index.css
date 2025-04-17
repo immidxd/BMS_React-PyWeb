@@ -1,0 +1,320 @@
+:root {
+  /* Light theme colors */
+  --light-bg-color: #f5f5f5;
+  --light-text-color: #333333;
+  --light-accent-color: #4a90e2;
+  --light-border-color: #e0e0e0;
+  --light-hover-color: #e8f1fd;
+  
+  /* Dark theme colors */
+  --dark-bg-color: #2d2d2d;
+  --dark-text-color: #f0f0f0;
+  --dark-accent-color: #64b5f6;
+  --dark-border-color: #444444;
+  --dark-hover-color: #3a3a3a;
+  
+  /* Status colors - same for both themes */
+  --status-green: #b8ffb8;
+  --status-green-dark: #75a175;
+  --status-red: #ffb8b8;
+  --status-orange: #ffd280;
+  --status-orange-light: #ffcc99;
+  --status-blue: #c6f5ff;
+  --status-gray: #e6e6e6;
+  
+  /* Delivery method colors */
+  --delivery-nova-poshta: #ff6666;
+  --delivery-ukrposhta: #f9de69;
+  --delivery-meest: #6666ff;
+  --delivery-pickup: #66cc66;
+  --delivery-courier: #cc66cc;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background-color: #f5f5f5;
+  color: #333;
+}
+
+a {
+  color: #4a6da7;
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+button {
+  cursor: pointer;
+}
+
+code {
+  font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New',
+    monospace;
+}
+
+/* Light theme */
+body.light-theme {
+  background-color: var(--light-bg-color);
+  color: var(--light-text-color);
+}
+
+/* Dark theme */
+body.dark-theme {
+  background-color: var(--dark-bg-color);
+  color: var(--dark-text-color);
+}
+
+/* Common styles */
+.container {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 0 1rem;
+}
+
+/* Table styles */
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.table-container {
+  overflow-x: auto;
+}
+
+/* Status badge styles */
+.status-badge {
+  padding: 4px 8px;
+  border-radius: 4px;
+  display: inline-block;
+  font-weight: 500;
+  text-align: center;
+}
+
+/* Animations */
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.fade-in {
+  animation: fadeIn 0.3s ease-in-out;
+}
+
+/* Transition effects */
+.tab-transition-enter {
+  opacity: 0;
+  transform: translateY(10px);
+}
+
+.tab-transition-enter-active {
+  opacity: 1;
+  transform: translateY(0);
+  transition: opacity 300ms, transform 300ms;
+}
+
+.tab-transition-exit {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.tab-transition-exit-active {
+  opacity: 0;
+  transform: translateY(10px);
+  transition: opacity 300ms, transform 300ms;
+}
+
+/* Slider styles */
+.range-slider {
+  width: 100%;
+  padding: 0 10px;
+}
+
+/* Collapsible section styles */
+.collapsible-section {
+  margin-bottom: 16px;
+  border: 1px solid var(--light-border-color);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.collapsible-header {
+  padding: 10px 16px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.collapsible-content {
+  padding: 16px;
+  border-top: 1px solid var(--light-border-color);
+  animation: fadeIn 0.3s ease-in-out;
+}
+
+.light-theme .collapsible-section {
+  border-color: var(--light-border-color);
+}
+
+.dark-theme .collapsible-section {
+  border-color: var(--dark-border-color);
+}
+
+.light-theme .collapsible-header:hover {
+  background-color: var(--light-hover-color);
+}
+
+.dark-theme .collapsible-header:hover {
+  background-color: var(--dark-hover-color);
+}
+
+/* Search input styles */
+.search-input {
+  width: 100%;
+  padding: 8px 12px;
+  border-radius: 4px;
+  margin-bottom: 16px;
+  transition: border-color 0.2s;
+}
+
+.light-theme .search-input {
+  border: 1px solid var(--light-border-color);
+  background-color: white;
+  color: var(--light-text-color);
+}
+
+.dark-theme .search-input {
+  border: 1px solid var(--dark-border-color);
+  background-color: #3a3a3a;
+  color: var(--dark-text-color);
+}
+
+.search-input:focus {
+  outline: none;
+  border-color: var(--light-accent-color);
+}
+
+/* Checkbox list styles */
+.checkbox-list {
+  max-height: 200px;
+  overflow-y: auto;
+  padding-right: 8px;
+}
+
+.checkbox-item {
+  display: flex;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.checkbox-item label {
+  margin-left: 8px;
+  cursor: pointer;
+}
+
+/* Tab styles */
+.tabs-container {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.tabs-header {
+  display: flex;
+  border-bottom: 1px solid var(--light-border-color);
+  overflow-x: auto;
+}
+
+.tab-button {
+  padding: 12px 16px;
+  cursor: pointer;
+  transition: background-color 0.2s;
+  white-space: nowrap;
+}
+
+.tab-button.active {
+  border-bottom: 2px solid var(--light-accent-color);
+  font-weight: 500;
+}
+
+.light-theme .tab-button:hover {
+  background-color: var(--light-hover-color);
+}
+
+.dark-theme .tab-button:hover {
+  background-color: var(--dark-hover-color);
+}
+
+.tabs-content {
+  padding: 16px 0;
+}
+
+/* Pagination styles */
+.pagination {
+  display: flex;
+  justify-content: center;
+  margin-top: 20px;
+}
+
+.pagination-button {
+  padding: 8px 12px;
+  margin: 0 4px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.pagination-button.active {
+  background-color: var(--light-accent-color);
+  color: white;
+}
+
+.light-theme .pagination-button:hover:not(.active) {
+  background-color: var(--light-hover-color);
+}
+
+.dark-theme .pagination-button:hover:not(.active) {
+  background-color: var(--dark-hover-color);
+}
+
+/* Loading indicator */
+.loading-indicator {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  height: 100px;
+}
+
+.loading-spinner {
+  border: 4px solid rgba(0, 0, 0, 0.1);
+  border-top: 4px solid var(--light-accent-color);
+  border-radius: 50%;
+  width: 40px;
+  height: 40px;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  0% {
+    transform: rotate(0deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+} 

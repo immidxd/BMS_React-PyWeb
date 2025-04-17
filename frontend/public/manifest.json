@@ -1,0 +1,9 @@
+{
+  "short_name": "Order Manager",
+  "name": "Product and Order Management System",
+  "icons": [],
+  "start_url": ".",
+  "display": "standalone",
+  "theme_color": "#000000",
+  "background_color": "#ffffff"
+} 

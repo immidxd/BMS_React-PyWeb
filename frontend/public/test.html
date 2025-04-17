@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test Page</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            margin: 0;
+            background-color: #f0f0f0;
+            color: #333;
+        }
+        .container {
+            text-align: center;
+            background-color: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+            max-width: 80%;
+        }
+        h1 {
+            color: #4a6da7;
+            margin-bottom: 20px;
+        }
+        button {
+            background-color: #4a6da7;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+            margin-top: 20px;
+        }
+        button:hover {
+            background-color: #3a5d97;
+        }
+        .result {
+            margin-top: 20px;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            background-color: #f9f9f9;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Тестова сторінка</h1>
+        <p>Якщо ви бачите цей текст, значить PyWebView успішно завантажив HTML-файл.</p>
+        
+        <button id="testButton">Натисніть для тесту JS</button>
+        
+        <div class="result" id="result">Результат буде тут...</div>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            // Display page load time
+            document.getElementById('result').textContent = 'Сторінка завантажена: ' + new Date().toLocaleTimeString();
+            
+            // Add button click handler
+            document.getElementById('testButton').addEventListener('click', function() {
+                document.getElementById('result').textContent = 'Кнопка натиснута: ' + new Date().toLocaleTimeString();
+            });
+        });
+    </script>
+</body>
+</html> 

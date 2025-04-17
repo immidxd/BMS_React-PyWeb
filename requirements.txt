@@ -1,0 +1,32 @@
+# FastAPI and server
+fastapi>=0.95.0
+uvicorn>=0.21.1
+pydantic>=1.10.7
+python-dotenv>=1.0.0
+
+# Database
+sqlalchemy>=2.0.9
+alembic>=1.10.3
+
+# PyWebView for desktop application
+pywebview>=4.0.2
+
+# Networking and async
+aiohttp>=3.8.4
+httpx>=0.24.0
+requests>=2.28.2
+
+# Utilities
+python-multipart>=0.0.6
+Jinja2>=3.1.2
+MarkupSafe>=2.1.2
+
+# Optional: For scraping/parsing functionality
+beautifulsoup4>=4.12.0
+lxml>=4.9.2
+selenium>=4.8.3
+webdriver-manager>=3.8.6
+
+# Testing
+pytest>=7.3.1
+pytest-asyncio>=0.21.0 

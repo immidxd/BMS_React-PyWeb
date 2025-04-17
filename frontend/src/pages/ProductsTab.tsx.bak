@@ -1,0 +1,265 @@
+import React, { useState } from 'react';
+import styled from 'styled-components';
+import { useSearch } from '../App';
+import ProductsTable from '../components/products/ProductsTable';
+import { useQuery } from 'react-query';
+import { fetchProducts, fetchProductFilters, ProductFilters } from '../services/productService';
+import ProductFiltersComponent from '../components/filters/ProductFilters';
+
+const TabContainer = styled.div`
+  display: flex;
+  flex-direction: column;
+  height: calc(100% - 20px);
+  padding-top: 10px;
+`;
+
+const MainContentArea = styled.div`
+  width: 100%;
+  height: 100%;
+`;
+
+const FiltersContainer = styled.div`
+  margin-bottom: 20px;
+`;
+
+// Інтерфейс для продуктів
+interface Product {
+  id: number;
+  productnumber: string;
+  clones?: string | null;
+  typename: string | null;
+  subtypename: string | null;
+  brandname: string | null;
+  model: string | null;
+  marking?: string | null;
+  gender?: string | null;
+  color: string | null;
+  description: string | null;
+  country: string | null;
+  manufacturer?: string | null;
+  size: string | null;
+  dimensions: string | null;
+  price: number;
+  oldprice: number | null;
+  statusname: string | null;
+  conditionname: string | null;
+  additional_note?: string | null;
+  import_status: string | null;
+  quantity: number;
+  image_url: string | null;
+  is_visible: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+// Тестові дані для відображення, коли API недоступний
+const dummyProducts: Product[] = [
+  {
+    id: 1,
+    productnumber: "P001",
+    typename: "Футболка",
+    subtypename: "Базова",
+    brandname: "Nike",
+    model: "Air",
+    color: "Чорний",
+    description: "Базова футболка Nike",
+    country: "Китай",
+    size: "L",
+    dimensions: null,
+    price: 1200,
+    oldprice: 1500,
+    statusname: "В наявності",
+    conditionname: "Нове",
+    import_status: "Імпортовано",
+    quantity: 5,
+    image_url: null,
+    is_visible: true,
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString()
+  },
+  {
+    id: 2,
+    productnumber: "P002",
+    typename: "Джинси",
+    subtypename: "Slim",
+    brandname: "Levi's",
+    model: "501",
+    color: "Синій",
+    description: "Класичні джинси Levi's",
+    country: "США",
+    size: "32",
+    dimensions: null,
+    price: 2500,
+    oldprice: null,
+    statusname: "В наявності",
+    conditionname: "Нове",
+    import_status: "Імпортовано",
+    quantity: 3,
+    image_url: null,
+    is_visible: true,
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString()
+  },
+  {
+    id: 3,
+    productnumber: "P003",
+    typename: "Куртка",
+    subtypename: "Зимова",
+    brandname: "Adidas",
+    model: "Winter",
+    color: "Зелений",
+    description: "Зимова куртка Adidas",
+    country: "Китай",
+    size: "XL",
+    dimensions: null,
+    price: 3500,
+    oldprice: 4000,
+    statusname: "В наявності",
+    conditionname: "Нове",
+    import_status: "Імпортовано",
+    quantity: 2,
+    image_url: null,
+    is_visible: true,
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString()
+  }
+];
+
+// Тестові дані для фільтрів при недоступному API
+const dummyFilters = {
+  brands: ['Nike', 'Adidas', 'Puma', 'Levi\'s', 'Gucci', 'H&M', 'Calvin Klein', 'Versace', 'Zara'],
+  types: ['Джинси', 'Куртка', 'Пальто', 'Светр', 'Сукня', 'Футболка', 'Шорти'],
+  colors: ['Білий', 'Жовтий', 'Зелений', 'Рожевий', 'Синій', 'Сірий', 'Фіолетовий', 'Червоний', 'Чорний'],
+  countries: ['Іспанія', 'Італія', 'Китай', 'Польща', 'США'],
+  statuses: ['В наявності', 'Закінчується', 'Немає в наявності', 'Під замовлення'],
+  conditions: ['Ідеальний стан', 'Добрий стан', 'Задовільний стан', 'Нове'],
+  price_range: {
+    min: 318,
+    max: 4999
+  },
+  size_range: {
+    min: 'L',
+    max: 'XXL'
+  }
+};
+
+const ProductsTab: React.FC = () => {
+  const { searchTerm } = useSearch();
+  const [page, setPage] = useState(1);
+  const [perPage, setPerPage] = useState(20);
+  const [filters, setFilters] = useState<ProductFilters>({
+    search: searchTerm || undefined,
+    visible_only: false,
+    only_unsold: false
+  });
+
+  // Оновлюємо фільтр пошукового запиту кожного разу, коли змінюється searchTerm
+  React.useEffect(() => {
+    setFilters(prev => ({ ...prev, search: searchTerm || undefined }));
+  }, [searchTerm]);
+
+  // Запит на отримання фільтрів
+  const { data: filtersData, isLoading: isLoadingFilters, error: filtersError } = useQuery(
+    'productFilters',
+    fetchProductFilters,
+    {
+      retry: 1,
+      onError: (error) => {
+        console.error('Error fetching filters:', error);
+      }
+    }
+  );
+
+  // Запит на отримання продуктів з відповідними фільтрами та пагінацією
+  const { data: productsData, isLoading: isLoadingProducts, error: productsError, refetch } = useQuery(
+    ['products', page, perPage, filters],
+    () => fetchProducts(page, perPage, filters),
+    { 
+      keepPreviousData: true,
+      retry: 1,
+      onError: (error) => {
+        console.error('Error fetching products:', error);
+      }
+    }
+  );
+
+  // Обробка зміни фільтрів
+  const handleFilterChange = (newFilters: ProductFilters) => {
+    setFilters(prev => ({ ...prev, ...newFilters }));
+    setPage(1); // Скидаємо пагінацію при зміні фільтрів
+  };
+
+  // Обробка зміни сторінки
+  const handlePageChange = (newPage: number) => {
+    setPage(newPage);
+  };
+
+  // Обробники дій з продуктами
+  const handleViewProduct = (productId: number) => {
+    console.log('View product', productId);
+  };
+
+  const handleEditProduct = (productId: number) => {
+    console.log('Edit product', productId);
+  };
+
+  const handleDeleteProduct = (productId: number) => {
+    console.log('Delete product', productId);
+  };
+
+  const handleToggleVisibility = (productId: number) => {
+    console.log('Toggle visibility', productId);
+    // Тут можна додати виклик API для перемикання видимості
+    refetch(); // Оновлюємо дані після зміни
+  };
+
+  // Використовуємо тестові дані, якщо є помилка API або дані ще завантажуються
+  const displayProducts = productsError || !productsData ? dummyProducts : productsData.items;
+  const displayFilters = filtersError || !filtersData ? dummyFilters : filtersData;
+  
+  // Якщо дані завантажуються без наявних даних, показуємо повідомлення
+  if (isLoadingProducts && !productsData && !productsError) {
+    return <div>Завантаження продуктів...</div>;
+  }
+
+  return (
+    <TabContainer>
+      <FiltersContainer>
+        <ProductFiltersComponent
+          filters={displayFilters}
+          selectedFilters={filters}
+          onFilterChange={handleFilterChange}
+        />
+      </FiltersContainer>
+      <MainContentArea>
+        <ProductsTable 
+          products={displayProducts}
+          onViewProduct={handleViewProduct}
+          onEditProduct={handleEditProduct}
+          onDeleteProduct={handleDeleteProduct}
+          onToggleVisibility={handleToggleVisibility}
+          totalItems={productsData?.total || dummyProducts.length}
+          currentPage={page}
+          perPage={perPage}
+          totalPages={productsData?.pages || 1}
+          onPageChange={handlePageChange}
+        />
+      </MainContentArea>
+      {productsError && (
+        <div style={{ 
+          color: 'red', 
+          textAlign: 'center',
+          margin: '10px auto',
+          padding: '10px',
+          borderRadius: '5px',
+          backgroundColor: 'rgba(255, 220, 220, 0.8)',
+          maxWidth: '80%'
+        }}>
+          Помилка з'єднання з сервером: використовуються тестові дані.
+        </div>
+      )}
+    </TabContainer>
+  );
+};
+
+export default ProductsTab; 

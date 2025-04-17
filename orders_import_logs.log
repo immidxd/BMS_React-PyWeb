@@ -1,0 +1,64 @@
+2025-04-01 04:34:33,003 - INFO - orders_pars.py:2304 - Починаємо імпорт даних з Google Sheets (1 файлів)
+2025-04-01 04:34:33,003 - ERROR - orders_pars.py:379 - Помилка при отриманні клієнта Google Sheets: [Errno 2] No such file or directory: '/Users/i.malashenko/Desktop/react-fastapi-app/backend/scripts/newproject2024-419923-8aec36a3b0ce.json'
+2025-04-01 04:34:33,003 - ERROR - orders_pars.py:2317 - Не вдалося отримати клієнт Google Sheets для Замовлення
+2025-04-01 04:34:33,003 - ERROR - orders_pars.py:2378 - Помилка при підрахунку загальної кількості рядків: name 'update_parsing_status' is not defined
+2025-04-01 04:34:33,003 - INFO - orders_pars.py:2383 - Обробка файлу: Замовлення
+2025-04-01 04:34:33,003 - ERROR - orders_pars.py:379 - Помилка при отриманні клієнта Google Sheets: [Errno 2] No such file or directory: '/Users/i.malashenko/Desktop/react-fastapi-app/backend/scripts/newproject2024-419923-8aec36a3b0ce.json'
+2025-04-01 04:34:33,003 - ERROR - orders_pars.py:2389 - Не вдалося отримати клієнт Google Sheets для Замовлення
+2025-04-01 04:34:33,004 - INFO - orders_pars.py:236 - Лог проблем з парсингом аркушів збережено у файл: /Users/i.malashenko/Desktop/react-fastapi-app/backend/scripts/sheets_parsing_issues.log
+2025-04-01 04:34:33,019 - INFO - orders_pars.py:1941 - Видаляємо дублікати у order_details (за (order_id, product_id))...
+2025-04-01 04:34:33,020 - ERROR - orders_pars.py:2121 - Помилка remove_redundant_order_duplicates(): relation "order_details" does not exist
+LINE 8:                FROM order_details
+                            ^
+
+2025-04-01 04:34:33,020 - INFO - orders_pars.py:2523 - Імпорт завершено. Тривалість: 0:00:00.016592
+2025-04-01 04:34:33,020 - INFO - orders_pars.py:2524 - Статистика: оброблено 0 замовлень, пропущено 0, оновлено 0, додано 0 продуктів, 0 трекінгів
+2025-04-01 04:34:33,020 - INFO - orders_pars.py:2526 - Зафіксовано 2 помилок парсингу, деталі у файлі: /Users/i.malashenko/Desktop/react-fastapi-app/backend/scripts/sheets_parsing_issues.log
+2025-04-01 04:34:42,593 - INFO - orders_pars.py:2304 - Починаємо імпорт даних з Google Sheets (1 файлів)
+2025-04-01 04:34:42,593 - ERROR - orders_pars.py:379 - Помилка при отриманні клієнта Google Sheets: [Errno 2] No such file or directory: '/Users/i.malashenko/Desktop/react-fastapi-app/backend/scripts/newproject2024-419923-8aec36a3b0ce.json'
+2025-04-01 04:34:42,593 - ERROR - orders_pars.py:2317 - Не вдалося отримати клієнт Google Sheets для Замовлення
+2025-04-01 04:34:42,593 - ERROR - orders_pars.py:2378 - Помилка при підрахунку загальної кількості рядків: name 'update_parsing_status' is not defined
+2025-04-01 04:34:42,593 - INFO - orders_pars.py:2383 - Обробка файлу: Замовлення
+2025-04-01 04:34:42,593 - ERROR - orders_pars.py:379 - Помилка при отриманні клієнта Google Sheets: [Errno 2] No such file or directory: '/Users/i.malashenko/Desktop/react-fastapi-app/backend/scripts/newproject2024-419923-8aec36a3b0ce.json'
+2025-04-01 04:34:42,593 - ERROR - orders_pars.py:2389 - Не вдалося отримати клієнт Google Sheets для Замовлення
+2025-04-01 04:34:42,593 - INFO - orders_pars.py:236 - Лог проблем з парсингом аркушів збережено у файл: /Users/i.malashenko/Desktop/react-fastapi-app/backend/scripts/sheets_parsing_issues.log
+2025-04-01 04:34:42,605 - INFO - orders_pars.py:1941 - Видаляємо дублікати у order_details (за (order_id, product_id))...
+2025-04-01 04:34:42,605 - ERROR - orders_pars.py:2121 - Помилка remove_redundant_order_duplicates(): relation "order_details" does not exist
+LINE 8:                FROM order_details
+                            ^
+
+2025-04-01 04:34:42,606 - INFO - orders_pars.py:2523 - Імпорт завершено. Тривалість: 0:00:00.013077
+2025-04-01 04:34:42,606 - INFO - orders_pars.py:2524 - Статистика: оброблено 0 замовлень, пропущено 0, оновлено 0, додано 0 продуктів, 0 трекінгів
+2025-04-01 04:34:42,606 - INFO - orders_pars.py:2526 - Зафіксовано 2 помилок парсингу, деталі у файлі: /Users/i.malashenko/Desktop/react-fastapi-app/backend/scripts/sheets_parsing_issues.log
+2025-04-01 04:34:49,164 - INFO - orders_pars.py:2304 - Починаємо імпорт даних з Google Sheets (1 файлів)
+2025-04-01 04:34:49,164 - ERROR - orders_pars.py:379 - Помилка при отриманні клієнта Google Sheets: [Errno 2] No such file or directory: '/Users/i.malashenko/Desktop/react-fastapi-app/backend/scripts/newproject2024-419923-8aec36a3b0ce.json'
+2025-04-01 04:34:49,164 - ERROR - orders_pars.py:2317 - Не вдалося отримати клієнт Google Sheets для Замовлення
+2025-04-01 04:34:49,164 - ERROR - orders_pars.py:2378 - Помилка при підрахунку загальної кількості рядків: name 'update_parsing_status' is not defined
+2025-04-01 04:34:49,164 - INFO - orders_pars.py:2383 - Обробка файлу: Замовлення
+2025-04-01 04:34:49,164 - ERROR - orders_pars.py:379 - Помилка при отриманні клієнта Google Sheets: [Errno 2] No such file or directory: '/Users/i.malashenko/Desktop/react-fastapi-app/backend/scripts/newproject2024-419923-8aec36a3b0ce.json'
+2025-04-01 04:34:49,164 - ERROR - orders_pars.py:2389 - Не вдалося отримати клієнт Google Sheets для Замовлення
+2025-04-01 04:34:49,164 - INFO - orders_pars.py:236 - Лог проблем з парсингом аркушів збережено у файл: /Users/i.malashenko/Desktop/react-fastapi-app/backend/scripts/sheets_parsing_issues.log
+2025-04-01 04:34:49,173 - INFO - orders_pars.py:1941 - Видаляємо дублікати у order_details (за (order_id, product_id))...
+2025-04-01 04:34:49,173 - ERROR - orders_pars.py:2121 - Помилка remove_redundant_order_duplicates(): relation "order_details" does not exist
+LINE 8:                FROM order_details
+                            ^
+
+2025-04-01 04:34:49,174 - INFO - orders_pars.py:2523 - Імпорт завершено. Тривалість: 0:00:00.009572
+2025-04-01 04:34:49,174 - INFO - orders_pars.py:2524 - Статистика: оброблено 0 замовлень, пропущено 0, оновлено 0, додано 0 продуктів, 0 трекінгів
+2025-04-01 04:34:49,174 - INFO - orders_pars.py:2526 - Зафіксовано 2 помилок парсингу, деталі у файлі: /Users/i.malashenko/Desktop/react-fastapi-app/backend/scripts/sheets_parsing_issues.log
+2025-04-01 04:36:23,586 - INFO - orders_pars.py:2304 - Починаємо імпорт даних з Google Sheets (1 файлів)
+2025-04-01 04:36:23,587 - ERROR - orders_pars.py:379 - Помилка при отриманні клієнта Google Sheets: [Errno 2] No such file or directory: '/Users/i.malashenko/Desktop/react-fastapi-app/backend/scripts/newproject2024-419923-8aec36a3b0ce.json'
+2025-04-01 04:36:23,587 - ERROR - orders_pars.py:2317 - Не вдалося отримати клієнт Google Sheets для Замовлення
+2025-04-01 04:36:23,587 - ERROR - orders_pars.py:2378 - Помилка при підрахунку загальної кількості рядків: name 'update_parsing_status' is not defined
+2025-04-01 04:36:23,587 - INFO - orders_pars.py:2383 - Обробка файлу: Замовлення
+2025-04-01 04:36:23,587 - ERROR - orders_pars.py:379 - Помилка при отриманні клієнта Google Sheets: [Errno 2] No such file or directory: '/Users/i.malashenko/Desktop/react-fastapi-app/backend/scripts/newproject2024-419923-8aec36a3b0ce.json'
+2025-04-01 04:36:23,587 - ERROR - orders_pars.py:2389 - Не вдалося отримати клієнт Google Sheets для Замовлення
+2025-04-01 04:36:23,587 - INFO - orders_pars.py:236 - Лог проблем з парсингом аркушів збережено у файл: /Users/i.malashenko/Desktop/react-fastapi-app/backend/scripts/sheets_parsing_issues.log
+2025-04-01 04:36:23,597 - INFO - orders_pars.py:1941 - Видаляємо дублікати у order_details (за (order_id, product_id))...
+2025-04-01 04:36:23,598 - ERROR - orders_pars.py:2121 - Помилка remove_redundant_order_duplicates(): relation "order_details" does not exist
+LINE 8:                FROM order_details
+                            ^
+
+2025-04-01 04:36:23,598 - INFO - orders_pars.py:2523 - Імпорт завершено. Тривалість: 0:00:00.011890
+2025-04-01 04:36:23,598 - INFO - orders_pars.py:2524 - Статистика: оброблено 0 замовлень, пропущено 0, оновлено 0, додано 0 продуктів, 0 трекінгів
+2025-04-01 04:36:23,598 - INFO - orders_pars.py:2526 - Зафіксовано 2 помилок парсингу, деталі у файлі: /Users/i.malashenko/Desktop/react-fastapi-app/backend/scripts/sheets_parsing_issues.log
