@@ -1,17 +1,38 @@
-import type { DefaultedQueryObserverOptions } from '@tanstack/query-core'
-import type { QueryObserver } from '@tanstack/query-core'
+import type {
+  DefaultError,
+  DefaultedQueryObserverOptions,
+  Query,
+  QueryKey,
+  QueryObserver,
+  QueryObserverResult,
+} from '@tanstack/query-core'
 import type { QueryErrorResetBoundaryValue } from './QueryErrorResetBoundary'
-import type { QueryObserverResult } from '@tanstack/query-core'
-import type { QueryKey } from '@tanstack/query-core'
 
-export const ensureStaleTime = (
+export const defaultThrowOnError = <
+  TQueryFnData = unknown,
+  TError = DefaultError,
+  TData = TQueryFnData,
+  TQueryKey extends QueryKey = QueryKey,
+>(
+  _error: TError,
+  query: Query<TQueryFnData, TError, TData, TQueryKey>,
+) => query.state.data === undefined
+
+export const ensureSuspenseTimers = (
   defaultedOptions: DefaultedQueryObserverOptions<any, any, any, any, any>,
 ) => {
+  const originalStaleTime = defaultedOptions.staleTime
+
   if (defaultedOptions.suspense) {
-    // Always set stale time when using suspense to prevent
-    // fetching again when directly mounting after suspending
-    if (typeof defaultedOptions.staleTime !== 'number') {
-      defaultedOptions.staleTime = 1000
+    // Handle staleTime to ensure minimum 1000ms in Suspense mode
+    // This prevents unnecessary refetching when components remount after suspending
+    defaultedOptions.staleTime =
+      typeof originalStaleTime === 'function'
+        ? (...args) => Math.max(originalStaleTime(...args), 1000)
+        : Math.max(originalStaleTime ?? 1000, 1000)
+
+    if (typeof defaultedOptions.gcTime === 'number') {
+      defaultedOptions.gcTime = Math.max(defaultedOptions.gcTime, 1000)
     }
   }
 }
@@ -26,8 +47,7 @@ export const shouldSuspend = (
     | DefaultedQueryObserverOptions<any, any, any, any, any>
     | undefined,
   result: QueryObserverResult<any, any>,
-  isRestoring: boolean,
-) => defaultedOptions?.suspense && willFetch(result, isRestoring)
+) => defaultedOptions?.suspense && result.isPending
 
 export const fetchOptimistic = <
   TQueryFnData,
@@ -46,14 +66,6 @@ export const fetchOptimistic = <
   observer: QueryObserver<TQueryFnData, TError, TData, TQueryData, TQueryKey>,
   errorResetBoundary: QueryErrorResetBoundaryValue,
 ) =>
-  observer
-    .fetchOptimistic(defaultedOptions)
-    .then(({ data }) => {
-      defaultedOptions.onSuccess?.(data as TData)
-      defaultedOptions.onSettled?.(data, null)
-    })
-    .catch((error) => {
-      errorResetBoundary.clearReset()
-      defaultedOptions.onError?.(error)
-      defaultedOptions.onSettled?.(undefined, error)
-    })
+  observer.fetchOptimistic(defaultedOptions).catch(() => {
+    errorResetBoundary.clearReset()
+  })

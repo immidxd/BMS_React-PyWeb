@@ -4,10 +4,8 @@ from pydantic import BaseModel
 # Base schema for reference entities with ID and name
 class ReferenceBase(BaseModel):
     id: int
-    name: str
-    
-    class Config:
-        from_attributes = True
+    # name: str
+    # Для OrderStatus, PaymentStatus, DeliveryMethod треба окремо
 
 # Gender schemas
 class Gender(ReferenceBase):
@@ -17,22 +15,21 @@ class GenderList(BaseModel):
     items: List[Gender]
 
 # OrderStatus schemas
-class OrderStatusBase(ReferenceBase):
+class OrderStatusBase(BaseModel):
+    id: int
+    status_name: str
     description: Optional[str] = None
-    color_code: Optional[str] = None
 
 class OrderStatus(OrderStatusBase):
     pass
 
 class OrderStatusCreate(BaseModel):
-    name: str
+    status_name: str
     description: Optional[str] = None
-    color_code: Optional[str] = None
 
 class OrderStatusUpdate(BaseModel):
-    name: Optional[str] = None
+    status_name: Optional[str] = None
     description: Optional[str] = None
-    color_code: Optional[str] = None
 
 class OrderStatusList(BaseModel):
     items: List[OrderStatus]

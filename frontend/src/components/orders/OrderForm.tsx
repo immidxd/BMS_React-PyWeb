@@ -14,7 +14,7 @@ import {
   FilterOptions 
 } from '../../services/orderService';
 import productService from '../../services/productService';
-import { Product } from '../../types/Product';
+import { Product } from '../../types/product';
 
 // Styled components
 const Container = styled.div`

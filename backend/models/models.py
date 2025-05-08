@@ -58,8 +58,7 @@ class OrderStatus(Base):
     __tablename__ = "order_statuses"
     
     id = Column(Integer, primary_key=True, index=True)
-    name = Column(String, unique=True, index=True)
-    color_code = Column(String, default="#808080")
+    status_name = Column(String, unique=True, index=True)
     
     # Relationships
     orders = relationship("Order", back_populates="order_status")

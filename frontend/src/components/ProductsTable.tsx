@@ -46,7 +46,7 @@ export const ProductsTable: React.FC<ProductsTableProps> = ({
     const fetchProducts = async () => {
         try {
             setLoading(true);
-            const response = await productService.getProducts(page + 1, filters);
+            const response = await productService.getProducts({ page: page + 1, ...filters });
             setProducts(response.items);
             setTotal(response.total);
         } catch (error) {
@@ -81,7 +81,7 @@ export const ProductsTable: React.FC<ProductsTableProps> = ({
         <Paper sx={{ width: '100%', overflow: 'hidden' }}>
             <Box sx={{ p: 2 }}>
                 <Grid container spacing={2}>
-                    <Grid item xs={12} sm={6} md={3}>
+                    <Grid style={{ width: '25%' }}>
                         <TextField
                             fullWidth
                             label="Search"
@@ -89,7 +89,7 @@ export const ProductsTable: React.FC<ProductsTableProps> = ({
                             onChange={(e) => handleFilterChange('search', e.target.value)}
                         />
                     </Grid>
-                    <Grid item xs={12} sm={6} md={3}>
+                    <Grid style={{ width: '25%' }}>
                         <TextField
                             fullWidth
                             label="Min Price"
@@ -98,7 +98,7 @@ export const ProductsTable: React.FC<ProductsTableProps> = ({
                             onChange={(e) => handleFilterChange('min_price', Number(e.target.value))}
                         />
                     </Grid>
-                    <Grid item xs={12} sm={6} md={3}>
+                    <Grid style={{ width: '25%' }}>
                         <TextField
                             fullWidth
                             label="Max Price"

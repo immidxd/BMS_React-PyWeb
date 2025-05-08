@@ -1,7 +1,6 @@
 import React, { useState } from 'react';
 import styled from 'styled-components';
-import { ProductFiltersOptions } from '../../services/productService';
-import type { ProductFilters } from '../../services/productService';
+import type { ProductFilters, ProductFilter } from '../../types/product';
 
 const FiltersContainer = styled.div`
   display: flex;
@@ -67,89 +66,61 @@ const RangeInput = styled.input`
   border-radius: 4px;
 `;
 
-interface ProductFiltersProps {
-  filters: ProductFiltersOptions;
-  selectedFilters: ProductFilters;
-  onFilterChange: (filters: ProductFilters) => void;
+interface ProductFiltersPanelProps {
+  filters: ProductFilters;
+  selectedFilters: ProductFilter;
+  onFilterChange: (filters: ProductFilter) => void;
 }
 
-const ProductFilters: React.FC<ProductFiltersProps> = ({ filters, selectedFilters, onFilterChange }) => {
+const ProductFiltersPanel: React.FC<ProductFiltersPanelProps> = ({ filters, selectedFilters, onFilterChange }) => {
   const [priceMin, setPriceMin] = useState<string>(
-    selectedFilters.price_min !== undefined ? selectedFilters.price_min.toString() : ''
+    selectedFilters.min_price !== undefined ? selectedFilters.min_price.toString() : ''
   );
   const [priceMax, setPriceMax] = useState<string>(
-    selectedFilters.price_max !== undefined ? selectedFilters.price_max.toString() : ''
+    selectedFilters.max_price !== undefined ? selectedFilters.max_price.toString() : ''
   );
 
   // Обробник зміни чекбоксів брендів
-  const handleBrandChange = (brand: string, checked: boolean) => {
-    const updatedBrands = [...(selectedFilters.brands || [])];
-    
+  const handleBrandChange = (brandId: number, checked: boolean) => {
+    let updatedBrands = Array.isArray(selectedFilters.brands) ? [...selectedFilters.brands] : [];
     if (checked) {
-      if (!updatedBrands.includes(brand)) {
-        updatedBrands.push(brand);
-      }
+      if (!updatedBrands.includes(brandId)) updatedBrands.push(brandId);
     } else {
-      const index = updatedBrands.indexOf(brand);
-      if (index !== -1) {
-        updatedBrands.splice(index, 1);
-      }
+      updatedBrands = updatedBrands.filter(b => b !== brandId);
     }
-    
     onFilterChange({ ...selectedFilters, brands: updatedBrands.length > 0 ? updatedBrands : undefined });
   };
 
   // Обробник зміни чекбоксів типів
-  const handleTypeChange = (type: string, checked: boolean) => {
-    const updatedTypes = [...(selectedFilters.types || [])];
-    
+  const handleTypeChange = (typeId: number, checked: boolean) => {
+    let updatedTypes = Array.isArray(selectedFilters.types) ? [...selectedFilters.types] : [];
     if (checked) {
-      if (!updatedTypes.includes(type)) {
-        updatedTypes.push(type);
-      }
+      if (!updatedTypes.includes(typeId)) updatedTypes.push(typeId);
     } else {
-      const index = updatedTypes.indexOf(type);
-      if (index !== -1) {
-        updatedTypes.splice(index, 1);
-      }
+      updatedTypes = updatedTypes.filter(t => t !== typeId);
     }
-    
     onFilterChange({ ...selectedFilters, types: updatedTypes.length > 0 ? updatedTypes : undefined });
   };
 
   // Обробник зміни чекбоксів кольорів
-  const handleColorChange = (color: string, checked: boolean) => {
-    const updatedColors = [...(selectedFilters.colors || [])];
-    
+  const handleColorChange = (colorId: number, checked: boolean) => {
+    let updatedColors = Array.isArray(selectedFilters.colors) ? [...selectedFilters.colors] : [];
     if (checked) {
-      if (!updatedColors.includes(color)) {
-        updatedColors.push(color);
-      }
+      if (!updatedColors.includes(colorId)) updatedColors.push(colorId);
     } else {
-      const index = updatedColors.indexOf(color);
-      if (index !== -1) {
-        updatedColors.splice(index, 1);
-      }
+      updatedColors = updatedColors.filter(c => c !== colorId);
     }
-    
     onFilterChange({ ...selectedFilters, colors: updatedColors.length > 0 ? updatedColors : undefined });
   };
 
   // Обробник зміни чекбоксів країн
-  const handleCountryChange = (country: string, checked: boolean) => {
-    const updatedCountries = [...(selectedFilters.countries || [])];
-    
+  const handleCountryChange = (countryId: number, checked: boolean) => {
+    let updatedCountries = Array.isArray(selectedFilters.countries) ? [...selectedFilters.countries] : [];
     if (checked) {
-      if (!updatedCountries.includes(country)) {
-        updatedCountries.push(country);
-      }
+      if (!updatedCountries.includes(countryId)) updatedCountries.push(countryId);
     } else {
-      const index = updatedCountries.indexOf(country);
-      if (index !== -1) {
-        updatedCountries.splice(index, 1);
-      }
+      updatedCountries = updatedCountries.filter(c => c !== countryId);
     }
-    
     onFilterChange({ ...selectedFilters, countries: updatedCountries.length > 0 ? updatedCountries : undefined });
   };
 
@@ -157,12 +128,7 @@ const ProductFilters: React.FC<ProductFiltersProps> = ({ filters, selectedFilter
   const handlePriceRangeChange = () => {
     const min = priceMin !== '' ? parseFloat(priceMin) : undefined;
     const max = priceMax !== '' ? parseFloat(priceMax) : undefined;
-    
-    onFilterChange({
-      ...selectedFilters,
-      price_min: min,
-      price_max: max
-    });
+    onFilterChange({ ...selectedFilters, min_price: min, max_price: max });
   };
 
   // Обробник зміни чекбоксу "Тільки непродані"
@@ -178,71 +144,66 @@ const ProductFilters: React.FC<ProductFiltersProps> = ({ filters, selectedFilter
   return (
     <FiltersContainer>
       <FiltersTitle>Product Filters</FiltersTitle>
-      
-      {filters.brands.length > 0 && (
+      {filters.brands && filters.brands.length > 0 && (
         <FilterSection>
           <FilterTitle>Brands</FilterTitle>
           {filters.brands.map(brand => (
-            <CheckboxLabel key={brand}>
-              <input 
-                type="checkbox" 
-                checked={selectedFilters.brands?.includes(brand) || false}
-                onChange={(e) => handleBrandChange(brand, e.target.checked)}
-              /> 
-              {brand}
+            <CheckboxLabel key={brand.id}>
+              <input
+                type="checkbox"
+                checked={Array.isArray(selectedFilters.brands) ? selectedFilters.brands.includes(brand.id) : false}
+                onChange={(e) => handleBrandChange(brand.id, e.target.checked)}
+              />
+              {brand.name}
             </CheckboxLabel>
           ))}
         </FilterSection>
       )}
-      
-      {filters.types.length > 0 && (
+      {filters.types && filters.types.length > 0 && (
         <FilterSection>
           <FilterTitle>Types</FilterTitle>
           {filters.types.map(type => (
-            <CheckboxLabel key={type}>
-              <input 
-                type="checkbox" 
-                checked={selectedFilters.types?.includes(type) || false}
-                onChange={(e) => handleTypeChange(type, e.target.checked)}
-              /> 
-              {type}
+            <CheckboxLabel key={type.id}>
+              <input
+                type="checkbox"
+                checked={Array.isArray(selectedFilters.types) ? selectedFilters.types.includes(type.id) : false}
+                onChange={(e) => handleTypeChange(type.id, e.target.checked)}
+              />
+              {type.name}
             </CheckboxLabel>
           ))}
         </FilterSection>
       )}
-      
-      {filters.colors.length > 0 && (
+      {filters.colors && filters.colors.length > 0 && (
         <FilterSection>
           <FilterTitle>Colors</FilterTitle>
           {filters.colors.map(color => (
-            <CheckboxLabel key={color}>
-              <input 
-                type="checkbox" 
-                checked={selectedFilters.colors?.includes(color) || false}
-                onChange={(e) => handleColorChange(color, e.target.checked)}
-              /> 
-              {color}
+            <CheckboxLabel key={color.id}>
+              <input
+                type="checkbox"
+                checked={Array.isArray(selectedFilters.colors) ? selectedFilters.colors.includes(color.id) : false}
+                onChange={(e) => handleColorChange(color.id, e.target.checked)}
+              />
+              {color.name}
             </CheckboxLabel>
           ))}
         </FilterSection>
       )}
-      
-      {filters.countries.length > 0 && (
+      {filters.countries && filters.countries.length > 0 && (
         <FilterSection>
           <FilterTitle>Countries</FilterTitle>
           {filters.countries.map(country => (
-            <CheckboxLabel key={country}>
-              <input 
-                type="checkbox" 
-                checked={selectedFilters.countries?.includes(country) || false}
-                onChange={(e) => handleCountryChange(country, e.target.checked)}
-              /> 
-              {country}
+            <CheckboxLabel key={country.id}>
+              <input
+                type="checkbox"
+                checked={Array.isArray(selectedFilters.countries) ? selectedFilters.countries.includes(country.id) : false}
+                onChange={(e) => handleCountryChange(country.id, e.target.checked)}
+              />
+              {country.name}
             </CheckboxLabel>
           ))}
         </FilterSection>
       )}
-      
       <FilterSection>
         <FilterTitle>Price Range</FilterTitle>
         <RangeContainer>
@@ -263,7 +224,6 @@ const ProductFilters: React.FC<ProductFiltersProps> = ({ filters, selectedFilter
           <button onClick={handlePriceRangeChange}>Apply</button>
         </RangeContainer>
       </FilterSection>
-      
       <FilterSection>
         <CheckboxContainer>
           <input
@@ -273,7 +233,6 @@ const ProductFilters: React.FC<ProductFiltersProps> = ({ filters, selectedFilter
           />
           <span>Only Unsold</span>
         </CheckboxContainer>
-        
         <CheckboxContainer>
           <input
             type="checkbox"
@@ -287,4 +246,4 @@ const ProductFilters: React.FC<ProductFiltersProps> = ({ filters, selectedFilter
   );
 };
 
-export default ProductFilters; 
+export default ProductFiltersPanel; 

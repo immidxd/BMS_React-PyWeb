@@ -14,7 +14,6 @@ import {
     Switch,
     Row,
     Col,
-    Pagination,
     Spin
 } from 'antd';
 import { 
@@ -24,39 +23,10 @@ import {
     EyeOutlined, 
     EyeInvisibleOutlined 
 } from '@ant-design/icons';
-import { Product, ProductListResponse } from '../../types/Product';
-import { useHistory } from 'react-router-dom';
+import { Product } from '../../types/product';
+import { useNavigate } from 'react-router-dom';
 import { productService } from '../../services/productService';
-
-// Типи даних 
-interface Product {
-  id: number;
-  productnumber: string;
-  clones?: string | null;
-  typename: string | null;
-  subtypename: string | null;
-  brandname: string | null;
-  model: string | null;
-  marking?: string | null;
-  gender?: string | null;
-  color: string | null;
-  description: string | null;
-  country: string | null;
-  manufacturer?: string | null;
-  size: string | null;
-  dimensions: string | null;
-  price: number;
-  oldprice: number | null;
-  statusname: string | null;
-  conditionname: string | null;
-  additional_note?: string | null;
-  import_status: string | null;
-  quantity: number;
-  image_url: string | null;
-  is_visible: boolean;
-  created_at: string;
-  updated_at: string;
-}
+import Pagination from '../common/Pagination';
 
 // Column configuration type
 interface ColumnConfig {
@@ -91,7 +61,7 @@ const OldPriceText = styled.span`
 `;
 
 interface ProductsTableProps {
-  products: ProductListResponse;
+  products: { items: Product[], total: number, page: number, per_page: number };
   loading: boolean;
   onDelete: (id: number) => Promise<void>;
   onPageChange: (page: number, pageSize?: number) => void;
@@ -105,7 +75,7 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
     onPageChange, 
     onVisibilityChange 
 }) => {
-    const history = useHistory();
+    const navigate = useNavigate();
     const [visibilityLoading, setVisibilityLoading] = useState<Record<number, boolean>>({});
     
     // Обробник зміни видимості товару
@@ -146,7 +116,7 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
             key: 'productnumber',
             width: 120,
             render: (text: string, record: Product) => (
-                <a onClick={() => history.push(`/products/${record.id}`)}>{text}</a>
+                <a onClick={() => navigate(`/products/${record.id}`)}>{text}</a>
             ),
         },
         {
@@ -232,7 +202,7 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
                             type="primary" 
                             icon={<EditOutlined />} 
                             size="small"
-                            onClick={() => history.push(`/products/${record.id}/edit`)}
+                            onClick={() => navigate(`/products/${record.id}/edit`)}
                         />
                     </Tooltip>
                     <Tooltip title="Видалити">
@@ -261,20 +231,10 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
                     <Button 
                         type="primary" 
                         icon={<PlusOutlined />}
-                        onClick={() => history.push('/products/create')}
+                        onClick={() => navigate('/products/create')}
                     >
                         Додати товар
                     </Button>
-                </Col>
-                <Col>
-                    <Pagination
-                        current={products.page}
-                        total={products.total}
-                        pageSize={products.size}
-                        onChange={onPageChange}
-                        showSizeChanger
-                        showTotal={(total, range) => `${range[0]}-${range[1]} з ${total} товарів`}
-                    />
                 </Col>
             </TableActions>
             
@@ -288,6 +248,15 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
                 size="middle"
                 bordered
             />
+            <div className="flex justify-center items-center mt-6 mb-2">
+                <Pagination
+                    currentPage={products.page}
+                    totalPages={Math.ceil(products.total / products.per_page)}
+                    totalItems={products.total}
+                    itemsPerPage={products.per_page}
+                    onPageChange={onPageChange}
+                />
+            </div>
         </TableContainer>
     );
 };

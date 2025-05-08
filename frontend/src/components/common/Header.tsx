@@ -35,12 +35,12 @@ const Controls = styled.div`
   gap: 1rem;
 `;
 
-const ThemeToggle = styled.button`
+const ThemeToggle = styled.button<{ isDarkTheme: boolean }>`
   background-color: transparent;
   border: none;
   cursor: pointer;
   font-size: 1.2rem;
-  color: ${props => props.theme.isDarkTheme ? 'var(--dark-text-color)' : 'var(--light-text-color)'};
+  color: ${props => props.isDarkTheme ? 'var(--dark-text-color)' : 'var(--light-text-color)'};
 `;
 
 const ParsingButton = styled.button`
@@ -61,10 +61,11 @@ const ParsingButton = styled.button`
 `;
 
 const Header: React.FC<HeaderProps> = ({ onOpenParsingDialog }) => {
-  const { darkTheme, toggleTheme } = useTheme();
+  const { theme, toggleTheme } = useTheme();
+  const isDark = theme === 'dark';
 
   return (
-    <HeaderContainer isDarkTheme={darkTheme}>
+    <HeaderContainer isDarkTheme={isDark}>
       <Logo>
         Product & Order Management System
       </Logo>
@@ -73,8 +74,8 @@ const Header: React.FC<HeaderProps> = ({ onOpenParsingDialog }) => {
           <FontAwesomeIcon icon={faSync} />
           Parse Data
         </ParsingButton>
-        <ThemeToggle onClick={toggleTheme} theme={{ isDarkTheme: darkTheme }}>
-          <FontAwesomeIcon icon={darkTheme ? faSun : faMoon} />
+        <ThemeToggle onClick={toggleTheme} isDarkTheme={isDark}>
+          <FontAwesomeIcon icon={isDark ? faSun : faMoon} />
         </ThemeToggle>
       </Controls>
     </HeaderContainer>

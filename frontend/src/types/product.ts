@@ -92,4 +92,10 @@ export interface ProductFilter {
     statusid?: number;
     min_price?: number;
     max_price?: number;
+    brands?: number[];
+    types?: number[];
+    colors?: number[];
+    countries?: number[];
+    only_unsold?: boolean;
+    visible_only?: boolean;
 } 

@@ -6,13 +6,13 @@ import {
     DialogActions,
     TextField,
     Button,
-    Grid,
     FormControl,
     InputLabel,
     Select,
     MenuItem,
     Box
 } from '@mui/material';
+import Grid from '@mui/material/Grid';
 import { Product, ReferenceItem } from '../types/product';
 import { productService } from '../services/productService';
 
@@ -49,6 +49,11 @@ export const ProductForm: React.FC<ProductFormProps> = ({
         conditions: [],
         genders: []
     });
+    const [isSubmitting, setIsSubmitting] = useState(false);
+
+    useEffect(() => {
+        setFormData(initialData || {});
+    }, [initialData]);
 
     useEffect(() => {
         if (open) {
@@ -83,8 +88,16 @@ export const ProductForm: React.FC<ProductFormProps> = ({
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
-        await onSubmit(formData);
-        onClose();
+        setIsSubmitting(true);
+        try {
+            await onSubmit(formData);
+            onClose();
+        } catch (err) {
+            // eslint-disable-next-line no-console
+            console.error('Submit error:', err);
+        } finally {
+            setIsSubmitting(false);
+        }
     };
 
     return (
@@ -95,7 +108,7 @@ export const ProductForm: React.FC<ProductFormProps> = ({
             <form onSubmit={handleSubmit}>
                 <DialogContent>
                     <Grid container spacing={2}>
-                        <Grid item xs={12} sm={6}>
+                        <Grid style={{ width: '50%' }}>
                             <TextField
                                 fullWidth
                                 label="Product Number"
@@ -104,7 +117,7 @@ export const ProductForm: React.FC<ProductFormProps> = ({
                                 required
                             />
                         </Grid>
-                        <Grid item xs={12} sm={6}>
+                        <Grid style={{ width: '50%' }}>
                             <TextField
                                 fullWidth
                                 label="Model"
@@ -112,11 +125,11 @@ export const ProductForm: React.FC<ProductFormProps> = ({
                                 onChange={(e) => handleChange('model', e.target.value)}
                             />
                         </Grid>
-                        <Grid item xs={12} sm={6}>
+                        <Grid style={{ width: '50%' }}>
                             <FormControl fullWidth>
                                 <InputLabel>Brand</InputLabel>
                                 <Select
-                                    value={formData.brandid || ''}
+                                    value={formData.brandid ?? ''}
                                     onChange={(e) => handleChange('brandid', e.target.value)}
                                     label="Brand"
                                 >
@@ -128,11 +141,11 @@ export const ProductForm: React.FC<ProductFormProps> = ({
                                 </Select>
                             </FormControl>
                         </Grid>
-                        <Grid item xs={12} sm={6}>
+                        <Grid style={{ width: '50%' }}>
                             <FormControl fullWidth>
                                 <InputLabel>Type</InputLabel>
                                 <Select
-                                    value={formData.typeid || ''}
+                                    value={formData.typeid ?? ''}
                                     onChange={(e) => handleChange('typeid', e.target.value)}
                                     label="Type"
                                 >
@@ -144,30 +157,30 @@ export const ProductForm: React.FC<ProductFormProps> = ({
                                 </Select>
                             </FormControl>
                         </Grid>
-                        <Grid item xs={12} sm={6}>
+                        <Grid style={{ width: '50%' }}>
                             <TextField
                                 fullWidth
                                 label="Price"
                                 type="number"
-                                value={formData.price || ''}
-                                onChange={(e) => handleChange('price', Number(e.target.value))}
+                                value={formData.price ?? ''}
+                                onChange={(e) => handleChange('price', e.target.value === '' ? undefined : Number(e.target.value))}
                             />
                         </Grid>
-                        <Grid item xs={12} sm={6}>
+                        <Grid style={{ width: '50%' }}>
                             <TextField
                                 fullWidth
                                 label="Quantity"
                                 type="number"
-                                value={formData.quantity || 0}
-                                onChange={(e) => handleChange('quantity', Number(e.target.value))}
+                                value={formData.quantity ?? ''}
+                                onChange={(e) => handleChange('quantity', e.target.value === '' ? undefined : Number(e.target.value))}
                                 required
                             />
                         </Grid>
-                        <Grid item xs={12} sm={6}>
+                        <Grid style={{ width: '50%' }}>
                             <FormControl fullWidth>
                                 <InputLabel>Status</InputLabel>
                                 <Select
-                                    value={formData.statusid || ''}
+                                    value={formData.statusid ?? ''}
                                     onChange={(e) => handleChange('statusid', e.target.value)}
                                     label="Status"
                                 >
@@ -179,11 +192,11 @@ export const ProductForm: React.FC<ProductFormProps> = ({
                                 </Select>
                             </FormControl>
                         </Grid>
-                        <Grid item xs={12} sm={6}>
+                        <Grid style={{ width: '50%' }}>
                             <FormControl fullWidth>
                                 <InputLabel>Condition</InputLabel>
                                 <Select
-                                    value={formData.conditionid || ''}
+                                    value={formData.conditionid ?? ''}
                                     onChange={(e) => handleChange('conditionid', e.target.value)}
                                     label="Condition"
                                 >
@@ -195,7 +208,7 @@ export const ProductForm: React.FC<ProductFormProps> = ({
                                 </Select>
                             </FormControl>
                         </Grid>
-                        <Grid item xs={12}>
+                        <Grid style={{ width: '100%' }}>
                             <TextField
                                 fullWidth
                                 label="Description"
@@ -208,8 +221,8 @@ export const ProductForm: React.FC<ProductFormProps> = ({
                     </Grid>
                 </DialogContent>
                 <DialogActions>
-                    <Button onClick={onClose}>Cancel</Button>
-                    <Button type="submit" variant="contained" color="primary">
+                    <Button onClick={onClose} disabled={isSubmitting}>Cancel</Button>
+                    <Button type="submit" variant="contained" color="primary" disabled={isSubmitting}>
                         {initialData ? 'Update' : 'Create'}
                     </Button>
                 </DialogActions>

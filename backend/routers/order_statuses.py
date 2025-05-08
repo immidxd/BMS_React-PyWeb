@@ -33,9 +33,9 @@ async def create_order_status(order_status: OrderStatusCreate, db: Session = Dep
     Create a new order status
     """
     # Check if order status with the same name already exists
-    existing_order_status = db.query(OrderStatus).filter(OrderStatus.name == order_status.name).first()
+    existing_order_status = db.query(OrderStatus).filter(OrderStatus.status_name == order_status.status_name).first()
     if existing_order_status:
-        raise HTTPException(status_code=400, detail=f"Order status with name '{order_status.name}' already exists")
+        raise HTTPException(status_code=400, detail=f"Order status with name '{order_status.status_name}' already exists")
     
     # Create new order status
     db_order_status = OrderStatus(**order_status.dict())
@@ -54,10 +54,10 @@ async def update_order_status(order_status_id: int, order_status: OrderStatusUpd
         raise HTTPException(status_code=404, detail="Order status not found")
     
     # Check if name is changed and if new name already exists
-    if order_status.name and order_status.name != db_order_status.name:
-        existing_order_status = db.query(OrderStatus).filter(OrderStatus.name == order_status.name).first()
+    if order_status.status_name and order_status.status_name != db_order_status.status_name:
+        existing_order_status = db.query(OrderStatus).filter(OrderStatus.status_name == order_status.status_name).first()
         if existing_order_status:
-            raise HTTPException(status_code=400, detail=f"Order status with name '{order_status.name}' already exists")
+            raise HTTPException(status_code=400, detail=f"Order status with name '{order_status.status_name}' already exists")
     
     # Update order status fields
     update_data = order_status.dict(exclude_unset=True)

@@ -1,16 +1,20 @@
 import axios from 'axios';
-import { 
-    Product, 
-    ProductCreate, 
-    ProductUpdate, 
-    ProductListResponse, 
-    ProductFilters,
-    GetProductsParams,
-    ProductFiltersOptions
-} from '../types/Product';
+import {
+    Product,
+    ProductFilters
+} from '../types/product';
 
 // Базовий URL для API товарів
 const API_URL = '/api/products';
+
+// Додаю тип ProductListResponse тут, якщо його немає
+export type ProductListResponse = {
+    items: Product[];
+    total: number;
+    page: number;
+    per_page: number;
+    pages: number;
+};
 
 /**
  * Сервіс для роботи з API товарів
@@ -19,7 +23,7 @@ export const productService = {
     /**
      * Отримати список товарів з пагінацією та фільтрацією
      */
-    async getProducts(params: GetProductsParams = {}): Promise<ProductListResponse> {
+    async getProducts(params: Record<string, any> = {}): Promise<ProductListResponse> {
         try {
             const { 
                 skip = 0, 
@@ -91,7 +95,7 @@ export const productService = {
     /**
      * Створити новий товар
      */
-    async createProduct(productData: ProductCreate): Promise<Product> {
+    async createProduct(productData: Partial<Product>): Promise<Product> {
         try {
             const response = await axios.post<Product>(API_URL, productData);
             return response.data;
@@ -104,7 +108,7 @@ export const productService = {
     /**
      * Оновити існуючий товар
      */
-    async updateProduct(id: number, productData: ProductUpdate): Promise<Product> {
+    async updateProduct(id: number, productData: Partial<Product>): Promise<Product> {
         try {
             const response = await axios.put<Product>(`${API_URL}/${id}`, productData);
             return response.data;
@@ -146,7 +150,7 @@ export const productService = {
     /**
      * Масове оновлення товарів
      */
-    async bulkUpdateProducts(productIds: number[], updateData: Partial<ProductUpdate>): Promise<{ success: boolean; message: string; updated_count: number }> {
+    async bulkUpdateProducts(productIds: number[], updateData: Partial<Product>): Promise<{ success: boolean; message: string; updated_count: number }> {
         try {
             const response = await axios.post<{ success: boolean; message: string; updated_count: number }>(
                 `${API_URL}/bulk-update`, 
@@ -165,9 +169,9 @@ export const productService = {
     /**
      * Отримати доступні опції для фільтрів
      */
-    async getFilters(): Promise<ProductFiltersOptions> {
+    async getFilters(): Promise<ProductFilters> {
         try {
-            const response = await axios.get<ProductFiltersOptions>(`${API_URL}/filters`);
+            const response = await axios.get<ProductFilters>(`${API_URL}/filters`);
             return response.data;
         } catch (error) {
             console.error('Error fetching product filters:', error);

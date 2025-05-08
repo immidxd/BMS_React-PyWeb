@@ -66,30 +66,31 @@ const SidebarFooter = styled.div`
 `;
 
 const Sidebar: React.FC<SidebarProps> = ({ activePath }) => {
-  const { darkTheme } = useTheme();
+  const { theme } = useTheme();
+  const isDark = theme === 'dark';
   
   return (
-    <SidebarContainer isDarkTheme={darkTheme}>
+    <SidebarContainer isDarkTheme={isDark}>
       <SidebarMenu>
-        <SidebarMenuItem active={activePath === '/products'} isDarkTheme={darkTheme}>
+        <SidebarMenuItem active={activePath === '/products'} isDarkTheme={isDark}>
           <Link to="/products">
             <FontAwesomeIcon icon={faCubes} />
             Products
           </Link>
         </SidebarMenuItem>
-        <SidebarMenuItem active={activePath === '/orders'} isDarkTheme={darkTheme}>
+        <SidebarMenuItem active={activePath === '/orders'} isDarkTheme={isDark}>
           <Link to="/orders">
             <FontAwesomeIcon icon={faShoppingCart} />
             Orders
           </Link>
         </SidebarMenuItem>
-        <SidebarMenuItem active={activePath === '/clients'} isDarkTheme={darkTheme}>
+        <SidebarMenuItem active={activePath === '/clients'} isDarkTheme={isDark}>
           <Link to="/clients">
             <FontAwesomeIcon icon={faUsers} />
             Clients
           </Link>
         </SidebarMenuItem>
-        <SidebarMenuItem active={activePath === '/settings'} isDarkTheme={darkTheme}>
+        <SidebarMenuItem active={activePath === '/settings'} isDarkTheme={isDark}>
           <Link to="/settings">
             <FontAwesomeIcon icon={faCog} />
             Settings

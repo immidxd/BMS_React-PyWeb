@@ -73,7 +73,7 @@ async def get_orders(
         client_name = f"{order.client.first_name} {order.client.last_name}" if order.client else "Unknown"
         
         # Get order status name
-        order_status_name = order.order_status.name if order.order_status else None
+        order_status_name = order.order_status.status_name if order.order_status else None
         
         # Get payment status name
         payment_status_name = order.payment_status_rel.name if order.payment_status_rel else None
@@ -193,7 +193,7 @@ async def get_order(order_id: int = Path(..., ge=1), db: Session = Depends(get_d
     client_name = f"{order.client.first_name} {order.client.last_name}" if order.client else "Unknown"
     
     # Get order status name
-    order_status_name = order.order_status.name if order.order_status else None
+    order_status_name = order.order_status.status_name if order.order_status else None
     
     # Get payment status name
     payment_status_name = order.payment_status_rel.name if order.payment_status_rel else None

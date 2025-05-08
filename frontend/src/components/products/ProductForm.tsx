@@ -15,13 +15,8 @@ import {
     Space 
 } from 'antd';
 import { SaveOutlined, CloseOutlined, ArrowLeftOutlined } from '@ant-design/icons';
-import { 
-    Product, 
-    ProductCreate, 
-    ProductUpdate, 
-    ProductFiltersOptions 
-} from '../../types/Product';
-import { useHistory, useParams } from 'react-router-dom';
+import { Product } from '../../types/product';
+import { useNavigate, useParams } from 'react-router-dom';
 import { productService } from '../../services/productService';
 import styled from 'styled-components';
 
@@ -42,8 +37,7 @@ const SubmitButtons = styled.div`
 interface ProductFormProps {
     mode: 'create' | 'edit';
     product?: Product;
-    filterOptions: ProductFiltersOptions;
-    onSubmit: (data: ProductCreate | ProductUpdate) => Promise<void>;
+    onSubmit: (data: any) => Promise<void>;
     loading: boolean;
 }
 
@@ -54,21 +48,18 @@ interface RouteParams {
 const ProductForm: React.FC<ProductFormProps> = ({ 
     mode, 
     product, 
-    filterOptions, 
     onSubmit, 
     loading 
 }) => {
     const [form] = Form.useForm();
-    const history = useHistory();
-    const { id } = useParams<RouteParams>();
+    const navigate = useNavigate();
+    const { id } = useParams<{ id?: string }>();
     const [submitting, setSubmitting] = useState(false);
-    const [selectedTypeId, setSelectedTypeId] = useState<number | undefined>(product?.typeid);
     
     // Оновлюємо форму при отриманні даних товару
     useEffect(() => {
         if (product) {
             form.setFieldsValue(product);
-            setSelectedTypeId(product.typeid);
         }
     }, [product, form]);
     
@@ -78,7 +69,7 @@ const ProductForm: React.FC<ProductFormProps> = ({
         try {
             await onSubmit(values);
             message.success(`Товар успішно ${mode === 'create' ? 'створено' : 'оновлено'}`);
-            history.push('/products');
+            navigate('/products');
         } catch (error) {
             console.error('Error submitting form:', error);
             message.error(`Помилка при ${mode === 'create' ? 'створенні' : 'оновленні'} товару`);
@@ -86,17 +77,6 @@ const ProductForm: React.FC<ProductFormProps> = ({
             setSubmitting(false);
         }
     };
-    
-    // Обробник зміни типу товару
-    const handleTypeChange = (value: number) => {
-        setSelectedTypeId(value);
-        form.setFieldsValue({ subtypeid: undefined });
-    };
-    
-    // Отримуємо підтипи, що відповідають вибраному типу
-    const filteredSubtypes = !selectedTypeId 
-        ? filterOptions.subtypes 
-        : filterOptions.subtypes.filter(subtype => !subtype.typeid || subtype.typeid === selectedTypeId);
     
     // Відображаємо спінер під час завантаження
     if (mode === 'edit' && !product && loading) {
@@ -114,7 +94,7 @@ const ProductForm: React.FC<ProductFormProps> = ({
                     <Space>
                         <Button 
                             icon={<ArrowLeftOutlined />} 
-                            onClick={() => history.push('/products')}
+                            onClick={() => navigate('/products')}
                             type="link"
                         />
                         {mode === 'create' ? 'Додати новий товар' : `Редагування товару ${product?.productnumber}`}
@@ -169,12 +149,9 @@ const ProductForm: React.FC<ProductFormProps> = ({
                                 <Select 
                                     placeholder="Виберіть тип" 
                                     allowClear 
-                                    onChange={handleTypeChange}
                                     disabled={loading || submitting}
                                 >
-                                    {filterOptions.types.map(type => (
-                                        <Option key={type.id} value={type.id}>{type.name}</Option>
-                                    ))}
+                                    {/* Тут потрібно додати список типів */}
                                 </Select>
                             </Form.Item>
                         </Col>
@@ -186,11 +163,9 @@ const ProductForm: React.FC<ProductFormProps> = ({
                                 <Select 
                                     placeholder="Виберіть підтип" 
                                     allowClear
-                                    disabled={loading || submitting || !selectedTypeId}
+                                    disabled={loading || submitting}
                                 >
-                                    {filteredSubtypes.map(subtype => (
-                                        <Option key={subtype.id} value={subtype.id}>{subtype.name}</Option>
-                                    ))}
+                                    {/* Тут потрібно додати список підтипів */}
                                 </Select>
                             </Form.Item>
                         </Col>
@@ -206,9 +181,7 @@ const ProductForm: React.FC<ProductFormProps> = ({
                                     showSearch
                                     optionFilterProp="children"
                                 >
-                                    {filterOptions.brands.map(brand => (
-                                        <Option key={brand.id} value={brand.id}>{brand.name}</Option>
-                                    ))}
+                                    {/* Тут потрібно додати список брендів */}
                                 </Select>
                             </Form.Item>
                         </Col>
@@ -277,9 +250,7 @@ const ProductForm: React.FC<ProductFormProps> = ({
                                     allowClear
                                     disabled={loading || submitting}
                                 >
-                                    {filterOptions.genders.map(gender => (
-                                        <Option key={gender.id} value={gender.id}>{gender.name}</Option>
-                                    ))}
+                                    {/* Тут потрібно додати список статей */}
                                 </Select>
                             </Form.Item>
                         </Col>
@@ -295,9 +266,7 @@ const ProductForm: React.FC<ProductFormProps> = ({
                                     showSearch
                                     optionFilterProp="children"
                                 >
-                                    {filterOptions.colors.map(color => (
-                                        <Option key={color.id} value={color.id}>{color.name}</Option>
-                                    ))}
+                                    {/* Тут потрібно додати список кольорів */}
                                 </Select>
                             </Form.Item>
                         </Col>
@@ -311,9 +280,7 @@ const ProductForm: React.FC<ProductFormProps> = ({
                                     allowClear
                                     disabled={loading || submitting}
                                 >
-                                    {filterOptions.conditions.map(condition => (
-                                        <Option key={condition.id} value={condition.id}>{condition.name}</Option>
-                                    ))}
+                                    {/* Тут потрібно додати список станів */}
                                 </Select>
                             </Form.Item>
                         </Col>
@@ -327,9 +294,7 @@ const ProductForm: React.FC<ProductFormProps> = ({
                                     allowClear
                                     disabled={loading || submitting}
                                 >
-                                    {filterOptions.statuses.map(status => (
-                                        <Option key={status.id} value={status.id}>{status.name}</Option>
-                                    ))}
+                                    {/* Тут потрібно додати список статусів */}
                                 </Select>
                             </Form.Item>
                         </Col>
@@ -405,8 +370,8 @@ const ProductForm: React.FC<ProductFormProps> = ({
                                     style={{ width: '100%' }}
                                     min={0}
                                     step={0.01}
-                                    formatter={value => value ? `${value} ₴` : ''}
-                                    parser={value => value ? value.replace(/[^\d.]/g, '') : ''}
+                                    formatter={(value: number | string | undefined) => value ? `${value} ₴` : ''}
+                                    parser={(value: string | undefined) => value ? Number(value.replace(/[^\d.]/g, '')) : 0}
                                     disabled={loading || submitting}
                                 />
                             </Form.Item>
@@ -420,8 +385,8 @@ const ProductForm: React.FC<ProductFormProps> = ({
                                     style={{ width: '100%' }}
                                     min={0}
                                     step={0.01}
-                                    formatter={value => value ? `${value} ₴` : ''}
-                                    parser={value => value ? value.replace(/[^\d.]/g, '') : ''}
+                                    formatter={(value: number | string | undefined) => value ? `${value} ₴` : ''}
+                                    parser={(value: string | undefined) => value ? Number(value.replace(/[^\d.]/g, '')) : 0}
                                     disabled={loading || submitting}
                                 />
                             </Form.Item>
@@ -513,7 +478,7 @@ const ProductForm: React.FC<ProductFormProps> = ({
                     <SubmitButtons>
                         <Space>
                             <Button
-                                onClick={() => history.push('/products')}
+                                onClick={() => navigate('/products')}
                                 icon={<CloseOutlined />}
                                 disabled={loading || submitting}
                             >

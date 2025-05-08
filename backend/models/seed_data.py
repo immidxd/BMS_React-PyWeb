@@ -66,11 +66,11 @@ def populate_initial_data(db: Session):
     
     # Create order statuses
     order_statuses = [
-        OrderStatus(name="Нове", color_code="#28a745"),
-        OrderStatus(name="В обробці", color_code="#007bff"),
-        OrderStatus(name="Доставляється", color_code="#fd7e14"),
-        OrderStatus(name="Доставлено", color_code="#20c997"),
-        OrderStatus(name="Скасовано", color_code="#dc3545"),
+        OrderStatus(status_name="Нове"),
+        OrderStatus(status_name="В обробці"),
+        OrderStatus(status_name="Доставляється"),
+        OrderStatus(status_name="Доставлено"),
+        OrderStatus(status_name="Скасовано"),
     ]
     db.add_all(order_statuses)
     

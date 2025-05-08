@@ -224,7 +224,7 @@ class OrderDAO:
         """Get all options for order filters"""
         # Get order statuses
         order_statuses = self.db.query(OrderStatus).all()
-        order_statuses_list = [{"id": status.id, "name": status.name, "color": status.color_code} 
+        order_statuses_list = [{"id": status.id, "status_name": status.status_name} 
                               for status in order_statuses]
         
         # Get payment statuses

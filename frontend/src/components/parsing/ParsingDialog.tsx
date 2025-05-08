@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import styled from 'styled-components';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import { faTimes, faPlay, faStop, faFileImport, faTable } from '@fortawesome/free-solid-svg-icons';
-import { useQuery, useMutation } from '@tanstack/react-query';
+import { useQuery, useMutation, UseMutationOptions } from '@tanstack/react-query';
 import { toast } from 'react-toastify';
 
 import { 
@@ -19,6 +19,13 @@ import { useTheme } from '../../contexts/ThemeContext';
 interface ParsingDialogProps {
   open: boolean;
   onClose: () => void;
+}
+
+interface ParsingParams {
+  source_id: number;
+  style_id: number;
+  request_interval: number;
+  max_items?: number | null;
 }
 
 // Styled components for the dialog
@@ -61,7 +68,7 @@ const DialogTitle = styled.h2`
   font-size: 1.5rem;
 `;
 
-const CloseButton = styled.button`
+const CloseButtonStyled = styled.button`
   background: none;
   border: none;
   font-size: 1.25rem;
@@ -102,7 +109,7 @@ const Label = styled.label`
   font-weight: 500;
 `;
 
-const Select = styled.select<{ isDarkTheme: boolean }>`
+const SelectStyled = styled.select<{ isDarkTheme: boolean }>`
   padding: 0.5rem;
   border-radius: 4px;
   border: 1px solid var(--light-border-color);
@@ -110,7 +117,7 @@ const Select = styled.select<{ isDarkTheme: boolean }>`
   color: ${props => props.isDarkTheme ? 'var(--dark-text-color)' : 'var(--light-text-color)'};
 `;
 
-const Input = styled.input<{ isDarkTheme: boolean }>`
+const InputStyled = styled.input<{ isDarkTheme: boolean }>`
   padding: 0.5rem;
   border-radius: 4px;
   border: 1px solid var(--light-border-color);
@@ -118,7 +125,7 @@ const Input = styled.input<{ isDarkTheme: boolean }>`
   color: ${props => props.isDarkTheme ? 'var(--dark-text-color)' : 'var(--light-text-color)'};
 `;
 
-const Button = styled.button<{ variant?: 'primary' | 'secondary' | 'danger' }>`
+const ButtonStyled = styled.button<{ variant?: 'primary' | 'secondary' | 'danger' }>`
   padding: 0.5rem 1rem;
   border-radius: 4px;
   border: none;
@@ -198,7 +205,7 @@ const TabButtons = styled.div`
   margin-bottom: 1rem;
 `;
 
-const TabButton = styled.button<{ active: boolean, isDarkTheme: boolean }>`
+const TabButtonStyled = styled.button<{ active: boolean, isDarkTheme: boolean }>`
   padding: 0.5rem 1rem;
   background-color: ${props => props.active ? (props.isDarkTheme ? '#444' : '#f0f0f0') : 'transparent'};
   border: none;
@@ -236,7 +243,8 @@ const ParserCardDescription = styled.p`
 `;
 
 const ParsingDialog: React.FC<ParsingDialogProps> = ({ open, onClose }) => {
-  const { darkTheme } = useTheme();
+  const { theme } = useTheme();
+  const isDark = theme === 'dark';
   const [sourceId, setSourceId] = useState<number | null>(null);
   const [styleId, setStyleId] = useState<number | null>(null);
   const [requestInterval, setRequestInterval] = useState<number>(1);
@@ -257,87 +265,121 @@ const ParsingDialog: React.FC<ParsingDialogProps> = ({ open, onClose }) => {
   });
 
   // Start parsing mutation
-  const startParsingMutation = useMutation({
-    mutationFn: startParsing,
+  const startParsingMutation = useMutation<any, Error, ParsingParams>({
+    mutationFn: async (variables: ParsingParams) => {
+      // Prepare the request object ensuring max_items is number or undefined, not null.
+      const requestForService: import('../../services/parsingService').ParsingRequest = {
+        source_id: variables.source_id,
+        style_id: variables.style_id,
+        request_interval: variables.request_interval,
+        // If max_items is null, pass undefined; otherwise, pass the value.
+        max_items: variables.max_items === null ? undefined : variables.max_items,
+      };
+      return startParsing(requestForService); 
+    },
     onSuccess: (data) => {
+      toast.success(data.message || 'Parsing started successfully!');
       setActiveLogId(data.log_id);
       setIsPolling(true);
-      toast.success("Parsing started successfully");
     },
-    onError: (error: any) => {
+    onError: (error) => {
       toast.error(`Failed to start parsing: ${error.message}`);
+      setIsPolling(false);
     }
-  });
+  } as UseMutationOptions<any, Error, ParsingParams>);
+
+  useEffect(() => {
+    if (startParsingMutation.data) {
+      setActiveLogId(startParsingMutation.data.log_id);
+      setIsPolling(true);
+      toast.success("Parsing started successfully");
+    }
+  }, [startParsingMutation.data]);
 
   // Stop parsing mutation
-  const stopParsingMutation = useMutation({
+  const stopParsingMutation = useMutation<any, Error, number>({
     mutationFn: stopParsing,
-    onSuccess: () => {
+    onSuccess: (data) => {
+      toast.info(data.message || 'Parsing stopped successfully!');
       setIsPolling(false);
-      toast.info("Parsing stopped");
+      if (activeLogId) refetchStatus(); // Fetch final status
     },
-    onError: (error: any) => {
+    onError: (error) => {
       toast.error(`Failed to stop parsing: ${error.message}`);
     }
   });
 
+  useEffect(() => {
+    if (stopParsingMutation.isSuccess) {
+      setIsPolling(false);
+      toast.info("Parsing stopped");
+    }
+  }, [stopParsingMutation.isSuccess]);
+
   // Fetch parsing status
   const { data: parsingStatus, refetch: refetchStatus } = useQuery({
     queryKey: ['parsingStatus', activeLogId],
-    queryFn: () => fetchParsingStatus(activeLogId!),
+    queryFn: () => activeLogId ? fetchParsingStatus(activeLogId) : Promise.resolve(null),
     enabled: !!activeLogId && isPolling,
     refetchInterval: isPolling ? 1000 : false,
-    onSuccess: (data) => {
-      if (data.status === 'completed' || data.status === 'failed' || data.status === 'cancelled') {
+  });
+
+  useEffect(() => {
+    if (parsingStatus) {
+      if (parsingStatus.status === 'completed' || parsingStatus.status === 'failed' || parsingStatus.status === 'cancelled') {
         setIsPolling(false);
-        if (data.status === 'completed') {
-          toast.success(`Parsing completed: ${data.items_processed} items processed`);
-        } else if (data.status === 'failed') {
-          toast.error(`Parsing failed: ${data.message}`);
+        if (parsingStatus.status === 'completed') {
+          toast.success(`Parsing completed: ${parsingStatus.items_processed} items processed`);
+        } else if (parsingStatus.status === 'failed') {
+          toast.error(`Parsing failed: ${parsingStatus.message}`);
         }
       }
     }
-  });
+  }, [parsingStatus]);
 
   // Add mutations for special parsers
-  const ordersParseMutation = useMutation({
+  const ordersParseMutation = useMutation<any, Error, void>({
     mutationFn: startOrdersParsing,
-    onSuccess: (data) => {
-      toast.success('Orders parsing started successfully');
-      setActiveLogId(data.log_id);
-      setIsPolling(true);
-    },
-    onError: (error: any) => {
-      toast.error(`Failed to start orders parsing: ${error.message}`);
-    }
+    onSuccess: (data) => toast.success(data.message || 'Orders parsing started!'),
+    onError: (error) => toast.error(`Orders parsing failed: ${error.message}`),
   });
 
-  const googleSheetsParseMutation = useMutation({
-    mutationFn: startGoogleSheetsParsing,
-    onSuccess: (data) => {
-      toast.success('Google Sheets parsing started successfully');
-      setActiveLogId(data.log_id);
+  useEffect(() => {
+    if (ordersParseMutation.data) {
+      toast.success('Orders parsing started successfully');
+      setActiveLogId(ordersParseMutation.data.log_id);
       setIsPolling(true);
-    },
-    onError: (error: any) => {
-      toast.error(`Failed to start Google Sheets parsing: ${error.message}`);
     }
+  }, [ordersParseMutation.data]);
+
+  const googleSheetsParseMutation = useMutation<any, Error, void>({
+    mutationFn: startGoogleSheetsParsing,
+    onSuccess: (data) => toast.success(data.message || 'Google Sheets parsing started!'),
+    onError: (error) => toast.error(`Google Sheets parsing failed: ${error.message}`),
   });
+
+  useEffect(() => {
+    if (googleSheetsParseMutation.data) {
+      toast.success('Google Sheets parsing started successfully');
+      setActiveLogId(googleSheetsParseMutation.data.log_id);
+      setIsPolling(true);
+    }
+  }, [googleSheetsParseMutation.data]);
 
   // Handle form submission
   const handleStartParsing = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!sourceId || !styleId) {
-      toast.warning("Please select both source and style");
-      return;
+    if (sourceId && styleId) {
+      const params: ParsingParams = {
+        source_id: sourceId,
+        style_id: styleId,
+        request_interval: requestInterval,
+        max_items: maxItems
+      };
+      startParsingMutation.mutate(params);
+    } else {
+      toast.warn('Please select a source and style.');
     }
-
-    startParsingMutation.mutate({
-      source_id: sourceId,
-      style_id: styleId,
-      request_interval: requestInterval,
-      max_items: maxItems || undefined
-    });
   };
 
   // Handle stop parsing
@@ -381,7 +423,7 @@ const ParsingDialog: React.FC<ParsingDialogProps> = ({ open, onClose }) => {
 
   if (!open) return null;
 
-  const isFormDisabled = startParsingMutation.isLoading || isPolling;
+  const isFormDisabled = startParsingMutation.isPending || isPolling;
   const showProgress = isPolling || (parsingStatus && parsingStatus.status !== 'unknown');
   
   // Calculate progress percentage
@@ -392,30 +434,30 @@ const ParsingDialog: React.FC<ParsingDialogProps> = ({ open, onClose }) => {
 
   return (
     <Overlay onClick={e => e.target === e.currentTarget && onClose()}>
-      <DialogContainer isDarkTheme={darkTheme}>
+      <DialogContainer isDarkTheme={isDark} onClick={e => e.stopPropagation()}>
         <DialogHeader>
-          <DialogTitle>Parsing Controller</DialogTitle>
-          <CloseButton onClick={onClose}>
+          <DialogTitle>Керування Парсингом Даних</DialogTitle>
+          <CloseButtonStyled onClick={onClose}>
             <FontAwesomeIcon icon={faTimes} />
-          </CloseButton>
+          </CloseButtonStyled>
         </DialogHeader>
         <DialogContent>
           <TabContainer>
             <TabButtons>
-              <TabButton 
+              <TabButtonStyled 
                 active={activeTab === 'general'} 
-                isDarkTheme={darkTheme}
+                isDarkTheme={isDark}
                 onClick={() => setActiveTab('general')}
               >
                 General Parsing
-              </TabButton>
-              <TabButton 
+              </TabButtonStyled>
+              <TabButtonStyled 
                 active={activeTab === 'special'} 
-                isDarkTheme={darkTheme}
+                isDarkTheme={isDark}
                 onClick={() => setActiveTab('special')}
               >
                 Data Import Scripts
-              </TabButton>
+              </TabButtonStyled>
             </TabButtons>
           </TabContainer>
 
@@ -423,12 +465,12 @@ const ParsingDialog: React.FC<ParsingDialogProps> = ({ open, onClose }) => {
             <Form onSubmit={handleStartParsing}>
               <FormGroup>
                 <Label htmlFor="source">Source</Label>
-                <Select 
+                <SelectStyled 
                   id="source" 
-                  value={sourceId || ''} 
-                  onChange={e => setSourceId(e.target.value ? parseInt(e.target.value) : null)}
+                  value={sourceId ?? ''} 
+                  onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setSourceId(Number(e.target.value))}
                   disabled={isFormDisabled}
-                  isDarkTheme={darkTheme}
+                  isDarkTheme={isDark}
                 >
                   <option value="">Select a source</option>
                   {sources.map(source => (
@@ -436,17 +478,17 @@ const ParsingDialog: React.FC<ParsingDialogProps> = ({ open, onClose }) => {
                       {source.name}
                     </option>
                   ))}
-                </Select>
+                </SelectStyled>
               </FormGroup>
               
               <FormGroup>
                 <Label htmlFor="style">Parsing Style</Label>
-                <Select 
+                <SelectStyled 
                   id="style" 
-                  value={styleId || ''} 
-                  onChange={e => setStyleId(e.target.value ? parseInt(e.target.value) : null)}
+                  value={styleId ?? ''} 
+                  onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setStyleId(Number(e.target.value))}
                   disabled={isFormDisabled}
-                  isDarkTheme={darkTheme}
+                  isDarkTheme={isDark}
                 >
                   <option value="">Select a style</option>
                   {styles.map(style => (
@@ -454,68 +496,72 @@ const ParsingDialog: React.FC<ParsingDialogProps> = ({ open, onClose }) => {
                       {style.name} - {style.description}
                     </option>
                   ))}
-                </Select>
+                </SelectStyled>
               </FormGroup>
               
               <FormGroup>
                 <Label htmlFor="interval">Request Interval (seconds)</Label>
-                <Input 
+                <InputStyled 
                   id="interval" 
                   type="number" 
                   min="0.1" 
                   step="0.1" 
                   value={requestInterval} 
-                  onChange={e => setRequestInterval(parseFloat(e.target.value))}
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => setRequestInterval(parseFloat(e.target.value))}
                   disabled={isFormDisabled}
-                  isDarkTheme={darkTheme}
+                  isDarkTheme={isDark}
                 />
               </FormGroup>
               
               <FormGroup>
                 <Label htmlFor="maxItems">Max Items (optional)</Label>
-                <Input 
+                <InputStyled 
                   id="maxItems" 
                   type="number" 
                   min="1" 
-                  value={maxItems || ''} 
-                  onChange={e => setMaxItems(e.target.value ? parseInt(e.target.value) : null)}
+                  value={maxItems ?? ''} 
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => setMaxItems(e.target.value ? parseInt(e.target.value) : null)}
                   disabled={isFormDisabled}
-                  isDarkTheme={darkTheme}
+                  isDarkTheme={isDark}
                 />
               </FormGroup>
+              <ButtonStyled type="submit" variant="primary" disabled={isFormDisabled || !sourceId || !styleId}>
+                <FontAwesomeIcon icon={faPlay} />
+                {startParsingMutation.isPending ? 'Starting...' : (isPolling ? 'Parsing...' : 'Start Parsing')}
+              </ButtonStyled>
             </Form>
           )}
 
           {activeTab === 'special' && (
             <SpecialParsersContainer>
-              <ParserCard isDarkTheme={darkTheme}>
+              <ParserCard isDarkTheme={isDark}>
                 <ParserCardTitle>Orders Import</ParserCardTitle>
                 <ParserCardDescription>
                   Run the orders_pars.py script to import orders from Google Sheets into the database.
                 </ParserCardDescription>
-                <Button
+                <ButtonStyled
                   type="button"
                   onClick={handleStartOrdersParsing}
-                  disabled={ordersParseMutation.isLoading}
+                  disabled={ordersParseMutation.isPending}
                 >
                   <FontAwesomeIcon icon={faFileImport} />
-                  {ordersParseMutation.isLoading ? 'Starting...' : 'Import Orders'}
-                </Button>
+                  {ordersParseMutation.isPending ? 'Starting...' : 'Import Orders'}
+                </ButtonStyled>
               </ParserCard>
 
-              <ParserCard isDarkTheme={darkTheme}>
+              <ParserCard isDarkTheme={isDark}>
                 <ParserCardTitle>Products Import</ParserCardTitle>
                 <ParserCardDescription>
                   Run the googlesheets_pars.py script to import products from Google Sheets into the database.
                 </ParserCardDescription>
-                <Button
+                <ButtonStyled
                   type="button"
                   onClick={handleStartGoogleSheetsParsing}
-                  disabled={googleSheetsParseMutation.isLoading}
+                  disabled={googleSheetsParseMutation.isPending}
                 >
                   <FontAwesomeIcon icon={faTable} />
-                  {googleSheetsParseMutation.isLoading ? 'Starting...' : 'Import Products'}
-                </Button>
+                  {googleSheetsParseMutation.isPending ? 'Starting...' : 'Import Products'}
+                </ButtonStyled>
               </ParserCard>
             </SpecialParsersContainer>
           )}
@@ -549,14 +595,14 @@ const ParsingDialog: React.FC<ParsingDialogProps> = ({ open, onClose }) => {
           )}
         </DialogContent>
         <DialogFooter>
-          <Button variant="secondary" onClick={onClose}>
+          <ButtonStyled variant="secondary" onClick={onClose}>
             Close
-          </Button>
+          </ButtonStyled>
           {activeLogId && isPolling && (
-            <Button variant="danger" onClick={handleStopParsing} disabled={stopParsingMutation.isLoading}>
+            <ButtonStyled variant="danger" onClick={handleStopParsing} disabled={stopParsingMutation.isPending}>
               <FontAwesomeIcon icon={faStop} />
-              {stopParsingMutation.isLoading ? 'Stopping...' : 'Stop Parsing'}
-            </Button>
+              {stopParsingMutation.isPending ? 'Stopping...' : 'Stop Parsing'}
+            </ButtonStyled>
           )}
         </DialogFooter>
       </DialogContainer>
