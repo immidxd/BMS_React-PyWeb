@@ -1,3 +1,5 @@
 node_modules/
 .env
 .cache/
+backend/scripts/full_parsing_fixed.log
+backend/scripts/temporary/newproject2024-419923-a5dba4c9f119.json
