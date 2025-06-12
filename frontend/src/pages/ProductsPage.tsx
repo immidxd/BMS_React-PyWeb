@@ -31,13 +31,13 @@ interface ProductsPageProps {
 
 const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
   const [isRefreshing, setIsRefreshing] = useState(false);
-
+            
   // Effect to react to global search changes if needed for filtering
-  useEffect(() => {
+    useEffect(() => {
     if (currentSearchTerm !== undefined) {
         console.log('ProductsPage received search term:', currentSearchTerm);
         // TODO: Implement actual filtering logic based on currentSearchTerm
-    }
+            }
   }, [currentSearchTerm]);
 
   const handleRefresh = () => {
@@ -52,9 +52,9 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
   const handleResetFilters = () => {
     console.log('Resetting product filters...');
     // Logic to reset all filter states for products
-  };
-
-  return (
+    };
+    
+    return (
     <MainLayout
       filterPanelContent={<ProductsFilterPanelContent />}
       onRefresh={handleRefresh}
@@ -86,7 +86,7 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
         </div>
       </div>
     </MainLayout>
-  );
+    );
 };
 
 export default ProductsPage; 

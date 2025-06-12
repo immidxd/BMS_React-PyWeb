@@ -65,7 +65,7 @@ DB_PORT = os.getenv("DB_PORT", "5432")
 # -------------------------------------------------------
 #   Дані для Google Sheets
 # -------------------------------------------------------
-GOOGLE_SHEETS_JSON_KEY = os.getenv("GOOGLE_SHEETS_JSON_KEY", "newproject2024-419923-8aec36a3b0ce.json")
+GOOGLE_SHEETS_JSON_KEY = os.getenv("GOOGLE_SHEETS_JSON_KEY", "newproject2024-419923-a5dba4c9f119.json")
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 GOOGLE_SHEETS_CREDENTIALS_FILE = os.path.join(SCRIPT_DIR, "secure_creds", GOOGLE_SHEETS_JSON_KEY)
 SPREADSHEET_NAME = os.getenv("GOOGLE_SHEETS_DOCUMENT_NAME_ORDERS", "Замовлення")
@@ -371,8 +371,7 @@ def get_google_sheet_client():
     """Отримує клієнт для роботи з Google Sheets API"""
     try:
         scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
-        creds_json = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'newproject2024-419923-8aec36a3b0ce.json')
-        credentials = ServiceAccountCredentials.from_json_keyfile_name(creds_json, scope)
+        credentials = ServiceAccountCredentials.from_json_keyfile_name(GOOGLE_SHEETS_CREDENTIALS_FILE, scope)
         client = gspread.authorize(credentials)
         return client
     except Exception as e:

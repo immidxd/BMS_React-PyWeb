@@ -34,7 +34,7 @@ export const AppThemeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
   return (
     <ThemeContext.Provider value={value}>
-      {children}
+        {children}
     </ThemeContext.Provider>
   );
 };

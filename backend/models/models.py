@@ -12,20 +12,54 @@ class Gender(Base):
     
     # Relationships
     clients = relationship("Client", back_populates="gender")
-    products = relationship("Product", back_populates="gender")
 
 class Client(Base):
     __tablename__ = "clients"
     
     id = Column(Integer, primary_key=True, index=True)
-    first_name = Column(String, nullable=False)
-    last_name = Column(String, nullable=False)
-    phone_number = Column(String)
-    email = Column(String)
+    first_name = Column(String, nullable=True)
+    last_name = Column(String, nullable=True)
+    middle_name = Column(String, nullable=True)
+    phone_number = Column(String, nullable=True)
+    email = Column(String, nullable=True)
     date_of_birth = Column(Date, nullable=True)
-    gender_id = Column(Integer, ForeignKey("genders.id"))
-    address = Column(String, nullable=True)
+    gender_id = Column(Integer, ForeignKey("genders.id"), nullable=True)
+    
+    # Social media fields
+    facebook = Column(String, nullable=True)
+    instagram = Column(String, nullable=True)
+    telegram = Column(String, nullable=True)
+    viber = Column(String, nullable=True)
+    messenger = Column(String, nullable=True)
+    tiktok = Column(String, nullable=True)
+    olx = Column(String, nullable=True)
+    
+    # Order tracking fields
+    first_order_date = Column(Date, nullable=True)
+    last_order_date = Column(Date, nullable=True)
+    last_order_address_id = Column(Integer, nullable=True)
+    order_count = Column(Integer, default=0)
+    average_order_value = Column(Float, nullable=True)
+    total_order_amount = Column(Float, nullable=True)
+    largest_purchase = Column(Float, nullable=True)
+    
+    # Client management fields
+    client_discount = Column(Float, nullable=True)
+    bonus_account = Column(Float, nullable=True)
+    city_of_residence = Column(String, nullable=True)
+    country_of_residence = Column(Integer, nullable=True)
+    preferred_delivery_method_id = Column(Integer, nullable=True)
+    preferred_payment_method_id = Column(Integer, nullable=True)
+    address_id = Column(Integer, nullable=True)
+    client_type_id = Column(Integer, nullable=True)
+    rating = Column(Float, nullable=True)
     notes = Column(Text, nullable=True)
+    status_id = Column(Integer, nullable=True)
+    priority = Column(Integer, default=0)
+    number_of_purchased_lots = Column(Integer, default=0)
+    
+    # Timestamps
+    registration_date = Column(DateTime, default=datetime.utcnow)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
@@ -72,7 +106,6 @@ class Order(Base):
     order_status_id = Column(Integer, ForeignKey("order_statuses.id"))
     total_amount = Column(Float, default=0.0, nullable=False)
     payment_method_id = Column(Integer, ForeignKey("payment_methods.id"))
-    payment_status_text = Column(String(50))
     payment_status_id = Column(Integer, ForeignKey("payment_statuses.id"))
     delivery_method_id = Column(Integer, ForeignKey("delivery_methods.id"))
     delivery_address_id = Column(Integer, ForeignKey("addresses.id"))
@@ -100,54 +133,42 @@ class Product(Base):
     __tablename__ = "products"
     
     id = Column(Integer, primary_key=True, index=True)
-    productnumber = Column(String(50), unique=True, nullable=False)
-    clonednumbers = Column(Text, nullable=True)
-    model = Column(String(500), nullable=True)
-    marking = Column(String(500), nullable=True)
-    year = Column(Integer, nullable=True)
-    description = Column(Text, nullable=True)
-    extranote = Column(Text, nullable=True)
-    price = Column(Float, nullable=True)
-    oldprice = Column(Float, nullable=True)
-    dateadded = Column(DateTime, default=datetime.utcnow)
-    sizeeu = Column(String(50), nullable=True)
-    sizeua = Column(String(50), nullable=True)
-    sizeusa = Column(String(50), nullable=True)
-    sizeuk = Column(String(10), nullable=True)
-    sizejp = Column(String(10), nullable=True)
-    sizecn = Column(String(10), nullable=True)
-    measurementscm = Column(String(50), nullable=True)
+    productnumber = Column(String(50), unique=True, index=True, nullable=False)
+    clonednumbers = Column(Text)
+    model = Column(String(100))
+    marking = Column(String(100))
+    year = Column(Integer)
+    description = Column(Text)
+    extranote = Column(Text)
+    price = Column(Float, default=0.0)
+    oldprice = Column(Float)
+    dateadded = Column(Date, default=func.current_date())
+    sizeeu = Column(String(20))
+    sizeua = Column(String(20))
+    sizeusa = Column(String(20))
+    sizeuk = Column(String(20))
+    sizejp = Column(String(20))
+    sizecn = Column(String(20))
+    measurementscm = Column(String(20))
     quantity = Column(Integer, default=1)
-    mainimage = Column(String(255), nullable=True)
-    is_visible = Column(Boolean, default=True)  # Видимість товару
-    created_at = Column(DateTime(timezone=True), default=func.now())
-    updated_at = Column(DateTime(timezone=True), default=func.now(), onupdate=func.now())
+    mainimage = Column(String(255))
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
-    # Foreign keys
-    typeid = Column(Integer, ForeignKey("types.id"), nullable=True)
-    subtypeid = Column(Integer, ForeignKey("subtypes.id"), nullable=True)
-    brandid = Column(Integer, ForeignKey("brands.id"), nullable=True)
-    genderid = Column(Integer, ForeignKey("genders.id"), nullable=True)
-    colorid = Column(Integer, ForeignKey("colors.id"), nullable=True)
-    ownercountryid = Column(Integer, ForeignKey("countries.id"), nullable=True)
-    manufacturercountryid = Column(Integer, ForeignKey("countries.id"), nullable=True)
-    statusid = Column(Integer, ForeignKey("statuses.id"), nullable=True)
-    conditionid = Column(Integer, ForeignKey("conditions.id"), nullable=True)
-    importid = Column(Integer, ForeignKey("imports.id"), nullable=True)
-    deliveryid = Column(Integer, ForeignKey("deliveries.id"), nullable=True)
+    # Foreign Keys
+    typeid = Column(Integer)
+    subtypeid = Column(Integer)
+    brandid = Column(Integer)
+    genderid = Column(Integer)
+    colorid = Column(Integer)
+    ownercountryid = Column(Integer)
+    manufacturercountryid = Column(Integer)
+    statusid = Column(Integer)
+    conditionid = Column(Integer)
+    importid = Column(Integer)
+    deliveryid = Column(Integer)
     
     # Relationships
-    type = relationship("Type", back_populates="products")
-    subtype = relationship("Subtype", back_populates="products")
-    brand = relationship("Brand", back_populates="products")
-    gender = relationship("Gender", back_populates="products")
-    color = relationship("Color", back_populates="products")
-    owner_country = relationship("Country", foreign_keys=[ownercountryid], back_populates="owner_products")
-    manufacturer_country = relationship("Country", foreign_keys=[manufacturercountryid], back_populates="manufacturer_products")
-    status = relationship("Status", back_populates="products")
-    condition = relationship("Condition", back_populates="products")
-    import_record = relationship("Import", back_populates="products")
-    delivery = relationship("Delivery", back_populates="products")
     order_items = relationship("OrderItem", back_populates="product")
 
 class ParsingSource(Base):
@@ -221,80 +242,6 @@ class OrderItem(Base):
     # Relationships
     order = relationship("Order", back_populates="items")
     product = relationship("Product", back_populates="order_items")
-
-# Додаємо нові моделі для довідників
-class Type(Base):
-    __tablename__ = "types"
-    
-    id = Column(Integer, primary_key=True, index=True)
-    name = Column(String(100), unique=True, nullable=False)
-    
-    products = relationship("Product", back_populates="type")
-
-class Subtype(Base):
-    __tablename__ = "subtypes"
-    
-    id = Column(Integer, primary_key=True, index=True)
-    name = Column(String(100), unique=True, nullable=False)
-    
-    products = relationship("Product", back_populates="subtype")
-
-class Brand(Base):
-    __tablename__ = "brands"
-    
-    id = Column(Integer, primary_key=True, index=True)
-    name = Column(String(100), unique=True, nullable=False)
-    
-    products = relationship("Product", back_populates="brand")
-
-class Color(Base):
-    __tablename__ = "colors"
-    
-    id = Column(Integer, primary_key=True, index=True)
-    name = Column(String(100), unique=True, nullable=False)
-    
-    products = relationship("Product", back_populates="color")
-
-class Country(Base):
-    __tablename__ = "countries"
-    
-    id = Column(Integer, primary_key=True, index=True)
-    name = Column(String(100), unique=True, nullable=False)
-    
-    owner_products = relationship("Product", foreign_keys="Product.ownercountryid", back_populates="owner_country")
-    manufacturer_products = relationship("Product", foreign_keys="Product.manufacturercountryid", back_populates="manufacturer_country")
-
-class Status(Base):
-    __tablename__ = "statuses"
-    
-    id = Column(Integer, primary_key=True, index=True)
-    name = Column(String(100), unique=True, nullable=False)
-    
-    products = relationship("Product", back_populates="status")
-
-class Condition(Base):
-    __tablename__ = "conditions"
-    
-    id = Column(Integer, primary_key=True, index=True)
-    name = Column(String(100), unique=True, nullable=False)
-    
-    products = relationship("Product", back_populates="condition")
-
-class Import(Base):
-    __tablename__ = "imports"
-    
-    id = Column(Integer, primary_key=True, index=True)
-    name = Column(String(100), unique=True, nullable=False)
-    
-    products = relationship("Product", back_populates="import_record")
-
-class Delivery(Base):
-    __tablename__ = "deliveries"
-    
-    id = Column(Integer, primary_key=True, index=True)
-    name = Column(String(100), unique=True, nullable=False)
-    
-    products = relationship("Product", back_populates="delivery")
 
 class PaymentMethod(Base):
     __tablename__ = "payment_methods"

@@ -455,4 +455,112 @@ async def run_googlesheets_parsing(background_tasks: BackgroundTasks, db: Sessio
         "log_id": parsing_log.id,
         "status": "started",
         "message": "Google Sheets parsing script started"
+    }
+
+@router.post("/parsing/orders-comprehensive", tags=["parsing"])
+async def run_comprehensive_orders_parsing(
+    max_sheets: Optional[int] = None,
+    background_tasks: BackgroundTasks = BackgroundTasks(),
+    db: Session = Depends(get_db)
+):
+    """
+    Запуск комплексного парсингу замовлень з Google Sheets
+    Включає дедуплікацію клієнтів, розпізнавання методів оплати, 
+    синхронізацію цін та оновлення розмірів товарів
+    """
+    import subprocess
+    import os
+    import sys
+    from datetime import datetime
+    
+    # Create parsing log
+    parsing_log = ParsingLog(
+        source_id=1,  # Google Sheets source
+        status="in_progress",
+        start_time=datetime.utcnow(),
+        message=f"Running comprehensive orders parser{' (limited to ' + str(max_sheets) + ' sheets)' if max_sheets else ''}"
+    )
+    db.add(parsing_log)
+    db.commit()
+    db.refresh(parsing_log)
+    
+    # Function to run in background
+    def run_comprehensive_orders_script():
+        try:
+            script_path = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 
+                "scripts", 
+                "orders_comprehensive_parser.py"
+            )
+            
+            # Build command with optional test parameter
+            cmd = [sys.executable, script_path]
+            if max_sheets:
+                cmd.extend(["--test", str(max_sheets)])
+            
+            # Start the subprocess
+            logger.info(f"Запуск команди: {' '.join(cmd)}")
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE, 
+                stderr=subprocess.PIPE,
+                text=True
+            )
+            
+            # Wait for completion
+            stdout, stderr = process.communicate()
+            
+            # Update parsing log
+            db_session = next(get_db())
+            log = db_session.query(ParsingLog).filter(ParsingLog.id == parsing_log.id).first()
+            
+            if process.returncode == 0:
+                log.status = "completed"
+                log.message = f"Комплексний парсинг замовлень завершено успішно{' (' + str(max_sheets) + ' аркушів)' if max_sheets else ''}"
+                
+                # Try to extract statistics from stdout
+                if "СТАТИСТИКА ПАРСИНГУ:" in stdout:
+                    stats_section = stdout.split("СТАТИСТИКА ПАРСИНГУ:")[1]
+                    log.message += f"\n\nСтатистика:\n{stats_section[:500]}"  # Limit message length
+                
+            else:
+                log.status = "failed"
+                log.message = f"Помилка комплексного парсингу замовлень: {stderr}"
+            
+            log.end_time = datetime.utcnow()
+            db_session.commit()
+            db_session.close()
+            
+            logger.info(f"Комплексний парсинг замовлень завершено з кодом: {process.returncode}")
+            
+        except Exception as e:
+            logger.error(f"Помилка запуску комплексного парсера замовлень: {e}")
+            # Update parsing log with error
+            try:
+                db_session = next(get_db())
+                log = db_session.query(ParsingLog).filter(ParsingLog.id == parsing_log.id).first()
+                if log:
+                    log.status = "failed"
+                    log.message = f"Помилка: {str(e)}"
+                    log.end_time = datetime.utcnow()
+                    db_session.commit()
+                db_session.close()
+            except Exception as db_error:
+                logger.error(f"Помилка оновлення лога: {db_error}")
+    
+    # Add task to background tasks
+    background_tasks.add_task(run_comprehensive_orders_script)
+    
+    return {
+        "log_id": parsing_log.id,
+        "status": "started",
+        "message": f"Комплексний парсинг замовлень запущено{' (обмежено до ' + str(max_sheets) + ' аркушів)' if max_sheets else ''}",
+        "max_sheets": max_sheets or "всі аркуші",
+        "features": [
+            "Дедуплікація клієнтів по телефону/Facebook",
+            "Розпізнавання методів оплати",
+            "Парсинг уточнень (розміри, заміри, коментарі)",
+            "Синхронізація цін товарів",
+            "Оновлення розмірів та замірів"
+        ]
     } 

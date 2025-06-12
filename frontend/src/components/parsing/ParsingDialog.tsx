@@ -371,9 +371,9 @@ const ParsingDialog: React.FC<ParsingDialogProps> = ({ open, onClose }) => {
     e.preventDefault();
     if (sourceId && styleId) {
       const params: ParsingParams = {
-        source_id: sourceId,
-        style_id: styleId,
-        request_interval: requestInterval,
+      source_id: sourceId,
+      style_id: styleId,
+      request_interval: requestInterval,
         max_items: maxItems
       };
       startParsingMutation.mutate(params);
