@@ -5,8 +5,12 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from backend.models.database import engine, Base, init_db
-from backend.routers import (
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from models.database import engine, Base, init_db
+from routers import (
     products,
     clients,
     orders,

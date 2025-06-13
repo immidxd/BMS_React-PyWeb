@@ -7,10 +7,10 @@ from sqlalchemy import text
 from contextlib import contextmanager
 from datetime import datetime
 
-from backend.models import models
-from backend.models.database import db_session
-from backend.schemas import product as schemas
-from backend.models.models import ParsingLog, Product, ParsingSource, ParsingStyle
+from models import models
+from models.database import db_session
+from schemas import product as schemas
+from models.models import ParsingLog, Product, ParsingSource, ParsingStyle
 
 logger = logging.getLogger(__name__)
 

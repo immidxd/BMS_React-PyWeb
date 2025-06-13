@@ -1,13 +1,19 @@
 from typing import List, Optional, Dict, Any
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, WebSocket, WebSocketDisconnect
 from sqlalchemy.orm import Session
 import asyncio
 import datetime
 import logging
+import json
+import sys
+import os
 
-from backend.models.database import get_db
-from backend.models.models import ParsingSource, ParsingStyle, ParsingLog, ParsingSchedule
-from backend.schemas.parsing import (
+# Додаємо шлях до backend для правильного імпорту
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from models.database import get_db
+from models.models import ParsingSource, ParsingStyle, ParsingLog, ParsingSchedule
+from schemas.parsing import (
     ParsingSource as ParsingSourceSchema,
     ParsingSourceCreate, ParsingSourceUpdate,
     ParsingStyle as ParsingStyleSchema,
@@ -18,7 +24,7 @@ from backend.schemas.parsing import (
     ParsingScheduleCreate, ParsingScheduleUpdate,
     ParsingRequest
 )
-from backend.services.parsing_service import (
+from services.parsing_service import (
     start_parsing,
     stop_parsing,
     get_parsing_status,
@@ -26,11 +32,79 @@ from backend.services.parsing_service import (
     calculate_next_run
 )
 
+# Додаємо шлях до scripts
+scripts_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'scripts')
+sys.path.append(scripts_path)
+
+try:
+    from unified_parser import UnifiedParser, ParsingMode, get_parsing_modes
+except ImportError as e:
+    logger.error(f"Failed to import unified_parser: {e}")
+    # Fallback implementations
+    class ParsingMode:
+        FULL = "full"
+        INCREMENTAL = "incremental"
+        QUICK_UPDATE = "quick_update"
+        PRODUCTS_ONLY = "products_only"
+        ORDERS_ONLY = "orders_only"
+        NEW_PRODUCTS = "new_products"
+    
+    class UnifiedParser:
+        def __init__(self, callback=None):
+            pass
+        
+        async def parse(self, mode, **kwargs):
+            pass
+        
+        def cancel(self):
+            pass
+    
+    def get_parsing_modes():
+        return [
+            {
+                "id": "full",
+                "name": "Повний парсинг",
+                "description": "Повний парсинг всіх товарів та замовлень",
+                "icon": "🔄",
+                "estimated_time": "1-2 години"
+            }
+        ]
+
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
 # Active parsing tasks
 active_parsing_tasks = {}
+
+# Глобальні змінні для відстеження парсингу
+current_parser: Optional[UnifiedParser] = None
+parsing_status = {
+    "is_running": False,
+    "task": "",
+    "current": 0,
+    "total": 0,
+    "elapsed_time": 0,
+    "errors": []
+}
+
+# WebSocket клієнти для оновлення статусу
+websocket_clients: List[WebSocket] = []
+
+async def broadcast_status(status: Dict):
+    """Відправляє статус всім підключеним клієнтам."""
+    global parsing_status
+    parsing_status = status
+    
+    # Видаляємо відключених клієнтів
+    disconnected = []
+    for client in websocket_clients:
+        try:
+            await client.send_json(status)
+        except:
+            disconnected.append(client)
+    
+    for client in disconnected:
+        websocket_clients.remove(client)
 
 @router.get("/parsing/sources", response_model=List[ParsingSourceSchema], tags=["parsing"])
 async def get_parsing_sources(db: Session = Depends(get_db)):
@@ -130,61 +204,88 @@ async def delete_parsing_style(style_id: int, db: Session = Depends(get_db)):
     db.commit()
     return {"message": "Parsing style deleted successfully"}
 
-@router.post("/parsing/start", tags=["parsing"])
-async def start_parsing_task(
-    request: ParsingRequest,
-    background_tasks: BackgroundTasks,
-    db: Session = Depends(get_db)
-):
-    """
-    Start a parsing task with the provided configuration
-    """
-    # Check if source exists
-    source = db.query(ParsingSource).filter(ParsingSource.id == request.source_id).first()
-    if not source:
-        raise HTTPException(status_code=404, detail="Parsing source not found")
+@router.post("/parsing/start")
+async def start_parsing(background_tasks: BackgroundTasks, mode: str, params: Optional[Dict] = None):
+    """Запускає парсинг у фоновому режимі."""
+    global current_parser
     
-    # Check if style exists
-    style = db.query(ParsingStyle).filter(ParsingStyle.id == request.style_id).first()
-    if not style:
-        raise HTTPException(status_code=404, detail="Parsing style not found")
+    if parsing_status.get("is_running", False):
+        raise HTTPException(status_code=400, detail="Парсинг вже виконується")
     
-    # Create parsing log
-    parsing_log = ParsingLog(
-        source_id=request.source_id,
-        status="in_progress",
-        start_time=datetime.datetime.utcnow()
-    )
-    db.add(parsing_log)
-    db.commit()
-    db.refresh(parsing_log)
+    try:
+        parsing_mode = ParsingMode(mode)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Невідомий режим парсингу: {mode}")
     
-    # Start parsing in background task
-    background_tasks.add_task(
-        start_parsing,
-        log_id=parsing_log.id,
-        source=source,
-        style=style,
-        categories=request.categories,
-        request_interval=request.request_interval,
-        max_items=request.max_items,
-        custom_options=request.custom_options
-    )
+    # Створюємо парсер з callback для оновлення статусу
+    current_parser = UnifiedParser(broadcast_status)
     
-    # Track active task
-    active_parsing_tasks[parsing_log.id] = {
-        "log_id": parsing_log.id,
-        "source": source.name,
-        "style": style.name,
-        "start_time": parsing_log.start_time,
-        "status": "in_progress"
-    }
+    # Запускаємо парсинг у фоновому режимі
+    background_tasks.add_task(run_parsing, parsing_mode, params or {})
     
     return {
-        "log_id": parsing_log.id,
         "status": "started",
-        "message": f"Parsing task started for source: {source.name} with style: {style.name}"
+        "mode": mode,
+        "message": "Парсинг запущено у фоновому режимі"
     }
+
+@router.post("/parsing/cancel")
+async def cancel_parsing():
+    """Скасовує поточний парсинг."""
+    global current_parser
+    
+    if not parsing_status.get("is_running", False):
+        raise HTTPException(status_code=400, detail="Немає активного парсингу")
+    
+    if current_parser:
+        current_parser.cancel()
+        return {"status": "cancelling", "message": "Запит на скасування відправлено"}
+    
+    return {"status": "error", "message": "Парсер не знайдено"}
+
+@router.websocket("/parsing/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    """WebSocket для отримання оновлень статусу в реальному часі."""
+    await websocket.accept()
+    websocket_clients.append(websocket)
+    
+    # Відправляємо поточний статус
+    await websocket.send_json(parsing_status)
+    
+    try:
+        while True:
+            # Чекаємо на повідомлення від клієнта (для підтримки з'єднання)
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        websocket_clients.remove(websocket)
+
+async def run_parsing(mode: ParsingMode, params: Dict):
+    """Запускає парсинг у фоновому режимі."""
+    global current_parser
+    
+    try:
+        await current_parser.parse(mode, **params)
+    except Exception as e:
+        await broadcast_status({
+            "is_running": False,
+            "task": "Помилка парсингу",
+            "current": 0,
+            "total": 0,
+            "elapsed_time": 0,
+            "errors": [str(e)]
+        })
+    finally:
+        current_parser = None
+
+@router.get("/parsing/modes")
+async def get_available_modes():
+    """Повертає доступні режими парсингу."""
+    return get_parsing_modes()
+
+@router.get("/parsing/status")
+async def get_parsing_status():
+    """Повертає поточний статус парсингу."""
+    return parsing_status
 
 @router.post("/parsing/stop/{log_id}", tags=["parsing"])
 async def stop_parsing_task(log_id: int, db: Session = Depends(get_db)):
@@ -455,7 +556,7 @@ async def run_googlesheets_parsing(background_tasks: BackgroundTasks, db: Sessio
         "log_id": parsing_log.id,
         "status": "started",
         "message": "Google Sheets parsing script started"
-    }
+    } 
 
 @router.post("/parsing/orders-comprehensive", tags=["parsing"])
 async def run_comprehensive_orders_parsing(
@@ -563,4 +664,15 @@ async def run_comprehensive_orders_parsing(
             "Синхронізація цін товарів",
             "Оновлення розмірів та замірів"
         ]
-    } 
+    }
+
+# Старі ендпоінти для сумісності
+@router.post("/parsing/products")
+async def parse_products(background_tasks: BackgroundTasks):
+    """Запускає парсинг товарів (для сумісності)."""
+    return await start_parsing(background_tasks, ParsingMode.PRODUCTS_ONLY.value)
+
+@router.post("/parsing/orders")
+async def parse_orders(background_tasks: BackgroundTasks):
+    """Запускає парсинг замовлень (для сумісності)."""
+    return await start_parsing(background_tasks, ParsingMode.ORDERS_ONLY.value) 

@@ -7,8 +7,8 @@ import argparse
 # Додаємо батьківську директорію до шляху імпорту
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from backend.models.database import db_session
-from backend.models.seed_data import reset_database
+from models.database import db_session
+from models.seed_data import reset_database
 
 logging.basicConfig(
     level=logging.INFO,

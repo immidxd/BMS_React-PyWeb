@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Layout, Menu, theme, Typography } from 'antd';
+import { Layout, Menu, theme, Typography, Button } from 'antd';
 import {
   MenuUnfoldOutlined,
   MenuFoldOutlined,
@@ -8,9 +8,12 @@ import {
   UserOutlined,
   FileOutlined,
   SettingOutlined,
+  ReloadOutlined,
 } from '@ant-design/icons';
 import { Link, useLocation } from 'react-router-dom';
 import styled from 'styled-components';
+import { ParsingDialog } from '../ParsingDialog';
+import { ParsingStatus } from '../ParsingStatus';
 
 const { Header, Sider, Content, Footer } = Layout;
 const { Title } = Typography;
@@ -56,10 +59,29 @@ interface MainLayoutProps {
 
 const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
   const [collapsed, setCollapsed] = useState(false);
+  const [parsingDialogOpen, setParsingDialogOpen] = useState(false);
   const location = useLocation();
   const {
     token: { colorBgContainer, borderRadiusLG },
   } = theme.useToken();
+
+  const handleStartParsing = async (mode: string, params: any) => {
+    try {
+      const response = await fetch('/api/parsing/parsing/start', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ mode, params }),
+      });
+      
+      if (!response.ok) {
+        throw new Error('Failed to start parsing');
+      }
+    } catch (error) {
+      console.error('Error starting parsing:', error);
+    }
+  };
 
   // Визначаємо ключі меню на основі поточного шляху
   const getSelectedKeys = () => {
@@ -120,7 +142,14 @@ const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
             }
           )}
           <Title level={4} style={{ margin: 0 }}>Система управління товарами та замовленнями</Title>
-          <div style={{ width: 40 }} /> {/* Пустий елемент для балансу */}
+          <Button 
+            type="primary" 
+            icon={<ReloadOutlined />} 
+            onClick={() => setParsingDialogOpen(true)}
+            style={{ marginLeft: 'auto' }}
+          >
+            Оновити дані
+          </Button>
         </StyledHeader>
         <StyledContent
           style={{
@@ -132,6 +161,16 @@ const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
         </StyledContent>
         <StyledFooter>BS System © {new Date().getFullYear()} Всі права захищено</StyledFooter>
       </Layout>
+
+      {/* Діалог парсингу */}
+      <ParsingDialog
+        open={parsingDialogOpen}
+        onClose={() => setParsingDialogOpen(false)}
+        onStartParsing={handleStartParsing}
+      />
+
+      {/* Статус парсингу */}
+      <ParsingStatus />
     </StyledLayout>
   );
 };

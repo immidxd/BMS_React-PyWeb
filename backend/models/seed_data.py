@@ -8,8 +8,8 @@ from sqlalchemy import func, select
 from backend.models.models import (
     OrderStatus, PaymentStatus, DeliveryMethod, 
     Client, Product, Order, OrderItem, Gender,
-    Type, Subtype, Brand, Color, Country,
-    Status, Condition, Import, Delivery,
+    # Type, Subtype, Brand, Color, Country,
+    # Status, Condition, Import, Delivery,
     Base, ParsingSource, ParsingStyle
 )
 from backend.models.database import engine
@@ -100,41 +100,41 @@ def populate_initial_data(db: Session):
     ]
     db.add_all(genders)
     
-    # Create product types
-    product_types = ["Футболка", "Джинси", "Куртка", "Сукня", "Шорти", "Светр", "Пальто"]
-    db.add_all([Type(name=name) for name in product_types])
+    # # Create product types
+    # product_types = ["Футболка", "Джинси", "Куртка", "Сукня", "Шорти", "Светр", "Пальто"]
+    # db.add_all([Type(name=name) for name in product_types])
     
-    # Create product subtypes
-    product_subtypes = ["Літня", "Зимова", "Базова", "Спортивна", "Повсякденна", "Святкова", "Ділова"]
-    db.add_all([Subtype(name=name) for name in product_subtypes])
+    # # Create product subtypes
+    # product_subtypes = ["Літня", "Зимова", "Базова", "Спортивна", "Повсякденна", "Святкова", "Ділова"]
+    # db.add_all([Subtype(name=name) for name in product_subtypes])
     
-    # Create brands
-    product_brands = ["Nike", "Adidas", "Zara", "H&M", "Puma", "Levi's", "Calvin Klein", "Gucci", "Versace"]
-    db.add_all([Brand(name=name) for name in product_brands])
+    # # Create brands
+    # product_brands = ["Nike", "Adidas", "Zara", "H&M", "Puma", "Levi's", "Calvin Klein", "Gucci", "Versace"]
+    # db.add_all([Brand(name=name) for name in product_brands])
     
-    # Create colors
-    product_colors = ["Червоний", "Синій", "Чорний", "Білий", "Зелений", "Жовтий", "Сірий", "Рожевий", "Фіолетовий"]
-    db.add_all([Color(name=name) for name in product_colors])
+    # # Create colors
+    # product_colors = ["Червоний", "Синій", "Чорний", "Білий", "Зелений", "Жовтий", "Сірий", "Рожевий", "Фіолетовий"]
+    # db.add_all([Color(name=name) for name in product_colors])
     
-    # Create countries
-    product_countries = ["Україна", "Китай", "Італія", "Франція", "Польща", "Туреччина", "США", "Іспанія"]
-    db.add_all([Country(name=name) for name in product_countries])
+    # # Create countries
+    # product_countries = ["Україна", "Китай", "Італія", "Франція", "Польща", "Туреччина", "США", "Іспанія"]
+    # db.add_all([Country(name=name) for name in product_countries])
     
-    # Create statuses
-    product_statuses = ["В наявності", "Закінчується", "Немає в наявності", "Під замовлення"]
-    db.add_all([Status(name=name) for name in product_statuses])
+    # # Create statuses
+    # product_statuses = ["В наявності", "Закінчується", "Немає в наявності", "Під замовлення"]
+    # db.add_all([Status(name=name) for name in product_statuses])
     
-    # Create conditions
-    product_conditions = ["Нове", "Ідеальний стан", "Добрий стан", "Задовільний стан"]
-    db.add_all([Condition(name=name) for name in product_conditions])
+    # # Create conditions
+    # product_conditions = ["Нове", "Ідеальний стан", "Добрий стан", "Задовільний стан"]
+    # db.add_all([Condition(name=name) for name in product_conditions])
     
-    # Create import statuses
-    import_statuses = ["Imported", "Pending", "Rejected"]
-    db.add_all([Import(name=name) for name in import_statuses])
+    # # Create import statuses
+    # import_statuses = ["Imported", "Pending", "Rejected"]
+    # db.add_all([Import(name=name) for name in import_statuses])
     
-    # Create deliveries
-    delivery_types = ["Express", "Standard", "Economy"]
-    db.add_all([Delivery(name=name) for name in delivery_types])
+    # # Create deliveries
+    # delivery_types = ["Express", "Standard", "Economy"]
+    # db.add_all([Delivery(name=name) for name in delivery_types])
     
     # Create a parsing source for Google Sheets
     parsing_source = ParsingSource(
@@ -201,56 +201,56 @@ def populate_test_data(db: Session):
         return
     
     # Get reference data IDs for use in product creation
-    types = db.query(Type).all()
-    subtypes = db.query(Subtype).all()
-    brands = db.query(Brand).all()
-    colors = db.query(Color).all()
-    countries = db.query(Country).all()
-    statuses = db.query(Status).all()
-    conditions = db.query(Condition).all()
-    imports = db.query(Import).all()
-    deliveries = db.query(Delivery).all()
+    # types = db.query(Type).all()
+    # subtypes = db.query(Subtype).all()
+    # brands = db.query(Brand).all()
+    # colors = db.query(Color).all()
+    # countries = db.query(Country).all()
+    # statuses = db.query(Status).all()
+    # conditions = db.query(Condition).all()
+    # imports = db.query(Import).all()
+    # deliveries = db.query(Delivery).all()
     genders = db.query(Gender).all()
     
     # Create some products
     products = []
-    for i in range(200):
-        type_obj = random.choice(types)
-        subtype_obj = random.choice(subtypes)
-        brand_obj = random.choice(brands)
-        color_obj = random.choice(colors)
-        country_obj = random.choice(countries)
-        status_obj = random.choice(statuses)
-        condition_obj = random.choice(conditions)
-        import_obj = random.choice(imports)
-        delivery_obj = random.choice(deliveries)
-        gender_obj = random.choice(genders)
-        
-        price = random.randint(300, 5000)
-        old_price = price + random.randint(100, 1000) if random.random() > 0.7 else None
-        
-        product = Product(
-            productnumber=f"P{i+1:05d}",
-            model=f"{brand_obj.name} {type_obj.name} {subtype_obj.name}",
-            price=price,
-            oldprice=old_price,
-            quantity=random.randint(0, 50),
-            mainimage=None,
-            description=f"Опис товару {type_obj.name} {subtype_obj.name} від {brand_obj.name}. Колір: {color_obj.name}, Країна: {country_obj.name}. Товар має гарну якість та стильний дизайн.",
-            typeid=type_obj.id,
-            subtypeid=subtype_obj.id,
-            brandid=brand_obj.id,
-            genderid=gender_obj.id,
-            colorid=color_obj.id,
-            ownercountryid=country_obj.id,
-            manufacturercountryid=country_obj.id,
-            statusid=status_obj.id,
-            conditionid=condition_obj.id,
-            importid=import_obj.id,
-            deliveryid=delivery_obj.id,
-            is_visible=True
-        )
-        products.append(product)
+    # Закоментовано, бо використовує класи, яких немає в models.py
+    # for i in range(200):
+    #     type_obj = random.choice(types)
+    #     subtype_obj = random.choice(subtypes)
+    #     brand_obj = random.choice(brands)
+    #     color_obj = random.choice(colors)
+    #     country_obj = random.choice(countries)
+    #     status_obj = random.choice(statuses)
+    #     condition_obj = random.choice(conditions)
+    #     import_obj = random.choice(imports)
+    #     delivery_obj = random.choice(deliveries)
+    #     gender_obj = random.choice(genders)
+    #     
+    #     price = random.randint(300, 5000)
+    #     old_price = price + random.randint(100, 1000) if random.random() > 0.7 else None
+    #     
+    #     product = Product(
+    #         productnumber=f"P{i+1:05d}",
+    #         model=f"{brand_obj.name} {type_obj.name} {subtype_obj.name}",
+    #         price=price,
+    #         oldprice=old_price,
+    #         quantity=random.randint(0, 50),
+    #         mainimage=None,
+    #         description=f"Опис товару {type_obj.name} {subtype_obj.name} від {brand_obj.name}. Колір: {color_obj.name}, Країна: {country_obj.name}. Товар має гарну якість та стильний дизайн.",
+    #         typeid=type_obj.id,
+    #         subtypeid=subtype_obj.id,
+    #         brandid=brand_obj.id,
+    #         genderid=gender_obj.id,
+    #         colorid=color_obj.id,
+    #         ownercountryid=country_obj.id,
+    #         manufacturercountryid=country_obj.id,
+    #         statusid=status_obj.id,
+    #         conditionid=condition_obj.id,
+    #         importid=import_obj.id,
+    #         deliveryid=delivery_obj.id,
+    #     )
+    #     products.append(product)
     
     db.add_all(products)
     try:

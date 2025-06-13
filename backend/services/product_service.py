@@ -5,8 +5,8 @@ from typing import Optional, List, Dict, Any, Tuple
 from datetime import datetime
 import logging
 
-from backend.models import models
-from backend.schemas import product as schemas
+from models import models
+from schemas import product as schemas
 
 logger = logging.getLogger(__name__)
 

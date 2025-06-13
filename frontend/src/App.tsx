@@ -4,6 +4,8 @@ import { AppThemeProvider, useTheme } from './contexts/ThemeContext';
 import { FilterPanelProvider, useFilterPanel } from './contexts/FilterPanelContext';
 import GlobalStyle from './styles/GlobalStyle'; // For potential global styles
 import SearchBar from './components/common/SearchBar';
+import { ParsingDialog } from './components/ParsingDialog';
+import { ParsingStatus } from './components/ParsingStatus';
 import './App.css';
 import './index.css'; // Main Tailwind CSS import
 
@@ -80,9 +82,44 @@ const AppContent: React.FC = () => {
   const ActivePageComponent = TABS.find(tab => tab.key === activeTab)?.component;
 
   const [currentSearchTerm, setCurrentSearchTerm] = useState('');
+  const [parsingDialogOpen, setParsingDialogOpen] = useState(false);
+  
   const handleGlobalSearch = (term: string) => {
     console.log('Global search triggered:', term);
     setCurrentSearchTerm(term);
+  };
+
+  const handleStartParsing = async (mode: string, params: any) => {
+    try {
+      // Мапимо режим парсингу на source_id та style_id
+      // Це тимчасове рішення, поки не буде реалізована повна логіка
+      const requestData = {
+        source_id: 1, // Google Sheets source
+        style_id: 1,  // Default style
+        custom_options: {
+          mode: mode,
+          ...params
+        }
+      };
+      
+      const response = await fetch('/api/parsing/parsing/start', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(requestData),
+      });
+      
+      if (!response.ok) {
+        const errorData = await response.json();
+        console.error('Parsing start error:', errorData);
+        throw new Error('Failed to start parsing');
+      }
+      
+      setParsingDialogOpen(false);
+    } catch (error) {
+      console.error('Error starting parsing:', error);
+    }
   };
 
   return (
@@ -134,6 +171,27 @@ const AppContent: React.FC = () => {
           {ActivePageComponent && <ActivePageComponent currentSearchTerm={currentSearchTerm} />}
         </Suspense>
       </main>
+
+      {/* Діалог парсингу */}
+      <ParsingDialog
+        open={parsingDialogOpen}
+        onClose={() => setParsingDialogOpen(false)}
+        onStartParsing={handleStartParsing}
+      />
+
+      {/* Статус парсингу */}
+      <ParsingStatus />
+      
+      {/* Маленька кнопка оновлення в правому нижньому куті */}
+      <button
+        onClick={() => setParsingDialogOpen(true)}
+        className="fixed bottom-4 right-4 w-10 h-10 bg-blue-500 hover:bg-blue-600 text-white rounded-full shadow-md flex items-center justify-center transition-all duration-200 hover:scale-110 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
+        aria-label="Запустити парсинг"
+      >
+        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+        </svg>
+      </button>
     </div>
   );
 };

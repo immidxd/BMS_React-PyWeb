@@ -51,7 +51,7 @@ def init_db():
     """Initialize database with tables and initial data"""
     try:
         # Import all models to ensure they are registered with Base
-        from backend.models import models  # noqa
+        from models import models  # noqa
 
         # Create all tables
         Base.metadata.create_all(bind=engine)

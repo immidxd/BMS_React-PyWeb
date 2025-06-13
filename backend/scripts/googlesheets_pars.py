@@ -281,7 +281,7 @@ def get_or_create_gender(cursor, gender_name, conn):
      
      # Перевіряємо чи існує запис (для логування)
      cursor.execute("SELECT id FROM genders WHERE id=%s", (gender_id,))
-     r = cursor.fetchone()
+   r = cursor.fetchone()
      if not r:
          # Це не повинно відбуватись, але додаємо для безпеки
          logger.warning(f"Гендер ID {gender_id} ({validated_gender}) не знайдено в БД!")
@@ -774,56 +774,56 @@ def rename_different_products_in_date_order(conn):
 
 
 def process_sheet_data(data, wtitle, all_product_numbers):
-    """Обробка даних з аркуша."""
-    logger.info(f"=== Початок обробки аркуша: {wtitle} ===")
-    conn = connect_to_db()
-    if not conn:
-        logger.error(f"Аркуш '{wtitle}': помилка підключення до бази даних")
-        return
+   """Обробка даних з аркуша."""
+   logger.info(f"=== Початок обробки аркуша: {wtitle} ===")
+   conn = connect_to_db()
+   if not conn:
+       logger.error(f"Аркуш '{wtitle}': помилка підключення до бази даних")
+       return
 
-    cursor = conn.cursor()
+   cursor = conn.cursor()
 
-    # Рахуємо загальну кількість рядків
-    total_rows = len(data)
-    logger.info(f"Аркуш '{wtitle}': всього рядків для обробки: {total_rows}")
+   # Рахуємо загальну кількість рядків
+   total_rows = len(data)
+   logger.info(f"Аркуш '{wtitle}': всього рядків для обробки: {total_rows}")
 
     # Перевіряємо, чи це основний аркуш "Data" з товарами
     is_data_sheet = (wtitle == "Data")
-    
-    # Аналізуємо назву аркуша для отримання дати і назви доставки
-    try:
-        delivery_date, deliv_name = parse_sheet_name(wtitle)
-        if delivery_date:
-            logger.info(f"Аркуш '{wtitle}': дата доставки: {delivery_date}, назва: {deliv_name}")
-        else:
+
+   # Аналізуємо назву аркуша для отримання дати і назви доставки
+   try:
+       delivery_date, deliv_name = parse_sheet_name(wtitle)
+       if delivery_date:
+           logger.info(f"Аркуш '{wtitle}': дата доставки: {delivery_date}, назва: {deliv_name}")
+       else:
             if not is_data_sheet:
-                logger.warning(f"Аркуш '{wtitle}': не вдалося розпізнати дату з назви")
-    except Exception as e:
-        logger.error(f"Аркуш '{wtitle}': помилка парсингу назви: {e}")
-        delivery_date, deliv_name = None, wtitle
+           logger.warning(f"Аркуш '{wtitle}': не вдалося розпізнати дату з назви")
+   except Exception as e:
+       logger.error(f"Аркуш '{wtitle}': помилка парсингу назви: {e}")
+       delivery_date, deliv_name = None, wtitle
 
-    # Визначаємо ім'я імпорту (наприклад, 'June 2023')
-    import_name = delivery_date.strftime("%B %Y") if delivery_date else None
-    import_date = delivery_date
+   # Визначаємо ім'я імпорту (наприклад, 'June 2023')
+   import_name = delivery_date.strftime("%B %Y") if delivery_date else None
+   import_date = delivery_date
 
-    # Якщо можемо, створюємо запис імпорту та доставки
-    imp_id = get_or_create_import(cursor, import_name, import_date, conn) if import_name and import_date else None
-    deliv_id = get_or_create_delivery(cursor, deliv_name, delivery_date, conn) if deliv_name and delivery_date else None
-    logger.info(f"Аркуш '{wtitle}': ID імпорту: {imp_id}, ID доставки: {deliv_id}")
+   # Якщо можемо, створюємо запис імпорту та доставки
+   imp_id = get_or_create_import(cursor, import_name, import_date, conn) if import_name and import_date else None
+   deliv_id = get_or_create_delivery(cursor, deliv_name, delivery_date, conn) if deliv_name and delivery_date else None
+   logger.info(f"Аркуш '{wtitle}': ID імпорту: {imp_id}, ID доставки: {deliv_id}")
 
-    # Створюємо список для зберігання даних рядків
-    rows_data = []
+   # Створюємо список для зберігання даних рядків
+   rows_data = []
     valid_products = 0
 
-    # Проходимося по кожному рядку даних, починаючи з 1 рядка (0-й - заголовки)
-    for row_index, rowvals in enumerate(data[1:], 1):
-        try:
-            logger.debug(f"Аркуш '{wtitle}': обробка рядка {row_index} з {total_rows-1}")
-            
-            # Прогрес обробки
+   # Проходимося по кожному рядку даних, починаючи з 1 рядка (0-й - заголовки)
+   for row_index, rowvals in enumerate(data[1:], 1):
+       try:
+           logger.debug(f"Аркуш '{wtitle}': обробка рядка {row_index} з {total_rows-1}")
+           
+           # Прогрес обробки
             if row_index % 500 == 0 or row_index == 1 or row_index == total_rows-1:
-                progress_percent = int((row_index / (total_rows-1)) * 100)
-                logger.info(f"Аркуш '{wtitle}': прогрес обробки {progress_percent}% ({row_index}/{total_rows-1})")
+               progress_percent = int((row_index / (total_rows-1)) * 100)
+               logger.info(f"Аркуш '{wtitle}': прогрес обробки {progress_percent}% ({row_index}/{total_rows-1})")
 
             # Отримуємо номер товару залежно від типу аркуша
             if is_data_sheet:
@@ -868,12 +868,12 @@ def process_sheet_data(data, wtitle, all_product_numbers):
 
             # Очищаємо номер товару
             product_number = sanitize_product_number(p_num_) if p_num_ else '#'
-            all_product_numbers.add(product_number)
+           all_product_numbers.add(product_number)
 
             # Пропускаємо порожні рядки
             if not product_number or product_number == '#':
-                logger.debug(f"Аркуш '{wtitle}': рядок {row_index} пропущено - порожній номер товару")
-                continue
+               logger.debug(f"Аркуш '{wtitle}': рядок {row_index} пропущено - порожній номер товару")
+               continue
 
             # Створюємо словник даних товару
             product_data = {
@@ -937,37 +937,37 @@ def process_sheet_data(data, wtitle, all_product_numbers):
             rows_data.append(product_data)
             valid_products += 1
 
-        except Exception as e:
-            logger.error(f"Аркуш '{wtitle}': рядок {row_index} помилка обробки: {e}")
-            logger.error(f"Дані рядка: {rowvals}")
-            conn.rollback()
-            continue
+       except Exception as e:
+           logger.error(f"Аркуш '{wtitle}': рядок {row_index} помилка обробки: {e}")
+           logger.error(f"Дані рядка: {rowvals}")
+           conn.rollback()
+           continue
 
-    logger.info(f"Аркуш '{wtitle}': зібрано {len(rows_data)} валідних товарів")
+   logger.info(f"Аркуш '{wtitle}': зібрано {len(rows_data)} валідних товарів")
 
     # Проходимо по зібраних даних і створюємо/оновлюємо товари
-    processed_items = 0
-    for item in rows_data:
-        try:
+   processed_items = 0
+   for item in rows_data:
+       try:
             # Видаляємо тимчасові поля перед збереженням
             clean_item = {k: v for k, v in item.items() if not k.startswith('_')}
             
             # Створюємо або оновлюємо товар
             insert_or_update_product(cursor, clean_item, conn)
-            processed_items += 1
+           processed_items += 1
             
             if processed_items % 100 == 0 or processed_items == 1 or processed_items == len(rows_data):
-                progress_percent = int((processed_items / len(rows_data)) * 100)
-                logger.info(f"Аркуш '{wtitle}': обробка товарів {progress_percent}% ({processed_items}/{len(rows_data)})")
+               progress_percent = int((processed_items / len(rows_data)) * 100)
+               logger.info(f"Аркуш '{wtitle}': обробка товарів {progress_percent}% ({processed_items}/{len(rows_data)})")
 
-        except Exception as e:
-            logger.error(f"Аркуш '{wtitle}': помилка оновлення товару '{item['productnumber']}': {e}")
-            conn.rollback()
-            continue
+       except Exception as e:
+           logger.error(f"Аркуш '{wtitle}': помилка оновлення товару '{item['productnumber']}': {e}")
+           conn.rollback()
+           continue
 
     logger.info(f"=== Завершено обробку аркуша '{wtitle}': створено/оновлено {processed_items} товарів ===")
-    cursor.close()
-    conn.close()
+   cursor.close()
+   conn.close()
 
 
 def merge_similar_products_and_rename():
@@ -1065,7 +1065,7 @@ def import_data():
        wtitle = ws.title
        processed_sheets += 1
        progress_percent = int((processed_sheets / total_sheets) * 100)
-
+       
        logger.info(f"Обробка поставки: {wtitle} ({processed_sheets}/{total_sheets}, {progress_percent}%)")
        try:
            logger.info(f"Отримання даних з аркуша {wtitle}...")

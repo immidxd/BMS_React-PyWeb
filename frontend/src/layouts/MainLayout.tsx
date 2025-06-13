@@ -1,7 +1,9 @@
-import React from 'react';
+import React, { useState } from 'react';
 import RefreshButton from '../components/common/RefreshButton';
 import FilterPanel from '../components/common/FilterPanel';
 import { useFilterPanel } from '../contexts/FilterPanelContext';
+import { ParsingDialog } from '../components/ParsingDialog';
+import { ParsingStatus } from '../components/ParsingStatus';
 
 interface MainLayoutProps {
   children: React.ReactNode;
@@ -19,6 +21,29 @@ const MainLayout: React.FC<MainLayoutProps> = ({
   onResetFilters,
 }) => {
   const { isFilterPanelOpen, openFilterPanel, closeFilterPanel } = useFilterPanel();
+  const [parsingDialogOpen, setParsingDialogOpen] = useState(false);
+
+  const handleRefreshClick = () => {
+    setParsingDialogOpen(true);
+  };
+
+  const handleStartParsing = async (mode: string, params: any) => {
+    try {
+      const response = await fetch('/api/parsing/parsing/start', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ mode, params }),
+      });
+      
+      if (!response.ok) {
+        throw new Error('Failed to start parsing');
+      }
+    } catch (error) {
+      console.error('Error starting parsing:', error);
+    }
+  };
 
   return (
     <div className="main-layout flex flex-col h-full">
@@ -36,7 +61,7 @@ const MainLayout: React.FC<MainLayoutProps> = ({
       </div>
       
       <div className="fixed bottom-6 right-6 z-20">
-        <RefreshButton onClick={onRefresh} isLoading={isRefreshing} />
+        <RefreshButton onClick={handleRefreshClick} isLoading={isRefreshing} />
       </div>
 
       <FilterPanel 
@@ -46,6 +71,16 @@ const MainLayout: React.FC<MainLayoutProps> = ({
       >
         {filterPanelContent}
       </FilterPanel>
+
+      {/* Діалог парсингу */}
+      <ParsingDialog
+        open={parsingDialogOpen}
+        onClose={() => setParsingDialogOpen(false)}
+        onStartParsing={handleStartParsing}
+      />
+
+      {/* Статус парсингу */}
+      <ParsingStatus />
     </div>
   );
 };

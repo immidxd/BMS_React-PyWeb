@@ -9,9 +9,14 @@
 - Синхронізація цін (остання ціна продажу → поточна ціна)
 - Обробка множинних товарів у замовленні
 - Автоматичне оновлення розмірів та замірів товарів
+- Оптимізації для швидкого повторного парсингу
+- Дедублікація замовлень
+- Кешування даних
 """
 
 import time
+import hashlib
+import pickle
 from datetime import datetime, timedelta
 import logging
 import argparse
@@ -19,12 +24,12 @@ import sys
 import os
 import re
 from collections import defaultdict, Counter
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, List, Optional, Tuple, Any, Set
 import asyncio
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from dotenv import load_dotenv
-from sqlalchemy import text
+from sqlalchemy import text, and_, or_
 
 # Додаємо шлях для імпортів
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -59,6 +64,115 @@ GOOGLE_SHEETS_JSON_KEY = os.getenv("GOOGLE_SHEETS_JSON_KEY")
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 GOOGLE_SHEETS_CREDENTIALS_FILE = os.path.join(SCRIPT_DIR, "secure_creds", GOOGLE_SHEETS_JSON_KEY)
 ORDERS_DOCUMENT_NAME = os.getenv("GOOGLE_SHEETS_DOCUMENT_NAME_ORDERS")
+
+# Кеш файли
+CACHE_DIR = os.path.join(SCRIPT_DIR, "cache")
+SHEETS_CACHE_FILE = os.path.join(CACHE_DIR, "sheets_cache.pkl")
+ORDERS_HASH_FILE = os.path.join(CACHE_DIR, "orders_hashes.pkl")
+PRODUCTS_CACHE_FILE = os.path.join(CACHE_DIR, "products_cache.pkl")
+
+# Створюємо директорію кешу
+os.makedirs(CACHE_DIR, exist_ok=True)
+
+class CacheManager:
+    """Клас для управління кешем даних."""
+    
+    def __init__(self):
+        self.sheets_cache = self.load_cache(SHEETS_CACHE_FILE, {})
+        self.orders_hashes = self.load_cache(ORDERS_HASH_FILE, set())
+        self.products_cache = self.load_cache(PRODUCTS_CACHE_FILE, {})
+    
+    def load_cache(self, file_path: str, default):
+        """Завантажує кеш з файлу."""
+        try:
+            if os.path.exists(file_path):
+                with open(file_path, 'rb') as f:
+                    return pickle.load(f)
+        except Exception as e:
+            logger.warning(f"Не вдалося завантажити кеш {file_path}: {e}")
+        return default
+    
+    def save_cache(self, file_path: str, data):
+        """Зберігає кеш у файл."""
+        try:
+            with open(file_path, 'wb') as f:
+                pickle.dump(data, f)
+        except Exception as e:
+            logger.error(f"Не вдалося зберегти кеш {file_path}: {e}")
+    
+    def save_all_caches(self):
+        """Зберігає всі кеші."""
+        self.save_cache(SHEETS_CACHE_FILE, self.sheets_cache)
+        self.save_cache(ORDERS_HASH_FILE, self.orders_hashes)
+        self.save_cache(PRODUCTS_CACHE_FILE, self.products_cache)
+    
+    def get_sheet_hash(self, sheet_name: str, data: List[List[str]]) -> str:
+        """Генерує хеш для аркуша."""
+        content = str(data)
+        return hashlib.md5(content.encode('utf-8')).hexdigest()
+    
+    def is_sheet_changed(self, sheet_name: str, data: List[List[str]]) -> bool:
+        """Перевіряє, чи змінився аркуш."""
+        current_hash = self.get_sheet_hash(sheet_name, data)
+        cached_hash = self.sheets_cache.get(sheet_name)
+        
+        if cached_hash != current_hash:
+            self.sheets_cache[sheet_name] = current_hash
+            return True
+        return False
+    
+    def get_order_hash(self, order_data: Dict) -> str:
+        """Генерує хеш для замовлення."""
+        # Створюємо унікальний ідентифікатор замовлення
+        key_fields = [
+            order_data.get('Клієнт', ''),
+            order_data.get('Контактний номер', ''),
+            order_data.get('Номера товарів', ''),
+            order_data.get('Сума', ''),
+            order_data.get('_sheet_date', ''),  # Додаємо дату аркуша
+        ]
+        content = '|'.join(str(field) for field in key_fields)
+        return hashlib.md5(content.encode('utf-8')).hexdigest()
+    
+    def is_order_processed(self, order_hash: str) -> bool:
+        """Перевіряє, чи було замовлення вже оброблено."""
+        return order_hash in self.orders_hashes
+    
+    def mark_order_processed(self, order_hash: str):
+        """Позначає замовлення як оброблене."""
+        self.orders_hashes.add(order_hash)
+
+class ProductCache:
+    """Клас для кешування товарів."""
+    
+    def __init__(self, session):
+        self.session = session
+        self.cache = {}
+        self.load_products()
+    
+    def load_products(self):
+        """Завантажує всі товари в кеш."""
+        logger.info("Завантаження товарів у кеш...")
+        products = self.session.query(Product).all()
+        for product in products:
+            # Кешуємо за номером товару (з # і без)
+            self.cache[product.productnumber] = product
+            if product.productnumber.startswith('#'):
+                self.cache[product.productnumber[1:]] = product
+            else:
+                self.cache[f"#{product.productnumber}"] = product
+        logger.info(f"Завантажено {len(products)} товарів у кеш")
+    
+    def get_product(self, product_code: str) -> Optional[Product]:
+        """Отримує товар з кешу."""
+        # Спробуємо знайти з # і без
+        product = self.cache.get(product_code)
+        if not product:
+            if product_code.startswith('#'):
+                product = self.cache.get(product_code[1:])
+            else:
+                product = self.cache.get(f"#{product_code}")
+        return product
 
 class PaymentMethodManager:
     """Клас для розпізнавання методів оплати."""
@@ -172,6 +286,15 @@ class ClientManager:
         self.phone_cache = {}
         self.facebook_cache = {}
         self.stats = {'created': 0, 'updated': 0, 'found': 0}
+        self.load_existing_clients()
+    
+    def load_existing_clients(self):
+        """Завантажує існуючих клієнтів у кеш."""
+        logger.info("Завантаження існуючих клієнтів у кеш...")
+        clients = self.session.query(Client).all()
+        for client in clients:
+            self._cache_client(client)
+        logger.info(f"Завантажено {len(clients)} клієнтів у кеш")
     
     def normalize_phone(self, phone: str) -> str:
         """Нормалізує номер телефону."""
@@ -205,26 +328,6 @@ class ClientManager:
         # Пошук за Facebook
         if facebook and facebook in self.facebook_cache:
             existing_client = self.facebook_cache[facebook]
-            if self._update_client_info(existing_client, client_data):
-                self.stats['updated'] += 1
-            else:
-                self.stats['found'] += 1
-            return existing_client
-        
-        # Пошук в базі даних
-        existing_client = None
-        if phone:
-            existing_client = self.session.query(Client).filter(
-                Client.phone_number == phone
-            ).first()
-        
-        if not existing_client and facebook:
-            existing_client = self.session.query(Client).filter(
-                Client.facebook == facebook
-            ).first()
-        
-        if existing_client:
-            self._cache_client(existing_client)
             if self._update_client_info(existing_client, client_data):
                 self.stats['updated'] += 1
             else:
@@ -316,20 +419,20 @@ class ProductPriceManager:
         if measurement and measurement.strip():
             self.measurement_updates[product_code].append(measurement.strip())
     
-    def apply_all_updates(self):
+    def apply_all_updates(self, product_cache: ProductCache):
         """Застосовує всі зібрані оновлення товарів."""
         logger.info("Застосовуємо оновлення товарів...")
         
         # Оновлення цін
-        self._apply_price_updates()
+        self._apply_price_updates(product_cache)
         
         # Оновлення розмірів
-        self._apply_size_updates()
+        self._apply_size_updates(product_cache)
         
         # Оновлення замірів
-        self._apply_measurement_updates()
+        self._apply_measurement_updates(product_cache)
     
-    def _apply_price_updates(self):
+    def _apply_price_updates(self, product_cache: ProductCache):
         """Застосовує оновлення цін: остання ціна продажу → поточна ціна."""
         logger.info(f"Оновлення цін для {len(self.price_updates)} товарів")
         
@@ -338,13 +441,8 @@ class ProductPriceManager:
             latest_sale = max(sales, key=lambda x: x['date'])
             latest_price = latest_sale['price']
             
-            # Додаємо # до номера товару для пошуку в БД
-            db_product_code = f"#{product_code}" if not product_code.startswith('#') else product_code
-            
-            # Знаходимо товар
-            product = self.session.query(Product).filter(
-                Product.productnumber == db_product_code
-            ).first()
+            # Знаходимо товар через кеш
+            product = product_cache.get_product(product_code)
             
             if product:
                 # Зберігаємо стару ціну в oldprice (якщо її там ще немає)
@@ -359,7 +457,7 @@ class ProductPriceManager:
             else:
                 logger.warning(f"Товар {product_code} не знайдено для оновлення ціни")
     
-    def _apply_size_updates(self):
+    def _apply_size_updates(self, product_cache: ProductCache):
         """Застосовує оновлення розмірів товарів."""
         logger.info(f"Оновлення розмірів для {len(self.size_updates)} товарів")
         
@@ -368,12 +466,7 @@ class ProductPriceManager:
             latest_size = sizes[-1] if sizes else None
             
             if latest_size:
-                # Додаємо # до номера товару для пошуку в БД
-                db_product_code = f"#{product_code}" if not product_code.startswith('#') else product_code
-                
-                product = self.session.query(Product).filter(
-                    Product.productnumber == db_product_code
-                ).first()
+                product = product_cache.get_product(product_code)
                 
                 if product:
                     # Оновлюємо тільки якщо розмір був порожній
@@ -383,7 +476,7 @@ class ProductPriceManager:
                 else:
                     logger.warning(f"Товар {product_code} не знайдено для оновлення розміру")
     
-    def _apply_measurement_updates(self):
+    def _apply_measurement_updates(self, product_cache: ProductCache):
         """Застосовує оновлення замірів товарів."""
         logger.info(f"Оновлення замірів для {len(self.measurement_updates)} товарів")
         
@@ -392,12 +485,7 @@ class ProductPriceManager:
             latest_measurement = measurements[-1] if measurements else None
             
             if latest_measurement:
-                # Додаємо # до номера товару для пошуку в БД
-                db_product_code = f"#{product_code}" if not product_code.startswith('#') else product_code
-                
-                product = self.session.query(Product).filter(
-                    Product.productnumber == db_product_code
-                ).first()
+                product = product_cache.get_product(product_code)
                 
                 if product:
                     # Оновлюємо тільки якщо замір був порожній
@@ -407,13 +495,89 @@ class ProductPriceManager:
                 else:
                     logger.warning(f"Товар {product_code} не знайдено для оновлення заміру")
 
+class OrderDeduplicator:
+    """Клас для дедублікації замовлень."""
+    
+    def __init__(self, session):
+        self.session = session
+        self.existing_orders = set()
+        self.load_existing_orders()
+    
+    def load_existing_orders(self):
+        """Завантажує хеші існуючих замовлень."""
+        logger.info("Завантаження існуючих замовлень для дедублікації...")
+        
+        # Завантажуємо замовлення за останні 30 днів для швидкості
+        cutoff_date = datetime.now() - timedelta(days=30)
+        orders = self.session.query(Order).filter(Order.order_date >= cutoff_date).all()
+        
+        for order in orders:
+            # Створюємо хеш на основі ключових полів
+            order_hash = self._create_order_hash(order)
+            self.existing_orders.add(order_hash)
+        
+        logger.info(f"Завантажено {len(self.existing_orders)} існуючих замовлень")
+    
+    def _create_order_hash(self, order: Order) -> str:
+        """Створює хеш замовлення на основі ключових полів."""
+        # Отримуємо клієнта
+        client = self.session.query(Client).filter(Client.id == order.client_id).first()
+        
+        # Отримуємо товари замовлення
+        order_items = self.session.query(OrderItem).filter(OrderItem.order_id == order.id).all()
+        product_codes = []
+        for item in order_items:
+            product = self.session.query(Product).filter(Product.id == item.product_id).first()
+            if product:
+                product_codes.append(product.productnumber)
+        
+        key_fields = [
+            client.phone_number if client else '',
+            ';'.join(sorted(product_codes)),
+            str(order.total_amount),
+            order.order_date.strftime('%Y-%m-%d') if order.order_date else '',
+        ]
+        content = '|'.join(str(field) for field in key_fields)
+        return hashlib.md5(content.encode('utf-8')).hexdigest()
+    
+    def is_duplicate(self, order_data: Dict, sheet_date: datetime) -> bool:
+        """Перевіряє, чи є замовлення дублікатом."""
+        # Створюємо хеш для нового замовлення
+        key_fields = [
+            order_data.get('Контактний номер', ''),
+            order_data.get('Номера товарів', ''),
+            order_data.get('Сума', ''),
+            sheet_date.strftime('%Y-%m-%d'),
+        ]
+        content = '|'.join(str(field) for field in key_fields)
+        order_hash = hashlib.md5(content.encode('utf-8')).hexdigest()
+        
+        return order_hash in self.existing_orders
+    
+    def add_order_hash(self, order_data: Dict, sheet_date: datetime):
+        """Додає хеш нового замовлення."""
+        key_fields = [
+            order_data.get('Контактний номер', ''),
+            order_data.get('Номера товарів', ''),
+            order_data.get('Сума', ''),
+            sheet_date.strftime('%Y-%m-%d'),
+        ]
+        content = '|'.join(str(field) for field in key_fields)
+        order_hash = hashlib.md5(content.encode('utf-8')).hexdigest()
+        self.existing_orders.add(order_hash)
+
 class OrdersComprehensiveParser:
     """Основний клас комплексного парсингу замовлень."""
     
-    def __init__(self):
+    def __init__(self, use_cache: bool = True, force_reparse: bool = False):
         self.session = None
         self.client_manager = None
         self.price_manager = None
+        self.product_cache = None
+        self.order_deduplicator = None
+        self.cache_manager = CacheManager() if use_cache else None
+        self.use_cache = use_cache
+        self.force_reparse = force_reparse
         self.stats = {
             'total_orders': 0,
             'successful_orders': 0,
@@ -424,7 +588,10 @@ class OrdersComprehensiveParser:
             'clients_updated': 0,
             'price_updates': 0,
             'size_updates': 0,
-            'measurement_updates': 0
+            'measurement_updates': 0,
+            'skipped_sheets': 0,
+            'skipped_duplicates': 0,
+            'processed_sheets': 0
         }
     
     def get_google_sheet_client(self):
@@ -522,6 +689,11 @@ class OrdersComprehensiveParser:
             # Парсимо коди товарів
             product_codes = self.parse_product_codes(products_text)
             if not product_codes:
+                return False
+            
+            # Перевіряємо дублікати замовлень
+            if self.order_deduplicator.is_duplicate(order_data, sheet_date):
+                self.stats['skipped_duplicates'] += 1
                 return False
             
             # Обробляємо клієнта
@@ -635,17 +807,12 @@ class OrdersComprehensiveParser:
             self.session.add(order)
             self.session.flush()  # Отримуємо ID замовлення
             
-            # Перевіряємо, чи всі товари існують в базі даних
+            # Перевіряємо, чи всі товари існують в базі даних (використовуємо кеш)
             found_products = []
             missing_products = []
             
             for product_code in product_codes:
-                # Додаємо # до номера товару для пошуку в БД
-                db_product_code = f"#{product_code}" if not product_code.startswith('#') else product_code
-                
-                product = self.session.query(Product).filter(
-                    Product.productnumber == db_product_code
-                ).first()
+                product = self.product_cache.get_product(product_code)
                 
                 if product:
                     found_products.append((product_code, product))
@@ -701,6 +868,9 @@ class OrdersComprehensiveParser:
                         # Оновлення замірів
                         self.price_manager.register_measurement_update(product_code, clarification_data['data']['measurement'])
             
+            # Додаємо хеш замовлення до дедуплікатора
+            self.order_deduplicator.add_order_hash(order_data, sheet_date)
+            
             self.stats['successful_orders'] += 1
             return True
             
@@ -737,6 +907,13 @@ class OrdersComprehensiveParser:
                 # Отримуємо дані з аркуша
                 all_data = self.parse_sheet(sheet_name)
                 
+                # Перевіряємо кеш аркуша (якщо увімкнено кешування)
+                if self.use_cache and not self.force_reparse:
+                    if not self.cache_manager.is_sheet_changed(sheet_name, all_data):
+                        logger.info(f"Аркуш '{sheet_name}' не змінився, пропускаємо")
+                        self.stats['skipped_sheets'] += 1
+                        return
+                
                 if len(all_data) < 2:
                     logger.warning(f"Аркуш '{sheet_name}' порожній або містить тільки заголовки")
                     return
@@ -759,6 +936,9 @@ class OrdersComprehensiveParser:
                 
                 if success and self.stats['total_orders'] % 100 == 0:
                     logger.info(f"Оброблено {self.stats['total_orders']} замовлень")
+            
+            self.stats['processed_sheets'] += 1
+            logger.info(f"Аркуш '{sheet_name}' успішно оброблено")
                     
         except Exception as e:
             logger.error(f"Помилка парсингу аркуша {worksheet.title}: {e}")
@@ -821,6 +1001,8 @@ class OrdersComprehensiveParser:
         self.session = SessionLocal()
         self.client_manager = ClientManager(self.session)
         self.price_manager = ProductPriceManager(self.session)
+        self.product_cache = ProductCache(self.session)
+        self.order_deduplicator = OrderDeduplicator(self.session)
         
         try:
             # Підключення до Google Sheets
@@ -869,18 +1051,26 @@ class OrdersComprehensiveParser:
                 logger.info(f"Обробляємо аркуш {i}/{len(order_sheets)}: {worksheet.title}")
                 self.parse_orders_sheet(worksheet, order_statuses, payment_statuses, delivery_methods)
                 
-                # Комітимо кожні 10 аркушів
+                # Комітимо кожні 10 аркушів для збереження пам'яті
                 if i % 10 == 0:
                     self.session.commit()
                     logger.info(f"Збережено зміни після {i} аркушів")
+                    
+                    # Очищуємо кеш SQLAlchemy для економії пам'яті
+                    self.session.expunge_all()
             
             # Фаза 3: Застосовуємо оновлення товарів
             logger.info("Застосовуємо оновлення товарів...")
-            self.price_manager.apply_all_updates()
+            self.price_manager.apply_all_updates(self.product_cache)
             
             # Фінальний коміт
             self.session.commit()
             logger.info("Всі зміни збережено в базу даних")
+            
+            # Зберігаємо кеші
+            if self.use_cache and self.cache_manager:
+                self.cache_manager.save_all_caches()
+                logger.info("Кеші збережено")
             
             # Оновлюємо статистику
             self.stats.update({
@@ -904,6 +1094,9 @@ class OrdersComprehensiveParser:
             logger.info(f"  Товарів з оновленими цінами: {self.stats['price_updates']}")
             logger.info(f"  Товарів з оновленими розмірами: {self.stats['size_updates']}")
             logger.info(f"  Товарів з оновленими замірами: {self.stats['measurement_updates']}")
+            logger.info(f"  Аркушів оброблено: {self.stats['processed_sheets']}")
+            logger.info(f"  Аркушів пропущено (без змін): {self.stats['skipped_sheets']}")
+            logger.info(f"  Дублікатів пропущено: {self.stats['skipped_duplicates']}")
             logger.info(f"  Успішність: {(self.stats['successful_orders']/max(self.stats['total_orders'], 1)*100):.1f}%")
             
         except Exception as e:
@@ -912,9 +1105,18 @@ class OrdersComprehensiveParser:
                 self.session.rollback()
             except:
                 pass  # Ігноруємо помилки rollback
+            
+            # Зберігаємо кеші навіть при помилці
+            if self.use_cache and self.cache_manager:
+                try:
+                    self.cache_manager.save_all_caches()
+                    logger.info("Кеші збережено після помилки")
+                except:
+                    pass
             raise
         finally:
-            self.session.close()
+            if self.session:
+                self.session.close()
 
     def map_order_status(self, status_text: str, order_statuses: Dict) -> int:
         """Маппить текстовий статус замовлення на ID в БД."""
@@ -999,9 +1201,24 @@ async def main():
     
     parser = argparse.ArgumentParser(description='Комплексний парсинг замовлень з Google Sheets')
     parser.add_argument('--test', type=int, help='Кількість аркушів для тестування (наприклад, --test 5)')
+    parser.add_argument('--no-cache', action='store_true', help='Вимкнути кешування')
+    parser.add_argument('--force-reparse', action='store_true', help='Примусово перепарсити всі аркуші')
+    parser.add_argument('--clear-cache', action='store_true', help='Очистити кеш перед запуском')
     args = parser.parse_args()
     
-    parser_instance = OrdersComprehensiveParser()
+    # Очищуємо кеш якщо потрібно
+    if args.clear_cache:
+        import shutil
+        if os.path.exists(CACHE_DIR):
+            shutil.rmtree(CACHE_DIR)
+            logger.info("Кеш очищено")
+        os.makedirs(CACHE_DIR, exist_ok=True)
+    
+    use_cache = not args.no_cache
+    parser_instance = OrdersComprehensiveParser(
+        use_cache=use_cache, 
+        force_reparse=args.force_reparse
+    )
     await parser_instance.parse_all_orders(max_sheets=args.test)
 
 if __name__ == "__main__":
