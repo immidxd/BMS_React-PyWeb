@@ -1,0 +1,310 @@
+from typing import List, Optional, Dict, Any
+from fastapi import APIRouter, Depends, HTTPException, Query, Body, Path, status
+from fastapi.responses import JSONResponse
+from sqlalchemy.orm import Session
+import logging
+from datetime import datetime
+
+from backend.models.database import get_db
+from backend.models import models
+from backend.schemas import product as schemas
+from backend.services import product_service
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter()
+
+@router.get("/api/products", response_model=schemas.ProductListResponse)
+async def get_products(
+    # Підтримуємо обидва варіанти параметрів для сумісності з фронтендом
+    page: int = Query(1, ge=1, description="Current page (starts from 1)"),
+    per_page: int = Query(20, ge=1, le=200, description="Number of items per page"),
+    skip: Optional[int] = Query(None, ge=0, description="Alternative to page/per_page"),
+    limit: Optional[int] = Query(None, ge=1, le=200, description="Alternative to page/per_page"),
+    search: Optional[str] = Query(None, description="Search term for products"),
+    # Фільтри
+    typeid: Optional[int] = Query(None),
+    subtypeid: Optional[int] = Query(None),
+    brandid: Optional[int] = Query(None),
+    genderid: Optional[int] = Query(None),
+    colorid: Optional[int] = Query(None),
+    statusid: Optional[int] = Query(None),
+    conditionid: Optional[int] = Query(None),
+    min_price: Optional[float] = Query(None, ge=0),
+    max_price: Optional[float] = Query(None, ge=0),
+    is_visible: Optional[bool] = Query(None),
+    with_stock_only: Optional[bool] = Query(None),
+    sort_by: str = Query("id", description="Sort column"),
+    sort_dir: str = Query("desc", description="Sort direction: asc|desc"),
+    db: Session = Depends(get_db)
+):
+    """Повертає список товарів з пагінацією та базовими фільтрами."""
+    try:
+        # Обчислюємо skip/limit
+        if skip is None or limit is None:
+            computed_skip = (page - 1) * per_page
+            computed_limit = per_page
+        else:
+            computed_skip = skip
+            computed_limit = limit
+
+        logger.info(
+            f"Requesting products: page={page}, per_page={per_page}, skip={skip}, limit={limit}, search={search}, sort={sort_by} {sort_dir}"
+        )
+
+        # Формуємо фільтри
+        filters = schemas.ProductFilter(
+            search=search,
+            typeid=typeid,
+            subtypeid=subtypeid,
+            brandid=brandid,
+            genderid=genderid,
+            colorid=colorid,
+            statusid=statusid,
+            conditionid=conditionid,
+            min_price=min_price,
+            max_price=max_price,
+            is_visible=is_visible,
+            with_stock_only=with_stock_only,
+        )
+
+        result = product_service.get_products(
+            db=db,
+            skip=computed_skip,
+            limit=computed_limit,
+            filters=filters,
+            sort_by=sort_by,
+            sort_dir=sort_dir,
+        )
+
+        items = []
+        for p in result["items"]:
+            # Перетворюємо ORM-об'єкт у DTO з плоскими полями імен
+            item: Dict[str, Any] = {
+                "id": p.id,
+                "productnumber": p.productnumber,
+                "model": getattr(p, "model", None),
+                "price": getattr(p, "price", None),
+                "oldprice": getattr(p, "oldprice", None),
+                "quantity": getattr(p, "quantity", 0),
+                "typeid": getattr(p, "typeid", None),
+                "subtypeid": getattr(p, "subtypeid", None),
+                "brandid": getattr(p, "brandid", None),
+                "statusid": getattr(p, "statusid", None),
+                "is_visible": getattr(p, "is_visible", True),
+                "dateadded": getattr(p, "dateadded", None),
+                "created_at": getattr(p, "created_at", None),
+                "updated_at": getattr(p, "updated_at", None),
+                # Імена пов'язаних сутностей (у моделі немає relationship, тому None)
+                "brand_name": None,
+                "type_name": None,
+                "status_name": None,
+            }
+            items.append(item)
+
+        response = {
+            "items": items,
+            "total": result["total"],
+            "page": result["page"],
+            # узгоджуємо назву з фронтендом
+            "per_page": result["size"],
+            "pages": result["pages"],
+        }
+
+        logger.info(f"Returning {len(items)} products (total={response['total']})")
+        return response
+    except Exception as e:
+        logger.error(f"Error getting products: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Помилка при отриманні товарів: {str(e)}")
+
+@router.get("/api/products/filters", response_model=schemas.FilterOptions)
+async def get_product_filters(db: Session = Depends(get_db)):
+    """
+    Повертає опції фільтрів товарів з БД.
+    """
+    try:
+        logger.info("Fetching product filters from DB")
+        return product_service.get_product_filters(db)
+    except Exception as e:
+        logger.error(f"Error getting product filters: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Помилка при отриманні фільтрів: {str(e)}")
+
+@router.get("/{product_id}", response_model=schemas.Product)
+async def get_product(
+    product_id: int = Path(..., ge=1, description="ID товару"),
+    db: Session = Depends(get_db)
+):
+    """
+    Отримати деталі товару за його ID
+    """
+    try:
+        product = product_service.get_product_with_relations(db, product_id)
+        
+        if not product:
+            raise HTTPException(status_code=404, detail=f"Товар з ID {product_id} не знайдено")
+        
+        return product
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting product {product_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Помилка при отриманні товару: {str(e)}")
+
+@router.post("/", response_model=schemas.Product, status_code=status.HTTP_201_CREATED)
+async def create_product(
+    product_data: schemas.ProductCreate,
+    db: Session = Depends(get_db)
+):
+    """
+    Створити новий товар
+    """
+    try:
+        # Перевіряємо, чи вже існує товар з таким номером
+        existing_product = product_service.get_product_by_number(db, product_data.productnumber)
+        
+        if existing_product:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Товар з номером {product_data.productnumber} вже існує"
+            )
+        
+        # Створюємо новий товар
+        product = product_service.create_product(db, product_data)
+        return product
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creating product: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Помилка при створенні товару: {str(e)}")
+
+@router.put("/{product_id}", response_model=schemas.Product)
+async def update_product(
+    product_id: int = Path(..., ge=1, description="ID товару"),
+    product_data: schemas.ProductUpdate = Body(...),
+    db: Session = Depends(get_db)
+):
+    """
+    Оновити існуючий товар
+    """
+    try:
+        # Перевіряємо, чи існує товар з таким ID
+        existing_product = product_service.get_product(db, product_id)
+        
+        if not existing_product:
+            raise HTTPException(status_code=404, detail=f"Товар з ID {product_id} не знайдено")
+        
+        # Якщо змінюється номер товару, перевіряємо його унікальність
+        if product_data.productnumber and product_data.productnumber != existing_product.productnumber:
+            duplicate = product_service.get_product_by_number(db, product_data.productnumber)
+            
+            if duplicate and duplicate.id != product_id:
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"Товар з номером {product_data.productnumber} вже існує"
+                )
+        
+        # Оновлюємо товар
+        updated_product = product_service.update_product(db, product_id, product_data)
+        
+        if not updated_product:
+            raise HTTPException(status_code=404, detail=f"Товар з ID {product_id} не знайдено")
+        
+        return updated_product
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating product {product_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Помилка при оновленні товару: {str(e)}")
+
+@router.delete("/{product_id}", response_model=Dict[str, Any])
+async def delete_product(
+    product_id: int = Path(..., ge=1, description="ID товару"),
+    db: Session = Depends(get_db)
+):
+    """
+    Видалити товар
+    """
+    try:
+        # Перевіряємо, чи існує товар з таким ID
+        existing_product = product_service.get_product(db, product_id)
+        
+        if not existing_product:
+            raise HTTPException(status_code=404, detail=f"Товар з ID {product_id} не знайдено")
+        
+        # Видаляємо товар
+        success = product_service.delete_product(db, product_id)
+        
+        if not success:
+            raise HTTPException(status_code=500, detail=f"Не вдалося видалити товар з ID {product_id}")
+        
+        return {"success": True, "message": f"Товар з ID {product_id} видалено"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting product {product_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Помилка при видаленні товару: {str(e)}")
+
+@router.patch("/{product_id}/visibility", response_model=Dict[str, Any])
+async def update_product_visibility(
+    product_id: int = Path(..., ge=1, description="ID товару"),
+    is_visible: bool = Body(..., embed=True),
+    db: Session = Depends(get_db)
+):
+    """
+    Оновити видимість товару
+    """
+    try:
+        # Перевіряємо, чи існує товар з таким ID
+        existing_product = product_service.get_product(db, product_id)
+        
+        if not existing_product:
+            raise HTTPException(status_code=404, detail=f"Товар з ID {product_id} не знайдено")
+        
+        # Оновлюємо видимість
+        success = product_service.update_product_visibility(db, product_id, is_visible)
+        
+        if not success:
+            raise HTTPException(status_code=500, detail=f"Не вдалося оновити видимість товару з ID {product_id}")
+        
+        return {
+            "success": True, 
+            "message": f"Видимість товару з ID {product_id} оновлено",
+            "is_visible": is_visible
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating product visibility {product_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Помилка при оновленні видимості товару: {str(e)}")
+
+@router.post("/bulk-update", response_model=Dict[str, Any])
+async def bulk_update_products(
+    product_ids: List[int] = Body(..., min_items=1),
+    update_data: Dict[str, Any] = Body(...),
+    db: Session = Depends(get_db)
+):
+    """
+    Масове оновлення товарів
+    """
+    try:
+        # Перевіряємо, що є хоча б один товар для оновлення
+        if not product_ids:
+            raise HTTPException(status_code=400, detail="Потрібно вказати хоча б один ID товару")
+        
+        # Перевіряємо, що є дані для оновлення
+        if not update_data:
+            raise HTTPException(status_code=400, detail="Потрібно вказати дані для оновлення")
+        
+        # Оновлюємо товари
+        updated_count = product_service.bulk_update_products(db, product_ids, update_data)
+        
+        return {
+            "success": True,
+            "message": f"Оновлено {updated_count} товарів",
+            "updated_count": updated_count
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error bulk updating products: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Помилка при масовому оновленні товарів: {str(e)}") 
