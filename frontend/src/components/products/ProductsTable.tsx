@@ -86,6 +86,79 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
     const [visibilityLoading, setVisibilityLoading] = useState<Record<number, boolean>>({});
     const [detailsId, setDetailsId] = useState<number | null>(null);
     const [detailsOpen, setDetailsOpen] = useState<boolean>(false);
+    // Контекстне меню керування колонками
+    const storageKey = 'products_table_columns_v2';
+    const menuRef = useRef<HTMLDivElement | null>(null);
+    const [menuOpen, setMenuOpen] = useState(false);
+    const [menuPos, setMenuPos] = useState<{x:number;y:number}>({x:0,y:0});
+    const columnOrder: { id: string; title: string; optional: boolean }[] = [
+        // 0.1 (опціонально перед №1)
+        { id: 'id', title: 'ID', optional: true },
+        // 1
+        { id: 'productnumber', title: 'Номер', optional: false },
+        // 1.1
+        { id: 'clonednumbers', title: 'Номера-клони', optional: true },
+        // 2
+        { id: 'type_name', title: 'Тип', optional: false },
+        // 2.1
+        { id: 'subtype_name', title: 'Підтип', optional: true },
+        // 3
+        { id: 'brand_name', title: 'Бренд', optional: false },
+        // 3.1, 3.2, 3.3
+        { id: 'model', title: 'Модель', optional: true },
+        { id: 'marking', title: 'Маркування', optional: true },
+        { id: 'year', title: 'Рік', optional: true },
+        // 4
+        { id: 'gender_name', title: 'Стать', optional: false },
+        // 5
+        { id: 'color_name', title: 'Колір', optional: false },
+        // 5.1
+        { id: 'description', title: 'Опис', optional: true },
+        // 6
+        { id: 'sizeeu', title: 'Розмір', optional: false },
+        // 7
+        { id: 'measurementscm', title: 'СМ', optional: false },
+        // 8
+        { id: 'price', title: 'Ціна', optional: false },
+        // 8.1, 8.2
+        { id: 'oldprice', title: 'Стара ціна', optional: true },
+        { id: 'quantity', title: 'К-сть', optional: true },
+        // 9
+        { id: 'status_name', title: 'Статус', optional: false },
+        // 10
+        { id: 'condition_name', title: 'Стан', optional: false },
+        // 11, 12, 13
+        { id: 'supplier_name', title: 'Постачальник', optional: true },
+        { id: 'is_visible', title: 'Видимість', optional: true },
+        { id: 'actions', title: 'Дії', optional: true },
+    ];
+    const defaultVisibility: Record<string, boolean> = columnOrder.reduce((acc, c) => {
+        acc[c.id] = !c.optional; return acc;
+    }, {} as Record<string, boolean>);
+    const [visibleMap, setVisibleMap] = useState<Record<string, boolean>>(() => {
+        try {
+            const raw = localStorage.getItem(storageKey);
+            if (!raw) return defaultVisibility;
+            const parsed = JSON.parse(raw);
+            return { ...defaultVisibility, ...parsed };
+        } catch {
+            return defaultVisibility;
+        }
+    });
+    useEffect(() => { localStorage.setItem(storageKey, JSON.stringify(visibleMap)); }, [visibleMap]);
+    useEffect(() => {
+        const onDocClick = (e: MouseEvent) => {
+            if (!menuRef.current) return setMenuOpen(false);
+            if (!menuRef.current.contains(e.target as Node)) setMenuOpen(false);
+        };
+        document.addEventListener('mousedown', onDocClick);
+        return () => document.removeEventListener('mousedown', onDocClick);
+    }, []);
+    const handleContextMenu: React.MouseEventHandler<HTMLDivElement> = (e) => {
+        e.preventDefault();
+        setMenuPos({ x: e.clientX, y: e.clientY });
+        setMenuOpen(true);
+    };
     
     // Обробник зміни видимості товару
     const handleVisibilityChange = async (id: number, isVisible: boolean) => {
@@ -110,85 +183,49 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
         }
     };
     
-    // Налаштування колонок для таблиці
-    const columns = [
-        {
-            title: 'ID',
-            dataIndex: 'id',
-            key: 'id',
-            width: 70,
-            sorter: true,
+    // Опис усіх можливих колонок уніфіковано, з рендерами
+    const allColumns: Record<string, any> = {
+        id: {
+            title: 'ID', dataIndex: 'id', key: 'id', width: 70, sorter: true,
         },
-        {
-            title: 'Номер',
-            dataIndex: 'productnumber',
-            key: 'productnumber',
-            width: 120,
+        productnumber: {
+            title: 'Номер', dataIndex: 'productnumber', key: 'productnumber', width: 120,
             render: (text: string, record: Product) => (
-                <a onClick={() => { setDetailsId(record.id); setDetailsOpen(true); }}>{text}</a>
+                <button className="text-primary-600 hover:underline" onClick={() => { setDetailsId(record.id); setDetailsOpen(true); }}>{text}</button>
             ),
         },
-        {
-            title: 'Модель',
-            dataIndex: 'model',
-            key: 'model',
-            width: 150,
-        },
-        {
-            title: 'Бренд',
-            dataIndex: 'brand_name',
-            key: 'brand_name',
-            width: 120,
-        },
-        {
-            title: 'Тип',
-            dataIndex: 'type_name',
-            key: 'type_name',
-            width: 120,
-        },
-        {
-            title: 'Ціна',
-            dataIndex: 'price',
-            key: 'price',
-            width: 150,
+        model: { title: 'Модель', dataIndex: 'model', key: 'model', width: 150 },
+        brand_name: { title: 'Бренд', dataIndex: 'brand_name', key: 'brand_name', width: 120 },
+        type_name: { title: 'Тип', dataIndex: 'type_name', key: 'type_name', width: 120 },
+        subtype_name: { title: 'Підтип', dataIndex: 'subtype_name', key: 'subtype_name', width: 120 },
+        gender_name: { title: 'Стать', dataIndex: 'gender_name', key: 'gender_name', width: 110 },
+        color_name: { title: 'Колір', dataIndex: 'color_name', key: 'color_name', width: 120 },
+        sizeeu: { title: 'Розмір', dataIndex: 'sizeeu', key: 'sizeeu', width: 100 },
+        measurementscm: { title: 'СМ', dataIndex: 'measurementscm', key: 'measurementscm', width: 100 },
+        price: { title: 'Ціна', dataIndex: 'price', key: 'price', width: 150, sorter: true,
             render: (price: number, record: Product) => (
                 <>
-                    {price && <PriceText>{price.toFixed(2)} ₴</PriceText>}
-                    {record.oldprice && <OldPriceText>{record.oldprice.toFixed(2)} ₴</OldPriceText>}
+                    {price !== undefined && price !== null && <PriceText>{Number(price).toFixed(2)} ₴</PriceText>}
+                    {(record as any).oldprice && <OldPriceText>{Number((record as any).oldprice).toFixed(2)} ₴</OldPriceText>}
                 </>
-            ),
-            sorter: true,
-        },
-        {
-            title: 'К-сть',
-            dataIndex: 'quantity',
-            key: 'quantity',
-            width: 80,
-            align: 'center' as 'center',
-            render: (quantity: number) => (
-                <Tag color={quantity > 0 ? 'green' : 'red'}>
-                    {quantity}
-                </Tag>
-            ),
-            sorter: true,
-        },
-        {
-            title: 'Статус',
-            dataIndex: 'status_name',
-            key: 'status_name',
-            width: 120,
+            )},
+        oldprice: { title: 'Стара ціна', dataIndex: 'oldprice', key: 'oldprice', width: 130,
+            render: (value: number) => value ? <OldPriceText>{Number(value).toFixed(2)} ₴</OldPriceText> : null },
+        quantity: { title: 'К-сть', dataIndex: 'quantity', key: 'quantity', width: 80, align: 'center' as const, sorter: true,
+            render: (q: number) => <Tag color={q > 0 ? 'green' : 'red'}>{q}</Tag> },
+        status_name: { title: 'Статус', dataIndex: 'status_name', key: 'status_name', width: 130,
             render: (status: string) => (
                 <Tag color={status === 'Продано' ? 'red' : status === 'В наявності' ? 'green' : 'blue'}>
                     {status || 'Не вказано'}
                 </Tag>
-            ),
-        },
-        {
-            title: 'Видимість',
-            dataIndex: 'is_visible',
-            key: 'is_visible',
-            width: 100,
-            align: 'center' as 'center',
+            ) },
+        condition_name: { title: 'Стан', dataIndex: 'condition_name', key: 'condition_name', width: 120 },
+        clonednumbers: { title: 'Номера-клони', dataIndex: 'clonednumbers', key: 'clonednumbers', width: 160 },
+        marking: { title: 'Маркування', dataIndex: 'marking', key: 'marking', width: 140 },
+        year: { title: 'Рік', dataIndex: 'year', key: 'year', width: 90 },
+        description: { title: 'Опис', dataIndex: 'description', key: 'description', width: 200, ellipsis: true },
+        supplier_name: { title: 'Постачальник', dataIndex: 'supplier_name', key: 'supplier_name', width: 160 },
+        is_visible: { title: 'Видимість', dataIndex: 'is_visible', key: 'is_visible', width: 100, align: 'center' as const,
             render: (isVisible: boolean, record: Product) => (
                 <Switch
                     checked={isVisible}
@@ -197,41 +234,25 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
                     checkedChildren={<EyeOutlined />}
                     unCheckedChildren={<EyeInvisibleOutlined />}
                 />
-            ),
-        },
-        {
-            title: 'Дії',
-            key: 'actions',
-            width: 120,
-            fixed: 'right' as 'right',
+            ) },
+        actions: { title: 'Дії', key: 'actions', width: 120, fixed: 'right' as const,
             render: (_: any, record: Product) => (
                 <Space>
                     <Tooltip title="Редагувати">
-                        <Button 
-                            type="primary" 
-                            icon={<EditOutlined />} 
-                            size="small"
-                            onClick={() => navigate(`/products/${record.id}/edit`)}
-                        />
+                        <Button type="primary" icon={<EditOutlined />} size="small" onClick={() => navigate(`/products/${record.id}/edit`)} />
                     </Tooltip>
                     <Tooltip title="Видалити">
-                        <Popconfirm
-                            title="Ви впевнені, що хочете видалити цей товар?"
-                            onConfirm={() => handleDelete(record.id)}
-                            okText="Так"
-                            cancelText="Ні"
-                        >
-                            <Button 
-                                danger 
-                                icon={<DeleteOutlined />}
-                                size="small"
-                            />
+                        <Popconfirm title="Ви впевнені, що хочете видалити цей товар?" onConfirm={() => handleDelete(record.id)} okText="Так" cancelText="Ні">
+                            <Button danger icon={<DeleteOutlined />} size="small" />
                         </Popconfirm>
                     </Tooltip>
                 </Space>
-            ),
-        },
-    ];
+            ) },
+    };
+    const columns = columnOrder
+        .filter(c => visibleMap[c.id])
+        .map(c => allColumns[c.id])
+        .filter(Boolean);
     
     const handleTableChange: TableProps<Product>['onChange'] = (pagination, filters, sorter) => {
         // AntD can return sorter as object or array; handle both
@@ -249,7 +270,7 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
     };
 
     return (
-        <TableContainer className="max-h-[calc(100vh-220px)]">
+        <TableContainer className="max-h-[calc(100vh-220px)]" onContextMenu={handleContextMenu}>
             <ProductDetailsModal productId={detailsId} open={detailsOpen} onClose={() => setDetailsOpen(false)} onSaved={() => setDetailsOpen(false)} />
             
             <Table
@@ -263,10 +284,38 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
                 scroll={{ y: 'calc(100vh - 260px)' }}
                 tableLayout="auto"
                 className="min-w-[1600px] xl:min-w-[1800px] 2xl:min-w-[2000px]"
-                size="middle"
-                bordered
+                size="small"
+                bordered={false}
                 onChange={handleTableChange}
             />
+
+            {/* Контекстне меню керування колонками */}
+            {menuOpen && (
+                <div
+                  ref={menuRef}
+                  style={{ top: menuPos.y, left: menuPos.x }}
+                  className="fixed z-[10000] w-72 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg p-2"
+                >
+                  <div className="px-2 py-1 text-xs text-gray-500">Видимість колонок</div>
+                  <div className="max-h-80 overflow-auto pr-1">
+                    {columnOrder.map(c => (
+                      <label key={c.id} className="flex items-center justify-between px-2 py-1 text-sm cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700 rounded">
+                        <span>{c.title}</span>
+                        <input
+                          type="checkbox"
+                          checked={!!visibleMap[c.id]}
+                          onChange={(e) => setVisibleMap(v => ({ ...v, [c.id]: e.target.checked }))}
+                        />
+                      </label>
+                    ))}
+                  </div>
+                  <div className="mt-2 grid grid-cols-3 gap-2">
+                    <button className="text-xs px-2 py-1 rounded border border-gray-300 hover:bg-gray-100" onClick={() => setVisibleMap(() => columnOrder.reduce((a, c) => (a[c.id] = true, a), {} as Record<string, boolean>))}>Всі</button>
+                    <button className="text-xs px-2 py-1 rounded border border-gray-300 hover:bg-gray-100" onClick={() => setVisibleMap(() => columnOrder.reduce((a, c) => (a[c.id] = false, a), {} as Record<string, boolean>))}>Приховати</button>
+                    <button className="text-xs px-2 py-1 rounded border border-gray-300 hover:bg-gray-100" onClick={() => setVisibleMap(defaultVisibility)}>За умовч.</button>
+                  </div>
+                </div>
+            )}
         </TableContainer>
     );
 };
