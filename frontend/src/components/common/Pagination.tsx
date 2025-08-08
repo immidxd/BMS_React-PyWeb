@@ -20,7 +20,7 @@ const Pagination: React.FC<PaginationProps> = ({
   const startItem = totalItems ? (currentPage - 1) * itemsPerPage + 1 : 0;
   const endItem = totalItems ? Math.min(currentPage * itemsPerPage, totalItems) : 0;
 
-  const pageButtons = [];
+  const pageButtons: React.ReactElement[] = [];
   const maxButtons = 5;
   let startPage = Math.max(1, currentPage - Math.floor(maxButtons / 2));
   let endPage = startPage + maxButtons - 1;
@@ -45,15 +45,15 @@ const Pagination: React.FC<PaginationProps> = ({
   }
 
   return (
-    <div className="flex flex-col md:flex-row justify-center items-center w-full gap-3">
-      <div className="hidden md:block text-xs md:text-sm text-gray-500 md:mr-4">
-        Показано {startItem}-{endItem} з {totalItems} записів
+    <div className="flex flex-col md:flex-row justify-center items-center w-full gap-2 select-none">
+      <div className="hidden md:block text-xs md:text-sm text-gray-500 md:mr-2">
+        Показано {startItem}-{endItem} з {totalItems}
       </div>
-      <div className="flex items-center justify-center rounded-full border border-gray-200 bg-white/90 shadow-sm px-2 py-1">
+      <div className="flex items-center justify-center gap-1 px-1 py-1">
         <button
           aria-label="Перша сторінка"
           onClick={() => onPageChange(1)}
-          className="mx-1 px-2 py-1 rounded-full bg-transparent text-gray-600 hover:bg-gray-100 disabled:opacity-40 disabled:cursor-not-allowed"
+          className="px-2 py-1 rounded-md text-gray-600 hover:bg-gray-100 disabled:opacity-40 disabled:cursor-not-allowed focus:outline-none"
           disabled={currentPage === 1}
         >
           &#x21E4;
@@ -61,16 +61,31 @@ const Pagination: React.FC<PaginationProps> = ({
         <button
           aria-label="Попередня сторінка"
           onClick={() => onPageChange(currentPage - 1)}
-          className="mx-1 px-2 py-1 rounded-full bg-transparent text-gray-600 hover:bg-gray-100 disabled:opacity-40 disabled:cursor-not-allowed"
+          className="px-2 py-1 rounded-md text-gray-600 hover:bg-gray-100 disabled:opacity-40 disabled:cursor-not-allowed focus:outline-none"
           disabled={currentPage === 1}
         >
           &#8592;
         </button>
-        {pageButtons}
+        <div className="flex items-center gap-1">
+          {pageButtons.map((btn, idx) => {
+            const p: any = btn.props as any;
+            return (
+            <button
+              key={idx}
+              aria-label={`Сторінка ${p.children}`}
+              onClick={p.onClick}
+              disabled={p.disabled}
+              className={`px-3 py-1 rounded-md border transition-colors duration-150 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-blue-400 ${p.disabled ? 'bg-blue-500 text-white border-blue-500' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-100'}`}
+            >
+              {p.children}
+            </button>
+            );
+          })}
+        </div>
         <button
           aria-label="Наступна сторінка"
           onClick={() => onPageChange(currentPage + 1)}
-          className="mx-1 px-2 py-1 rounded-full bg-transparent text-gray-600 hover:bg-gray-100 disabled:opacity-40 disabled:cursor-not-allowed"
+          className="px-2 py-1 rounded-md text-gray-600 hover:bg-gray-100 disabled:opacity-40 disabled:cursor-not-allowed focus:outline-none"
           disabled={currentPage === totalPages || totalPages === 0}
         >
           &#8594;
@@ -78,7 +93,7 @@ const Pagination: React.FC<PaginationProps> = ({
         <button
           aria-label="Остання сторінка"
           onClick={() => onPageChange(totalPages)}
-          className="mx-1 px-2 py-1 rounded-full bg-transparent text-gray-600 hover:bg-gray-100 disabled:opacity-40 disabled:cursor-not-allowed"
+          className="px-2 py-1 rounded-md text-gray-600 hover:bg-gray-100 disabled:opacity-40 disabled:cursor-not-allowed focus:outline-none"
           disabled={currentPage === totalPages || totalPages === 0}
         >
           &#x21E5;

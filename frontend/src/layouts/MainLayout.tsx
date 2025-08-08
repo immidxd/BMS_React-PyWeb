@@ -46,7 +46,7 @@ const MainLayout: React.FC<MainLayoutProps> = ({
   };
 
 return (
-  <div className="main-layout flex flex-col h-screen">{/* тягнемося на весь екран */}
+  <div className="main-layout flex flex-col h-screen relative">{/* тягнемося на весь екран */}
       <div className="flex flex-row flex-grow gap-4 overflow-hidden px-2 sm:px-4">{/* трохи більше корисної ширини */}
         <div 
           className="hidden sm:block fixed left-0 top-0 bottom-0 w-4 z-30 cursor-pointer"
@@ -60,7 +60,10 @@ return (
         </div>
       </div>
       
-      {/* Прибираємо плаваючу кнопку оновлення, щоб не дублювалась з іншими елементами */}
+      {/* Плаваюча кнопка оновлення поверх усього UI */}
+      <div className="fixed right-6 bottom-6 z-[9999] drop-shadow-lg">
+        <RefreshButton onClick={onRefresh} isLoading={isRefreshing} />
+      </div>
 
       <FilterPanel 
         isOpen={isFilterPanelOpen} 

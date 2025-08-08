@@ -149,46 +149,47 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
       onResetFilters={handleResetFilters}
     >
       {/* Main content for Products Page */}
-      <div className="p-4 bg-white dark:bg-gray-800 shadow-md rounded-lg w-full">
+      <div className="p-4 pb-24 bg-white dark:bg-gray-800 shadow-md rounded-lg w-full">
         <div className="flex justify-between items-center mb-2">
-          <h1 className="text-2xl font-semibold text-gray-900 dark:text-gray-100">Товари</h1>
-          {/* Display the search term received from props */}
-          {currentSearchTerm && <p className='text-sm text-gray-500 dark:text-gray-400'>Активний пошук: "{currentSearchTerm}"</p>}
-        </div>
-
-        {/* Фіксована верхня панель керування (мінімалістична, без зайвих ліній) */}
-        <div className="sticky top-0 z-10 -mx-4 px-4 py-1 bg-white/80 dark:bg-gray-800/80">
-          <div className="flex items-center justify-end gap-1">
-              <Button type="primary" icon={<PlusOutlined />} onClick={() => navigate('/products/create')}>
-                Додати товар
-              </Button>
-              <Button
-                disabled={selectedRowKeys.length === 0}
-                icon={<EyeOutlined />}
-                onClick={async () => {
-                  if (selectedRowKeys.length === 0) return;
-                  await productService.bulkUpdateProducts(selectedRowKeys as number[], { is_visible: true });
-                  setSelectedRowKeys([]);
-                  await fetchProducts();
-                }}
-              >
-                Увімкнути видимість
-              </Button>
-              <Button
-                disabled={selectedRowKeys.length === 0}
-                danger
-                icon={<EyeInvisibleOutlined />}
-                onClick={async () => {
-                  if (selectedRowKeys.length === 0) return;
-                  await productService.bulkUpdateProducts(selectedRowKeys as number[], { is_visible: false });
-                  setSelectedRowKeys([]);
-                  await fetchProducts();
-                }}
-              >
-                Вимкнути видимість
-              </Button>
+          <div className="flex items-center gap-3">
+            <h1 className="text-2xl font-semibold text-gray-900 dark:text-gray-100">Товари</h1>
+            {currentSearchTerm && (
+              <span className='text-xs text-gray-500 dark:text-gray-400'>Пошук: "{currentSearchTerm}"</span>
+            )}
+          </div>
+          <div className="flex items-center gap-2">
+            <Button type="primary" icon={<PlusOutlined />} onClick={() => navigate('/products/create')}>
+              Додати товар
+            </Button>
+            <Button
+              disabled={selectedRowKeys.length === 0}
+              icon={<EyeOutlined />}
+              onClick={async () => {
+                if (selectedRowKeys.length === 0) return;
+                await productService.bulkUpdateProducts(selectedRowKeys as number[], { is_visible: true });
+                setSelectedRowKeys([]);
+                await fetchProducts();
+              }}
+            >
+              Увімкнути видимість
+            </Button>
+            <Button
+              disabled={selectedRowKeys.length === 0}
+              danger
+              icon={<EyeInvisibleOutlined />}
+              onClick={async () => {
+                if (selectedRowKeys.length === 0) return;
+                await productService.bulkUpdateProducts(selectedRowKeys as number[], { is_visible: false });
+                setSelectedRowKeys([]);
+                await fetchProducts();
+              }}
+            >
+              Вимкнути видимість
+            </Button>
           </div>
         </div>
+
+        {/* Видалено окремий sticky-бар дій, кнопки перенесені у шапку */}
         <div className="w-full overflow-x-auto">
         <ProductsTable
           products={products}
@@ -202,39 +203,45 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
         />
         </div>
 
-        {/* Низ сторінки: ліворуч чекбокси, по центру — пагінація */}
-        <div className="mt-5 grid grid-cols-1 md:grid-cols-3 items-center">
-          <div className="flex items-center gap-6 order-2 md:order-1 md:justify-start justify-center mt-3 md:mt-0">
-            <label className="inline-flex items-center text-sm text-gray-700 dark:text-gray-300">
-              <input
-                type="checkbox"
-                checked={onlyUnsold}
-                onChange={(e) => { setOnlyUnsold(e.target.checked); setPage(1); }}
-                className="h-4 w-4 text-primary-600 border-gray-300 rounded focus:ring-primary-500 dark:focus:ring-primary-400 dark:bg-gray-700 dark:border-gray-600"
+      {/* Фіксований (fixed) нижній бар для стабільної пагінації незалежно від скролу */}
+        <div className="fixed bottom-0 left-0 right-0 px-0 py-3 bg-white/95 dark:bg-gray-800/95 backdrop-blur supports-backdrop-blur:backdrop-blur-md border-t border-gray-100 dark:border-gray-700 z-20 shadow-[0_-2px_10px_rgba(0,0,0,0.04)]">
+          <div className="max-w-screen-2xl mx-auto grid grid-cols-12 items-center px-4 gap-4">
+            <div className="col-span-12 md:col-span-4 flex items-center gap-6 order-2 md:order-1 md:justify-start justify-center mt-3 md:mt-0">
+              <label className="inline-flex items-center text-sm text-gray-700 dark:text-gray-300">
+                <input
+                  type="checkbox"
+                  checked={onlyUnsold}
+                  onChange={(e) => { setOnlyUnsold(e.target.checked); setPage(1); }}
+                  className="h-4 w-4 text-primary-600 border-gray-300 rounded focus:ring-primary-500 dark:focus:ring-primary-400 dark:bg-gray-700 dark:border-gray-600"
+                />
+                <span className="ml-2">Показувати тільки непродані</span>
+              </label>
+              <label className="inline-flex items-center text-sm text-gray-700 dark:text-gray-300">
+                <input
+                  type="checkbox"
+                  checked={visibleOnly}
+                  onChange={(e) => { setVisibleOnly(e.target.checked); setPage(1); }}
+                  className="h-4 w-4 text-primary-600 border-gray-300 rounded focus:ring-primary-500 dark:focus:ring-primary-400 dark:bg-gray-700 dark:border-gray-600"
+                />
+                <span className="ml-2">Лише видимі</span>
+              </label>
+            </div>
+            <div className="col-span-12 md:col-span-4 order-1 md:order-2 flex justify-center">
+              <Pagination
+                currentPage={products.page}
+                totalPages={Math.ceil(products.total / products.per_page)}
+                totalItems={products.total}
+                itemsPerPage={products.per_page}
+                onPageChange={(p) => setPage(p)}
               />
-              <span className="ml-2">Показувати тільки непродані</span>
-            </label>
-            <label className="inline-flex items-center text-sm text-gray-700 dark:text-gray-300">
-              <input
-                type="checkbox"
-                checked={visibleOnly}
-                onChange={(e) => { setVisibleOnly(e.target.checked); setPage(1); }}
-                className="h-4 w-4 text-primary-600 border-gray-300 rounded focus:ring-primary-500 dark:focus:ring-primary-400 dark:bg-gray-700 dark:border-gray-600"
-              />
-              <span className="ml-2">Лише видимі</span>
-            </label>
+            </div>
+            <div className="col-span-12 md:col-span-4 order-3 flex justify-end text-xs md:text-sm text-gray-500">
+              <span>Показано {products.items.length ? (products.page - 1) * products.per_page + 1 : 0}-{Math.min(products.page * products.per_page, products.total)} з {products.total} записів</span>
+            </div>
           </div>
-          <div className="order-1 md:order-2 flex justify-center">
-          <Pagination
-            currentPage={products.page}
-            totalPages={Math.ceil(products.total / products.per_page)}
-            totalItems={products.total}
-            itemsPerPage={products.per_page}
-            onPageChange={(p) => setPage(p)}
-          />
-          </div>
-          <div className="order-3" />
         </div>
+        {/* Спейсер, щоб контент не накривався fixed-панеллю */}
+        <div className="h-20" />
       </div>
     </MainLayout>
     );
