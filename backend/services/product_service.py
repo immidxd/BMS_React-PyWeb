@@ -119,7 +119,9 @@ def get_products(
         
         total = query.count()
         
-        if sort_by and hasattr(models.Product, sort_by):
+        # Валідація сортування: дозволяємо тільки безпечні колонки
+        allowed_sort_columns = {"id", "dateadded", "price", "created_at", "updated_at"}
+        if sort_by in allowed_sort_columns and hasattr(models.Product, sort_by):
             sort_column = getattr(models.Product, sort_by)
             if sort_dir.lower() == "asc":
                 query = query.order_by(asc(sort_column))

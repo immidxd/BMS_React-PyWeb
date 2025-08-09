@@ -186,46 +186,50 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
     // Опис усіх можливих колонок уніфіковано, з рендерами
     const allColumns: Record<string, any> = {
         id: {
-            title: 'ID', dataIndex: 'id', key: 'id', width: 70, sorter: true,
+            title: 'ID', dataIndex: 'id', key: 'id', width: 45, sorter: true,
         },
         productnumber: {
-            title: 'Номер', dataIndex: 'productnumber', key: 'productnumber', width: 120,
+            title: 'Номер', dataIndex: 'productnumber', key: 'productnumber', width: 55,
             render: (text: string, record: Product) => (
-                <button className="text-primary-600 hover:underline" onClick={() => { setDetailsId(record.id); setDetailsOpen(true); }}>{text}</button>
+                <button className="text-primary-600 hover:underline text-xs" onClick={() => { setDetailsId(record.id); setDetailsOpen(true); }}>{text}</button>
             ),
         },
-        model: { title: 'Модель', dataIndex: 'model', key: 'model', width: 150 },
-        brand_name: { title: 'Бренд', dataIndex: 'brand_name', key: 'brand_name', width: 120 },
-        type_name: { title: 'Тип', dataIndex: 'type_name', key: 'type_name', width: 120 },
+        model: { title: 'Модель', dataIndex: 'model', key: 'model', width: 140 },
+        brand_name: { title: 'Бренд', dataIndex: 'brand_name', key: 'brand_name', width: 110 },
+        type_name: { title: 'Тип', dataIndex: 'type_name', key: 'type_name', width: 110 },
         subtype_name: { title: 'Підтип', dataIndex: 'subtype_name', key: 'subtype_name', width: 120 },
-        gender_name: { title: 'Стать', dataIndex: 'gender_name', key: 'gender_name', width: 110 },
-        color_name: { title: 'Колір', dataIndex: 'color_name', key: 'color_name', width: 120 },
-        sizeeu: { title: 'Розмір', dataIndex: 'sizeeu', key: 'sizeeu', width: 100 },
-        measurementscm: { title: 'СМ', dataIndex: 'measurementscm', key: 'measurementscm', width: 100 },
-        price: { title: 'Ціна', dataIndex: 'price', key: 'price', width: 150, sorter: true,
+        gender_name: { title: 'Стать', dataIndex: 'gender_name', key: 'gender_name', width: 75 },
+        color_name: { title: 'Колір', dataIndex: 'color_name', key: 'color_name', width: 65 },
+        sizeeu: { title: 'Розмір', dataIndex: 'sizeeu', key: 'sizeeu', width: 50,
+            render: (text: string) => <span className="text-xs">{text}</span> },
+        measurementscm: { title: 'СМ', dataIndex: 'measurementscm', key: 'measurementscm', width: 60,
+            render: (text: string) => <span className="text-xs">{text}</span> },
+        price: { title: 'Ціна', dataIndex: 'price', key: 'price', width: 50, sorter: true,
             render: (price: number, record: Product) => (
-                <>
-                    {price !== undefined && price !== null && <PriceText>{Number(price).toFixed(2)} ₴</PriceText>}
-                    {(record as any).oldprice && <OldPriceText>{Number((record as any).oldprice).toFixed(2)} ₴</OldPriceText>}
-                </>
+                <span className="text-xs">
+                    {price !== undefined && price !== null && <PriceText>{Number(price).toFixed(0)}₴</PriceText>}
+                </span>
             )},
-        oldprice: { title: 'Стара ціна', dataIndex: 'oldprice', key: 'oldprice', width: 130,
-            render: (value: number) => value ? <OldPriceText>{Number(value).toFixed(2)} ₴</OldPriceText> : null },
-        quantity: { title: 'К-сть', dataIndex: 'quantity', key: 'quantity', width: 80, align: 'center' as const, sorter: true,
+        oldprice: { title: 'Стара ціна', dataIndex: 'oldprice', key: 'oldprice', width: 90,
+            render: (value: number) => value ? <OldPriceText>{Number(value).toFixed(0)} ₴</OldPriceText> : null },
+        quantity: { title: 'К-сть', dataIndex: 'quantity', key: 'quantity', width: 50, align: 'center' as const, sorter: true,
             render: (q: number) => <Tag color={q > 0 ? 'green' : 'red'}>{q}</Tag> },
-        status_name: { title: 'Статус', dataIndex: 'status_name', key: 'status_name', width: 130,
+        status_name: { title: 'Статус', dataIndex: 'status_name', key: 'status_name', width: 80,
             render: (status: string) => (
-                <Tag color={status === 'Продано' ? 'red' : status === 'В наявності' ? 'green' : 'blue'}>
-                    {status || 'Не вказано'}
+                <Tag
+                  color={status === 'Продано' ? 'red' : status === 'В наявності' ? 'green' : 'blue'}
+                  style={{ display: 'block', maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', padding: '0 6px', fontSize: 12 }}
+                >
+                  {status || 'Не вказано'}
                 </Tag>
             ) },
-        condition_name: { title: 'Стан', dataIndex: 'condition_name', key: 'condition_name', width: 120 },
+        condition_name: { title: 'Стан', dataIndex: 'condition_name', key: 'condition_name', width: 75 },
         clonednumbers: { title: 'Номера-клони', dataIndex: 'clonednumbers', key: 'clonednumbers', width: 160 },
         marking: { title: 'Маркування', dataIndex: 'marking', key: 'marking', width: 140 },
-        year: { title: 'Рік', dataIndex: 'year', key: 'year', width: 90 },
+        year: { title: 'Рік', dataIndex: 'year', key: 'year', width: 50 },
         description: { title: 'Опис', dataIndex: 'description', key: 'description', width: 200, ellipsis: true },
         supplier_name: { title: 'Постачальник', dataIndex: 'supplier_name', key: 'supplier_name', width: 160 },
-        is_visible: { title: 'Видимість', dataIndex: 'is_visible', key: 'is_visible', width: 100, align: 'center' as const,
+        is_visible: { title: 'Видимість', dataIndex: 'is_visible', key: 'is_visible', width: 85, align: 'center' as const,
             render: (isVisible: boolean, record: Product) => (
                 <Switch
                     checked={isVisible}
@@ -235,7 +239,7 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
                     unCheckedChildren={<EyeInvisibleOutlined />}
                 />
             ) },
-        actions: { title: 'Дії', key: 'actions', width: 120, fixed: 'right' as const,
+        actions: { title: 'Дії', key: 'actions', width: 90, fixed: 'right' as const,
             render: (_: any, record: Product) => (
                 <Space>
                     <Tooltip title="Редагувати">
@@ -281,9 +285,9 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
                 pagination={false}
                 loading={loading}
                 // y: заповнюємо висоту вікна мінус шапка сторінки
-                scroll={{ y: 'calc(100vh - 260px)' }}
-                tableLayout="auto"
-                className="min-w-[1600px] xl:min-w-[1800px] 2xl:min-w-[2000px]"
+                scroll={{ x: 'max-content', y: 'calc(100vh - 260px)' }}
+                tableLayout="fixed"
+                className="min-w-[1200px] xl:min-w-[1400px] 2xl:min-w-[1600px]"
                 size="small"
                 bordered={false}
                 onChange={handleTableChange}
