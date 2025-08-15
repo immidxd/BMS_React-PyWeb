@@ -277,21 +277,23 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
         <TableContainer className="max-h-[calc(100vh-220px)]" onContextMenu={handleContextMenu}>
             <ProductDetailsModal productId={detailsId} open={detailsOpen} onClose={() => setDetailsOpen(false)} onSaved={() => setDetailsOpen(false)} />
             
-            <Table
-                columns={columns}
-                dataSource={products.items}
-                rowKey="id"
-                rowSelection={rowSelection}
-                pagination={false}
-                loading={loading}
-                // y: заповнюємо висоту вікна мінус шапка сторінки
-                scroll={{ x: 'max-content', y: 'calc(100vh - 260px)' }}
-                tableLayout="fixed"
-                className="min-w-[1200px] xl:min-w-[1400px] 2xl:min-w-[1600px]"
-                size="small"
-                bordered={false}
-                onChange={handleTableChange}
-            />
+            <div className="overflow-x-auto rounded-lg shadow-md border border-gray-200 bg-white dark:bg-gray-800 dark:border-gray-700">
+                <Table
+                    columns={columns}
+                    dataSource={products.items}
+                    rowKey="id"
+                    rowSelection={rowSelection}
+                    pagination={false}
+                    loading={loading}
+                    // y: заповнюємо висоту вікна мінус шапка сторінки
+                    scroll={{ x: 'max-content', y: 'calc(100vh - 260px)' }}
+                    tableLayout="fixed"
+                    className="min-w-[1200px] xl:min-w-[1400px] 2xl:min-w-[1600px]"
+                    size="small"
+                    bordered={false}
+                    onChange={handleTableChange}
+                />
+            </div>
 
             {/* Контекстне меню керування колонками */}
             {menuOpen && (

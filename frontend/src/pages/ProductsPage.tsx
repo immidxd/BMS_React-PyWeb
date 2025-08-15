@@ -149,7 +149,7 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
       onResetFilters={handleResetFilters}
     >
       {/* Main content for Products Page */}
-      <div className="p-4 pb-24 bg-white dark:bg-gray-800 shadow-md rounded-lg w-full">
+      <div className="p-4 pb-12 bg-white dark:bg-gray-800 shadow-md rounded-lg w-full">
         <div className="flex justify-between items-center mb-2">
           <div className="flex items-center gap-3">
             <h1 className="text-2xl font-semibold text-gray-900 dark:text-gray-100">Товари</h1>
@@ -242,7 +242,7 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
           </div>
         </div>
         {/* Спейсер, щоб контент не накривався fixed-панеллю */}
-        <div className="h-20" />
+        <div className="h-10" />
       </div>
     </MainLayout>
     );
