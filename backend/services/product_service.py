@@ -65,6 +65,7 @@ def get_products(
     """Get a list of products with pagination and filtering with related data."""
     try:
         logger.debug(f"Getting products with filters: {filters}")
+        # Hot reload trigger
         
         # Use direct SQL query to get all product data with related names
         from sqlalchemy import text
@@ -96,7 +97,14 @@ def get_products(
                     (p.productnumber ILIKE :search OR 
                      p.model ILIKE :search OR 
                      p.description ILIKE :search OR 
-                     p.marking ILIKE :search)
+                     p.marking ILIKE :search OR
+                     p.extranote ILIKE :search OR
+                     b.brandname ILIKE :search OR
+                     t.typename ILIKE :search OR
+                     c.colorname ILIKE :search OR
+                     g.gendername ILIKE :search OR
+                     cond.conditionname ILIKE :search OR
+                     s.statusname ILIKE :search)
                 """)
                 params['search'] = search
                 

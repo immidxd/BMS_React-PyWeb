@@ -24,6 +24,7 @@ from routers import (
     order_statuses,
     delivery_methods,
     parsing,
+    search,
 )
 try:
     from routers import deliveries  # optional
@@ -92,6 +93,7 @@ app.include_router(payment_statuses.router, tags=["payment-statuses"])  # routes
 app.include_router(order_statuses.router, tags=["order-statuses"])      # routes define full /api prefix
 app.include_router(delivery_methods.router, tags=["delivery-methods"])  # routes define full /api prefix
 app.include_router(parsing.router, prefix="/api/parsing", tags=["parsing"])  # router exposes paths like /parsing/.. → final /api/parsing/..
+app.include_router(search.router, tags=["search"])  # search router already has /api/search prefix
 if suppliers:
     app.include_router(suppliers.router, tags=["suppliers"])  # routes already prefixed with /api
 if deliveries:

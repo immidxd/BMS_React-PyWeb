@@ -80,7 +80,7 @@ const AppContent: React.FC = () => {
   const [activeTab, setActiveTab] = useState<TabKey>(TABS[0].key);
   const ActivePageComponent = TABS.find(tab => tab.key === activeTab)?.component;
 
-  const [currentSearchTerm, setCurrentSearchTerm] = useState('');
+  const [currentSearchTerm, setCurrentSearchTerm] = useState<string>('');
   const [parsingDialogOpen, setParsingDialogOpen] = useState(false);
   
   const handleGlobalSearch = (term: string) => {
@@ -149,7 +149,12 @@ const AppContent: React.FC = () => {
           </div>
 
           <div className="flex-grow min-w-0">
-            <SearchBar onSearch={handleGlobalSearch} placeholder={`Пошук у розділі "${TABS.find(t=>t.key===activeTab)?.label}"...`} />
+            <SearchBar 
+              onSearch={handleGlobalSearch} 
+              placeholder={`Пошук у розділі "${TABS.find(t=>t.key===activeTab)?.label}"...`}
+              showGlobalResults={true}
+              currentScope={activeTab}
+            />
           </div>
           
           <div className="flex items-center space-x-2 flex-shrink-0">

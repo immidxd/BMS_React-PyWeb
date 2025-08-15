@@ -2,6 +2,8 @@ import React, { useState, useEffect } from 'react';
 import MainLayout from '../layouts/MainLayout';
 import ProductsTable from '../components/products/ProductsTable';
 import { productService, type ProductListResponse } from '../services/productService';
+import { searchService } from '../services/searchService';
+import SearchInsights from '../components/search/SearchInsights';
 import ProductFiltersPanel from '../components/filters/ProductFilters';
 import type { ProductFilter as ProductFilterType, ProductFilters as ProductFiltersType } from '../types/product';
 import { useLocation, useNavigate } from 'react-router-dom';
@@ -54,14 +56,40 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
   const [sortBy, setSortBy] = useState<string>('id');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
   const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([]);
+  const [searchInsights, setSearchInsights] = useState<any>(null);
             
-  // Effect to react to global search changes if needed for filtering
-    useEffect(() => {
+  // Effect to react to global search changes and fetch insights
+  useEffect(() => {
     if (currentSearchTerm !== undefined) {
         console.log('ProductsPage received search term:', currentSearchTerm);
-        // TODO: Implement actual filtering logic based on currentSearchTerm
-            }
-  }, [currentSearchTerm]);
+        
+        // Якщо є пошуковий запит, отримуємо інсайти
+        if (currentSearchTerm.trim().length >= 2) {
+          fetchSearchInsights(currentSearchTerm.trim());
+        } else {
+          // Очищаємо інсайти коли пошук порожній
+          setSearchInsights(null);
+          // Скидаємо сторінку до першої при очищенні пошуку
+          if (page !== 1) {
+            setPage(1);
+          }
+        }
+    }
+  }, [currentSearchTerm]); // Прибрав page з залежностей
+
+  const fetchSearchInsights = async (query: string) => {
+    try {
+      const results = await searchService.globalSearch(query, {
+        scope: 'products',
+        limit: 0, // Нам потрібні тільки інсайти
+        include_insights: true
+      });
+      setSearchInsights(results.insights);
+    } catch (error) {
+      console.error('Failed to fetch search insights:', error);
+      setSearchInsights(null);
+    }
+  };
 
   const fetchProducts = async () => {
     setLoading(true);
@@ -71,7 +99,7 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
         per_page: perPage,
         sort_by: sortBy,
         sort_dir: sortDir,
-        search: currentSearchTerm,
+        search: currentSearchTerm && currentSearchTerm.trim() ? currentSearchTerm.trim() : undefined,
         with_stock_only: onlyUnsold ? true : undefined,
         is_visible: visibleOnly ? true : undefined,
         ...selectedFilters,
@@ -189,6 +217,18 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
           </div>
         </div>
 
+        {/* Інсайти пошуку */}
+        {currentSearchTerm && searchInsights && (
+          <SearchInsights 
+            insights={searchInsights}
+            query={currentSearchTerm}
+            onNavigateToCategory={(category, query) => {
+              console.log(`Navigate to ${category} with query: ${query}`);
+              // TODO: Реалізувати навігацію до інших категорій
+            }}
+          />
+        )}
+
         {/* Видалено окремий sticky-бар дій, кнопки перенесені у шапку */}
         <div className="w-full overflow-x-auto">
         <ProductsTable
@@ -229,7 +269,7 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
             <div className="order-1 md:order-none justify-self-center flex justify-center">
               <Pagination
                 currentPage={products.page}
-                totalPages={Math.ceil(products.total / products.per_page)}
+                totalPages={products.pages || Math.ceil(products.total / (products.per_page || perPage))}
                 totalItems={products.total}
                 itemsPerPage={products.per_page}
                 onPageChange={(p) => setPage(p)}
