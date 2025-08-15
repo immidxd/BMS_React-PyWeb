@@ -62,75 +62,158 @@ def get_products(
     sort_by: str = "id",
     sort_dir: str = "desc",
 ) -> Dict[str, Any]:
-    """Get a list of products with pagination and filtering.
-
-    Note: The `Product` ORM model in this project doesn't define relationship
-    attributes to reference tables (brand/type/status ...). Therefore we avoid
-    joinedload on non-existent attributes and fetch plain `Product` rows only.
-    """
+    """Get a list of products with pagination and filtering with related data."""
     try:
         logger.debug(f"Getting products with filters: {filters}")
-        query = db.query(models.Product)
+        
+        # Use direct SQL query to get all product data with related names
+        from sqlalchemy import text
+        
+        base_sql = """
+        SELECT p.*, 
+               t.typename as type_name,
+               b.brandname as brand_name, 
+               s.statusname as status_name,
+               c.colorname as color_name,
+               cond.conditionname as condition_name,
+               g.gendername as gender_name
+        FROM products p
+        LEFT JOIN types t ON p.typeid = t.id
+        LEFT JOIN brands b ON p.brandid = b.id  
+        LEFT JOIN statuses s ON p.statusid = s.id
+        LEFT JOIN colors c ON p.colorid = c.id
+        LEFT JOIN conditions cond ON p.conditionid = cond.id
+        LEFT JOIN genders g ON p.genderid = g.id
+        """
+        
+        where_conditions = []
+        params = {}
         
         if filters:
             if filters.search:
                 search = f"%{filters.search}%"
-                query = query.filter(
-                    or_(
-                        models.Product.productnumber.ilike(search),
-                        models.Product.model.ilike(search),
-                        models.Product.description.ilike(search),
-                        models.Product.marking.ilike(search)
-                    )
-                )
+                where_conditions.append("""
+                    (p.productnumber ILIKE :search OR 
+                     p.model ILIKE :search OR 
+                     p.description ILIKE :search OR 
+                     p.marking ILIKE :search)
+                """)
+                params['search'] = search
                 
             if filters.typeid:
-                query = query.filter(models.Product.typeid == filters.typeid)
+                where_conditions.append("p.typeid = :typeid")
+                params['typeid'] = filters.typeid
                 
             if filters.subtypeid:
-                query = query.filter(models.Product.subtypeid == filters.subtypeid)
+                where_conditions.append("p.subtypeid = :subtypeid") 
+                params['subtypeid'] = filters.subtypeid
                 
             if filters.brandid:
-                query = query.filter(models.Product.brandid == filters.brandid)
+                where_conditions.append("p.brandid = :brandid")
+                params['brandid'] = filters.brandid
                 
             if filters.genderid:
-                query = query.filter(models.Product.genderid == filters.genderid)
+                where_conditions.append("p.genderid = :genderid")
+                params['genderid'] = filters.genderid
                 
             if filters.colorid:
-                query = query.filter(models.Product.colorid == filters.colorid)
+                where_conditions.append("p.colorid = :colorid")
+                params['colorid'] = filters.colorid
                 
             if filters.statusid:
-                query = query.filter(models.Product.statusid == filters.statusid)
+                where_conditions.append("p.statusid = :statusid")
+                params['statusid'] = filters.statusid
                 
             if filters.conditionid:
-                query = query.filter(models.Product.conditionid == filters.conditionid)
+                where_conditions.append("p.conditionid = :conditionid")
+                params['conditionid'] = filters.conditionid
                 
             if filters.min_price is not None:
-                query = query.filter(models.Product.price >= filters.min_price)
+                where_conditions.append("p.price >= :min_price")
+                params['min_price'] = filters.min_price
                 
             if filters.max_price is not None:
-                query = query.filter(models.Product.price <= filters.max_price)
+                where_conditions.append("p.price <= :max_price")
+                params['max_price'] = filters.max_price
             
-            if filters.is_visible is not None:
-                query = query.filter(models.Product.is_visible == filters.is_visible)
+            # Note: is_visible column doesn't exist in the actual database
             
             if filters.with_stock_only:
-                query = query.filter(models.Product.quantity > 0)
+                where_conditions.append("p.quantity > 0")
         
-        total = query.count()
+        # Build WHERE clause
+        if where_conditions:
+            base_sql += " WHERE " + " AND ".join(where_conditions)
         
-        # Валідація сортування: дозволяємо тільки безпечні колонки
+        # Count total
+        count_sql = f"SELECT COUNT(*) FROM ({base_sql}) AS subquery"
+        total_result = db.execute(text(count_sql), params)
+        total = total_result.scalar()
+        
+        # Add ORDER BY
         allowed_sort_columns = {"id", "dateadded", "price", "created_at", "updated_at"}
-        if sort_by in allowed_sort_columns and hasattr(models.Product, sort_by):
-            sort_column = getattr(models.Product, sort_by)
-            if sort_dir.lower() == "asc":
-                query = query.order_by(asc(sort_column))
-            else:
-                query = query.order_by(desc(sort_column))
+        if sort_by in allowed_sort_columns:
+            sort_col = f"p.{sort_by}"
+            order_dir = "ASC" if sort_dir.lower() == "asc" else "DESC"
+            base_sql += f" ORDER BY {sort_col} {order_dir}"
         else:
-            query = query.order_by(desc(models.Product.id))
+            base_sql += " ORDER BY p.id DESC"
         
-        items = query.offset(skip).limit(limit).all()
+        # Add LIMIT and OFFSET
+        base_sql += " LIMIT :limit OFFSET :offset"
+        params['limit'] = limit
+        params['offset'] = skip
+        
+        # Execute query
+        rows = db.execute(text(base_sql), params).fetchall()
+        
+        # Convert rows to dictionaries (since we're using raw SQL)
+        items = []
+        for row in rows:
+            # Raw SQL returns Row objects - convert to dict
+            product_dict = {
+                'id': row[0],  # id
+                'productnumber': row[1],  # productnumber
+                'clonednumbers': row[2],  # clonednumbers
+                'model': row[3],  # model
+                'marking': row[4],  # marking
+                'year': row[5],  # year
+                'description': row[6],  # description
+                'extranote': row[7],  # extranote
+                'price': row[8],  # price
+                'oldprice': row[9],  # oldprice
+                'dateadded': row[10],  # dateadded
+                'sizeeu': row[11],  # sizeeu
+                'sizeua': row[12],  # sizeua
+                'sizeusa': row[13],  # sizeusa
+                'sizeuk': row[14],  # sizeuk
+                'sizejp': row[15],  # sizejp
+                'sizecn': row[16],  # sizecn
+                'measurementscm': row[17],  # measurementscm
+                'quantity': row[18],  # quantity
+                'typeid': row[19],  # typeid
+                'subtypeid': row[20],  # subtypeid
+                'brandid': row[21],  # brandid
+                'genderid': row[22],  # genderid
+                'colorid': row[23],  # colorid
+                'ownercountryid': row[24],  # ownercountryid
+                'manufacturercountryid': row[25],  # manufacturercountryid
+                'statusid': row[26],  # statusid
+                'conditionid': row[27],  # conditionid
+                'importid': row[28],  # importid
+                'deliveryid': row[29],  # deliveryid
+                'mainimage': row[30],  # mainimage
+                'created_at': row[31],  # created_at
+                'updated_at': row[32],  # updated_at
+                # Related names from JOINs (after all product columns)
+                'type_name': row[33],  # type_name
+                'brand_name': row[34],  # brand_name
+                'status_name': row[35],  # status_name
+                'color_name': row[36],  # color_name
+                'condition_name': row[37],  # condition_name
+                'gender_name': row[38],  # gender_name
+            }
+            items.append(product_dict)
         
         result = {
             "items": items,
@@ -199,10 +282,10 @@ def get_product_filters(db: Session) -> Dict[str, Any]:
         types = fetch_pairs("SELECT id, typename FROM types ORDER BY typename")
         subtypes_rows = db.execute(text("SELECT id, subtypename, typeid FROM subtypes ORDER BY subtypename")).fetchall()
         brands = fetch_pairs("SELECT id, brandname FROM brands ORDER BY brandname")
-        genders = fetch_pairs("SELECT id, name FROM genders ORDER BY name")
+        genders = fetch_pairs("SELECT id, gendername FROM genders ORDER BY gendername")
         colors = fetch_pairs("SELECT id, colorname FROM colors ORDER BY colorname")
-        statuses = fetch_pairs("SELECT id, name FROM statuses ORDER BY name")
-        conditions = fetch_pairs("SELECT id, name FROM conditions ORDER BY name")
+        statuses = fetch_pairs("SELECT id, statusname FROM statuses ORDER BY statusname")
+        conditions = fetch_pairs("SELECT id, conditionname FROM conditions ORDER BY conditionname")
 
         price_min_max = db.execute(text("SELECT COALESCE(min(price),0) AS min_price, COALESCE(max(price),0) AS max_price FROM products")).mappings().first()
         min_price = float(price_min_max["min_price"]) if price_min_max else 0

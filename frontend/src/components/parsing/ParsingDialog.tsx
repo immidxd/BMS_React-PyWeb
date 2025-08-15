@@ -9,8 +9,6 @@ import {
   fetchParsingSources, 
   fetchParsingStyles, 
   startParsing, 
-  stopParsing, 
-  fetchParsingStatus, 
   startOrdersParsing, 
   startGoogleSheetsParsing 
 } from '../../services/parsingService';
@@ -187,9 +185,10 @@ const StatusText = styled.div<{ status: string }>`
   font-weight: 500;
   color: ${props => {
     switch (props.status) {
-      case 'completed': return 'green';
+      case 'succeeded': return 'green';
       case 'failed': return 'red';
-      case 'cancelled': return 'orange';
+      case 'canceled': return 'orange';
+      case 'stalled': return 'orangered';
       default: return 'inherit';
     }
   }};
@@ -249,8 +248,10 @@ const ParsingDialog: React.FC<ParsingDialogProps> = ({ open, onClose }) => {
   const [styleId, setStyleId] = useState<number | null>(null);
   const [requestInterval, setRequestInterval] = useState<number>(1);
   const [maxItems, setMaxItems] = useState<number | null>(null);
-  const [activeLogId, setActiveLogId] = useState<number | null>(null);
+  const [activeJobId, setActiveJobId] = useState<number | null>(null);
   const [isPolling, setIsPolling] = useState<boolean>(false);
+  const [jobSnapshot, setJobSnapshot] = useState<any | null>(null);
+  const [ws, setWs] = useState<WebSocket | null>(null);
   const [activeTab, setActiveTab] = useState<'general' | 'special'>('general');
 
   // Fetch available parsing sources and styles
@@ -267,19 +268,17 @@ const ParsingDialog: React.FC<ParsingDialogProps> = ({ open, onClose }) => {
   // Start parsing mutation
   const startParsingMutation = useMutation<any, Error, ParsingParams>({
     mutationFn: async (variables: ParsingParams) => {
-      // Prepare the request object ensuring max_items is number or undefined, not null.
       const requestForService: import('../../services/parsingService').ParsingRequest = {
         source_id: variables.source_id,
         style_id: variables.style_id,
         request_interval: variables.request_interval,
-        // If max_items is null, pass undefined; otherwise, pass the value.
         max_items: variables.max_items === null ? undefined : variables.max_items,
       };
       return startParsing(requestForService); 
     },
     onSuccess: (data) => {
-      toast.success(data.message || 'Parsing started successfully!');
-      setActiveLogId(data.log_id);
+      toast.success('Parsing started successfully!');
+      setActiveJobId(data.jobId);
       setIsPolling(true);
     },
     onError: (error) => {
@@ -289,91 +288,42 @@ const ParsingDialog: React.FC<ParsingDialogProps> = ({ open, onClose }) => {
   } as UseMutationOptions<any, Error, ParsingParams>);
 
   useEffect(() => {
-    if (startParsingMutation.data) {
-      setActiveLogId(startParsingMutation.data.log_id);
+    if (startParsingMutation.data?.jobId) {
+      setActiveJobId(startParsingMutation.data.jobId);
       setIsPolling(true);
-      toast.success("Parsing started successfully");
+      toast.success('Parsing started successfully');
     }
   }, [startParsingMutation.data]);
 
-  // Stop parsing mutation
-  const stopParsingMutation = useMutation<any, Error, number>({
-    mutationFn: stopParsing,
-    onSuccess: (data) => {
-      toast.info(data.message || 'Parsing stopped successfully!');
+  // WebSocket stream per job
+  useEffect(() => {
+    if (!activeJobId || !isPolling) return;
+    const base = window.location.origin.replace('http', 'ws');
+    const socket = new WebSocket(`${base}/api/parsing/jobs/${activeJobId}/stream`);
+    socket.onmessage = (ev) => {
+      try { setJobSnapshot(JSON.parse(ev.data)); } catch {}
+    };
+    socket.onerror = () => {};
+    setWs(socket);
+    return () => { socket.close(); setWs(null); };
+  }, [activeJobId, isPolling]);
+
+  useEffect(() => {
+    if (jobSnapshot && ['succeeded','failed','canceled','stalled'].includes(jobSnapshot.status)) {
       setIsPolling(false);
-      if (activeLogId) refetchStatus(); // Fetch final status
-    },
-    onError: (error) => {
-      toast.error(`Failed to stop parsing: ${error.message}`);
+      if (jobSnapshot.status === 'succeeded') toast.success('Parsing completed');
+      if (jobSnapshot.status === 'failed') toast.error(jobSnapshot.error_summary || 'Parsing failed');
     }
-  });
-
-  useEffect(() => {
-    if (stopParsingMutation.isSuccess) {
-      setIsPolling(false);
-      toast.info("Parsing stopped");
-    }
-  }, [stopParsingMutation.isSuccess]);
-
-  // Fetch parsing status
-  const { data: parsingStatus, refetch: refetchStatus } = useQuery({
-    queryKey: ['parsingStatus', activeLogId],
-    queryFn: () => activeLogId ? fetchParsingStatus(activeLogId) : Promise.resolve(null),
-    enabled: !!activeLogId && isPolling,
-    refetchInterval: isPolling ? 1000 : false,
-  });
-
-  useEffect(() => {
-    if (parsingStatus) {
-      if (parsingStatus.status === 'completed' || parsingStatus.status === 'failed' || parsingStatus.status === 'cancelled') {
-        setIsPolling(false);
-        if (parsingStatus.status === 'completed') {
-          toast.success(`Parsing completed: ${parsingStatus.items_processed} items processed`);
-        } else if (parsingStatus.status === 'failed') {
-          toast.error(`Parsing failed: ${parsingStatus.message}`);
-        }
-      }
-    }
-  }, [parsingStatus]);
-
-  // Add mutations for special parsers
-  const ordersParseMutation = useMutation<any, Error, void>({
-    mutationFn: startOrdersParsing,
-    onSuccess: (data) => toast.success(data.message || 'Orders parsing started!'),
-    onError: (error) => toast.error(`Orders parsing failed: ${error.message}`),
-  });
-
-  useEffect(() => {
-    if (ordersParseMutation.data) {
-      toast.success('Orders parsing started successfully');
-      setActiveLogId(ordersParseMutation.data.log_id);
-      setIsPolling(true);
-    }
-  }, [ordersParseMutation.data]);
-
-  const googleSheetsParseMutation = useMutation<any, Error, void>({
-    mutationFn: startGoogleSheetsParsing,
-    onSuccess: (data) => toast.success(data.message || 'Google Sheets parsing started!'),
-    onError: (error) => toast.error(`Google Sheets parsing failed: ${error.message}`),
-  });
-
-  useEffect(() => {
-    if (googleSheetsParseMutation.data) {
-      toast.success('Google Sheets parsing started successfully');
-      setActiveLogId(googleSheetsParseMutation.data.log_id);
-      setIsPolling(true);
-    }
-  }, [googleSheetsParseMutation.data]);
+  }, [jobSnapshot]);
 
   // Handle form submission
   const handleStartParsing = (e: React.FormEvent) => {
     e.preventDefault();
     if (sourceId && styleId) {
       const params: ParsingParams = {
-      source_id: sourceId,
-      style_id: styleId,
-      request_interval: requestInterval,
+        source_id: sourceId,
+        style_id: styleId,
+        request_interval: requestInterval,
         max_items: maxItems
       };
       startParsingMutation.mutate(params);
@@ -384,53 +334,26 @@ const ParsingDialog: React.FC<ParsingDialogProps> = ({ open, onClose }) => {
 
   // Handle stop parsing
   const handleStopParsing = () => {
-    if (activeLogId) {
-      stopParsingMutation.mutate(activeLogId);
+    if (activeJobId) {
+      fetch(`/api/parsing/jobs/${activeJobId}/cancel`, { method: 'POST' });
     }
   };
 
   // Handle starting orders parsing
   const handleStartOrdersParsing = () => {
-    ordersParseMutation.mutate();
+    startOrdersParsing().then(() => toast.success('Orders parsing started')).catch(err => toast.error(String(err)));
   };
 
   // Handle starting Google Sheets parsing
   const handleStartGoogleSheetsParsing = () => {
-    googleSheetsParseMutation.mutate();
+    startGoogleSheetsParsing().then(() => toast.success('Products parsing started')).catch(err => toast.error(String(err)));
   };
-
-  // Clean up polling when dialog closes
-  useEffect(() => {
-    if (!open) {
-      setIsPolling(false);
-    }
-  }, [open]);
-
-  // Check polling status and set up interval
-  useEffect(() => {
-    let interval: NodeJS.Timeout;
-    
-    if (isPolling && activeLogId) {
-      interval = setInterval(() => {
-        refetchStatus();
-      }, 1000);
-    }
-    
-    return () => {
-      if (interval) clearInterval(interval);
-    };
-  }, [isPolling, activeLogId, refetchStatus]);
 
   if (!open) return null;
 
   const isFormDisabled = startParsingMutation.isPending || isPolling;
-  const showProgress = isPolling || (parsingStatus && parsingStatus.status !== 'unknown');
-  
-  // Calculate progress percentage
-  const progress = parsingStatus ? 
-    parsingStatus.progress || 
-    (parsingStatus.total_items && parsingStatus.current_item ? 
-      Math.round((parsingStatus.current_item / parsingStatus.total_items) * 100) : 0) : 0;
+  const showProgress = isPolling || !!jobSnapshot;
+  const progress = jobSnapshot?.percent ?? 0;
 
   return (
     <Overlay onClick={e => e.target === e.currentTarget && onClose()}>
@@ -542,10 +465,10 @@ const ParsingDialog: React.FC<ParsingDialogProps> = ({ open, onClose }) => {
                 <ButtonStyled
                   type="button"
                   onClick={handleStartOrdersParsing}
-                  disabled={ordersParseMutation.isPending}
+                  disabled={false}
                 >
                   <FontAwesomeIcon icon={faFileImport} />
-                  {ordersParseMutation.isPending ? 'Starting...' : 'Import Orders'}
+                  Import Orders
                 </ButtonStyled>
               </ParserCard>
 
@@ -557,10 +480,10 @@ const ParsingDialog: React.FC<ParsingDialogProps> = ({ open, onClose }) => {
                 <ButtonStyled
                   type="button"
                   onClick={handleStartGoogleSheetsParsing}
-                  disabled={googleSheetsParseMutation.isPending}
+                  disabled={false}
                 >
                   <FontAwesomeIcon icon={faTable} />
-                  {googleSheetsParseMutation.isPending ? 'Starting...' : 'Import Products'}
+                  Import Products
                 </ButtonStyled>
               </ParserCard>
             </SpecialParsersContainer>
@@ -573,20 +496,19 @@ const ParsingDialog: React.FC<ParsingDialogProps> = ({ open, onClose }) => {
                 <ProgressFill progress={progress} />
               </ProgressBar>
               
-              <StatusText status={parsingStatus?.status || 'in_progress'}>
-                Status: {parsingStatus?.status || 'In progress'}
+              <StatusText status={jobSnapshot?.status || 'running'}>
+                Status: {jobSnapshot?.status || 'Running'}
               </StatusText>
               
-              {parsingStatus && (
+              {jobSnapshot && (
                 <>
-                  <div>{parsingStatus.message}</div>
+                  <div>Step: {jobSnapshot.current_step || '...'}</div>
                   
-                  {parsingStatus.items_processed > 0 && (
+                  {jobSnapshot.processed_items >= 0 && (
                     <ProgressStats>
-                      <div>Processed: {parsingStatus.items_processed}</div>
-                      <div>Added: {parsingStatus.items_added}</div>
-                      <div>Updated: {parsingStatus.items_updated}</div>
-                      <div>Failed: {parsingStatus.items_failed}</div>
+                      <div>{jobSnapshot.processed_items} / {jobSnapshot.total_items ?? '...'}</div>
+                      <div>Rate: {jobSnapshot.items_per_sec ?? 0} items/sec</div>
+                      <div>ETA: {jobSnapshot.eta_seconds ?? '...' }s</div>
                     </ProgressStats>
                   )}
                 </>
@@ -598,10 +520,10 @@ const ParsingDialog: React.FC<ParsingDialogProps> = ({ open, onClose }) => {
           <ButtonStyled variant="secondary" onClick={onClose}>
             Close
           </ButtonStyled>
-          {activeLogId && isPolling && (
-            <ButtonStyled variant="danger" onClick={handleStopParsing} disabled={stopParsingMutation.isPending}>
+          {activeJobId && isPolling && (
+            <ButtonStyled variant="danger" onClick={handleStopParsing}>
               <FontAwesomeIcon icon={faStop} />
-              {stopParsingMutation.isPending ? 'Stopping...' : 'Stop Parsing'}
+              Stop Parsing
             </ButtonStyled>
           )}
         </DialogFooter>

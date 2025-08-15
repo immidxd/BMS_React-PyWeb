@@ -27,7 +27,7 @@ from collections import defaultdict, Counter
 from typing import Dict, List, Optional, Tuple, Any, Set
 import asyncio
 import gspread
-from oauth2client.service_account import ServiceAccountCredentials
+from google.oauth2 import service_account
 from dotenv import load_dotenv
 from sqlalchemy import text, and_, or_
 
@@ -60,9 +60,19 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Google Sheets налаштування
-GOOGLE_SHEETS_JSON_KEY = os.getenv("GOOGLE_SHEETS_JSON_KEY")
+GOOGLE_SHEETS_JSON_KEY = os.getenv("GOOGLE_SHEETS_JSON_KEY", "newproject2024-419923-working.json")
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-GOOGLE_SHEETS_CREDENTIALS_FILE = os.path.join(SCRIPT_DIR, "secure_creds", GOOGLE_SHEETS_JSON_KEY)
+GOOGLE_SHEETS_CREDENTIALS_FILE = os.getenv(
+    "GOOGLE_SHEETS_CREDENTIALS_FILE",
+    os.path.join(SCRIPT_DIR, "secure_creds", GOOGLE_SHEETS_JSON_KEY)
+)
+if not os.path.isabs(GOOGLE_SHEETS_CREDENTIALS_FILE):
+    GOOGLE_SHEETS_CREDENTIALS_FILE = os.path.join(SCRIPT_DIR, GOOGLE_SHEETS_CREDENTIALS_FILE)
+if not os.path.exists(GOOGLE_SHEETS_CREDENTIALS_FILE):
+    project_root = os.path.abspath(os.path.join(SCRIPT_DIR, "..", ".."))
+    mcp_key = os.path.join(project_root, "mcp-google-sheets", "working_credentials.json")
+    if os.path.exists(mcp_key):
+        GOOGLE_SHEETS_CREDENTIALS_FILE = mcp_key
 ORDERS_DOCUMENT_NAME = os.getenv("GOOGLE_SHEETS_DOCUMENT_NAME_ORDERS")
 
 # Кеш файли
@@ -597,9 +607,9 @@ class OrdersComprehensiveParser:
     def get_google_sheet_client(self):
         """Повертає авторизований клієнт Google Sheets."""
         try:
-            creds = ServiceAccountCredentials.from_json_keyfile_name(
+            creds = service_account.Credentials.from_service_account_file(
                 GOOGLE_SHEETS_CREDENTIALS_FILE,
-                ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
+                scopes=['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
             )
             return gspread.authorize(creds)
         except Exception as e:
@@ -824,19 +834,46 @@ class OrdersComprehensiveParser:
                 logger.warning(f"Пропускаємо замовлення - жоден з товарів не знайдено: {product_codes}")
                 return False
             
-            # Логуємо відсутні товари
+            # Логуємо відсутні товари та створюємо мінімальні картки товарів, щоб не губити замовлення
             if missing_products:
                 logger.warning(f"Відсутні товари в замовленні: {missing_products}")
                 self.stats['missing_products'] += len(missing_products)
                 self.stats['orders_with_missing_products'] += 1
-                # Додаємо до коментарів інформацію про відсутні товари
-                missing_note = f"Відсутні товари: {', '.join(missing_products)}"
+                # Створюємо базові товари на льоту
+                from datetime import datetime as _dt
+                for mp_code in missing_products:
+                    try:
+                        # Перевірка ще раз у кеші перед створенням
+                        if self.product_cache.get_product(mp_code):
+                            found_products.append((mp_code, self.product_cache.get_product(mp_code)))
+                            continue
+                        new_product = Product(
+                            productnumber=mp_code,
+                            price=0.0,
+                            quantity=1,
+                            created_at=_dt.utcnow(),
+                            updated_at=_dt.utcnow(),
+                        )
+                        self.session.add(new_product)
+                        self.session.flush()
+                        # Оновлюємо кеш для обох варіантів коду (#ХХХ і ХХХ)
+                        self.product_cache.cache[mp_code] = new_product
+                        if mp_code.startswith('#'):
+                            self.product_cache.cache[mp_code[1:]] = new_product
+                        else:
+                            self.product_cache.cache[f"#{mp_code}"] = new_product
+                        found_products.append((mp_code, new_product))
+                        logger.info(f"Створено базовий товар з коду замовлення: {mp_code} (id={new_product.id})")
+                    except Exception as _e:
+                        logger.error(f"Не вдалося створити товар {mp_code}: {_e}")
+                # Додаємо службову нотатку в замовлення
+                missing_note = f"Створено {len([x for x in missing_products if self.product_cache.get_product(x)])} відсутніх товарів"
                 if order.notes:
                     order.notes += f"; {missing_note}"
                 else:
                     order.notes = missing_note
             
-            # Створюємо позиції замовлення тільки для знайдених товарів
+            # Створюємо позиції замовлення тільки для знайдених/щойно створених товарів
             for product_code, product in found_products:
                 # Створюємо позицію замовлення
                 item_price = price / len(found_products) if len(found_products) > 0 else price

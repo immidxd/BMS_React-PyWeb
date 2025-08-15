@@ -7,7 +7,13 @@ from fastapi.staticfiles import StaticFiles
 
 import sys
 import os
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Ensure both backend package and project root are on sys.path for absolute imports
+BACKEND_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+PROJECT_ROOT_DIR = os.path.dirname(BACKEND_DIR)
+if BACKEND_DIR not in sys.path:
+    sys.path.append(BACKEND_DIR)
+if PROJECT_ROOT_DIR not in sys.path:
+    sys.path.append(PROJECT_ROOT_DIR)
 
 from models.database import engine, Base, init_db
 from routers import (
@@ -18,9 +24,15 @@ from routers import (
     order_statuses,
     delivery_methods,
     parsing,
-    suppliers
 )
-from routers import deliveries
+try:
+    from routers import deliveries  # optional
+except Exception:
+    deliveries = None
+try:
+    from routers import suppliers  # optional
+except Exception:
+    suppliers = None
 
 # Configure logging
 logging.basicConfig(
@@ -34,15 +46,15 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
-# Create tables and initialize database
-try:
-    # Create database tables
-    Base.metadata.create_all(bind=engine)
-    # Initialize with seed data
-    init_db()
-    logger.info("Database initialized successfully")
-except Exception as e:
-    logger.error(f"Error initializing database: {e}")
+# Ensure Google Sheets creds are available to parsers (single source of truth)
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+DEFAULT_MCP_KEY = os.path.join(PROJECT_ROOT, 'mcp-google-sheets', 'working_credentials.json')
+if not os.getenv('GOOGLE_SHEETS_CREDENTIALS_FILE') and os.path.exists(DEFAULT_MCP_KEY):
+    os.environ['GOOGLE_SHEETS_CREDENTIALS_FILE'] = DEFAULT_MCP_KEY
+    logger.info(f"GOOGLE_SHEETS_CREDENTIALS_FILE set to {DEFAULT_MCP_KEY}")
+
+# Database initialization moved to separate script for faster startup
+logger.info("Database connection ready")
 
 app = FastAPI()
 
@@ -80,8 +92,10 @@ app.include_router(payment_statuses.router, tags=["payment-statuses"])  # routes
 app.include_router(order_statuses.router, tags=["order-statuses"])      # routes define full /api prefix
 app.include_router(delivery_methods.router, tags=["delivery-methods"])  # routes define full /api prefix
 app.include_router(parsing.router, prefix="/api/parsing", tags=["parsing"])  # router exposes paths like /parsing/.. → final /api/parsing/..
-app.include_router(suppliers.router, tags=["suppliers"])  # routes already prefixed with /api
-app.include_router(deliveries.router, tags=["deliveries"])  # routes already prefixed with /api
+if suppliers:
+    app.include_router(suppliers.router, tags=["suppliers"])  # routes already prefixed with /api
+if deliveries:
+    app.include_router(deliveries.router, tags=["deliveries"])  # routes already prefixed with /api
 
 # Mount static files from frontend build if available
 frontend_build_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../frontend/build"))

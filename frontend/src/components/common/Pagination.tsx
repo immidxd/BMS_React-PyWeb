@@ -7,6 +7,7 @@ interface PaginationProps {
   itemsPerPage?: number;
   onPageChange: (page: number) => void;
   onPerPageChange?: (perPage: number) => void;
+  showRange?: boolean;
 }
 
 const Pagination: React.FC<PaginationProps> = ({
@@ -15,7 +16,8 @@ const Pagination: React.FC<PaginationProps> = ({
   totalItems = 0,
   itemsPerPage = 20,
   onPageChange,
-  onPerPageChange
+  onPerPageChange,
+  showRange = true
 }) => {
   const startItem = totalItems ? (currentPage - 1) * itemsPerPage + 1 : 0;
   const endItem = totalItems ? Math.min(currentPage * itemsPerPage, totalItems) : 0;
@@ -46,9 +48,11 @@ const Pagination: React.FC<PaginationProps> = ({
 
   return (
     <div className="flex flex-col md:flex-row justify-center items-center w-full gap-2 select-none">
-      <div className="hidden md:block text-xs md:text-sm text-gray-500 md:mr-2">
-        Показано {startItem}-{endItem} з {totalItems}
-      </div>
+      {showRange && (
+        <div className="hidden md:block text-xs md:text-sm text-gray-500 md:mr-2">
+          Показано {startItem}-{endItem} з {totalItems}
+        </div>
+      )}
       <div className="flex items-center justify-center gap-1 px-1 py-1">
         <button
           aria-label="Перша сторінка"

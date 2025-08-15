@@ -205,8 +205,8 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
 
       {/* Фіксований (fixed) нижній бар для стабільної пагінації незалежно від скролу */}
         <div className="fixed bottom-0 left-0 right-0 px-0 py-3 bg-white/95 dark:bg-gray-800/95 backdrop-blur supports-backdrop-blur:backdrop-blur-md border-t border-gray-100 dark:border-gray-700 z-20 shadow-[0_-2px_10px_rgba(0,0,0,0.04)]">
-          <div className="max-w-screen-2xl mx-auto grid grid-cols-12 items-center px-4 gap-4">
-            <div className="col-span-12 md:col-span-4 flex items-center gap-6 order-2 md:order-1 md:justify-start justify-center mt-3 md:mt-0">
+          <div className="w-full grid grid-cols-1 md:grid-cols-[1fr_auto_1fr] items-center px-4 lg:px-6 gap-4">
+            <div className="order-2 md:order-none flex items-center gap-6 justify-self-start justify-start mt-3 md:mt-0 pl-2 md:pl-0">
               <label className="inline-flex items-center text-sm text-gray-700 dark:text-gray-300">
                 <input
                   type="checkbox"
@@ -226,17 +226,18 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
                 <span className="ml-2">Лише видимі</span>
               </label>
             </div>
-            <div className="col-span-12 md:col-span-4 order-1 md:order-2 flex justify-center">
+            <div className="order-1 md:order-none justify-self-center flex justify-center">
               <Pagination
                 currentPage={products.page}
                 totalPages={Math.ceil(products.total / products.per_page)}
                 totalItems={products.total}
                 itemsPerPage={products.per_page}
                 onPageChange={(p) => setPage(p)}
+                showRange={false}
               />
             </div>
-            <div className="col-span-12 md:col-span-4 order-3 flex justify-end text-xs md:text-sm text-gray-500">
-              <span>Показано {products.items.length ? (products.page - 1) * products.per_page + 1 : 0}-{Math.min(products.page * products.per_page, products.total)} з {products.total} записів</span>
+            <div className="order-3 md:order-none justify-self-end flex justify-end text-xs md:text-sm lg:text-base text-gray-500 pr-2 md:pr-0">
+              <span className="whitespace-nowrap">Показано {products.items.length ? (products.page - 1) * products.per_page + 1 : 0}-{Math.min(products.page * products.per_page, products.total)} з {products.total} записів</span>
             </div>
           </div>
         </div>

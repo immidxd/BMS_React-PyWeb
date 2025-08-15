@@ -67,8 +67,8 @@ export const fetchParsingStyles = async (): Promise<ParsingStyle[]> => {
   return response.data;
 };
 
-export const startParsing = async (request: ParsingRequest): Promise<{ log_id: number; status: string; message: string }> => {
-  const response = await axios.post('/api/parsing/start', request);
+export const startParsing = async (request: ParsingRequest): Promise<{ jobId: number }> => {
+  const response = await axios.post('/api/parsing/run', request);
   return response.data;
 };
 
@@ -81,6 +81,11 @@ export const fetchParsingStatus = async (logId: number): Promise<ParsingStatus> 
   const response = await axios.get(`/api/parsing/status/${logId}`);
   return response.data;
 };
+
+export const fetchJob = async (jobId: number) => {
+  const response = await axios.get(`/api/parsing/jobs/${jobId}`);
+  return response.data;
+}
 
 export const fetchParsingLogs = async (limit: number = 50): Promise<ParsingLog[]> => {
   const response = await axios.get(`/api/parsing/logs?limit=${limit}`);

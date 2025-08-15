@@ -14,7 +14,7 @@ from datetime import datetime
 from collections import defaultdict
 
 import gspread
-from oauth2client.service_account import ServiceAccountCredentials
+from google.oauth2 import service_account
 import psycopg2
 from psycopg2 import sql
 from dotenv import load_dotenv
@@ -65,9 +65,19 @@ DB_PORT = os.getenv("DB_PORT", "5432")
 # -------------------------------------------------------
 #   Дані для Google Sheets
 # -------------------------------------------------------
-GOOGLE_SHEETS_JSON_KEY = os.getenv("GOOGLE_SHEETS_JSON_KEY", "newproject2024-419923-a5dba4c9f119.json")
+GOOGLE_SHEETS_JSON_KEY = os.getenv("GOOGLE_SHEETS_JSON_KEY", "newproject2024-419923-working.json")
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-GOOGLE_SHEETS_CREDENTIALS_FILE = os.path.join(SCRIPT_DIR, "secure_creds", GOOGLE_SHEETS_JSON_KEY)
+GOOGLE_SHEETS_CREDENTIALS_FILE = os.getenv(
+    "GOOGLE_SHEETS_CREDENTIALS_FILE",
+    os.path.join(SCRIPT_DIR, "secure_creds", GOOGLE_SHEETS_JSON_KEY)
+)
+if not os.path.isabs(GOOGLE_SHEETS_CREDENTIALS_FILE):
+    GOOGLE_SHEETS_CREDENTIALS_FILE = os.path.join(SCRIPT_DIR, GOOGLE_SHEETS_CREDENTIALS_FILE)
+if not os.path.exists(GOOGLE_SHEETS_CREDENTIALS_FILE):
+    project_root = os.path.abspath(os.path.join(SCRIPT_DIR, "..", ".."))
+    mcp_key = os.path.join(project_root, "mcp-google-sheets", "working_credentials.json")
+    if os.path.exists(mcp_key):
+        GOOGLE_SHEETS_CREDENTIALS_FILE = mcp_key
 SPREADSHEET_NAME = os.getenv("GOOGLE_SHEETS_DOCUMENT_NAME_ORDERS", "Замовлення")
 
 # -------------------------------------------------------
@@ -371,7 +381,10 @@ def get_google_sheet_client():
     """Отримує клієнт для роботи з Google Sheets API"""
     try:
         scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
-        credentials = ServiceAccountCredentials.from_json_keyfile_name(GOOGLE_SHEETS_CREDENTIALS_FILE, scope)
+        credentials = service_account.Credentials.from_service_account_file(
+            GOOGLE_SHEETS_CREDENTIALS_FILE, 
+            scopes=scope
+        )
         client = gspread.authorize(credentials)
         return client
     except Exception as e:

@@ -1,6 +1,6 @@
 import os
 import gspread
-from oauth2client.service_account import ServiceAccountCredentials
+from google.oauth2 import service_account
 import psycopg2
 import logging
 import time
@@ -10,6 +10,12 @@ import sys
 from datetime import datetime
 import pycountry
 from dotenv import load_dotenv
+try:
+    from .brand_utils import upsert_brand_and_get_id
+except Exception:
+    # fallback for direct script execution
+    sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+    from brand_utils import upsert_brand_and_get_id
 
 load_dotenv()
 
@@ -22,18 +28,34 @@ DB_NAME = os.getenv("DB_NAME")
 DB_USER = os.getenv("DB_USER")
 DB_PASSWORD = os.getenv("DB_PASSWORD")
 
-GOOGLE_SHEETS_JSON_KEY = os.getenv("GOOGLE_SHEETS_JSON_KEY")
+GOOGLE_SHEETS_JSON_KEY = os.getenv("GOOGLE_SHEETS_JSON_KEY", "newproject2024-419923-working.json")
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-GOOGLE_SHEETS_CREDENTIALS_FILE = os.path.join(SCRIPT_DIR, GOOGLE_SHEETS_JSON_KEY)
+# Дозволяємо передати повний шлях через GOOGLE_SHEETS_CREDENTIALS_FILE, або шукаємо у secure_creds/, або fallback на mcp-google-sheets/working_credentials.json
+GOOGLE_SHEETS_CREDENTIALS_FILE = os.getenv(
+    "GOOGLE_SHEETS_CREDENTIALS_FILE",
+    os.path.join(SCRIPT_DIR, "secure_creds", GOOGLE_SHEETS_JSON_KEY)
+)
+if not os.path.isabs(GOOGLE_SHEETS_CREDENTIALS_FILE):
+    GOOGLE_SHEETS_CREDENTIALS_FILE = os.path.join(SCRIPT_DIR, GOOGLE_SHEETS_CREDENTIALS_FILE)
+if not os.path.exists(GOOGLE_SHEETS_CREDENTIALS_FILE):
+    # fallback до робочого ключа MCP, якщо доступний
+    project_root = os.path.abspath(os.path.join(SCRIPT_DIR, "..", ".."))
+    mcp_key = os.path.join(project_root, "mcp-google-sheets", "working_credentials.json")
+    if os.path.exists(mcp_key):
+        GOOGLE_SHEETS_CREDENTIALS_FILE = mcp_key
 SPREADSHEET_NAME = os.getenv("GOOGLE_SHEETS_DOCUMENT_NAME")
+if not SPREADSHEET_NAME:
+    # Фолбек на обов'язковий документ "Журнал", якщо .env не заданий
+    SPREADSHEET_NAME = "Журнал"
+    logger.warning("GOOGLE_SHEETS_DOCUMENT_NAME не задано (.env). Використовую 'Журнал' за замовчуванням.")
 
 
 def get_google_sheet_client():
    """Повертає авторизований клієнт Google Sheets."""
    try:
-       creds = ServiceAccountCredentials.from_json_keyfile_name(
+       creds = service_account.Credentials.from_service_account_file(
            GOOGLE_SHEETS_CREDENTIALS_FILE,
-           ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
+           scopes=['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
        )
        return gspread.authorize(creds)
    except Exception as e:
@@ -202,16 +224,8 @@ def get_or_create_subtype(cursor, subtype_name, conn):
 
 
 def get_or_create_brand(cursor, brand_name, conn):
-   if not brand_name:
-       return None
-   cursor.execute("SELECT id FROM brands WHERE brandname=%s", (brand_name,))
-   r = cursor.fetchone()
-   if r:
-       return r[0]
-   else:
-       cursor.execute("INSERT INTO brands (brandname) VALUES (%s) RETURNING id", (brand_name,))
-       conn.commit()
-       return cursor.fetchone()[0]
+   """ЗАМІНЕНО: використовує нормалізацію + блоклист + upsert по normalized_name."""
+   return upsert_brand_and_get_id(cursor, conn, brand_name)
 
 
 def validate_gender(gender_value):
@@ -264,30 +278,30 @@ def validate_gender(gender_value):
 
 
 def get_or_create_gender(cursor, gender_name, conn):
-     """Створює або отримує ID гендера. Завжди повертає валідний ID."""
-     # Валідуємо гендер (тепер завжди повертає валідне значення)
-     validated_gender = validate_gender(gender_name)
-     
-     # Маппування назв гендерів на конкретні ID (0-3)
-     gender_id_mapping = {
-         'Невідомо': 0,
-         'унісекс': 1,
-         'жіноча': 2,
-         'чоловіча': 3
-     }
-     
-     # Повертаємо конкретний ID без створення нових записів
-     gender_id = gender_id_mapping.get(validated_gender, 0)  # За замовчуванням "Невідомо"
-     
-     # Перевіряємо чи існує запис (для логування)
-     cursor.execute("SELECT id FROM genders WHERE id=%s", (gender_id,))
-   r = cursor.fetchone()
-     if not r:
-         # Це не повинно відбуватись, але додаємо для безпеки
-         logger.warning(f"Гендер ID {gender_id} ({validated_gender}) не знайдено в БД!")
-         return 0  # Повертаємо "Невідомо"
-     
-     return gender_id
+    """Повертає реальний ID з таблиці genders. Створює запис за потреби."""
+    name = validate_gender(gender_name) or 'Невідомо'
+    # спроба знайти існуючий
+    cursor.execute("SELECT id FROM genders WHERE LOWER(gendername)=LOWER(%s)", (name,))
+    r = cursor.fetchone()
+    if r:
+        return r[0]
+    # створити, якщо відсутній
+    try:
+        cursor.execute("INSERT INTO genders (gendername) VALUES (%s) RETURNING id", (name,))
+        conn.commit()
+        return cursor.fetchone()[0]
+    except Exception:
+        conn.rollback()
+        # fallback: спробувати ще раз отримати
+        cursor.execute("SELECT id FROM genders WHERE LOWER(gendername)=LOWER(%s)", (name,))
+        rr = cursor.fetchone()
+        if rr:
+            return rr[0]
+        logger.warning("Не вдалося створити/отримати гендер, використовую 'Невідомо'")
+        # Остання спроба знайти 'Невідомо'
+        cursor.execute("SELECT id FROM genders WHERE LOWER(gendername)=LOWER('Невідомо')")
+        r3 = cursor.fetchone()
+        return r3[0] if r3 else None
 
 
 def get_or_create_color(cursor, color_name, conn):
@@ -379,7 +393,11 @@ def get_or_create_condition(cursor, condition_name, conn):
 def sanitize_product_number(num):
    if not num:
        return num
-   return re.sub(r"[^a-zA-Z0-9а-яА-ЯёЁіІїЇєЄґҐ\-\.\(\)/_#]+", "", num).strip()
+   # Видаляємо символ # та інші небажані символи
+   cleaned = re.sub(r"[^a-zA-Z0-9а-яА-ЯёЁіІїЇєЄґҐ\-\.\(\)/_]+", "", num).strip()
+   # Прибираємо символ # з початку та кінця
+   cleaned = cleaned.strip('#')
+   return cleaned
 
 
 def fully_identical_for_merge(tp1, tp2, st1, st2, br1, br2, gd1, gd2, cl1, cl2,
@@ -529,12 +547,12 @@ def remove_old_suffix_duplicates(conn):
 
        logger.info(f"Знайдено {len(candidate_ids)} товар(ів), які закінчуються на (..). Перевіряємо зв'язки ...")
 
-       # 2) Перевіряємо, чи використовується товар у order_details
+       # 2) Перевіряємо, чи використовується товар у order_items
        #    Якщо так - пропускаємо видалення
        to_delete = []
        for pid in candidate_ids:
-           # Перевірка
-           cur.execute("SELECT COUNT(*) FROM order_details WHERE product_id=%s", (pid,))
+           # Перевірка посилань у коректній таблиці зв'язків (order_items)
+           cur.execute("SELECT COUNT(*) FROM order_items WHERE product_id=%s", (pid,))
            ref_count = cur.fetchone()[0]
            if ref_count == 0:
                to_delete.append(pid)
@@ -787,8 +805,8 @@ def process_sheet_data(data, wtitle, all_product_numbers):
    total_rows = len(data)
    logger.info(f"Аркуш '{wtitle}': всього рядків для обробки: {total_rows}")
 
-    # Перевіряємо, чи це основний аркуш "Data" з товарами
-    is_data_sheet = (wtitle == "Data")
+   # Перевіряємо, чи це основний аркуш "Data" з товарами
+   is_data_sheet = (wtitle == "Data")
 
    # Аналізуємо назву аркуша для отримання дати і назви доставки
    try:
@@ -796,8 +814,8 @@ def process_sheet_data(data, wtitle, all_product_numbers):
        if delivery_date:
            logger.info(f"Аркуш '{wtitle}': дата доставки: {delivery_date}, назва: {deliv_name}")
        else:
-            if not is_data_sheet:
-           logger.warning(f"Аркуш '{wtitle}': не вдалося розпізнати дату з назви")
+           if not is_data_sheet:
+               logger.warning(f"Аркуш '{wtitle}': не вдалося розпізнати дату з назви")
    except Exception as e:
        logger.error(f"Аркуш '{wtitle}': помилка парсингу назви: {e}")
        delivery_date, deliv_name = None, wtitle
@@ -813,159 +831,169 @@ def process_sheet_data(data, wtitle, all_product_numbers):
 
    # Створюємо список для зберігання даних рядків
    rows_data = []
-    valid_products = 0
+   valid_products = 0
 
    # Проходимося по кожному рядку даних, починаючи з 1 рядка (0-й - заголовки)
    for row_index, rowvals in enumerate(data[1:], 1):
-       try:
-           logger.debug(f"Аркуш '{wtitle}': обробка рядка {row_index} з {total_rows-1}")
-           
-           # Прогрес обробки
-            if row_index % 500 == 0 or row_index == 1 or row_index == total_rows-1:
-               progress_percent = int((row_index / (total_rows-1)) * 100)
-               logger.info(f"Аркуш '{wtitle}': прогрес обробки {progress_percent}% ({row_index}/{total_rows-1})")
+      try:
+         logger.debug(f"Аркуш '{wtitle}': обробка рядка {row_index} з {total_rows-1}")
 
-            # Отримуємо номер товару залежно від типу аркуша
-            if is_data_sheet:
-                # Для аркуша "Data" номер в колонці 13 (індекс 12)
-                p_num_ = str(rowvals[12] if len(rowvals) > 12 else '').strip()
-                # Додаткові дані для "Data"
-                brand = validate_text(rowvals[0] if len(rowvals) > 0 else '')
-                clones = validate_text(rowvals[1] if len(rowvals) > 1 else '')
-                model = validate_text(rowvals[2] if len(rowvals) > 2 else '')
-                marking = validate_text(rowvals[3] if len(rowvals) > 3 else '')
-                year = validate_integer(rowvals[4] if len(rowvals) > 4 else '')
-                gender = validate_text(rowvals[5] if len(rowvals) > 5 else '')
-                color = validate_text(rowvals[6] if len(rowvals) > 6 else '')
-                country_producer = validate_text(rowvals[7] if len(rowvals) > 7 else '')
-                country_owner = validate_text(rowvals[8] if len(rowvals) > 8 else '')
-                size = validate_text(rowvals[9] if len(rowvals) > 9 else '')
-                size_cm = validate_text(rowvals[10] if len(rowvals) > 10 else '')
-                price = validate_decimal(rowvals[11] if len(rowvals) > 11 else '')
-                type_name = validate_text(rowvals[13] if len(rowvals) > 13 else '')
-                subtype_name = validate_text(rowvals[14] if len(rowvals) > 14 else '')
-                description = None  # Для аркуша Data опис може бути в іншій колонці або відсутній
+         # Прогрес обробки
+         if row_index % 500 == 0 or row_index == 1 or row_index == total_rows-1:
+            progress_percent = int((row_index / (total_rows-1)) * 100)
+            logger.info(f"Аркуш '{wtitle}': прогрес обробки {progress_percent}% ({row_index}/{total_rows-1})")
+
+         # Отримуємо номер товару залежно від типу аркуша
+         if is_data_sheet:
+            # Для аркуша "Data" номер в колонці 13 (індекс 12)
+            p_num_ = str(rowvals[12] if len(rowvals) > 12 else '').strip()
+            # Додаткові дані для "Data"
+            brand = validate_text(rowvals[0] if len(rowvals) > 0 else '')
+            clones = validate_text(rowvals[1] if len(rowvals) > 1 else '')
+            model = validate_text(rowvals[2] if len(rowvals) > 2 else '')
+            marking = validate_text(rowvals[3] if len(rowvals) > 3 else '')
+            year = validate_integer(rowvals[4] if len(rowvals) > 4 else '')
+            gender = validate_text(rowvals[5] if len(rowvals) > 5 else '')
+            color = validate_text(rowvals[6] if len(rowvals) > 6 else '')
+            country_producer = validate_text(rowvals[7] if len(rowvals) > 7 else '')
+            country_owner = validate_text(rowvals[8] if len(rowvals) > 8 else '')
+            size = validate_text(rowvals[9] if len(rowvals) > 9 else '')
+            size_cm = validate_text(rowvals[10] if len(rowvals) > 10 else '')
+            price = validate_decimal(rowvals[11] if len(rowvals) > 11 else '')
+            type_name = validate_text(rowvals[13] if len(rowvals) > 13 else '')
+            subtype_name = validate_text(rowvals[14] if len(rowvals) > 14 else '')
+            description = None  # Для аркуша Data опис може бути в іншій колонці або відсутній
+         else:
+            # Для аркушів доставок номер в колонці 1 (індекс 0)
+            p_num_ = str(rowvals[0] if len(rowvals) > 0 else '').strip()
+            # Розширені дані для аркушів доставок відповідно до структури
+            clones = validate_text(rowvals[1] if len(rowvals) > 1 else '')
+            type_name = validate_text(rowvals[2] if len(rowvals) > 2 else '')
+            subtype_name = validate_text(rowvals[3] if len(rowvals) > 3 else '')
+            # Бренд з колонки E (4)
+            brand = validate_text(rowvals[4] if len(rowvals) > 4 else '')
+            model = validate_text(rowvals[5] if len(rowvals) > 5 else '')
+            marking = validate_text(rowvals[6] if len(rowvals) > 6 else '')
+            year = validate_integer(rowvals[7] if len(rowvals) > 7 else '')
+            gender = validate_text(rowvals[8] if len(rowvals) > 8 else '')
+            color = validate_text(rowvals[9] if len(rowvals) > 9 else '')
+            # Опис в колонці 11 (індекс 10)
+            description = validate_text(rowvals[10] if len(rowvals) > 10 else '')
+            country_producer = validate_text(rowvals[11] if len(rowvals) > 11 else '')
+            country_owner = validate_text(rowvals[12] if len(rowvals) > 12 else '')
+            size = validate_text(rowvals[13] if len(rowvals) > 13 else '')
+            size_cm = validate_text(rowvals[14] if len(rowvals) > 14 else '')
+            price = validate_decimal(rowvals[15] if len(rowvals) > 15 else '')
+
+         # Очищаємо номер товару (без додавання символу #)
+         product_number = sanitize_product_number(p_num_) if p_num_ else ''
+         if product_number:  # Додаємо тільки непорожні номери
+             all_product_numbers.add(product_number)
+
+         # Пропускаємо порожні рядки
+         if not product_number:
+            logger.debug(f"Аркуш '{wtitle}': рядок {row_index} пропущено - порожній номер товару")
+            continue
+
+         # Створюємо словник даних товару
+         product_data = {
+            'productnumber': product_number,
+            'clonednumbers': clones,
+            'model': model,
+            'marking': marking,
+            'year': year,
+            'price': price if price is not None else 0.0,
+            'sizeeu': size,
+            'measurementscm': size_cm,
+            'description': description,
+            # ВАЖЛИВО: передаємо реальні datetime об'єкти, а не рядок 'now()'
+            'created_at': datetime.now(),
+            'updated_at': datetime.now(),
+            'dateadded': import_date or datetime.now().date(),
+            'statusid': 2  # Непродано
+         }
+
+         # Отримуємо або створюємо зв'язані об'єкти
+         if brand:
+            brand_id = get_or_create_brand(cursor, brand, conn)
+            if brand_id:
+               product_data['brandid'] = brand_id
+               product_data['_b_name'] = brand
             else:
-                # Для аркушів доставок номер в колонці 1 (індекс 0)
-                p_num_ = str(rowvals[0] if len(rowvals) > 0 else '').strip()
-                # Розширені дані для аркушів доставок відповідно до структури
-                clones = validate_text(rowvals[1] if len(rowvals) > 1 else '')
-                type_name = validate_text(rowvals[2] if len(rowvals) > 2 else '')
-                subtype_name = validate_text(rowvals[3] if len(rowvals) > 3 else '')
-                brand = validate_text(rowvals[4] if len(rowvals) > 4 else '')
-                model = validate_text(rowvals[5] if len(rowvals) > 5 else '')
-                marking = validate_text(rowvals[6] if len(rowvals) > 6 else '')
-                year = validate_integer(rowvals[7] if len(rowvals) > 7 else '')
-                gender = validate_text(rowvals[8] if len(rowvals) > 8 else '')
-                color = validate_text(rowvals[9] if len(rowvals) > 9 else '')
-                # Опис в колонці 11 (індекс 10)
-                description = validate_text(rowvals[10] if len(rowvals) > 10 else '')
-                country_producer = validate_text(rowvals[11] if len(rowvals) > 11 else '')
-                country_owner = validate_text(rowvals[12] if len(rowvals) > 12 else '')
-                size = validate_text(rowvals[13] if len(rowvals) > 13 else '')
-                size_cm = validate_text(rowvals[14] if len(rowvals) > 14 else '')
-                price = validate_decimal(rowvals[15] if len(rowvals) > 15 else '')
+               logger.warning(f"Бренд заблоковано або невалідний: {brand}")
+         else:
+            # Якщо бренд не вказано, можна створити default або залишити None
+            # default_brand_id = get_or_create_brand(cursor, 'Невизначено', conn)
+            # product_data['brandid'] = default_brand_id
+            pass
 
-            # Очищаємо номер товару
-            product_number = sanitize_product_number(p_num_) if p_num_ else '#'
-           all_product_numbers.add(product_number)
+         if type_name:
+            type_id = get_or_create_type(cursor, type_name, conn)
+            product_data['typeid'] = type_id
+            product_data['_t_name'] = type_name
+         else:
+            # Якщо тип не вказано, створюємо default тип
+            default_type_id = get_or_create_type(cursor, 'Невизначено', conn)
+            product_data['typeid'] = default_type_id
 
-            # Пропускаємо порожні рядки
-            if not product_number or product_number == '#':
-               logger.debug(f"Аркуш '{wtitle}': рядок {row_index} пропущено - порожній номер товару")
-               continue
+         if subtype_name:
+            subtype_id = get_or_create_subtype(cursor, subtype_name, conn)
+            product_data['subtypeid'] = subtype_id
+            product_data['_st_name'] = subtype_name
 
-            # Створюємо словник даних товару
-            product_data = {
-                'productnumber': product_number,
-                'clonednumbers': clones,
-                'model': model,
-                'marking': marking,
-                'year': year,
-                'price': price,
-                'sizeeu': size,
-                'measurementscm': size_cm,
-                'description': description if 'description' in locals() else None,
-                'created_at': 'now()',
-                'updated_at': 'now()',
-                'dateadded': import_date or 'now()',
-                'statusid': 2  # Непродано
-            }
-            
-            # Отримуємо або створюємо зв'язані об'єкти
-            if brand:
-                brand_id = get_or_create_brand(cursor, brand, conn)
-                product_data['brandid'] = brand_id
-                product_data['_b_name'] = brand
-            else:
-                # Якщо бренд не вказано, можна створити default або залишити None
-                # default_brand_id = get_or_create_brand(cursor, 'Невизначено', conn)
-                # product_data['brandid'] = default_brand_id
-                pass
-            
-            if type_name:
-                type_id = get_or_create_type(cursor, type_name, conn)
-                product_data['typeid'] = type_id
-                product_data['_t_name'] = type_name
-            else:
-                # Якщо тип не вказано, створюємо default тип
-                default_type_id = get_or_create_type(cursor, 'Невизначено', conn)
-                product_data['typeid'] = default_type_id
-                
-            if subtype_name:
-                subtype_id = get_or_create_subtype(cursor, subtype_name, conn)
-                product_data['subtypeid'] = subtype_id
-                product_data['_st_name'] = subtype_name
-                
-            # Обробляємо гендер з валідацією (завжди отримуємо валідний ID)
-            gender_id = get_or_create_gender(cursor, gender, conn)
-            product_data['genderid'] = gender_id
-            
-            # Логуємо якщо було передане значення, але воно стало "Невідомо"
-            if gender and validate_gender(gender) == 'Невідомо':
-                logger.debug(f"Аркуш '{wtitle}': рядок {row_index} невалідний гендер '{gender}' → 'Невідомо'")
-                
-            if color:
-                color_id = get_or_create_color(cursor, color, conn)
-                product_data['colorid'] = color_id
-                
-            if country_producer:
-                country_id = get_or_create_country(cursor, country_producer, conn)
-                product_data['countryid'] = country_id
+         # Обробляємо гендер з валідацією (завжди отримуємо валідний ID)
+         gender_id = get_or_create_gender(cursor, gender, conn)
+         product_data['genderid'] = gender_id
 
-            # Додаємо до списку для обробки
-            rows_data.append(product_data)
-            valid_products += 1
+         # Логуємо якщо було передане значення, але воно стало "Невідомо"
+         if gender and validate_gender(gender) == 'Невідомо':
+            logger.debug(f"Аркуш '{wtitle}': рядок {row_index} невалідний гендер '{gender}' → 'Невідомо'")
 
-       except Exception as e:
-           logger.error(f"Аркуш '{wtitle}': рядок {row_index} помилка обробки: {e}")
-           logger.error(f"Дані рядка: {rowvals}")
-           conn.rollback()
-           continue
+         if color:
+            color_id = get_or_create_color(cursor, color, conn)
+            product_data['colorid'] = color_id
+
+         # Коректно зберігаємо країни: виробник -> manufacturercountryid, власник -> ownercountryid
+         if country_producer:
+            m_country_id = get_or_create_country(cursor, country_producer, conn)
+            product_data['manufacturercountryid'] = m_country_id
+         if country_owner:
+            o_country_id = get_or_create_country(cursor, country_owner, conn)
+            product_data['ownercountryid'] = o_country_id
+
+         # Додаємо до списку для обробки
+         rows_data.append(product_data)
+         valid_products += 1
+
+      except Exception as e:
+         logger.error(f"Аркуш '{wtitle}': рядок {row_index} помилка обробки: {e}")
+         logger.error(f"Дані рядка: {rowvals}")
+         conn.rollback()
+         continue
 
    logger.info(f"Аркуш '{wtitle}': зібрано {len(rows_data)} валідних товарів")
 
-    # Проходимо по зібраних даних і створюємо/оновлюємо товари
+   # Проходимо по зібраних даних і створюємо/оновлюємо товари
    processed_items = 0
    for item in rows_data:
-       try:
-            # Видаляємо тимчасові поля перед збереженням
-            clean_item = {k: v for k, v in item.items() if not k.startswith('_')}
-            
-            # Створюємо або оновлюємо товар
-            insert_or_update_product(cursor, clean_item, conn)
-           processed_items += 1
-            
-            if processed_items % 100 == 0 or processed_items == 1 or processed_items == len(rows_data):
-               progress_percent = int((processed_items / len(rows_data)) * 100)
-               logger.info(f"Аркуш '{wtitle}': обробка товарів {progress_percent}% ({processed_items}/{len(rows_data)})")
+      try:
+         # Видаляємо тимчасові поля перед збереженням
+         clean_item = {k: v for k, v in item.items() if not k.startswith('_')}
 
-       except Exception as e:
-           logger.error(f"Аркуш '{wtitle}': помилка оновлення товару '{item['productnumber']}': {e}")
-           conn.rollback()
-           continue
+         # Створюємо або оновлюємо товар
+         insert_or_update_product(cursor, clean_item, conn)
+         processed_items += 1
 
-    logger.info(f"=== Завершено обробку аркуша '{wtitle}': створено/оновлено {processed_items} товарів ===")
+         if processed_items % 100 == 0 or processed_items == 1 or processed_items == len(rows_data):
+            progress_percent = int((processed_items / len(rows_data)) * 100)
+            logger.info(f"Аркуш '{wtitle}': обробка товарів {progress_percent}% ({processed_items}/{len(rows_data)})")
+
+      except Exception as e:
+         logger.error(f"Аркуш '{wtitle}': помилка оновлення товару '{item.get('productnumber', '???')}': {e}")
+         conn.rollback()
+         continue
+
+   logger.info(f"=== Завершено обробку аркуша '{wtitle}': створено/оновлено {processed_items} товарів ===")
    cursor.close()
    conn.close()
 
@@ -1021,30 +1049,34 @@ def import_data():
        conn_rm.close()
        logger.info("Видалення застарілих дублікатів завершено")
    except Exception as e:
+       # Не блокуємо увесь імпорт через помилки видалення — просто логуємо і продовжуємо
        logger.error(f"Помилка видалення старих суфіксів (n): {e}")
-       conn_rm.close()
-       return
+       try:
+           conn_rm.close()
+       except Exception:
+           pass
+       # continue
 
    client = get_google_sheet_client()
    if not client:
        logger.error("Не вдалося отримати Google Sheets client")
-       return
+       raise RuntimeError("No Google Sheets client")
 
    logger.info(f"Документ: {SPREADSHEET_NAME}")
    try:
        doc = client.open(SPREADSHEET_NAME)
    except Exception as e:
        logger.error(f"Помилка відкриття Google Sheets: {e}")
-       return
+       raise
 
    ignore_sheets = ['Suppliers', 'Publications', 'New']
    sheet_list = doc.worksheets()
    all_product_numbers = set()
-   
+    
    # Розділяємо аркуші на поставки (з датами) та довідковий "Data"
    delivery_sheets = []
    data_sheet = None
-   
+    
    for ws in sheet_list:
        if ws.title in ignore_sheets:
            continue
@@ -1118,7 +1150,7 @@ def import_data():
            # Видаляємо порожні товари (без основних атрибутів)
            cur.execute("""
                DELETE FROM products
-               WHERE (productnumber IS NULL OR productnumber='#')
+               WHERE (productnumber IS NULL OR productnumber='' OR productnumber='#')
                  AND (
                    (CASE WHEN brandid IS NOT NULL THEN 1 ELSE 0 END)
                  + (CASE WHEN model IS NOT NULL AND model<>'' THEN 1 ELSE 0 END)

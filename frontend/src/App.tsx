@@ -5,7 +5,6 @@ import { FilterPanelProvider, useFilterPanel } from './contexts/FilterPanelConte
 import GlobalStyle from './styles/GlobalStyle'; // For potential global styles
 import SearchBar from './components/common/SearchBar';
 import { ParsingDialog } from './components/ParsingDialog';
-import { ParsingStatus } from './components/ParsingStatus';
 import './App.css';
 import './index.css'; // Main Tailwind CSS import
 
@@ -179,10 +178,7 @@ const AppContent: React.FC = () => {
         onStartParsing={handleStartParsing}
       />
 
-      {/* Статус парсингу */}
-      <ParsingStatus />
-      
-      {/* Плаваюча кнопка оновлення винесена в MainLayout і дубль тут не рендеримо */}
+      {/* Плаваюча кнопка оновлення винесена в MainLayout; статус парсингу рендериться лише там */}
     </div>
   );
 };

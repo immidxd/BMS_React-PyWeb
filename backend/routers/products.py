@@ -77,30 +77,8 @@ async def get_products(
             sort_dir=sort_dir,
         )
 
-        items = []
-        for p in result["items"]:
-            # Перетворюємо ORM-об'єкт у DTO з плоскими полями імен
-            item: Dict[str, Any] = {
-                "id": p.id,
-                "productnumber": p.productnumber,
-                "model": getattr(p, "model", None),
-                "price": getattr(p, "price", None),
-                "oldprice": getattr(p, "oldprice", None),
-                "quantity": getattr(p, "quantity", 0),
-                "typeid": getattr(p, "typeid", None),
-                "subtypeid": getattr(p, "subtypeid", None),
-                "brandid": getattr(p, "brandid", None),
-                "statusid": getattr(p, "statusid", None),
-                "is_visible": getattr(p, "is_visible", True),
-                "dateadded": getattr(p, "dateadded", None),
-                "created_at": getattr(p, "created_at", None),
-                "updated_at": getattr(p, "updated_at", None),
-                # Імена пов'язаних сутностей (у моделі немає relationship, тому None)
-                "brand_name": None,
-                "type_name": None,
-                "status_name": None,
-            }
-            items.append(item)
+        # Service now returns dictionaries with JOIN data, so we can use them directly
+        items = result["items"]
 
         response = {
             "items": items,

@@ -168,19 +168,28 @@ class ProductList(BaseModel):
     id: int
     productnumber: str
     model: Optional[str] = None
+    description: Optional[str] = None
     price: Optional[float] = None
+    oldprice: Optional[float] = None
     quantity: int
+    sizeeu: Optional[str] = None
     typeid: Optional[int] = None
     brandid: Optional[int] = None
     statusid: Optional[int] = None
-    is_visible: bool
+    colorid: Optional[int] = None
+    conditionid: Optional[int] = None
+    genderid: Optional[int] = None
     
+    # Related names from JOIN queries
     type_name: Optional[str] = None
     brand_name: Optional[str] = None
     status_name: Optional[str] = None
+    color_name: Optional[str] = None
+    condition_name: Optional[str] = None
+    gender_name: Optional[str] = None
     
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 # Модель для пагінації та списку товарів
 class ProductListResponse(BaseModel):

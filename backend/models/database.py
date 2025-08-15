@@ -55,6 +55,11 @@ def init_db():
 
         # Create all tables
         Base.metadata.create_all(bind=engine)
+        # Ensure new columns exist in existing DB without full migrations
+        from sqlalchemy import text
+        with engine.begin() as conn:
+            conn.execute(text("alter table if exists parsing_jobs add column if not exists logs_head text"))
+            conn.execute(text("alter table if exists parsing_jobs add column if not exists cancel_requested boolean default false"))
         
         # Populate initial reference data (only adds basic reference data, no test data)
         from .seed_data import populate_initial_data

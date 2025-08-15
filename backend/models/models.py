@@ -4,14 +4,47 @@ from datetime import datetime
 
 from .database import Base
 
+# Reference tables
 class Gender(Base):
     __tablename__ = "genders"
     
     id = Column(Integer, primary_key=True, index=True)
-    name = Column(String(100), unique=True, nullable=False)
+    gendername = Column(String(100), unique=True, nullable=False)
     
     # Relationships
     clients = relationship("Client", back_populates="gender")
+
+class Brand(Base):
+    __tablename__ = "brands"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    brandname = Column(String(100), unique=True, nullable=False)
+
+class Type(Base):
+    __tablename__ = "types"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    typename = Column(String(100), unique=True, nullable=False)
+
+class Status(Base):
+    __tablename__ = "statuses"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    statusname = Column(String(100), unique=True, nullable=False)
+    statusdescription = Column(Text, nullable=True)
+
+class Color(Base):
+    __tablename__ = "colors"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    colorname = Column(String(100), unique=True, nullable=False)
+
+class Condition(Base):
+    __tablename__ = "conditions"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    conditionname = Column(String(100), unique=True, nullable=False)
+    conditiondescription = Column(Text, nullable=True)
 
 class Client(Base):
     __tablename__ = "clients"
@@ -222,6 +255,26 @@ class ParsingSchedule(Base):
     enabled = Column(Boolean, default=True)
     last_run = Column(DateTime, nullable=True)
     next_run = Column(DateTime, nullable=True)
+
+class ParsingJob(Base):
+    __tablename__ = "parsing_jobs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    mode = Column(String, nullable=False)
+    status = Column(String, default="queued")
+    started_at = Column(DateTime, nullable=True)
+    updated_at = Column(DateTime, nullable=True)
+    ended_at = Column(DateTime, nullable=True)
+    total_items = Column(Integer, nullable=True)
+    processed_items = Column(Integer, default=0)
+    percent = Column(Integer, default=0)
+    items_per_sec = Column(Float, nullable=True)
+    eta_seconds = Column(Integer, nullable=True)
+    current_step = Column(String, nullable=True)
+    last_heartbeat_at = Column(DateTime, nullable=True)
+    error_summary = Column(Text, nullable=True)
+    logs_head = Column(Text, nullable=True)
+    cancel_requested = Column(Boolean, default=False)
 
 class OrderItem(Base):
     __tablename__ = "order_items"

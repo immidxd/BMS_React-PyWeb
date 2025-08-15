@@ -13,3 +13,4 @@ BMS_React-PyWeb.git/
 
 # Ignore build output
 frontend/build/
+backend/scripts/secure_creds/*.json

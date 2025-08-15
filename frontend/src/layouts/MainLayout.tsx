@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import RefreshButton from '../components/common/RefreshButton';
 import FilterPanel from '../components/common/FilterPanel';
 import { useFilterPanel } from '../contexts/FilterPanelContext';
@@ -22,26 +22,47 @@ const MainLayout: React.FC<MainLayoutProps> = ({
 }) => {
   const { isFilterPanelOpen, openFilterPanel, closeFilterPanel } = useFilterPanel();
   const [parsingDialogOpen, setParsingDialogOpen] = useState(false);
+  const [currentJobId, setCurrentJobId] = useState<number | null>(null);
+  const [isParsing, setIsParsing] = useState(false);
+  const [hideButtonUntil, setHideButtonUntil] = useState<number | null>(null);
+  const prevIsRunningRef = React.useRef<boolean>(false);
 
   const handleRefreshClick = () => {
     setParsingDialogOpen(true);
   };
 
+  // legacy global banner visibility kept (optional)
+  useEffect(() => {
+    let isMounted = true;
+    const poll = async () => {
+      try {
+        const res = await fetch('/api/parsing/status');
+        const data = await res.json();
+        if (!isMounted) return;
+        const running = Boolean(data?.is_running);
+        if (!running && prevIsRunningRef.current) setHideButtonUntil(Date.now() + 3000);
+        prevIsRunningRef.current = running;
+        setIsParsing(running);
+      } catch {}
+    };
+    poll();
+    const id = setInterval(poll, 1500);
+    return () => { isMounted = false; clearInterval(id); };
+  }, []);
+
   const handleStartParsing = async (mode: string, params: any) => {
     try {
-      const response = await fetch('/api/parsing/parsing/start', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ mode, params }),
+      const res = await fetch(`/api/parsing/run?mode=${encodeURIComponent(mode)}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(params || {})
       });
-      
-      if (!response.ok) {
-        throw new Error('Failed to start parsing');
-      }
-    } catch (error) {
-      console.error('Error starting parsing:', error);
+      const data = await res.json();
+      console.log('[MainLayout] run response:', data);
+      if (!res.ok || !data?.jobId) throw new Error('run failed');
+      setCurrentJobId(data.jobId);
+      // Закриваємо меню вибору відразу після старту
+      setParsingDialogOpen(false);
+    } catch (e) {
+      console.error('[MainLayout] quick parsing error:', e);
     }
   };
 
@@ -60,10 +81,12 @@ return (
         </div>
       </div>
       
-      {/* Плаваюча кнопка оновлення поверх усього UI */}
-      <div className="fixed right-6 bottom-6 z-[9999] drop-shadow-lg">
-        <RefreshButton onClick={onRefresh} isLoading={isRefreshing} />
-      </div>
+      {/* Плаваюча кнопка оновлення поверх усього UI (прихована під час активного парсингу) */}
+      {!isParsing && !(hideButtonUntil && Date.now() < hideButtonUntil) && (
+        <div className="fixed right-6 bottom-6 z-[9999] drop-shadow-lg">
+          <RefreshButton onClick={handleRefreshClick} isLoading={isRefreshing} />
+        </div>
+      )}
 
       <FilterPanel 
         isOpen={isFilterPanelOpen} 
@@ -76,12 +99,12 @@ return (
       {/* Діалог парсингу */}
       <ParsingDialog
         open={parsingDialogOpen}
-        onClose={() => setParsingDialogOpen(false)}
+        onClose={() => { setParsingDialogOpen(false); setCurrentJobId(null); }}
         onStartParsing={handleStartParsing}
       />
 
       {/* Статус парсингу */}
-      <ParsingStatus />
+      <ParsingStatus jobId={currentJobId} />
     </div>
   );
 };
