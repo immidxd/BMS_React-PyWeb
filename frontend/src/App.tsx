@@ -5,6 +5,7 @@ import { FilterPanelProvider, useFilterPanel } from './contexts/FilterPanelConte
 import GlobalStyle from './styles/GlobalStyle'; // For potential global styles
 import SearchBar from './components/common/SearchBar';
 import { ParsingDialog } from './components/ParsingDialog';
+import { ParsingStatus } from './components/ParsingStatus';
 import './App.css';
 import './index.css'; // Main Tailwind CSS import
 
@@ -88,36 +89,61 @@ const AppContent: React.FC = () => {
     setCurrentSearchTerm(term);
   };
 
+  const [currentJobId, setCurrentJobId] = useState<number | null>(null);
+
   const handleStartParsing = async (mode: string, params: any) => {
     try {
-      // Мапимо режим парсингу на source_id та style_id
-      // Це тимчасове рішення, поки не буде реалізована повна логіка
-      const requestData = {
-        source_id: 1, // Google Sheets source
-        style_id: 1,  // Default style
-        custom_options: {
-          mode: mode,
-          ...params
-        }
-      };
-      
-      const response = await fetch('/api/parsing/parsing/start', {
+      // ПРИМІТКА: показуємо прогрес одразу, поки чекаємо відповідь API (jobId=-1 як тимчасовий),
+      // щоб уникнути відсутності прогрес-вікна до приходу реального jobId
+      if (!currentJobId) setCurrentJobId(-1 as any);
+      const response = await fetch(`/api/parsing/run?mode=${encodeURIComponent(mode)}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify(requestData),
+        body: JSON.stringify({ params: params || {} }),
       });
       
       if (!response.ok) {
-        const errorData = await response.json();
-        console.error('Parsing start error:', errorData);
         throw new Error('Failed to start parsing');
+      }
+      
+      const data = await response.json();
+      console.log('[App.tsx] Parsing started:', data);
+      console.log('[App.tsx] API Response:', JSON.stringify(data));
+      
+      // ТИМЧАСОВО: Показуємо alert з відповіддю API
+      alert(`API відповідь: ${JSON.stringify(data)}`);
+      
+      // Встановлюємо jobId для відображення прогресу (не скидаємо при закритті діалогу)
+      if (data.jobId) {
+        setCurrentJobId(data.jobId);
+        console.log('[App.tsx] JobId set:', data.jobId);
+        alert(`JobId встановлено: ${data.jobId}`);
+      } else {
+        // Fallback: створюємо job без запуску
+        const res2 = await fetch(`/api/parsing/test?mode=${encodeURIComponent(mode)}`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(params || {}),
+        });
+        const data2 = await res2.json();
+        if (res2.ok && data2.jobId) {
+          setCurrentJobId(data2.jobId);
+          console.log('[App.tsx] Fallback JobId set:', data2.jobId);
+          alert(`Fallback JobId: ${data2.jobId}`);
+        } else {
+          console.error('[App.tsx] No jobId in response!', data);
+          alert('ПОМИЛКА: Немає jobId в відповіді!');
+        }
       }
       
       setParsingDialogOpen(false);
     } catch (error) {
       console.error('Error starting parsing:', error);
+      alert(`Error: ${error instanceof Error ? error.message : String(error)}`); // ТИМЧАСОВО ДЛЯ ДІАГНОСТИКИ
     }
   };
 
@@ -183,7 +209,8 @@ const AppContent: React.FC = () => {
         onStartParsing={handleStartParsing}
       />
 
-      {/* Плаваюча кнопка оновлення винесена в MainLayout; статус парсингу рендериться лише там */}
+      {/* Статус парсингу */}
+      <ParsingStatus jobId={currentJobId} />
     </div>
   );
 };

@@ -35,13 +35,22 @@ try:
 except Exception:
     suppliers = None
 
-# Configure logging
+# НАЛАШТУВАННЯ ЛОГУВАННЯ
+# Використовуємо абсолютний шлях і гарантуємо наявність директорії,
+# щоб запуск не ламався, коли CWD відрізняється (наприклад, у PyWebView)
+LOG_DIR = os.path.join(PROJECT_ROOT_DIR, 'backend', 'app')
+LOG_FILE = os.path.join(LOG_DIR, 'app.log')
+try:
+    os.makedirs(LOG_DIR, exist_ok=True)
+except Exception:
+    pass
+
 logging.basicConfig(
     level=logging.DEBUG,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler('backend/app/app.log')
+        logging.FileHandler(LOG_FILE, encoding='utf-8')
     ]
 )
 

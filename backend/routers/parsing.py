@@ -39,7 +39,7 @@ scripts_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__fi
 sys.path.append(scripts_path)
 
 try:
-    from unified_parser import UnifiedParser, ParsingMode, get_parsing_modes
+    from backend.scripts.unified_parser import UnifiedParser, ParsingMode, get_parsing_modes
 except ImportError as e:
     # Defer logging until logger defined below
     # Fallback implementations
@@ -79,6 +79,9 @@ if 'UnifiedParser' not in globals():
 
 # Active parsing tasks
 active_parsing_tasks = {}
+
+# Зв'язка job_id -> UnifiedParser для адресного скасування
+job_parsers: Dict[int, "UnifiedParser"] = {}
 
 # Глобальні змінні для відстеження парсингу
 current_parser: Optional[UnifiedParser] = None
@@ -208,6 +211,15 @@ async def delete_parsing_style(style_id: int, db: Session = Depends(get_db)):
     db.commit()
     return {"message": "Parsing style deleted successfully"}
 
+@router.post("/test", tags=["parsing"])
+async def test_parsing_job(mode: str = "quick_update", db: Session = Depends(get_db)):
+    """ТЕСТ: Створює job і одразу повертає jobId без запуску парсингу."""
+    job = ParsingJob(mode=mode, status="queued")
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+    return {"jobId": job.id, "message": "Test job created successfully"}
+
 @router.post("/run", tags=["parsing"])
 async def run_parsing_job(mode: str = "quick_update", params: Optional[Dict] = None, db: Session = Depends(get_db)):
     """Запускає реальний UnifiedParser і оновлює `parsing_jobs` по callback/WS."""
@@ -216,22 +228,25 @@ async def run_parsing_job(mode: str = "quick_update", params: Optional[Dict] = N
     db.add(job)
     db.commit()
     db.refresh(job)
+    
+    job_id = job.id  # Зберігаємо ID перед закриттям сесії
 
     # 2) Готуємо перетворення mode -> ParsingMode
     try:
         parsed_mode = None
-        if 'ParsingMode' in globals():
+        try:
+            # Спробуємо створити ParsingMode
+            parsed_mode = ParsingMode(mode)
+        except Exception:
+            # alias-и
+            alias = {
+                'quick': 'quick_update',
+                'full_parse': 'full',
+            }.get(mode, mode)
             try:
-                parsed_mode = ParsingMode(mode)
-            except Exception:
-                # alias-и
-                alias = {
-                    'quick': 'quick_update',
-                    'full_parse': 'full',
-                }.get(mode, mode)
                 parsed_mode = ParsingMode(alias)
-        else:
-            raise RuntimeError("UnifiedParser not available")
+            except Exception as e:
+                raise RuntimeError(f"Cannot create ParsingMode for '{mode}': {e}")
 
         # 3) Callback: оновлюємо рядок jobs кожне повідомлення + акумулюємо лог
         async def status_cb(payload: Dict[str, Any]):
@@ -309,6 +324,10 @@ async def run_parsing_job(mode: str = "quick_update", params: Optional[Dict] = N
 
         # 4) Запускаємо UnifiedParser у фоні
         parser = UnifiedParser(status_callback=status_cb)
+        # робимо доступним для глобального скасування та адресного по job_id
+        global current_parser
+        current_parser = parser
+        job_parsers[job_id] = parser
 
         def _describe_mode(m: str) -> str:
             m = m or ''
@@ -323,53 +342,85 @@ async def run_parsing_job(mode: str = "quick_update", params: Optional[Dict] = N
             return mapping.get(m, f"mode: {m}")
 
         async def runner():
-            # set started
-            job_row = db.query(ParsingJob).filter(ParsingJob.id == job.id).first()
-            if job_row:
-                job_row.status = 'running'
-                job_row.started_at = datetime.datetime.utcnow()
-                job_row.updated_at = job_row.started_at
-                job_row.current_step = 'initializing'
-                desc = _describe_mode(parsed_mode.value if hasattr(parsed_mode, 'value') else str(parsed_mode))
-                job_row.logs_head = ((job_row.logs_head or '') + ("\n" if job_row.logs_head else '') + f"START {job_row.started_at.isoformat()} — {desc}")[-8000:]
-                db.commit()
+            # set started - використовуємо нову сесію
+            sess = SessionLocal()
             try:
-                await parser.parse(parsed_mode, **(params or {}))
-                job_row = db.query(ParsingJob).filter(ParsingJob.id == job.id).first()
+                job_row = sess.query(ParsingJob).filter(ParsingJob.id == job_id).first()
                 if job_row:
-                    # Виставляємо succeeded лише якщо не failed/canceled
-                    if job_row.status not in ('failed', 'canceled'):
-                        job_row.status = 'succeeded'
-                        if (job_row.total_items or 0) > 0 and (job_row.processed_items or 0) >= (job_row.total_items or 0):
-                            job_row.percent = 100
+                    # Якщо до старту вже надійшов запит на скасування – завершуємо одразу
+                    if job_row.cancel_requested or (job_row.status in ('canceled', 'cancelled')):
+                        job_row.status = 'canceled'
                         job_row.ended_at = datetime.datetime.utcnow()
                         job_row.updated_at = job_row.ended_at
-                        job_row.current_step = 'done'
-                        job_row.eta_seconds = 0
-                        job_row.logs_head = ((job_row.logs_head or '') + f"\nEND {job_row.ended_at.isoformat()} — ok")[-8000:]
-                        db.commit()
+                        job_row.current_step = 'canceled'
+                        sess.commit()
+                        return
+                    job_row.status = 'running'
+                    job_row.started_at = datetime.datetime.utcnow()
+                    job_row.updated_at = job_row.started_at
+                    job_row.current_step = 'initializing'
+                    desc = _describe_mode(parsed_mode.value if hasattr(parsed_mode, 'value') else str(parsed_mode))
+                    job_row.logs_head = ((job_row.logs_head or '') + ("\n" if job_row.logs_head else '') + f"START {job_row.started_at.isoformat()} — {desc}")[-8000:]
+                    sess.commit()
+            finally:
+                sess.close()
+            try:
+                await parser.parse(parsed_mode, **(params or {}))
+                sess = SessionLocal()
+                try:
+                    job_row = sess.query(ParsingJob).filter(ParsingJob.id == job_id).first()
+                    if job_row:
+                        # Виставляємо succeeded лише якщо не failed/canceled
+                        if job_row.status not in ('failed', 'canceled'):
+                            job_row.status = 'succeeded'
+                            if (job_row.total_items or 0) > 0 and (job_row.processed_items or 0) >= (job_row.total_items or 0):
+                                job_row.percent = 100
+                            job_row.ended_at = datetime.datetime.utcnow()
+                            job_row.updated_at = job_row.ended_at
+                            job_row.current_step = 'done'
+                            job_row.eta_seconds = 0
+                            job_row.logs_head = ((job_row.logs_head or '') + f"\nEND {job_row.ended_at.isoformat()} — ok")[-8000:]
+                            sess.commit()
+                finally:
+                    sess.close()
             except Exception as e:
-                job_row = db.query(ParsingJob).filter(ParsingJob.id == job.id).first()
-                if job_row:
-                    job_row.status = 'failed'
-                    job_row.error_summary = str(e)
-                    job_row.ended_at = datetime.datetime.utcnow()
-                    job_row.updated_at = job_row.ended_at
-                    job_row.current_step = 'failed'
-                    job_row.logs_head = ((job_row.logs_head or '') + f"\nEND {job_row.ended_at.isoformat()} — failed: {e}")[-8000:]
-                    db.commit()
+                sess = SessionLocal()
+                try:
+                    job_row = sess.query(ParsingJob).filter(ParsingJob.id == job_id).first()
+                    if job_row:
+                        job_row.status = 'failed'
+                        job_row.error_summary = str(e)
+                        job_row.ended_at = datetime.datetime.utcnow()
+                        job_row.updated_at = job_row.ended_at
+                        job_row.current_step = 'failed'
+                        job_row.logs_head = ((job_row.logs_head or '') + f"\nEND {job_row.ended_at.isoformat()} — failed: {e}")[-8000:]
+                        sess.commit()
+                finally:
+                    sess.close()
                 raise
+            finally:
+                # при завершенні очищаємо мапу парсерів
+                try:
+                    if job_parsers.get(job_id) is parser:
+                        del job_parsers[job_id]
+                except Exception:
+                    pass
+                try:
+                    if current_parser is parser:
+                        current_parser = None
+                except Exception:
+                    pass
 
         # Фонова корутина — не завершуємо HTTP-відповідь завершеним статусом,
         # просто повертаємо jobId; фінальний статус виставить runner() після parse().
         asyncio.create_task(runner())
-        return {"jobId": job.id}
+        return {"jobId": job_id}
     except Exception as e:
         job.status = "failed"
         job.error_summary = str(e)
         job.updated_at = datetime.datetime.utcnow()
         db.commit()
-        raise
+        return {"jobId": job_id, "error": str(e)}
 @router.get("/jobs/{job_id}", tags=["parsing"])
 async def get_job(job_id: int, db: Session = Depends(get_db)):
     job = db.query(ParsingJob).filter(ParsingJob.id == job_id).first()
@@ -403,6 +454,13 @@ async def cancel_job(job_id: int, db: Session = Depends(get_db)):
     job.ended_at = datetime.datetime.utcnow()
     job.updated_at = job.ended_at
     db.commit()
+    # Якщо парсер ще працює – просимо його зупинитися
+    try:
+        parser = job_parsers.get(job_id)
+        if parser:
+            parser.cancel()
+    except Exception:
+        pass
     return {"message": "Cancel requested"}
 
 @router.websocket("/jobs/{job_id}/stream")
@@ -435,21 +493,16 @@ async def job_stream(websocket: WebSocket, job_id: int, db: Session = Depends(ge
     except WebSocketDisconnect:
         pass
 
-@router.post("/parsing/cancel")
+@router.post("/cancel")
 async def cancel_parsing():
-    """Скасовує поточний парсинг."""
+    """Скасовує поточний парсинг незалежно від поточного індикатора стану."""
     global current_parser
-    
-    if not parsing_status.get("is_running", False):
-        raise HTTPException(status_code=400, detail="Немає активного парсингу")
-    
-    if current_parser:
-        # 1) Просимо парсер зупинитися
-        current_parser.cancel()
-        # 2) Показуємо "Скасування..." лише якщо парсер ще в стані is_running,
-        #    щоб не перезатирати фінальний статус (false) якщо він уже встиг завершитися
-        try:
-            if getattr(current_parser, 'status', None) and getattr(current_parser.status, 'is_running', False):
+    try:
+        parser = current_parser
+        if parser:
+            logger.info("Cancel requested: invoking parser.cancel()")
+            parser.cancel()
+            try:
                 await broadcast_status({
                     "is_running": True,
                     "task": "Скасування парсингу...",
@@ -458,11 +511,36 @@ async def cancel_parsing():
                     "elapsed_time": 0,
                     "errors": []
                 })
+            except Exception:
+                pass
+            return {"status": "cancelling", "message": "Запит на скасування відправлено"}
+        logger.info("Cancel requested: no current_parser found; will mark latest queued/running job as canceled if present")
+        # Спроба позначити останню queued/running джобу як скасовану, щоб runner не стартував
+        try:
+            sess = SessionLocal()
+            try:
+                job = (
+                    sess.query(ParsingJob)
+                    .filter(ParsingJob.status.in_(['queued', 'running']))
+                    .order_by(ParsingJob.id.desc())
+                    .first()
+                )
+                if job:
+                    job.cancel_requested = True
+                    job.status = 'canceled'
+                    job.ended_at = datetime.datetime.utcnow()
+                    job.updated_at = job.ended_at
+                    job.current_step = 'canceled'
+                    sess.commit()
+                    return {"status": "canceled", "message": f"Job {job.id} canceled before start"}
+            finally:
+                sess.close()
         except Exception:
-            pass
-        return {"status": "cancelling", "message": "Запит на скасування відправлено"}
-    
-    return {"status": "error", "message": "Парсер не знайдено"}
+            logger.debug("Failed to mark latest job canceled", exc_info=True)
+        return {"status": "idle", "message": "Активний парсер не знайдено"}
+    except Exception as e:
+        logger.error(f"Cancel error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):

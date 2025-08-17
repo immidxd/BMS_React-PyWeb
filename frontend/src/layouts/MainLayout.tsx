@@ -52,17 +52,43 @@ const MainLayout: React.FC<MainLayoutProps> = ({
 
   const handleStartParsing = async (mode: string, params: any) => {
     try {
+      // ПРИМІТКА: показуємо віджет одразу у стані "з’єднання..." через тимчасовий jobId=-1,
+      // щоб уникнути ситуації, коли прогрес-вікно не з’являється до приходу реального jobId з API
+      if (!currentJobId) setCurrentJobId(-1 as any);
       const res = await fetch(`/api/parsing/run?mode=${encodeURIComponent(mode)}`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(params || {})
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ params: params || {} })
       });
       const data = await res.json();
-      console.log('[MainLayout] run response:', data);
+      console.log('[MainLayout] test response:', data);
+      alert(`API відповідь: ${JSON.stringify(data)}`); // ТИМЧАСОВО ДЛЯ ДІАГНОСТИКИ
+      
       if (!res.ok || !data?.jobId) throw new Error('run failed');
       setCurrentJobId(data.jobId);
+      alert(`JobId встановлено: ${data.jobId}`); // ТИМЧАСОВО ДЛЯ ДІАГНОСТИКИ
       // Закриваємо меню вибору відразу після старту
       setParsingDialogOpen(false);
     } catch (e) {
-      console.error('[MainLayout] quick parsing error:', e);
+      console.error('[MainLayout] run parsing error:', e);
+      // Fallback: створюємо job без запуску, щоб показати прогрес-віджет і діагностувати
+      try {
+        const res2 = await fetch(`/api/parsing/test?mode=${encodeURIComponent(mode)}`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(params || {})
+        });
+        const data2 = await res2.json();
+        if (res2.ok && data2?.jobId) {
+          console.log('[MainLayout] fallback test jobId:', data2.jobId);
+          setCurrentJobId(data2.jobId);
+          setParsingDialogOpen(false);
+          alert(`Fallback jobId: ${data2.jobId}`);
+          return;
+        }
+        throw new Error('fallback test failed');
+      } catch (e2) {
+        console.error('[MainLayout] fallback error:', e2);
+        alert(`Помилка: ${(e as Error).message}`); // ТИМЧАСОВО ДЛЯ ДІАГНОСТИКИ
+      }
     }
   };
 
@@ -82,7 +108,7 @@ return (
       </div>
       
       {/* Плаваюча кнопка оновлення поверх усього UI (прихована під час активного парсингу) */}
-      {!isParsing && !(hideButtonUntil && Date.now() < hideButtonUntil) && (
+      {!isParsing && !currentJobId && !(hideButtonUntil && Date.now() < hideButtonUntil) && (
         <div className="fixed right-6 bottom-6 z-[9999] drop-shadow-lg">
           <RefreshButton onClick={handleRefreshClick} isLoading={isRefreshing} />
         </div>
@@ -99,7 +125,7 @@ return (
       {/* Діалог парсингу */}
       <ParsingDialog
         open={parsingDialogOpen}
-        onClose={() => { setParsingDialogOpen(false); setCurrentJobId(null); }}
+        onClose={() => { setParsingDialogOpen(false); }}
         onStartParsing={handleStartParsing}
       />
 
