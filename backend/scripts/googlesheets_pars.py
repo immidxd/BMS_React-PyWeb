@@ -634,43 +634,55 @@ def find_or_update_rostovka_product(conn, productnumber, p_data):
 
 
 def insert_or_update_product(cursor, p_data, conn):
-   pnum = p_data['productnumber']
+    """Покращена функція вставки/оновлення товару з розумною ростовкою."""
+    try:
+        # Імпортуємо покращений менеджер ростовки
+        from advanced_rostovka_manager import improved_insert_or_update_product
+        return improved_insert_or_update_product(cursor, p_data, conn)
+    except ImportError:
+        # Fallback на стару логіку якщо новий модуль недоступний
+        logger.warning("Використовується стара логіка ростовки")
+        return _legacy_insert_or_update_product(cursor, p_data, conn)
 
-   rost_id = find_or_update_rostovka_product(conn, pnum, p_data)
-   if rost_id:
-       return
+def _legacy_insert_or_update_product(cursor, p_data, conn):
+    """Стара логіка вставки/оновлення товару (backup)."""
+    pnum = p_data['productnumber']
 
-   cursor.execute("SELECT id FROM products WHERE productnumber=%s", (pnum,))
-   exist = cursor.fetchall()
-   if exist:
-       if not same_item_check(cursor, p_data):
-           base = re.sub(r"\(\d+\)$", "", pnum).strip()
-           sfx = 1
-           while True:
-               newn = f"{base}({sfx})"
-               cursor.execute("SELECT id FROM products WHERE productnumber=%s", (newn,))
-               if cursor.fetchone():
-                   sfx += 1
-               else:
-                   p_data['productnumber'] = newn
-                   break
+    rost_id = find_or_update_rostovka_product(conn, pnum, p_data)
+    if rost_id:
+        return
 
-   final_pn = p_data['productnumber']
-   cursor.execute("SELECT id FROM products WHERE productnumber=%s", (final_pn,))
-   row = cursor.fetchone()
-   if row:
-       sets = ', '.join([f"{k}=%s" for k in p_data if k != 'productnumber'])
-       vals = [p_data[k] for k in p_data if k != 'productnumber']
-       q = f"UPDATE products SET {sets} WHERE productnumber=%s"
-       cursor.execute(q, vals + [final_pn])
-       conn.commit()
-   else:
-       cols = ', '.join(p_data.keys())
-       pls = ', '.join(['%s'] * len(p_data))
-       q = f"INSERT INTO products ({cols}) VALUES ({pls})"
-       vals = tuple(p_data.values())
-       cursor.execute(q, vals)
-       conn.commit()
+    cursor.execute("SELECT id FROM products WHERE productnumber=%s", (pnum,))
+    exist = cursor.fetchall()
+    if exist:
+        if not same_item_check(cursor, p_data):
+            base = re.sub(r"\(\d+\)$", "", pnum).strip()
+            sfx = 1
+            while True:
+                newn = f"{base}({sfx})"
+                cursor.execute("SELECT id FROM products WHERE productnumber=%s", (newn,))
+                if cursor.fetchone():
+                    sfx += 1
+                else:
+                    p_data['productnumber'] = newn
+                    break
+
+    final_pn = p_data['productnumber']
+    cursor.execute("SELECT id FROM products WHERE productnumber=%s", (final_pn,))
+    row = cursor.fetchone()
+    if row:
+        sets = ', '.join([f"{k}=%s" for k in p_data if k != 'productnumber'])
+        vals = [p_data[k] for k in p_data if k != 'productnumber']
+        q = f"UPDATE products SET {sets} WHERE productnumber=%s"
+        cursor.execute(q, vals + [final_pn])
+        conn.commit()
+    else:
+        cols = ', '.join(p_data.keys())
+        pls = ', '.join(['%s'] * len(p_data))
+        q = f"INSERT INTO products ({cols}) VALUES ({pls})"
+        vals = tuple(p_data.values())
+        cursor.execute(q, vals)
+        conn.commit()
 
 
 def merge_similar_products(conn):
@@ -1007,6 +1019,23 @@ def merge_similar_products_and_rename():
    try:
        merge_similar_products(conn)
        rename_different_products_in_date_order(conn)
+       
+       # Додаємо нову логіку консолідації ростовки
+       try:
+           from advanced_rostovka_consolidator import SmartSuffixManager
+           logger.info("🔄 Запуск розширеної консолідації ростовки...")
+           
+           manager = SmartSuffixManager(conn.cursor(), conn)
+           consolidated = manager.clean_auto_duplicates_only()
+           
+           if consolidated > 0:
+               logger.info(f"✅ Консолідовано {consolidated} ростовок з автоматичними дублікатами")
+           
+       except ImportError:
+           logger.warning("Модуль advanced_rostovka_consolidator недоступний")
+       except Exception as e:
+           logger.error(f"Помилка розширеної консолідації: {e}")
+           
    except Exception as e:
        logger.error(f"Помилка merge/rename: {e}")
        conn.rollback()
@@ -1203,5 +1232,30 @@ def import_data():
        logger.error(f"Не вдалося виконати orders_pars.py: {err}")
 
 
+def consolidate_rostovka_command():
+    """Команда для консолідації всіх ростовок."""
+    logger.info("🚀 ЗАПУСК КОНСОЛІДАЦІЇ РОСТОВОК")
+    
+    conn = connect_to_db()
+    if not conn:
+        logger.error("Не вдалося підключитися до БД")
+        return
+    
+    try:
+        from advanced_rostovka_manager import batch_consolidate_all_rostovka
+        batch_consolidate_all_rostovka(conn)
+        logger.info("✅ Консолідація ростовок завершена")
+    except ImportError:
+        logger.error("❌ Модуль advanced_rostovka_manager недоступний")
+    except Exception as e:
+        logger.error(f"❌ Помилка консолідації: {e}")
+        conn.rollback()
+    finally:
+        conn.close()
+
 if __name__ == '__main__':
-   import_data()
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1] == "--consolidate-rostovka":
+        consolidate_rostovka_command()
+    else:
+        import_data()
