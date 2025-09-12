@@ -1,0 +1,16 @@
+2025-09-12 03:21:46,017 - [MainThread] - INFO - ⚡ ШВИДКЕ ОНОВЛЕННЯ
+2025-09-12 03:21:46,017 - [MainThread] - INFO - 🔄 ІНКРЕМЕНТАЛЬНИЙ ПАРСИНГ (останні 3 днів)
+2025-09-12 03:21:47,252 - [MainThread] - ERROR - Критична помилка: 'NoneType' object has no attribute 'read'
+2025-09-12 03:21:47,253 - [MainThread] - ERROR - Критична помилка парсингу: 'NoneType' object has no attribute 'read'
+Traceback (most recent call last):
+  File "/Users/i.malashenko/Desktop/react-fastapi-app/backend/scripts/unified_parser.py", line 186, in parse
+    await self._parse_quick_update()
+  File "/Users/i.malashenko/Desktop/react-fastapi-app/backend/scripts/unified_parser.py", line 441, in _parse_quick_update
+    await self._parse_incremental(3)
+  File "/Users/i.malashenko/Desktop/react-fastapi-app/backend/scripts/unified_parser.py", line 351, in _parse_incremental
+    stderr = await process.stderr.read()
+                   ^^^^^^^^^^^^^^^^^^^
+AttributeError: 'NoneType' object has no attribute 'read'
+2025-09-12 03:22:02,892 - [MainThread] - INFO - ⚡ ШВИДКЕ ОНОВЛЕННЯ
+2025-09-12 03:22:02,892 - [MainThread] - INFO - 🔄 ІНКРЕМЕНТАЛЬНИЙ ПАРСИНГ (останні 3 днів)
+2025-09-12 03:22:04,043 - [MainThread] - ERROR - Помилка інкрементального парсингу: Процес завершився з кодом 1

@@ -22,11 +22,16 @@ DATABASE_URL = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NA
 logger = logging.getLogger(__name__)
 logger.info(f"Using database connection: {DATABASE_URL}")
 
-# Create SQLAlchemy engine
+# Create SQLAlchemy engine with connection pool limits
 engine = create_engine(
     DATABASE_URL, 
     connect_args={} if DATABASE_URL.startswith("postgresql") else {"check_same_thread": False},
-    echo=True  # Set to True for SQL query logging
+    echo=False,  # Вимкнено для зменшення навантаження
+    pool_size=5,  # Основний пул з'єднань
+    max_overflow=10,  # Максимум додаткових з'єднань
+    pool_timeout=30,  # Таймаут очікування з'єднання
+    pool_recycle=1800,  # Перестворювати з'єднання кожні 30 хв
+    pool_pre_ping=True  # Перевіряти з'єднання перед використанням
 )
 
 # Create session factory

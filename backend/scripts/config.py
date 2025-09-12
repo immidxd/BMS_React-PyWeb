@@ -118,6 +118,16 @@ PARSING_CONFIG = {
     "special_sheets": {
         "Data": "reference",  # Довідковий аркуш
         "Валізи(Андрій)": {"date": "2024-01-01", "supplier": "Андрій"}
+    },
+    
+    # Паралельна обробка
+    "parallel": {
+        "enabled": True,  # Увімкнути паралельну обробку
+        "max_workers": 3,  # Зменшено для економії з'єднань БД
+        "batch_size": 25,  # Зменшено для менш агресивної обробки
+        "queue_timeout": 30,  # Таймаут черги (сек)
+        "db_pool_size": 3,  # Зменшено відповідно до max_workers
+        "progress_update_interval": 2.0  # Збільшено для зменшення навантаження
     }
 }
 

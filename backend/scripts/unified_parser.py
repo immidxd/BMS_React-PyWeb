@@ -25,6 +25,14 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from models.database import SessionLocal
 from models.models import ParsingLog
 
+# Імпортуємо паралельний парсер
+try:
+    from parallel_parser import AsyncParallelParser, ParallelParser
+    PARALLEL_PARSING_AVAILABLE = True
+except ImportError:
+    PARALLEL_PARSING_AVAILABLE = False
+    logger.warning("Паралельний парсер недоступний, використовується послідовна обробка")
+
 # Налаштування логування
 logging.basicConfig(
     level=logging.INFO,
@@ -43,6 +51,9 @@ TIME_LIMITS = {
     "products_only": 90 * 60,     # 1.5 год
     "orders_only": 90 * 60,       # 1.5 год
     "new_products": 30 * 60,      # 30 хв
+    "parallel_full": 2 * 60 * 60,  # 2 години
+    "parallel_products": 60 * 60,  # 1 година
+    "parallel_orders": 60 * 60,    # 1 година
 }
 
 class ParsingMode(Enum):
@@ -53,6 +64,9 @@ class ParsingMode(Enum):
     ORDERS_ONLY = "orders_only"  # Тільки замовлення
     NEW_PRODUCTS = "new_products"  # Пошук новинок
     QUICK_UPDATE = "quick_update"  # Швидке оновлення (останні 3 дні)
+    PARALLEL_FULL = "parallel_full"  # Паралельний повний парсинг
+    PARALLEL_PRODUCTS = "parallel_products"  # Паралельний парсинг товарів
+    PARALLEL_ORDERS = "parallel_orders"  # Паралельний парсинг замовлень
 
 class ParsingStatus:
     """Клас для відстеження статусу парсингу."""
@@ -124,12 +138,26 @@ class ParsingStatus:
 class UnifiedParser:
     """Об'єднаний парсер для всіх типів даних."""
     
-    def __init__(self, status_callback: Optional[Callable] = None):
+    def __init__(self, status_callback: Optional[Callable] = None, use_parallel: bool = False):
         self.status = ParsingStatus(status_callback)
         self.is_cancelled = False
         self.parsing_log = None
         self.db_session = None
         self.current_process: Optional[asyncio.subprocess.Process] = None
+        self.use_parallel = use_parallel and PARALLEL_PARSING_AVAILABLE
+        
+        # Ініціалізуємо паралельний парсер якщо потрібно
+        if self.use_parallel:
+            self.parallel_parser = AsyncParallelParser(progress_callback=self._parallel_progress_callback)
+            logger.info("Увімкнено паралельну обробку")
+    
+    def _parallel_progress_callback(self, progress: Dict):
+        """Callback для оновлення прогресу паралельної обробки."""
+        self.status.update(
+            f"Паралельна обробка: {progress['completed']}/{progress['total']} задач",
+            progress['completed'],
+            progress['total']
+        )
         
     async def parse(self, mode: ParsingMode, **kwargs):
         """Запускає парсинг у вибраному режимі."""
@@ -156,6 +184,12 @@ class UnifiedParser:
                 await self._parse_new_products()
             elif mode == ParsingMode.QUICK_UPDATE:
                 await self._parse_quick_update()
+            elif mode == ParsingMode.PARALLEL_FULL:
+                await self._parse_parallel_full()
+            elif mode == ParsingMode.PARALLEL_PRODUCTS:
+                await self._parse_parallel_products()
+            elif mode == ParsingMode.PARALLEL_ORDERS:
+                await self._parse_parallel_orders()
             else:
                 raise ValueError(f"Невідомий режим парсингу: {mode}")
             
@@ -314,8 +348,13 @@ class UnifiedParser:
             return
 
         if process.returncode != 0:
-            stderr = await process.stderr.read()
-            self.status.add_error(f"Помилка інкрементального парсингу: {stderr.decode('utf-8')}")
+            # Перевіряємо чи є stderr перед читанням
+            if process.stderr:
+                stderr = await process.stderr.read()
+                error_msg = stderr.decode('utf-8') if stderr else "Невідома помилка"
+            else:
+                error_msg = f"Процес завершився з кодом {process.returncode}"
+            self.status.add_error(f"Помилка інкрементального парсингу: {error_msg}")
             self._update_parsing_log("failed", "Помилка інкрементального парсингу")
         else:
             # фінальний меседж БЕЗ примусових 1/1, зберігаємо останні лічильники
@@ -405,6 +444,109 @@ class UnifiedParser:
         
         # Інкрементальний парсинг за 3 дні
         await self._parse_incremental(3)
+    
+    async def _parse_parallel_full(self):
+        """Паралельний повний парсинг."""
+        if not self.use_parallel:
+            logger.warning("Паралельна обробка недоступна, використовується звичайний режим")
+            await self._parse_full()
+            return
+        
+        logger.info("🚀⚡ ПАРАЛЕЛЬНИЙ ПОВНИЙ ПАРСИНГ")
+        
+        # Крок 1: Паралельний парсинг товарів
+        self.status.update("Паралельний парсинг товарів...", 0, 2)
+        await self._parse_parallel_products()
+        await self._check_cancelled()
+        
+        # Крок 2: Паралельний парсинг замовлень
+        self.status.update("Паралельний парсинг замовлень...", 1, 2)
+        await self._parse_parallel_orders()
+        await self._check_cancelled()
+        
+        self.status.update("Паралельний повний парсинг завершено", 2, 2)
+    
+    async def _parse_parallel_products(self):
+        """Паралельний парсинг товарів."""
+        if not self.use_parallel:
+            logger.warning("Паралельна обробка недоступна")
+            await self._parse_products_only()
+            return
+        
+        logger.info("📦⚡ ПАРАЛЕЛЬНИЙ ПАРСИНГ ТОВАРІВ")
+        
+        try:
+            # Отримуємо список аркушів для обробки
+            from googlesheets_pars import get_google_sheet_client
+            
+            client = get_google_sheet_client()
+            if not client:
+                raise Exception("Не вдалося підключитися до Google Sheets")
+            
+            doc = client.open(os.getenv("GOOGLE_SHEETS_DOCUMENT_NAME", "Журнал"))
+            sheets = doc.worksheets()
+            
+            # Фільтруємо аркуші
+            ignore_sheets = ['Suppliers', 'Publications', 'New']
+            sheets_to_process = [
+                {"name": ws.title, "worksheet": ws}
+                for ws in sheets
+                if ws.title not in ignore_sheets
+            ]
+            
+            self.status.update(f"Знайдено {len(sheets_to_process)} аркушів для паралельної обробки")
+            
+            # Запускаємо паралельну обробку
+            results = await self.parallel_parser.process_sheets_async(sheets_to_process)
+            
+            # Аналізуємо результати
+            successful = sum(1 for r in results if r.success)
+            failed = sum(1 for r in results if not r.success)
+            total_items = sum(r.items_processed for r in results)
+            
+            logger.info(f"Паралельна обробка товарів завершена: {successful} успішно, {failed} помилок, {total_items} товарів")
+            self.status.update(f"Оброблено {total_items} товарів", 1, 1)
+            
+        except Exception as e:
+            logger.error(f"Помилка паралельного парсингу товарів: {e}", exc_info=True)
+            self.status.add_error(f"Помилка паралельного парсингу: {str(e)}")
+            raise
+    
+    async def _parse_parallel_orders(self):
+        """Паралельний парсинг замовлень."""
+        if not self.use_parallel:
+            logger.warning("Паралельна обробка недоступна")
+            await self._parse_orders_only()
+            return
+        
+        logger.info("🛒⚡ ПАРАЛЕЛЬНИЙ ПАРСИНГ ЗАМОВЛЕНЬ")
+        
+        try:
+            # Отримуємо список замовлень для обробки
+            from orders_comprehensive_parser import OrdersComprehensiveParser
+            
+            parser = OrdersComprehensiveParser(use_cache=True)
+            
+            # Отримуємо дані замовлень
+            orders_data = parser.get_all_orders_data()
+            
+            self.status.update(f"Знайдено {len(orders_data)} замовлень для паралельної обробки")
+            
+            # Запускаємо паралельну обробку
+            results = await self.parallel_parser.process_orders_async(orders_data)
+            
+            # Аналізуємо результати
+            successful = sum(1 for r in results if r.success)
+            failed = sum(1 for r in results if not r.success)
+            total_items = sum(r.items_processed for r in results)
+            
+            logger.info(f"Паралельна обробка замовлень завершена: {successful} успішно, {failed} помилок, {total_items} замовлень")
+            self.status.update(f"Оброблено {total_items} замовлень", 1, 1)
+            
+        except Exception as e:
+            logger.error(f"Помилка паралельного парсингу замовлень: {e}", exc_info=True)
+            self.status.add_error(f"Помилка паралельного парсингу: {str(e)}")
+            raise
     
     async def _run_products_parser(self):
         """Запускає парсер товарів."""
@@ -686,6 +828,27 @@ def get_parsing_modes():
             "description": "Пошук нових товарів в каталозі",
             "icon": "🆕",
             "estimated_time": "15-30 хвилин"
+        },
+        {
+            "id": ParsingMode.PARALLEL_FULL.value,
+            "name": "⚡ Паралельний повний парсинг",
+            "description": "Прискорений повний парсинг з паралельною обробкою",
+            "icon": "🚀⚡",
+            "estimated_time": "30-45 хвилин"
+        },
+        {
+            "id": ParsingMode.PARALLEL_PRODUCTS.value,
+            "name": "⚡ Паралельний парсинг товарів",
+            "description": "Прискорений парсинг товарів з паралельною обробкою",
+            "icon": "📦⚡",
+            "estimated_time": "15-25 хвилин"
+        },
+        {
+            "id": ParsingMode.PARALLEL_ORDERS.value,
+            "name": "⚡ Паралельний парсинг замовлень",
+            "description": "Прискорений парсинг замовлень з паралельною обробкою",
+            "icon": "🛒⚡",
+            "estimated_time": "15-25 хвилин"
         }
     ]
 
