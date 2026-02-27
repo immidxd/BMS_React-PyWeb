@@ -257,15 +257,6 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
                 />
                 <span className="ml-2">Тільки непродані</span>
               </label>
-              <label className="inline-flex items-center text-sm text-gray-700 dark:text-gray-300">
-                <input
-                  type="checkbox"
-                  checked={visibleOnly}
-                  onChange={(e) => { setVisibleOnly(e.target.checked); setPage(1); }}
-                  className="h-4 w-4 text-primary-600 border-gray-300 rounded focus:ring-primary-500 dark:focus:ring-primary-400 dark:bg-gray-700 dark:border-gray-600"
-                />
-                <span className="ml-2">Лише видимі</span>
-              </label>
             </div>
             <div className="order-1 md:order-none justify-self-center flex justify-center">
               <Pagination
