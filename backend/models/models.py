@@ -177,6 +177,18 @@ class Order(Base):
     broadcast = relationship("Broadcast", back_populates="orders")
     items = relationship("OrderItem", back_populates="order", cascade="all, delete-orphan")
 
+class Supplier(Base):
+    __tablename__ = "suppliers"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(255), unique=True, nullable=False)
+    notes = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    products = relationship("Product", back_populates="supplier")
+
+
 class Product(Base):
     __tablename__ = "products"
     
@@ -215,9 +227,12 @@ class Product(Base):
     conditionid = Column(Integer, ForeignKey("conditions.id"), nullable=True)
     importid = Column(Integer, nullable=True)
     deliveryid = Column(Integer, nullable=True)
+    supplierid = Column(Integer, ForeignKey("suppliers.id"), nullable=True)
+    is_visible = Column(Boolean, default=True)
     
     # Relationships
     order_items = relationship("OrderItem", back_populates="product")
+    supplier = relationship("Supplier", back_populates="products")
     brand = relationship("Brand", foreign_keys=[brandid], primaryjoin="Product.brandid == Brand.id")
     type = relationship("Type", foreign_keys=[typeid], primaryjoin="Product.typeid == Type.id")
     subtype = relationship("Subtype", foreign_keys=[subtypeid], primaryjoin="Product.subtypeid == Subtype.id")

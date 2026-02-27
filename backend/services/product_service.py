@@ -78,6 +78,7 @@ def get_products(
                c.colorname as color_name,
                cond.conditionname as condition_name,
                g.gendername as gender_name,
+               sup.name as supplier_name,
                COALESCE(sold.sold_count, 0) AS sold_count,
                GREATEST(0, COALESCE(p.quantity, 0) - COALESCE(sold.sold_count, 0)) AS available_qty
         FROM products p
@@ -87,6 +88,7 @@ def get_products(
         LEFT JOIN colors c ON p.colorid = c.id
         LEFT JOIN conditions cond ON p.conditionid = cond.id
         LEFT JOIN genders g ON p.genderid = g.id
+        LEFT JOIN suppliers sup ON p.supplierid = sup.id
         LEFT JOIN (
             SELECT product_id, COUNT(*) AS sold_count
             FROM order_items
@@ -249,6 +251,7 @@ def get_products(
                 'measurementscm': m.get('measurementscm'),
                 'quantity': m.get('quantity'),
                 'mainimage': m.get('mainimage'),
+                'is_visible': m.get('is_visible'),
                 'typeid': m.get('typeid'),
                 'subtypeid': m.get('subtypeid'),
                 'brandid': m.get('brandid'),
@@ -268,6 +271,7 @@ def get_products(
                 'color_name': m.get('color_name'),
                 'condition_name': m.get('condition_name'),
                 'gender_name': m.get('gender_name'),
+                'supplier_name': m.get('supplier_name'),
                 'sold_count': m.get('sold_count', 0),
                 'available_qty': m.get('available_qty'),
             }

@@ -20,8 +20,7 @@ __pycache__/
 # Ignore accidental nested bare Git repo
 BMS_React-PyWeb.git/
 
-# Ignore build output
-frontend/build/
+# Ignore build backups
 frontend/build_backup_*/
 backend/scripts/secure_creds/*.json
 

@@ -42,11 +42,11 @@ export interface ClientList {
 
 export interface Supplier {
   id: number;
-  company_name: string | null;
-  contact_person: string | null;
-  city_location: string | null;
-  status: string | null;
-  priority: number;
+  name: string;
+  notes: string | null;
+  product_count: number;
+  created_at: string | null;
+  updated_at: string | null;
 }
 
 export interface SupplierList {
@@ -137,9 +137,9 @@ export const deleteClient = async (id: number): Promise<{ message: string }> => 
 export const fetchSuppliers = async (
   search?: string,
   page: number = 1,
-  perPage: number = 20,
-  sortBy: 'id' | 'company_name' | 'priority' = 'priority',
-  sortDir: 'asc' | 'desc' = 'desc',
+  perPage: number = 100,
+  sortBy: 'id' | 'name' | 'product_count' = 'name',
+  sortDir: 'asc' | 'desc' = 'asc',
 ): Promise<SupplierList> => {
   const params = new URLSearchParams();
   params.append('page', String(page));
@@ -148,5 +148,20 @@ export const fetchSuppliers = async (
   if (sortBy) params.append('sort_by', sortBy);
   if (sortDir) params.append('sort_dir', sortDir);
   const response = await axios.get(`/api/suppliers?${params.toString()}`);
+  return response.data;
+};
+
+export const mergeSuppliers = async (targetId: number, sourceIds: number[]): Promise<any> => {
+  const response = await axios.post('/api/suppliers/merge', { target_id: targetId, source_ids: sourceIds });
+  return response.data;
+};
+
+export const updateSupplier = async (id: number, data: { name?: string; notes?: string }): Promise<Supplier> => {
+  const response = await axios.put(`/api/suppliers/${id}`, data);
+  return response.data;
+};
+
+export const deleteSupplier = async (id: number): Promise<any> => {
+  const response = await axios.delete(`/api/suppliers/${id}`);
   return response.data;
 };

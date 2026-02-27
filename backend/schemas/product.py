@@ -167,18 +167,34 @@ class Product(ProductBase):
 class ProductList(BaseModel):
     id: int
     productnumber: str
+    clonednumbers: Optional[str] = None
     model: Optional[str] = None
+    marking: Optional[str] = None
+    year: Optional[int] = None
     description: Optional[str] = None
+    extranote: Optional[str] = None
     price: Optional[float] = None
     oldprice: Optional[float] = None
     quantity: int
     sizeeu: Optional[str] = None
+    sizeua: Optional[str] = None
+    sizeusa: Optional[str] = None
+    sizeuk: Optional[str] = None
+    sizejp: Optional[str] = None
+    sizecn: Optional[str] = None
+    measurementscm: Optional[str] = None
+    mainimage: Optional[str] = None
+    is_visible: Optional[bool] = None
+    dateadded: Optional[str] = None
     typeid: Optional[int] = None
+    subtypeid: Optional[int] = None
     brandid: Optional[int] = None
     statusid: Optional[int] = None
     colorid: Optional[int] = None
     conditionid: Optional[int] = None
     genderid: Optional[int] = None
+    importid: Optional[int] = None
+    deliveryid: Optional[int] = None
     
     # Related names from JOIN queries
     type_name: Optional[str] = None
@@ -187,6 +203,7 @@ class ProductList(BaseModel):
     color_name: Optional[str] = None
     condition_name: Optional[str] = None
     gender_name: Optional[str] = None
+    supplier_name: Optional[str] = None
 
     # Computed from order_items
     sold_count: int = 0

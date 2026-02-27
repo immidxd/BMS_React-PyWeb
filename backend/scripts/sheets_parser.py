@@ -63,6 +63,33 @@ def parse_date_from_sheet_title(title: str) -> Optional[date]:
     return None
 
 
+def parse_supplier_from_sheet_title(title: str) -> Optional[str]:
+    """Extract supplier name from sheet title like '24.02.2026(Андрій)' → 'Андрій'."""
+    m = re.search(r"\(([^)]+)\)", title.strip())
+    if m:
+        name = m.group(1).strip()
+        return name if name else None
+    return None
+
+
+def _get_or_create_supplier(session: Session, name: str) -> Optional[int]:
+    """Get or create a supplier row by name. Returns supplier ID."""
+    if not name or not name.strip():
+        return None
+    from sqlalchemy import text
+    n = name.strip()
+    row = session.execute(
+        text("SELECT id FROM suppliers WHERE name = :n"), {"n": n}
+    ).fetchone()
+    if row:
+        return row[0]
+    row = session.execute(
+        text("INSERT INTO suppliers (name) VALUES (:n) RETURNING id"), {"n": n}
+    ).fetchone()
+    session.flush()
+    return row[0] if row else None
+
+
 # ── Reference-table helpers ──────────────────────────────────────────────────
 def _get_or_create(session: Session, model, unique_field: str, value: str):
     """Get or create a reference-table row by unique string field."""
@@ -161,6 +188,7 @@ def _parse_products_sheet(
     sheet_date: Optional[date],
     progress_cb: Optional[Callable] = None,
     seen_in_run: Optional[dict] = None,
+    supplier_id: Optional[int] = None,
 ) -> dict:
     """
     Parse one batch sheet from Журнал into products table.
@@ -317,6 +345,27 @@ def _parse_products_sheet(
             seen_in_run[full_match.id] = cnt
             full_match.quantity = cnt
             full_match.statusid = status_id
+            # Оновлюємо поля якщо нові дані непорожні
+            if marking:
+                full_match.marking = marking
+            if model_val:
+                full_match.model = model_val
+            if year_int is not None:
+                full_match.year = year_int
+            if desc_val:
+                full_match.description = desc_val
+            if clones:
+                full_match.clonednumbers = clones
+            if cm_val:
+                full_match.measurementscm = cm_val
+            if supplier_id and not full_match.supplierid:
+                full_match.supplierid = supplier_id
+            # Логіка oldprice: якщо ціна з журналу відрізняється — зберегти стару
+            if price_float and full_match.price and price_float != full_match.price:
+                full_match.oldprice = full_match.price
+                full_match.price = price_float
+            elif price_float and not full_match.price:
+                full_match.price = price_float
             full_match.updated_at = datetime.utcnow()
             updated += 1
 
@@ -343,6 +392,7 @@ def _parse_products_sheet(
                 statusid              = status_id,
                 manufacturercountryid = mfr_id,
                 ownercountryid        = own_id,
+                supplierid            = supplier_id,
             )
             session.add(product)
             try:
@@ -402,6 +452,7 @@ def _parse_products_sheet(
                 statusid              = status_id,
                 manufacturercountryid = mfr_id,
                 ownercountryid        = own_id,
+                supplierid            = supplier_id,
             )
             session.add(product)
             try:
@@ -824,6 +875,13 @@ def _parse_orders_sheet(
 
             product = _resolve_order_product(session, pnum_clean, size_hints)
 
+            # Oldprice logic: якщо ціна продажу відрізняється від журнальної
+            if product and price and price > 0 and product.price:
+                if price != product.price:
+                    product.oldprice = product.price
+                    product.price = price
+                    product.updated_at = datetime.utcnow()
+
             item = OrderItem(
                 order_id   = order.id,
                 product_id = product.id if product else None,
@@ -1092,7 +1150,9 @@ def run_products_parsing(
 
     for idx, ws in enumerate(batch_sheets):
         sheet_date = parse_date_from_sheet_title(ws.title)
-        logger.info(f"[products] Parsing sheet {idx+1}/{total_sheets}: {ws.title}")
+        supplier_name = parse_supplier_from_sheet_title(ws.title)
+        supplier_id = _get_or_create_supplier(session, supplier_name) if supplier_name else None
+        logger.info(f"[products] Parsing sheet {idx+1}/{total_sheets}: {ws.title} (supplier={supplier_name})")
 
         def _cb(done, total, _ws=ws, _idx=idx):
             if progress_cb:
@@ -1103,7 +1163,7 @@ def run_products_parsing(
         if idx > 0:
             time.sleep(SHEET_READ_DELAY_SEC)
 
-        result = _parse_products_sheet(ws, session, sheet_date, _cb, seen_in_run)
+        result = _parse_products_sheet(ws, session, sheet_date, _cb, seen_in_run, supplier_id)
         total_added   += result["added"]
         total_updated += result["updated"]
         total_skipped += result["skipped"]
