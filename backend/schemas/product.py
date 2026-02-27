@@ -231,6 +231,7 @@ class ProductFilter(BaseModel):
     # Visibility
     is_visible: Optional[bool] = None
     with_stock_only: Optional[bool] = None
+    only_unsold: Optional[bool] = None
 
 # Модель для опцій фільтрів
 class FilterOptions(BaseModel):

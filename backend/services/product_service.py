@@ -191,6 +191,9 @@ def get_products(
             if filters.with_stock_only:
                 where_conditions.append("p.quantity > 0")
 
+            if filters.only_unsold:
+                where_conditions.append("s.statusname = 'Непродано'")
+
             if filters.is_visible is not None:
                 where_conditions.append("p.is_visible = :is_visible")
                 params['is_visible'] = filters.is_visible

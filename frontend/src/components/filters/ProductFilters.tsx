@@ -141,8 +141,7 @@ const ProductFiltersPanel: React.FC<ProductFiltersPanelProps> = ({ filters, sele
     'typeids','brandids','genderids','colorids','conditionids','statusids',
   ].reduce((acc, f) => acc + countActive(f), 0)
     + (selectedFilters.min_price !== undefined || selectedFilters.max_price !== undefined ? 1 : 0)
-    + (selectedFilters.sizeeu ? 1 : 0)
-    + (selectedFilters.with_stock_only ? 1 : 0);
+    + (selectedFilters.sizeeu ? 1 : 0);
 
   const euSizes = useMemo(() => {
     const raw = filters.size_ranges?.eu || [];
@@ -159,19 +158,6 @@ const ProductFiltersPanel: React.FC<ProductFiltersPanelProps> = ({ filters, sele
           <span className="inline-flex items-center justify-center min-w-[20px] h-5 px-1.5 rounded-full bg-blue-500 text-white text-[11px] font-bold">{totalActive}</span>
         </div>
       )}
-
-      {/* Наявність та видимість */}
-      <div className="border-b border-gray-100 dark:border-gray-700 py-3 space-y-2">
-        <label className="flex items-center gap-2 cursor-pointer">
-          <input
-            type="checkbox"
-            className="w-3.5 h-3.5 rounded border-gray-300 text-blue-500 focus:ring-blue-400"
-            checked={selectedFilters.with_stock_only || false}
-            onChange={e => onFilterChange({ ...selectedFilters, with_stock_only: e.target.checked || undefined })}
-          />
-          <span className="text-xs text-gray-700 dark:text-gray-200 font-medium">Тільки в наявності (кількість &gt; 0)</span>
-        </label>
-      </div>
 
       {/* Тип */}
       {filters.types?.length > 0 && (

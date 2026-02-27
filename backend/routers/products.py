@@ -50,6 +50,7 @@ async def get_products(
     # Visibility / stock
     is_visible: Optional[bool] = Query(None),
     with_stock_only: Optional[bool] = Query(None),
+    only_unsold: Optional[bool] = Query(None),
     sort_by: str = Query("id", description="Sort column"),
     sort_dir: str = Query("desc", description="Sort direction: asc|desc"),
     db: Session = Depends(get_db)
@@ -90,6 +91,7 @@ async def get_products(
             sizeeu=sizeeu,
             is_visible=is_visible,
             with_stock_only=with_stock_only,
+            only_unsold=only_unsold,
         )
 
         result = product_service.get_products(

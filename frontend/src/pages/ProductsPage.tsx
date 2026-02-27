@@ -77,7 +77,7 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
         sort_by: sortBy,
         sort_dir: sortDir,
         search: currentSearchTerm && currentSearchTerm.trim() ? currentSearchTerm.trim() : undefined,
-        with_stock_only: onlyUnsold ? true : (selectedFilters.with_stock_only || undefined),
+        only_unsold: onlyUnsold || undefined,
         is_visible: visibleOnly ? true : (selectedFilters.is_visible || undefined),
         min_price: selectedFilters.min_price,
         max_price: selectedFilters.max_price,
@@ -255,7 +255,7 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
                   onChange={(e) => { setOnlyUnsold(e.target.checked); setPage(1); }}
                   className="h-4 w-4 text-primary-600 border-gray-300 rounded focus:ring-primary-500 dark:focus:ring-primary-400 dark:bg-gray-700 dark:border-gray-600"
                 />
-                <span className="ml-2">Показувати тільки непродані</span>
+                <span className="ml-2">Тільки непродані</span>
               </label>
               <label className="inline-flex items-center text-sm text-gray-700 dark:text-gray-300">
                 <input
