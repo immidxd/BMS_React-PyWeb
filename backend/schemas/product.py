@@ -204,6 +204,7 @@ class ProductList(BaseModel):
     condition_name: Optional[str] = None
     gender_name: Optional[str] = None
     supplier_name: Optional[str] = None
+    subtype_name: Optional[str] = None
 
     # Computed from order_items
     sold_count: int = 0
