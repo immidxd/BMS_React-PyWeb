@@ -94,9 +94,9 @@ def populate_initial_data(db: Session):
     
     # Create gender options
     genders = [
-        Gender(name="Чоловіча"),
-        Gender(name="Жіноча"),
-        Gender(name="Унісекс"),
+        Gender(gendername="Чоловіча"),
+        Gender(gendername="Жіноча"),
+        Gender(gendername="Унісекс"),
     ]
     db.add_all(genders)
     

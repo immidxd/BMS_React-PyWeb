@@ -2,10 +2,10 @@ from typing import List
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from backend.models.database import get_db
-from backend.models.models import OrderStatus
-from backend.schemas.reference import OrderStatus as OrderStatusSchema
-from backend.schemas.reference import OrderStatusCreate, OrderStatusUpdate, OrderStatusList
+from models.database import get_db
+from models.models import OrderStatus
+from schemas.reference import OrderStatus as OrderStatusSchema
+from schemas.reference import OrderStatusCreate, OrderStatusUpdate, OrderStatusList
 
 router = APIRouter()
 

@@ -5,10 +5,16 @@ from sqlalchemy.orm import Session
 import logging
 from datetime import datetime
 
-from backend.models.database import get_db
-from backend.models import models
-from backend.schemas import product as schemas
-from backend.services import product_service
+try:
+    from models.database import get_db
+    from models import models
+    from schemas import product as schemas
+    from services import product_service
+except ImportError:
+    from backend.models.database import get_db
+    from backend.models import models
+    from backend.schemas import product as schemas
+    from backend.services import product_service
 
 logger = logging.getLogger(__name__)
 
@@ -16,13 +22,12 @@ router = APIRouter()
 
 @router.get("/api/products", response_model=schemas.ProductListResponse)
 async def get_products(
-    # Підтримуємо обидва варіанти параметрів для сумісності з фронтендом
     page: int = Query(1, ge=1, description="Current page (starts from 1)"),
     per_page: int = Query(20, ge=1, le=200, description="Number of items per page"),
     skip: Optional[int] = Query(None, ge=0, description="Alternative to page/per_page"),
     limit: Optional[int] = Query(None, ge=1, le=200, description="Alternative to page/per_page"),
     search: Optional[str] = Query(None, description="Search term for products"),
-    # Фільтри
+    # Single ID filters (legacy)
     typeid: Optional[int] = Query(None),
     subtypeid: Optional[int] = Query(None),
     brandid: Optional[int] = Query(None),
@@ -30,8 +35,19 @@ async def get_products(
     colorid: Optional[int] = Query(None),
     statusid: Optional[int] = Query(None),
     conditionid: Optional[int] = Query(None),
+    # Multi-ID filters
+    typeids: Optional[List[int]] = Query(None),
+    subtypeids: Optional[List[int]] = Query(None),
+    brandids: Optional[List[int]] = Query(None),
+    genderids: Optional[List[int]] = Query(None),
+    colorids: Optional[List[int]] = Query(None),
+    statusids: Optional[List[int]] = Query(None),
+    conditionids: Optional[List[int]] = Query(None),
+    # Price / size
     min_price: Optional[float] = Query(None, ge=0),
     max_price: Optional[float] = Query(None, ge=0),
+    sizeeu: Optional[str] = Query(None),
+    # Visibility / stock
     is_visible: Optional[bool] = Query(None),
     with_stock_only: Optional[bool] = Query(None),
     sort_by: str = Query("id", description="Sort column"),
@@ -62,8 +78,16 @@ async def get_products(
             colorid=colorid,
             statusid=statusid,
             conditionid=conditionid,
+            typeids=typeids,
+            subtypeids=subtypeids,
+            brandids=brandids,
+            genderids=genderids,
+            colorids=colorids,
+            statusids=statusids,
+            conditionids=conditionids,
             min_price=min_price,
             max_price=max_price,
+            sizeeu=sizeeu,
             is_visible=is_visible,
             with_stock_only=with_stock_only,
         )
@@ -84,8 +108,7 @@ async def get_products(
             "items": items,
             "total": result["total"],
             "page": result["page"],
-            # узгоджуємо назву з фронтендом
-            "per_page": result["size"],
+            "per_page": computed_limit,
             "pages": result["pages"],
         }
 

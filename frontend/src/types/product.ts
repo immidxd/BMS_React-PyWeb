@@ -39,7 +39,7 @@ export interface Product {
     created_at: string;
     updated_at: string;
     
-    // Related data
+    // Related data (ORM objects)
     type?: ReferenceItem;
     subtype?: ReferenceItem;
     brand?: ReferenceItem;
@@ -51,6 +51,20 @@ export interface Product {
     condition?: ReferenceItem;
     import_record?: ReferenceItem;
     delivery?: ReferenceItem;
+
+    // Flat joined name fields returned by SQL JOIN in product_service
+    type_name?: string;
+    brand_name?: string;
+    status_name?: string;
+    color_name?: string;
+    condition_name?: string;
+    gender_name?: string;
+    subtype_name?: string;
+    supplier_name?: string;
+
+    // Computed from order_items
+    sold_count?: number;
+    available_qty?: number;
 }
 
 export interface ProductListResponse {
@@ -86,16 +100,35 @@ export interface ProductFilters {
 
 export interface ProductFilter {
     search?: string;
+    // Legacy single-id
     typeid?: number;
     subtypeid?: number;
     brandid?: number;
+    genderid?: number;
+    colorid?: number;
     statusid?: number;
+    conditionid?: number;
+    // Multi-id arrays (used by filter panel)
+    typeids?: number[];
+    subtypeids?: number[];
+    brandids?: number[];
+    genderids?: number[];
+    colorids?: number[];
+    statusids?: number[];
+    conditionids?: number[];
+    // Price range
     min_price?: number;
     max_price?: number;
+    // Size
+    sizeeu?: string;
+    // Stock / visibility
+    with_stock_only?: boolean;
+    is_visible?: boolean;
+    // Legacy aliases kept for compatibility
     brands?: number[];
     types?: number[];
     colors?: number[];
     countries?: number[];
     only_unsold?: boolean;
     visible_only?: boolean;
-} 
+}

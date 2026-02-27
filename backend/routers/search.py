@@ -9,15 +9,15 @@ from sqlalchemy import text, or_, and_, func
 from typing import Optional, Dict, Any, List
 import logging
 
-from backend.models.database import get_db
-from backend.models import models
-from backend.schemas.search import (
+from models.database import get_db
+from models import models
+from schemas.search import (
     GlobalSearchRequest, 
     GlobalSearchResponse, 
     SearchInsights,
     CategorySearchResult
 )
-from backend.services.advanced_search_service import advanced_search_service
+from services.advanced_search_service import advanced_search_service
 
 router = APIRouter(prefix="/api/search", tags=["search"])
 logger = logging.getLogger(__name__)

@@ -26,6 +26,20 @@ class Type(Base):
     id = Column(Integer, primary_key=True, index=True)
     typename = Column(String(100), unique=True, nullable=False)
 
+class Subtype(Base):
+    __tablename__ = "subtypes"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    subtypename = Column(String(100), unique=True, nullable=False)
+    type_id = Column(Integer, ForeignKey("types.id"), nullable=True)
+
+class Country(Base):
+    __tablename__ = "countries"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    countryname = Column(String(100), unique=True, nullable=False)
+    countrycode = Column(String(10), nullable=True)
+
 class Status(Base):
     __tablename__ = "statuses"
     
@@ -80,7 +94,7 @@ class Client(Base):
     client_discount = Column(Float, nullable=True)
     bonus_account = Column(Float, nullable=True)
     city_of_residence = Column(String, nullable=True)
-    country_of_residence = Column(Integer, nullable=True)
+    country_of_residence = Column(Integer, ForeignKey("countries.id"), nullable=True)
     preferred_delivery_method_id = Column(Integer, nullable=True)
     preferred_payment_method_id = Column(Integer, nullable=True)
     address_id = Column(Integer, nullable=True)
@@ -139,6 +153,7 @@ class Order(Base):
     order_status_id = Column(Integer, ForeignKey("order_statuses.id"))
     total_amount = Column(Float, default=0.0, nullable=False)
     payment_method_id = Column(Integer, ForeignKey("payment_methods.id"))
+    payment_status = Column(String, nullable=True)
     payment_status_id = Column(Integer, ForeignKey("payment_statuses.id"))
     delivery_method_id = Column(Integer, ForeignKey("delivery_methods.id"))
     delivery_address_id = Column(Integer, ForeignKey("addresses.id"))
@@ -189,20 +204,29 @@ class Product(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
     # Foreign Keys
-    typeid = Column(Integer)
-    subtypeid = Column(Integer)
-    brandid = Column(Integer)
-    genderid = Column(Integer)
-    colorid = Column(Integer)
-    ownercountryid = Column(Integer)
-    manufacturercountryid = Column(Integer)
-    statusid = Column(Integer)
-    conditionid = Column(Integer)
-    importid = Column(Integer)
-    deliveryid = Column(Integer)
+    typeid = Column(Integer, ForeignKey("types.id"), nullable=True)
+    subtypeid = Column(Integer, ForeignKey("subtypes.id"), nullable=True)
+    brandid = Column(Integer, ForeignKey("brands.id"), nullable=True)
+    genderid = Column(Integer, ForeignKey("genders.id"), nullable=True)
+    colorid = Column(Integer, ForeignKey("colors.id"), nullable=True)
+    ownercountryid = Column(Integer, ForeignKey("countries.id"), nullable=True)
+    manufacturercountryid = Column(Integer, ForeignKey("countries.id"), nullable=True)
+    statusid = Column(Integer, ForeignKey("statuses.id"), nullable=True)
+    conditionid = Column(Integer, ForeignKey("conditions.id"), nullable=True)
+    importid = Column(Integer, nullable=True)
+    deliveryid = Column(Integer, nullable=True)
     
     # Relationships
     order_items = relationship("OrderItem", back_populates="product")
+    brand = relationship("Brand", foreign_keys=[brandid], primaryjoin="Product.brandid == Brand.id")
+    type = relationship("Type", foreign_keys=[typeid], primaryjoin="Product.typeid == Type.id")
+    subtype = relationship("Subtype", foreign_keys=[subtypeid], primaryjoin="Product.subtypeid == Subtype.id")
+    color = relationship("Color", foreign_keys=[colorid], primaryjoin="Product.colorid == Color.id")
+    gender = relationship("Gender", foreign_keys=[genderid], primaryjoin="Product.genderid == Gender.id")
+    owner_country = relationship("Country", foreign_keys=[ownercountryid], primaryjoin="Product.ownercountryid == Country.id")
+    manufacturer_country = relationship("Country", foreign_keys=[manufacturercountryid], primaryjoin="Product.manufacturercountryid == Country.id")
+    status = relationship("Status", foreign_keys=[statusid], primaryjoin="Product.statusid == Status.id")
+    condition = relationship("Condition", foreign_keys=[conditionid], primaryjoin="Product.conditionid == Condition.id")
 
 class ParsingSource(Base):
     __tablename__ = "parsing_sources"

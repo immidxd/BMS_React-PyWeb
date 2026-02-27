@@ -1,8 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
 import styled from 'styled-components';
-import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
-import { faEdit, faTrash, faEye, faEyeSlash, faCheck } from '@fortawesome/free-solid-svg-icons';
-import { useTheme } from '../../contexts/ThemeContext';
 import { 
     Table, 
     Button, 
@@ -122,7 +119,8 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
         { id: 'price', title: 'Ціна', optional: false },
         // 8.1, 8.2
         { id: 'oldprice', title: 'Стара ціна', optional: true },
-        { id: 'quantity', title: 'К-сть', optional: true },
+        { id: 'quantity', title: 'К-сть (заг.)', optional: true },
+        { id: 'available_qty', title: 'В наявності', optional: false },
         // 9
         { id: 'status_name', title: 'Статус', optional: false },
         // 10
@@ -212,17 +210,38 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
             )},
         oldprice: { title: 'Стара ціна', dataIndex: 'oldprice', key: 'oldprice', width: 90,
             render: (value: number) => value ? <OldPriceText>{Number(value).toFixed(0)} ₴</OldPriceText> : null },
-        quantity: { title: 'К-сть', dataIndex: 'quantity', key: 'quantity', width: 50, align: 'center' as const, sorter: true,
-            render: (q: number) => <Tag color={q > 0 ? 'green' : 'red'}>{q}</Tag> },
-        status_name: { title: 'Статус', dataIndex: 'status_name', key: 'status_name', width: 80,
-            render: (status: string) => (
-                <Tag
-                  color={status === 'Продано' ? 'red' : status === 'В наявності' ? 'green' : 'blue'}
-                  style={{ display: 'block', maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', padding: '0 6px', fontSize: 12 }}
-                >
-                  {status || 'Не вказано'}
-                </Tag>
-            ) },
+        quantity: { title: 'К-сть (заг.)', dataIndex: 'quantity', key: 'quantity', width: 65, align: 'center' as const, sorter: true,
+            render: (q: number) => <Tag color={q > 0 ? 'blue' : 'red'}>{q}</Tag> },
+        available_qty: { title: 'В наявності', key: 'available_qty', width: 80, align: 'center' as const,
+            render: (_: any, record: Product) => {
+                const total = record.quantity ?? 0;
+                const avail = record.available_qty ?? total;
+                const sold  = record.sold_count  ?? 0;
+                if (total === 0) return <Tag color="red">0</Tag>;
+                if (sold === 0)  return <Tag color="green">{total}</Tag>;
+                if (avail <= 0) return <Tag color="red">0 / {total}</Tag>;
+                return (
+                    <Tooltip title={`Продано: ${sold} / ${total}`}>
+                        <Tag color="orange">{avail} / {total}</Tag>
+                    </Tooltip>
+                );
+            } },
+        status_name: { title: 'Статус', dataIndex: 'status_name', key: 'status_name', width: 110,
+            render: (status: string) => {
+                const colorMap: Record<string, string> = {
+                    'Непродано': 'green',
+                    'Продано':   'red',
+                };
+                const color = colorMap[status] || (status ? 'geekblue' : 'default');
+                return (
+                    <Tag
+                        color={color}
+                        style={{ display: 'block', maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', padding: '0 6px', fontSize: 12 }}
+                    >
+                        {status || 'Не вказано'}
+                    </Tag>
+                );
+            } },
         condition_name: { title: 'Стан', dataIndex: 'condition_name', key: 'condition_name', width: 75 },
         clonednumbers: { title: 'Номера-клони', dataIndex: 'clonednumbers', key: 'clonednumbers', width: 160 },
         marking: { title: 'Маркування', dataIndex: 'marking', key: 'marking', width: 140 },
@@ -285,6 +304,20 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
                     rowSelection={rowSelection}
                     pagination={false}
                     loading={loading}
+                    onRow={(record: Product) => {
+                        const hasIssue = record.productnumber === '???' || !record.productnumber;
+                        const issues: string[] = [];
+                        if (!record.productnumber || record.productnumber === '???') issues.push('Товар не має номера');
+                        if (!record.type_name) issues.push('Не вказано тип');
+                        if (!record.price) issues.push('Ціна = 0 або не вказана');
+                        const conflictTitle = issues.join(' • ');
+                        return {
+                            title: hasIssue ? `⚠ ${conflictTitle}` : undefined,
+                            className: hasIssue
+                                ? 'bg-orange-50 dark:bg-orange-900/20 border-l-4 border-orange-400 hover:bg-orange-100 dark:hover:bg-orange-900/40'
+                                : '',
+                        };
+                    }}
                     // y: заповнюємо висоту вікна мінус шапка сторінки
                     scroll={{ x: 'max-content', y: 'calc(100vh - 260px)' }}
                     tableLayout="fixed"

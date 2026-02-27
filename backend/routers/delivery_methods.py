@@ -2,10 +2,10 @@ from typing import List
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from backend.models.database import get_db
-from backend.models.models import DeliveryMethod
-from backend.schemas.reference import DeliveryMethod as DeliveryMethodSchema
-from backend.schemas.reference import DeliveryMethodCreate, DeliveryMethodUpdate, DeliveryMethodList
+from models.database import get_db
+from models.models import DeliveryMethod
+from schemas.reference import DeliveryMethod as DeliveryMethodSchema
+from schemas.reference import DeliveryMethodCreate, DeliveryMethodUpdate, DeliveryMethodList
 
 router = APIRouter()
 

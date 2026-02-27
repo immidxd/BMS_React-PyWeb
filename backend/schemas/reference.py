@@ -95,11 +95,24 @@ class ClientUpdate(ClientBase):
 
 class Client(ClientBase):
     id: int
-    full_name: str  # Combined first_name and last_name
-    
+    full_name: str
+    middle_name: Optional[str] = None
+    facebook: Optional[str] = None
+    instagram: Optional[str] = None
+    telegram: Optional[str] = None
+    viber: Optional[str] = None
+    olx: Optional[str] = None
+    city_of_residence: Optional[str] = None
+    order_count: Optional[int] = None
+    total_order_amount: Optional[float] = None
+    average_order_value: Optional[float] = None
+
     class Config:
         from_attributes = True
 
 class ClientList(BaseModel):
     items: List[Client]
-    total: int 
+    total: int = 0
+    page: int = 1
+    per_page: int = 20
+    pages: int = 1

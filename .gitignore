@@ -7,10 +7,23 @@ backend/scripts/temporary/newproject2024-419923-a5dba4c9f119.json
 backend/scripts/*.log
 unified_parser.log
 backend/unified_parser.log
+*.log
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# OS files
+.DS_Store
 
 # Ignore accidental nested bare Git repo
 BMS_React-PyWeb.git/
 
 # Ignore build output
 frontend/build/
+frontend/build_backup_*/
 backend/scripts/secure_creds/*.json
+
+# Cache files
+backend/scripts/cache/

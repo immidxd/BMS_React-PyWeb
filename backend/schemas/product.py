@@ -187,6 +187,10 @@ class ProductList(BaseModel):
     color_name: Optional[str] = None
     condition_name: Optional[str] = None
     gender_name: Optional[str] = None
+
+    # Computed from order_items
+    sold_count: int = 0
+    available_qty: Optional[int] = None
     
     class Config:
         from_attributes = True
@@ -203,6 +207,7 @@ class ProductListResponse(BaseModel):
 # Модель для фільтрації товарів
 class ProductFilter(BaseModel):
     search: Optional[str] = None
+    # Single ID filters (legacy)
     typeid: Optional[int] = None
     subtypeid: Optional[int] = None
     brandid: Optional[int] = None
@@ -210,8 +215,20 @@ class ProductFilter(BaseModel):
     colorid: Optional[int] = None
     statusid: Optional[int] = None
     conditionid: Optional[int] = None
+    # Multi-ID filters (arrays)
+    typeids: Optional[List[int]] = None
+    subtypeids: Optional[List[int]] = None
+    brandids: Optional[List[int]] = None
+    genderids: Optional[List[int]] = None
+    colorids: Optional[List[int]] = None
+    statusids: Optional[List[int]] = None
+    conditionids: Optional[List[int]] = None
+    # Price range
     min_price: Optional[float] = None
     max_price: Optional[float] = None
+    # Size filter
+    sizeeu: Optional[str] = None
+    # Visibility
     is_visible: Optional[bool] = None
     with_stock_only: Optional[bool] = None
 
@@ -224,8 +241,9 @@ class FilterOptions(BaseModel):
     colors: List[Dict[str, Any]]
     statuses: List[Dict[str, Any]]
     conditions: List[Dict[str, Any]]
-    min_price: Optional[float] = None
-    max_price: Optional[float] = None
+    countries: List[Dict[str, Any]] = []
+    price_range: Dict[str, float] = {"min_price": 0, "max_price": 0}
+    size_ranges: Dict[str, List[str]] = {}
 
 # Schema for Product filters
 class ProductFilters(BaseModel):

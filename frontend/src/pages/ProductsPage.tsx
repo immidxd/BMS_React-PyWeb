@@ -13,31 +13,9 @@ import Pagination from '../components/common/Pagination';
 import { PlusOutlined, EyeOutlined, EyeInvisibleOutlined } from '@ant-design/icons';
 
 // Placeholder for actual filter components for Products
-const ProductsFilterPanelContent: React.FC = () => {
-  return (
-    <div>
-      <h3 className="text-md font-semibold mb-3 text-gray-700 dark:text-gray-200">Ціна</h3>
-      {/* Placeholder for Price Slider */}
-      <div className="p-2 border border-dashed rounded mb-4 h-16 flex items-center justify-center text-sm text-gray-400 dark:text-gray-500">Price Slider Area</div>
-
-      <h3 className="text-md font-semibold mb-3 text-gray-700 dark:text-gray-200">Заміри (СМ)</h3>
-      <div className="p-2 border border-dashed rounded mb-4 h-16 flex items-center justify-center text-sm text-gray-400 dark:text-gray-500">Measurements Slider Area</div>
-
-      <h3 className="text-md font-semibold mb-3 text-gray-700 dark:text-gray-200">Розмір</h3>
-      <div className="p-2 border border-dashed rounded mb-4 h-16 flex items-center justify-center text-sm text-gray-400 dark:text-gray-500">Size Slider Area</div>
-
-      <h3 className="text-md font-semibold mb-2 text-gray-700 dark:text-gray-200">Бренд</h3>
-      {/* Placeholder for Brand checkboxes with search */}
-      <div className="p-2 border border-dashed rounded mb-4 h-24 flex items-center justify-center text-sm text-gray-400 dark:text-gray-500">Brand Filter Area</div>
-      
-      {/* Add other filter sections (Вид, Модель, Стать, Країна, Постачальник, Стан) as placeholders */}
-      <p className="text-xs text-center text-gray-400 dark:text-gray-500">More filters here...</p>
-    </div>
-  );
-};
 
 interface ProductsPageProps {
-  currentSearchTerm: string; // Receive search term from App
+  currentSearchTerm: string;
 }
 
 const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
@@ -46,7 +24,6 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
   const [products, setProducts] = useState<ProductListResponse>({ items: [], total: 0, page: 1, per_page: 20, pages: 1 });
   const [page, setPage] = useState<number>(1);
   const [perPage, setPerPage] = useState<number>(20);
-  const [filtersOpen, setFiltersOpen] = useState(false);
   const [filtersMeta, setFiltersMeta] = useState<ProductFiltersType | null>(null);
   const [selectedFilters, setSelectedFilters] = useState<ProductFilterType>({});
   const navigate = useNavigate();
@@ -94,16 +71,28 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
   const fetchProducts = async () => {
     setLoading(true);
     try {
-      const res = await productService.getProducts({
+      const params: Record<string, any> = {
         page,
         per_page: perPage,
         sort_by: sortBy,
         sort_dir: sortDir,
         search: currentSearchTerm && currentSearchTerm.trim() ? currentSearchTerm.trim() : undefined,
-        with_stock_only: onlyUnsold ? true : undefined,
-        is_visible: visibleOnly ? true : undefined,
-        ...selectedFilters,
-      });
+        with_stock_only: onlyUnsold ? true : (selectedFilters.with_stock_only || undefined),
+        is_visible: visibleOnly ? true : (selectedFilters.is_visible || undefined),
+        min_price: selectedFilters.min_price,
+        max_price: selectedFilters.max_price,
+        sizeeu: selectedFilters.sizeeu,
+      };
+      // Append multi-id arrays as repeated query params
+      const appendIds = (key: string, ids?: number[]) => { if (ids && ids.length > 0) params[key] = ids; };
+      appendIds('typeids', selectedFilters.typeids);
+      appendIds('subtypeids', selectedFilters.subtypeids);
+      appendIds('brandids', selectedFilters.brandids);
+      appendIds('genderids', selectedFilters.genderids);
+      appendIds('colorids', selectedFilters.colorids);
+      appendIds('statusids', selectedFilters.statusids);
+      appendIds('conditionids', selectedFilters.conditionids);
+      const res = await productService.getProducts(params);
       setProducts(res);
     } finally {
       setLoading(false);
@@ -113,11 +102,13 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
   const handleRefresh = () => { setIsRefreshing(true); fetchProducts().finally(() => setIsRefreshing(false)); };
 
   const handleResetFilters = () => {
-    console.log('Resetting product filters...');
-    // Logic to reset all filter states for products
-    };
+    setSelectedFilters({});
+    setOnlyUnsold(false);
+    setVisibleOnly(false);
+    setPage(1);
+  };
     
-    useEffect(() => { fetchProducts(); }, [page, perPage, currentSearchTerm, selectedFilters]);
+    useEffect(() => { fetchProducts(); }, [page, perPage, currentSearchTerm, selectedFilters, onlyUnsold, visibleOnly]);
 
     useEffect(() => {
       // Load filter options once
@@ -171,7 +162,17 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
 
     return (
     <MainLayout
-      filterPanelContent={<ProductsFilterPanelContent />}
+      filterPanelContent={
+        filtersMeta ? (
+          <ProductFiltersPanel
+            filters={filtersMeta}
+            selectedFilters={selectedFilters}
+            onFilterChange={(f) => { setSelectedFilters(f); setPage(1); }}
+          />
+        ) : (
+          <div className="flex items-center justify-center h-32 text-gray-400 text-sm">Завантаження фільтрів...</div>
+        )
+      }
       onRefresh={handleRefresh}
       isRefreshing={isRefreshing}
       onResetFilters={handleResetFilters}

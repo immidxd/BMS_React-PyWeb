@@ -123,6 +123,30 @@ body {
   background-color: #faad14;
 }
 
+/* ── Підсвітка рядків з проблемами ──────────────────────────────────────── */
+
+/* Підсвітка рядків з помилкою — уніфікований жовтогарячий стиль */
+.ant-table-row-no-number td,
+.order-row-conflict td {
+  background-color: #fff7e6 !important;
+  border-left: 3px solid #fa8c16 !important;
+}
+.ant-table-row-no-number:hover td,
+.order-row-conflict:hover td {
+  background-color: #ffe7ba !important;
+}
+
+/* Dark mode variants */
+.dark .ant-table-row-no-number td,
+.dark .order-row-conflict td {
+  background-color: #2b1d0e !important;
+  border-left-color: #fa8c16 !important;
+}
+.dark .ant-table-row-no-number:hover td,
+.dark .order-row-conflict:hover td {
+  background-color: #3d2b10 !important;
+}
+
 /* Стилі для порожніх станів */
 .empty-state {
   text-align: center;

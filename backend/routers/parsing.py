@@ -64,12 +64,54 @@ except ImportError as e:
     def get_parsing_modes():
         return [
             {
-                "id": "full",
-                "name": "Повний парсинг",
-                "description": "Повний парсинг всіх товарів та замовлень",
+                "id": "sheets_products_quick",
+                "name": "Товари — швидко (30 аркушів)",
+                "description": "Парсинг товарів з Google Sheets «Журнал» — останні 30 партій",
+                "icon": "⚡",
+                "estimated_time": "~2 хвилини"
+            },
+            {
+                "id": "sheets_products_full",
+                "name": "Товари — повний",
+                "description": "Парсинг усіх партій товарів з Google Sheets «Журнал»",
+                "icon": "📦",
+                "estimated_time": "~6 хвилин"
+            },
+            {
+                "id": "sheets_orders_quick",
+                "name": "Замовлення — швидко (30 аркушів)",
+                "description": "Парсинг замовлень з Google Sheets «Замовлення» — останні 30 аркушів",
+                "icon": "🛒",
+                "estimated_time": "~2 хвилини"
+            },
+            {
+                "id": "sheets_orders_full",
+                "name": "Замовлення — повний",
+                "description": "Парсинг усіх замовлень з Google Sheets «Замовлення»",
+                "icon": "🛒",
+                "estimated_time": "~6 хвилин"
+            },
+            {
+                "id": "sheets_full_quick",
+                "name": "Все — швидко (товари + замовлення)",
+                "description": "Швидкий парсинг і товарів, і замовлень (останні 30 аркушів кожного)",
                 "icon": "🔄",
-                "estimated_time": "1-2 години"
-            }
+                "estimated_time": "~4 хвилини"
+            },
+            {
+                "id": "sheets_full_full",
+                "name": "Все — повний парсинг",
+                "description": "Повний парсинг усіх товарів і замовлень з Google Sheets",
+                "icon": "🔄",
+                "estimated_time": "~12 хвилин"
+            },
+            {
+                "id": "sheets_workspace",
+                "name": "Воркспейс — злиття / додавання",
+                "description": "Парсинг Воркспейс1: товари зі збігом ≥4 з 5 характеристик зливаються (номер → клони), решта додаються як нові (без номеру → '???')",
+                "icon": "🔀",
+                "estimated_time": "~1-2 хвилини"
+            },
         ]
 
 router = APIRouter()
@@ -222,7 +264,22 @@ async def test_parsing_job(mode: str = "quick_update", db: Session = Depends(get
 
 @router.post("/run", tags=["parsing"])
 async def run_parsing_job(mode: str = "quick_update", params: Optional[Dict] = None, db: Session = Depends(get_db)):
-    """Запускає реальний UnifiedParser і оновлює `parsing_jobs` по callback/WS."""
+    """Запускає парсинг. Sheets-режими (sheets_*) делегуються окремим handlers."""
+    # ── Sheets режими: sheets_<target>_<speed> ──────────────────────────────
+    # mode examples: sheets_products_quick, sheets_orders_full, sheets_full_quick
+    if mode.startswith("sheets_"):
+        import threading
+        parts = mode.split("_")  # ['sheets', target, speed]
+        target = parts[1] if len(parts) > 1 else "full"
+        speed  = parts[2] if len(parts) > 2 else "quick"
+        job = ParsingJob(mode=mode, status="queued")
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+        t = threading.Thread(target=_run_sheets_job, args=(job.id, target, speed), daemon=True)
+        t.start()
+        return {"jobId": job.id, "mode": mode, "target": target, "speed": speed}
+    # ── Legacy UnifiedParser below ────────────────────────────────────────────
     # 1) Створюємо запис job
     job = ParsingJob(mode=mode, status="queued")
     db.add(job)
@@ -769,16 +826,23 @@ async def run_orders_parsing(background_tasks: BackgroundTasks, db: Session = De
             if process.returncode == 0:
                 log.status = "completed"
                 log.message = "Orders parsing completed successfully"
+                log.end_time = datetime.utcnow()
+                db_session.commit()
+                # Синхронізація статусів після парсингу замовлень
+                try:
+                    from services.product_service import sync_product_statuses
+                    sync_result = sync_product_statuses(db_session)
+                    logger.info(f"sync_product_statuses after orders: {sync_result}")
+                except Exception as sync_err:
+                    logger.warning(f"sync_product_statuses failed (non-fatal): {sync_err}")
             else:
                 log.status = "failed"
                 log.message = f"Orders parsing failed: {stderr.decode('utf-8')}"
-            
-            log.end_time = datetime.utcnow()
-            db_session.commit()
+                log.end_time = datetime.utcnow()
+                db_session.commit()
             
         except Exception as e:
             logger.error(f"Error running orders script: {e}")
-            # Update parsing log with error
             db_session = next(get_db())
             log = db_session.query(ParsingLog).filter(ParsingLog.id == parsing_log.id).first()
             log.status = "failed"
@@ -837,16 +901,23 @@ async def run_googlesheets_parsing(background_tasks: BackgroundTasks, db: Sessio
             if process.returncode == 0:
                 log.status = "completed"
                 log.message = "Google Sheets parsing completed successfully"
+                log.end_time = datetime.utcnow()
+                db_session.commit()
+                # Синхронізація статусів після парсингу товарів
+                try:
+                    from services.product_service import sync_product_statuses
+                    sync_result = sync_product_statuses(db_session)
+                    logger.info(f"sync_product_statuses after googlesheets: {sync_result}")
+                except Exception as sync_err:
+                    logger.warning(f"sync_product_statuses failed (non-fatal): {sync_err}")
             else:
                 log.status = "failed"
                 log.message = f"Google Sheets parsing failed: {stderr.decode('utf-8')}"
-            
-            log.end_time = datetime.utcnow()
-            db_session.commit()
+                log.end_time = datetime.utcnow()
+                db_session.commit()
             
         except Exception as e:
             logger.error(f"Error running Google Sheets script: {e}")
-            # Update parsing log with error
             db_session = next(get_db())
             log = db_session.query(ParsingLog).filter(ParsingLog.id == parsing_log.id).first()
             log.status = "failed"
@@ -970,6 +1041,187 @@ async def run_comprehensive_orders_parsing(
             "Оновлення розмірів та замірів"
         ]
     }
+
+# ── Sheets parser endpoints ──────────────────────────────────────────────────
+def _run_sheets_job(job_id: int, target: str, mode: str):
+    """Background thread: run sheets_parser and update ParsingJob row."""
+    import threading
+    try:
+        from scripts.sheets_parser import run_products_parsing, run_orders_parsing, run_full_parsing, run_workspace_parsing
+    except ImportError:
+        from backend.scripts.sheets_parser import run_products_parsing, run_orders_parsing, run_full_parsing, run_workspace_parsing
+
+    sess = SessionLocal()
+    try:
+        job = sess.query(ParsingJob).filter(ParsingJob.id == job_id).first()
+        if not job:
+            return
+        job.status = "running"
+        job.started_at = datetime.datetime.utcnow()
+        job.updated_at = job.started_at
+        job.current_step = "initializing"
+        sess.commit()
+
+        def progress_cb(pct, msg):
+            s = SessionLocal()
+            try:
+                j = s.query(ParsingJob).filter(ParsingJob.id == job_id).first()
+                if j:
+                    j.percent = pct
+                    j.current_step = str(msg)[:255]
+                    j.updated_at = datetime.datetime.utcnow()
+                    j.last_heartbeat_at = j.updated_at
+                    s.commit()
+            except Exception:
+                s.rollback()
+            finally:
+                s.close()
+
+        if target == "products":
+            result = run_products_parsing(sess, mode=mode, progress_cb=progress_cb)
+        elif target == "orders":
+            result = run_orders_parsing(sess, mode=mode, progress_cb=progress_cb)
+        elif target == "workspace":
+            result = run_workspace_parsing(sess, progress_cb=progress_cb)
+        else:
+            result = run_full_parsing(sess, mode=mode, progress_cb=progress_cb)
+
+        job = sess.query(ParsingJob).filter(ParsingJob.id == job_id).first()
+        if job:
+            job.status = "succeeded"
+            job.percent = 100
+            job.ended_at = datetime.datetime.utcnow()
+            job.updated_at = job.ended_at
+            job.current_step = "syncing statuses"
+            job.logs_head = str(result)[:8000]
+            sess.commit()
+
+        # Синхронізація статусів: Продано/Непродано за order_items + журнал
+        try:
+            progress_cb(98, "Синхронізація статусів товарів...")
+            from services.product_service import sync_product_statuses
+            sync_result = sync_product_statuses(sess)
+            progress_cb(100, f"Статуси синхронізовані: Продано={sync_result['prodano']}, Непродано={sync_result['neprodano']}")
+            logger.info(f"Sheets job {job_id}: sync_product_statuses -> {sync_result}")
+        except Exception as sync_err:
+            logger.warning(f"Sheets job {job_id}: sync_product_statuses failed (non-fatal): {sync_err}")
+
+        job = sess.query(ParsingJob).filter(ParsingJob.id == job_id).first()
+        if job:
+            job.current_step = "done"
+            sess.commit()
+
+    except Exception as e:
+        logger.exception(f"Sheets job {job_id} failed: {e}")
+        s2 = SessionLocal()
+        try:
+            j = s2.query(ParsingJob).filter(ParsingJob.id == job_id).first()
+            if j:
+                j.status = "failed"
+                j.error_summary = str(e)[:500]
+                j.ended_at = datetime.datetime.utcnow()
+                j.updated_at = j.ended_at
+                s2.commit()
+        finally:
+            s2.close()
+    finally:
+        sess.close()
+
+
+@router.post("/sheets/products", tags=["parsing"])
+async def sheets_parse_products(mode: str = "quick", db: Session = Depends(get_db)):
+    """
+    Парсинг товарів з Google Sheets (Журнал) → products.
+    mode: quick (останні 30 аркушів) | full (всі аркуші)
+    """
+    import threading
+    job = ParsingJob(mode=f"sheets_products_{mode}", status="queued")
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+    t = threading.Thread(target=_run_sheets_job, args=(job.id, "products", mode), daemon=True)
+    t.start()
+    return {"jobId": job.id, "mode": mode, "target": "products"}
+
+
+@router.post("/sheets/orders", tags=["parsing"])
+async def sheets_parse_orders(mode: str = "quick", db: Session = Depends(get_db)):
+    """
+    Парсинг замовлень з Google Sheets (Замовлення) → orders + order_items + clients.
+    mode: quick (останні 30 аркушів) | full (всі аркуші)
+    """
+    import threading
+    job = ParsingJob(mode=f"sheets_orders_{mode}", status="queued")
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+    t = threading.Thread(target=_run_sheets_job, args=(job.id, "orders", mode), daemon=True)
+    t.start()
+    return {"jobId": job.id, "mode": mode, "target": "orders"}
+
+
+@router.post("/sheets/full", tags=["parsing"])
+async def sheets_parse_full(mode: str = "quick", db: Session = Depends(get_db)):
+    """
+    Повний парсинг: спочатку товари, потім замовлення, потім воркспейс.
+    mode: quick | full
+    """
+    import threading
+    job = ParsingJob(mode=f"sheets_full_{mode}", status="queued")
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+    t = threading.Thread(target=_run_sheets_job, args=(job.id, "full", mode), daemon=True)
+    t.start()
+    return {"jobId": job.id, "mode": mode, "target": "full"}
+
+
+@router.post("/sheets/workspace", tags=["parsing"])
+async def sheets_parse_workspace(db: Session = Depends(get_db)):
+    """
+    Парсинг Воркспейс1 → merge/додавання в products.
+    Товари зі співпадінням ≥4 з 5 характеристик → merge (номер до clonednumbers).
+    Без співпадіння → новий запис (без номеру → productnumber='???').
+    """
+    import threading
+    job = ParsingJob(mode="sheets_workspace", status="queued")
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+    t = threading.Thread(target=_run_sheets_job, args=(job.id, "workspace", "quick"), daemon=True)
+    t.start()
+    return {"jobId": job.id, "target": "workspace"}
+
+
+@router.post("/sheets/reset-products", tags=["parsing"])
+async def reset_products_for_reparse(db: Session = Depends(get_db)):
+    """
+    Безпечне очищення таблиці products (і order_items що посилаються на неї)
+    перед чистим перепарсингом з новою логікою ростовок/дублікатів.
+    НЕ видаляє clients, orders, reference tables.
+    """
+    from sqlalchemy import text
+    try:
+        # Step 1: nullify FK references so DELETE doesn't fail (ON DELETE NO ACTION)
+        db.execute(text("UPDATE order_items SET product_id = NULL WHERE product_id IS NOT NULL"))
+        # Step 2: delete all products (safe — no more FK references point at them)
+        db.execute(text("DELETE FROM products"))
+        # Step 3: reset PK sequence so IDs start from 1 again
+        db.execute(text("ALTER SEQUENCE products_id_seq RESTART WITH 1"))
+        db.commit()
+        # Verify orders and order_items are intact
+        oi_count = db.execute(text("SELECT COUNT(*) FROM order_items")).scalar()
+        o_count  = db.execute(text("SELECT COUNT(*) FROM orders")).scalar()
+        return {
+            "status": "ok",
+            "message": "Таблиця products очищена. Замовлення та позиції збережено.",
+            "orders_intact": o_count,
+            "order_items_intact": oi_count,
+        }
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Помилка очищення: {e}")
+
 
 # Старі ендпоінти для сумісності
 @router.post("/parsing/products")

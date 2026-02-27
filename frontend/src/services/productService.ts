@@ -47,8 +47,12 @@ export const productService = {
             // Додаємо фільтри, якщо вони вказані
             Object.entries(filters).forEach(([key, value]) => {
                 if (value === undefined || value === null) return;
-                // Масиви не використовуються тут; прості значення додаємо напряму
-                queryParams.append(key, String(value));
+                if (Array.isArray(value)) {
+                    // FastAPI List[int] — повторювані params: key=1&key=2
+                    value.forEach((v: any) => queryParams.append(key, String(v)));
+                } else {
+                    queryParams.append(key, String(value));
+                }
             });
             
             console.log("Fetching products from API:", `${API_URL}?${queryParams.toString()}`);

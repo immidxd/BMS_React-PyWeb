@@ -6,6 +6,8 @@ import GlobalStyle from './styles/GlobalStyle'; // For potential global styles
 import SearchBar from './components/common/SearchBar';
 import { ParsingDialog } from './components/ParsingDialog';
 import { ParsingStatus } from './components/ParsingStatus';
+import { ToastContainer, toast } from 'react-toastify';
+import 'react-toastify/dist/ReactToastify.css';
 import './App.css';
 import './index.css'; // Main Tailwind CSS import
 
@@ -112,14 +114,12 @@ const AppContent: React.FC = () => {
       console.log('[App.tsx] Parsing started:', data);
       console.log('[App.tsx] API Response:', JSON.stringify(data));
       
-      // ТИМЧАСОВО: Показуємо alert з відповіддю API
-      alert(`API відповідь: ${JSON.stringify(data)}`);
-      
       // Встановлюємо jobId для відображення прогресу (не скидаємо при закритті діалогу)
       if (data.jobId) {
         setCurrentJobId(data.jobId);
         console.log('[App.tsx] JobId set:', data.jobId);
-        alert(`JobId встановлено: ${data.jobId}`);
+        toast.success('Парсинг запущено');
+        toast.info(`JobId: ${data.jobId}`);
       } else {
         // Fallback: створюємо job без запуску
         const res2 = await fetch(`/api/parsing/test?mode=${encodeURIComponent(mode)}`, {
@@ -133,17 +133,17 @@ const AppContent: React.FC = () => {
         if (res2.ok && data2.jobId) {
           setCurrentJobId(data2.jobId);
           console.log('[App.tsx] Fallback JobId set:', data2.jobId);
-          alert(`Fallback JobId: ${data2.jobId}`);
+          toast.warn(`Fallback JobId: ${data2.jobId}`);
         } else {
           console.error('[App.tsx] No jobId in response!', data);
-          alert('ПОМИЛКА: Немає jobId в відповіді!');
+          toast.error('ПОМИЛКА: Немає jobId в відповіді!');
         }
       }
       
       setParsingDialogOpen(false);
     } catch (error) {
       console.error('Error starting parsing:', error);
-      alert(`Error: ${error instanceof Error ? error.message : String(error)}`); // ТИМЧАСОВО ДЛЯ ДІАГНОСТИКИ
+      toast.error(`Помилка запуску парсингу: ${error instanceof Error ? error.message : String(error)}`);
     }
   };
 
@@ -184,6 +184,14 @@ const AppContent: React.FC = () => {
           </div>
           
           <div className="flex items-center space-x-2 flex-shrink-0">
+            <button
+              onClick={() => setParsingDialogOpen(true)}
+              aria-label="Запустити парсинг"
+              title="Парсинг Google Sheets"
+              className="p-2 rounded-md bg-blue-100 hover:bg-blue-200 dark:bg-blue-900 dark:hover:bg-blue-800 text-blue-700 dark:text-blue-200 transition-colors duration-150 focus:outline-none focus:ring-1 focus:ring-blue-500 text-sm font-medium px-3"
+            >
+              ⚡ Парсинг
+            </button>
             <FilterToggleButton />
             <ThemeSwitcherButton />
           </div>
@@ -221,6 +229,7 @@ const App: React.FC = () => {
       <AppThemeProvider>
         <FilterPanelProvider>
           <GlobalStyle /> 
+          <ToastContainer position="top-right" newestOnTop theme="dark" />
           <Routes>
             <Route path="/*" element={<AppContent />} /> 
           </Routes>

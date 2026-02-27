@@ -78,7 +78,9 @@ async def get_orders(
         order_status_name = order.order_status.status_name if order.order_status else None
         
         # Безпечне витягування назв із відомих колонок
-        payment_status_name = order.payment_status  # текстове поле в таблиці orders
+        payment_status_name = order.payment_status or (
+            order.payment_status_rel.name if order.payment_status_rel else getattr(order.payment_status_rel, 'status_name', None)
+        )
         payment_method_name = None
         if order.payment_method_id and order.payment_method:
             payment_method_name = getattr(order.payment_method, 'name', None) or getattr(order.payment_method, 'method_name', None)
@@ -95,9 +97,8 @@ async def get_orders(
         # Prepare order items
         order_items = []
         for item in order.items:
-            # Get product details
-            product_number = item.product.productnumber if item.product else "Unknown"
-            product_name = f"{item.product.model or ''} {item.product.marking or ''}".strip() or "Unknown"
+            product_number = item.product.productnumber if item.product else (item.notes or "—")
+            product_name = (f"{item.product.model or ''} {item.product.marking or ''}".strip() if item.product else "") or "—"
             
             order_items.append({
                 "id": item.id,
@@ -245,9 +246,8 @@ async def get_order(order_id: int = Path(..., ge=1), db: Session = Depends(get_d
     # Prepare order items
     order_items = []
     for item in order.items:
-        # Get product details
-        product_number = item.product.productnumber if item.product else "Unknown"
-        product_name = f"{item.product.model or ''} {item.product.marking or ''}".strip() or "Unknown"
+        product_number = item.product.productnumber if item.product else (item.notes or "—")
+        product_name = (f"{item.product.model or ''} {item.product.marking or ''}".strip() if item.product else "") or "—"
         
         order_items.append({
             "id": item.id,

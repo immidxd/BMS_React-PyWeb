@@ -4,6 +4,7 @@ import FilterPanel from '../components/common/FilterPanel';
 import { useFilterPanel } from '../contexts/FilterPanelContext';
 import { ParsingDialog } from '../components/ParsingDialog';
 import { ParsingStatus } from '../components/ParsingStatus';
+import { toast } from 'react-toastify';
 
 interface MainLayoutProps {
   children: React.ReactNode;
@@ -62,11 +63,11 @@ const MainLayout: React.FC<MainLayoutProps> = ({
       });
       const data = await res.json();
       console.log('[MainLayout] test response:', data);
-      alert(`API відповідь: ${JSON.stringify(data)}`); // ТИМЧАСОВО ДЛЯ ДІАГНОСТИКИ
+      toast.success('Парсинг запущено');
       
       if (!res.ok || !data?.jobId) throw new Error('run failed');
       setCurrentJobId(data.jobId);
-      alert(`JobId встановлено: ${data.jobId}`); // ТИМЧАСОВО ДЛЯ ДІАГНОСТИКИ
+      toast.info(`JobId: ${data.jobId}`);
       // Закриваємо меню вибору відразу після старту
       setParsingDialogOpen(false);
     } catch (e) {
@@ -81,13 +82,13 @@ const MainLayout: React.FC<MainLayoutProps> = ({
           console.log('[MainLayout] fallback test jobId:', data2.jobId);
           setCurrentJobId(data2.jobId);
           setParsingDialogOpen(false);
-          alert(`Fallback jobId: ${data2.jobId}`);
+          toast.warn(`Fallback jobId: ${data2.jobId}`);
           return;
         }
         throw new Error('fallback test failed');
       } catch (e2) {
         console.error('[MainLayout] fallback error:', e2);
-        alert(`Помилка: ${(e as Error).message}`); // ТИМЧАСОВО ДЛЯ ДІАГНОСТИКИ
+        toast.error(`Помилка: ${(e as Error).message}`);
       }
     }
   };

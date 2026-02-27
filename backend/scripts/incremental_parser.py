@@ -52,7 +52,7 @@ class IncrementalParser:
             logger.info(f"✅ Документ відкрито: {doc.title}")
             
             # Отримуємо довідкові дані
-            order_statuses, payment_statuses, delivery_methods = self.parser.get_or_create_reference_data()
+            order_statuses, payment_statuses, delivery_methods, delivery_statuses, payment_methods = self.parser.get_or_create_reference_data()
             
             # Отримуємо всі аркуші
             worksheets = doc.worksheets()
@@ -95,7 +95,14 @@ class IncrementalParser:
                         continue
                     
                     # Парсимо аркуш
-                    self.parser.parse_orders_sheet(worksheet, order_statuses, payment_statuses, delivery_methods)
+                    self.parser.parse_orders_sheet(
+                        worksheet,
+                        order_statuses,
+                        payment_statuses,
+                        delivery_methods,
+                        delivery_statuses,
+                        payment_methods
+                    )
                     
                     # Комітимо після кожного аркуша для інкрементального режиму
                     self.parser.session.commit()

@@ -77,7 +77,9 @@ def get_products(
                s.statusname as status_name,
                c.colorname as color_name,
                cond.conditionname as condition_name,
-               g.gendername as gender_name
+               g.gendername as gender_name,
+               COALESCE(sold.sold_count, 0) AS sold_count,
+               GREATEST(0, COALESCE(p.quantity, 0) - COALESCE(sold.sold_count, 0)) AS available_qty
         FROM products p
         LEFT JOIN types t ON p.typeid = t.id
         LEFT JOIN brands b ON p.brandid = b.id  
@@ -85,6 +87,12 @@ def get_products(
         LEFT JOIN colors c ON p.colorid = c.id
         LEFT JOIN conditions cond ON p.conditionid = cond.id
         LEFT JOIN genders g ON p.genderid = g.id
+        LEFT JOIN (
+            SELECT product_id, COUNT(*) AS sold_count
+            FROM order_items
+            WHERE product_id IS NOT NULL
+            GROUP BY product_id
+        ) sold ON sold.product_id = p.id
         """
         
         where_conditions = []
@@ -108,46 +116,84 @@ def get_products(
                 """)
                 params['search'] = search
                 
-            if filters.typeid:
+            # Single ID filters
+            if filters.typeid and not filters.typeids:
                 where_conditions.append("p.typeid = :typeid")
                 params['typeid'] = filters.typeid
-                
-            if filters.subtypeid:
-                where_conditions.append("p.subtypeid = :subtypeid") 
+
+            if filters.subtypeid and not filters.subtypeids:
+                where_conditions.append("p.subtypeid = :subtypeid")
                 params['subtypeid'] = filters.subtypeid
-                
-            if filters.brandid:
+
+            if filters.brandid and not filters.brandids:
                 where_conditions.append("p.brandid = :brandid")
                 params['brandid'] = filters.brandid
-                
-            if filters.genderid:
+
+            if filters.genderid and not filters.genderids:
                 where_conditions.append("p.genderid = :genderid")
                 params['genderid'] = filters.genderid
-                
-            if filters.colorid:
+
+            if filters.colorid and not filters.colorids:
                 where_conditions.append("p.colorid = :colorid")
                 params['colorid'] = filters.colorid
-                
-            if filters.statusid:
+
+            if filters.statusid and not filters.statusids:
                 where_conditions.append("p.statusid = :statusid")
                 params['statusid'] = filters.statusid
-                
-            if filters.conditionid:
+
+            if filters.conditionid and not filters.conditionids:
                 where_conditions.append("p.conditionid = :conditionid")
                 params['conditionid'] = filters.conditionid
-                
+
+            # Multi-ID filters (arrays) — use ANY(:arr)
+            if filters.typeids:
+                where_conditions.append("p.typeid = ANY(:typeids)")
+                params['typeids'] = filters.typeids
+
+            if filters.subtypeids:
+                where_conditions.append("p.subtypeid = ANY(:subtypeids)")
+                params['subtypeids'] = filters.subtypeids
+
+            if filters.brandids:
+                where_conditions.append("p.brandid = ANY(:brandids)")
+                params['brandids'] = filters.brandids
+
+            if filters.genderids:
+                where_conditions.append("p.genderid = ANY(:genderids)")
+                params['genderids'] = filters.genderids
+
+            if filters.colorids:
+                where_conditions.append("p.colorid = ANY(:colorids)")
+                params['colorids'] = filters.colorids
+
+            if filters.statusids:
+                where_conditions.append("p.statusid = ANY(:statusids)")
+                params['statusids'] = filters.statusids
+
+            if filters.conditionids:
+                where_conditions.append("p.conditionid = ANY(:conditionids)")
+                params['conditionids'] = filters.conditionids
+
+            # Price range
             if filters.min_price is not None:
                 where_conditions.append("p.price >= :min_price")
                 params['min_price'] = filters.min_price
-                
+
             if filters.max_price is not None:
                 where_conditions.append("p.price <= :max_price")
                 params['max_price'] = filters.max_price
-            
-            # Note: is_visible column doesn't exist in the actual database
-            
+
+            # Size EU filter
+            if filters.sizeeu:
+                where_conditions.append("p.sizeeu = :sizeeu")
+                params['sizeeu'] = filters.sizeeu
+
             if filters.with_stock_only:
                 where_conditions.append("p.quantity > 0")
+
+            if filters.is_visible is not None:
+                where_conditions.append("p.is_visible = :is_visible")
+                params['is_visible'] = filters.is_visible
         
         # Build WHERE clause
         if where_conditions:
@@ -175,51 +221,52 @@ def get_products(
         # Execute query
         rows = db.execute(text(base_sql), params).fetchall()
         
-        # Convert rows to dictionaries (since we're using raw SQL)
+        # Convert rows to dictionaries using _mapping (safe regardless of column order)
         items = []
         for row in rows:
-            # Raw SQL returns Row objects - convert to dict
+            m = row._mapping
             product_dict = {
-                'id': row[0],  # id
-                'productnumber': row[1],  # productnumber
-                'clonednumbers': row[2],  # clonednumbers
-                'model': row[3],  # model
-                'marking': row[4],  # marking
-                'year': row[5],  # year
-                'description': row[6],  # description
-                'extranote': row[7],  # extranote
-                'price': row[8],  # price
-                'oldprice': row[9],  # oldprice
-                'dateadded': row[10],  # dateadded
-                'sizeeu': row[11],  # sizeeu
-                'sizeua': row[12],  # sizeua
-                'sizeusa': row[13],  # sizeusa
-                'sizeuk': row[14],  # sizeuk
-                'sizejp': row[15],  # sizejp
-                'sizecn': row[16],  # sizecn
-                'measurementscm': row[17],  # measurementscm
-                'quantity': row[18],  # quantity
-                'typeid': row[19],  # typeid
-                'subtypeid': row[20],  # subtypeid
-                'brandid': row[21],  # brandid
-                'genderid': row[22],  # genderid
-                'colorid': row[23],  # colorid
-                'ownercountryid': row[24],  # ownercountryid
-                'manufacturercountryid': row[25],  # manufacturercountryid
-                'statusid': row[26],  # statusid
-                'conditionid': row[27],  # conditionid
-                'importid': row[28],  # importid
-                'deliveryid': row[29],  # deliveryid
-                'mainimage': row[30],  # mainimage
-                'created_at': row[31],  # created_at
-                'updated_at': row[32],  # updated_at
-                # Related names from JOINs (after all product columns)
-                'type_name': row[33],  # type_name
-                'brand_name': row[34],  # brand_name
-                'status_name': row[35],  # status_name
-                'color_name': row[36],  # color_name
-                'condition_name': row[37],  # condition_name
-                'gender_name': row[38],  # gender_name
+                'id': m.get('id'),
+                'productnumber': m.get('productnumber'),
+                'clonednumbers': m.get('clonednumbers'),
+                'model': m.get('model'),
+                'marking': m.get('marking'),
+                'year': m.get('year'),
+                'description': m.get('description'),
+                'extranote': m.get('extranote'),
+                'price': m.get('price'),
+                'oldprice': m.get('oldprice'),
+                'dateadded': str(m.get('dateadded')) if m.get('dateadded') else None,
+                'sizeeu': m.get('sizeeu'),
+                'sizeua': m.get('sizeua'),
+                'sizeusa': m.get('sizeusa'),
+                'sizeuk': m.get('sizeuk'),
+                'sizejp': m.get('sizejp'),
+                'sizecn': m.get('sizecn'),
+                'measurementscm': m.get('measurementscm'),
+                'quantity': m.get('quantity'),
+                'mainimage': m.get('mainimage'),
+                'typeid': m.get('typeid'),
+                'subtypeid': m.get('subtypeid'),
+                'brandid': m.get('brandid'),
+                'genderid': m.get('genderid'),
+                'colorid': m.get('colorid'),
+                'ownercountryid': m.get('ownercountryid'),
+                'manufacturercountryid': m.get('manufacturercountryid'),
+                'statusid': m.get('statusid'),
+                'conditionid': m.get('conditionid'),
+                'importid': m.get('importid'),
+                'deliveryid': m.get('deliveryid'),
+                'created_at': str(m.get('created_at')) if m.get('created_at') else None,
+                'updated_at': str(m.get('updated_at')) if m.get('updated_at') else None,
+                'type_name': m.get('type_name'),
+                'brand_name': m.get('brand_name'),
+                'status_name': m.get('status_name'),
+                'color_name': m.get('color_name'),
+                'condition_name': m.get('condition_name'),
+                'gender_name': m.get('gender_name'),
+                'sold_count': m.get('sold_count', 0),
+                'available_qty': m.get('available_qty'),
             }
             items.append(product_dict)
         
@@ -288,7 +335,7 @@ def get_product_filters(db: Session) -> Dict[str, Any]:
             return db.execute(text(sql)).fetchall()
 
         types = fetch_pairs("SELECT id, typename FROM types ORDER BY typename")
-        subtypes_rows = db.execute(text("SELECT id, subtypename, typeid FROM subtypes ORDER BY subtypename")).fetchall()
+        subtypes_rows = db.execute(text("SELECT id, subtypename, type_id FROM subtypes ORDER BY subtypename")).fetchall()
         brands = fetch_pairs("SELECT id, brandname FROM brands ORDER BY brandname")
         genders = fetch_pairs("SELECT id, gendername FROM genders ORDER BY gendername")
         colors = fetch_pairs("SELECT id, colorname FROM colors ORDER BY colorname")
@@ -299,6 +346,13 @@ def get_product_filters(db: Session) -> Dict[str, Any]:
         min_price = float(price_min_max["min_price"]) if price_min_max else 0
         max_price = float(price_min_max["max_price"]) if price_min_max else 0
 
+        countries = fetch_pairs("SELECT id, countryname FROM countries ORDER BY countryname")
+
+        # Size ranges per system
+        def fetch_sizes(col: str):
+            rows = db.execute(text(f"SELECT DISTINCT {col} FROM products WHERE {col} IS NOT NULL AND {col} != '' ORDER BY {col}")).fetchall()
+            return [r[0] for r in rows]
+
         result = {
             "types": [{"id": t[0], "name": t[1]} for t in types],
             "subtypes": [{"id": s[0], "name": s[1], "typeid": s[2]} for s in subtypes_rows],
@@ -307,8 +361,16 @@ def get_product_filters(db: Session) -> Dict[str, Any]:
             "colors": [{"id": c[0], "name": c[1]} for c in colors],
             "statuses": [{"id": s[0], "name": s[1]} for s in statuses],
             "conditions": [{"id": c[0], "name": c[1]} for c in conditions],
-            "min_price": min_price,
-            "max_price": max_price,
+            "countries": [{"id": c[0], "name": c[1]} for c in countries],
+            "price_range": {"min_price": min_price, "max_price": max_price},
+            "size_ranges": {
+                "eu": fetch_sizes("sizeeu"),
+                "ua": fetch_sizes("sizeua"),
+                "usa": fetch_sizes("sizeusa"),
+                "uk": fetch_sizes("sizeuk"),
+                "jp": fetch_sizes("sizejp"),
+                "cn": fetch_sizes("sizecn"),
+            },
         }
         logger.debug("Retrieved filters via raw SQL")
         return result
@@ -407,4 +469,133 @@ def bulk_update_products(db: Session, product_ids: List[int], update_data: Dict[
     except Exception as e:
         db.rollback()
         logger.error(f"Error during bulk update: {str(e)}")
-        raise 
+        raise
+
+
+def sync_product_statuses(db: Session) -> Dict[str, int]:
+    """
+    Синхронізує статуси товарів після парсингу.
+
+    Логіка:
+      - "Продано"   якщо товар є в order_items АБО журнал вже встановив "Продано"
+      - "Непродано" в усіх інших випадках
+
+    Повертає: {'prodano': <кількість>, 'neprodano': <кількість>}
+    """
+    try:
+        # Отримуємо ID статусів; якщо немає — створюємо
+        prodano_row = db.execute(
+            text("SELECT id FROM statuses WHERE statusname = 'Продано' LIMIT 1")
+        ).fetchone()
+        if not prodano_row:
+            db.execute(text("INSERT INTO statuses (statusname) VALUES ('Продано')"))
+            db.commit()
+            prodano_row = db.execute(
+                text("SELECT id FROM statuses WHERE statusname = 'Продано' LIMIT 1")
+            ).fetchone()
+
+        neprodano_row = db.execute(
+            text("SELECT id FROM statuses WHERE statusname = 'Непродано' LIMIT 1")
+        ).fetchone()
+        if not neprodano_row:
+            db.execute(text("INSERT INTO statuses (statusname) VALUES ('Непродано')"))
+            db.commit()
+            neprodano_row = db.execute(
+                text("SELECT id FROM statuses WHERE statusname = 'Непродано' LIMIT 1")
+            ).fetchone()
+
+        prodano_id   = prodano_row[0]
+        neprodano_id = neprodano_row[0]
+
+        # Рахуємо кількість продажів по product_id (точний метод)
+        # та по notes для не-ростовок (де тільки 1 товар з таким номером)
+        # Статус "Продано" — тільки якщо sold_count >= quantity (всі одиниці продано)
+        # Статус "Непродано" — якщо 0 < sold_count < quantity (частково продано)
+        # Без продажів — не чіпаємо (залишаємо статус з журналу)
+        r1 = db.execute(text("""
+            WITH
+            id_sold AS (
+                SELECT product_id, COUNT(*) AS cnt
+                FROM order_items
+                WHERE product_id IS NOT NULL
+                GROUP BY product_id
+            ),
+            notes_sold AS (
+                SELECT p.id, COUNT(oi.id) AS cnt
+                FROM products p
+                JOIN order_items oi
+                    ON oi.product_id IS NULL
+                   AND oi.notes IS NOT NULL
+                   AND oi.notes != ''
+                   AND oi.notes NOT LIKE '% %'
+                   AND '#' || LTRIM(oi.notes, '#') = p.productnumber
+                WHERE (
+                    SELECT COUNT(*) FROM products p2
+                    WHERE p2.productnumber = p.productnumber
+                ) = 1
+                GROUP BY p.id
+            ),
+            sold_counts AS (
+                SELECT
+                    p.id,
+                    COALESCE(i.cnt, 0) + COALESCE(n.cnt, 0) AS sold_count,
+                    COALESCE(p.quantity, 1)                  AS qty
+                FROM products p
+                LEFT JOIN id_sold    i ON i.product_id = p.id
+                LEFT JOIN notes_sold n ON n.id          = p.id
+                WHERE COALESCE(i.cnt, 0) + COALESCE(n.cnt, 0) > 0
+            )
+            UPDATE products p
+            SET statusid = CASE
+                WHEN sc.sold_count >= sc.qty THEN :prodano_id
+                ELSE :neprodano_id
+            END
+            FROM sold_counts sc
+            WHERE p.id = sc.id
+        """), {"prodano_id": prodano_id, "neprodano_id": neprodano_id})
+        total_updated = r1.rowcount
+
+        # Крок 2: скинути хибний "Продано" з журналу для товарів де
+        # фактично sold_count < quantity (або взагалі 0 продажів).
+        # Товари зі спеціальними статусами (Повернуто, Пошкоджений тощо) — не чіпаємо.
+        r2 = db.execute(text("""
+            UPDATE products p
+            SET statusid = :neprodano_id
+            WHERE p.statusid = :prodano_id
+              AND p.id NOT IN (
+                  SELECT sc.id FROM (
+                      SELECT
+                          p2.id,
+                          COALESCE(
+                              (SELECT COUNT(*) FROM order_items oi
+                               WHERE oi.product_id = p2.id), 0
+                          ) AS sold_count,
+                          COALESCE(p2.quantity, 1) AS qty
+                      FROM products p2
+                      WHERE p2.statusid = :prodano_id
+                  ) sc
+                  WHERE sc.sold_count >= sc.qty AND sc.qty > 0
+              )
+        """), {"prodano_id": prodano_id, "neprodano_id": neprodano_id})
+        total_updated += r2.rowcount
+        logger.info(f"sync_product_statuses: fixed {r2.rowcount} false 'Продано' → 'Непродано'")
+
+        # Рахуємо фінальний розподіл для логу
+        counts = db.execute(text("""
+            SELECT s.statusname, COUNT(p.id) as cnt
+            FROM products p JOIN statuses s ON p.statusid = s.id
+            GROUP BY s.statusname
+        """)).fetchall()
+        prodano_count   = next((r.cnt for r in counts if r.statusname == 'Продано'),   0)
+        neprodano_count = next((r.cnt for r in counts if r.statusname == 'Непродано'), 0)
+
+        db.commit()
+        logger.info(
+            f"sync_product_statuses: Продано={prodano_count}, Непродано={neprodano_count}"
+        )
+        return {"prodano": prodano_count, "neprodano": neprodano_count}
+
+    except Exception as e:
+        db.rollback()
+        logger.error(f"sync_product_statuses error: {e}")
+        raise

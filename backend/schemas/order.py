@@ -5,7 +5,7 @@ from .product import Product
 
 # OrderItem Schema
 class OrderItemBase(BaseModel):
-    product_id: int
+    product_id: Optional[int] = None
     quantity: int = 1
     price: float
     discount_type: Optional[str] = None
@@ -23,10 +23,10 @@ class OrderItemUpdate(OrderItemBase):
 class OrderItem(OrderItemBase):
     id: int
     order_id: int
-    created_at: datetime
-    updated_at: datetime
-    product_number: Optional[str] = None  # For display
-    product_name: Optional[str] = None    # For display
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    product_number: Optional[str] = None
+    product_name: Optional[str] = None
 
     class Config:
         from_attributes = True

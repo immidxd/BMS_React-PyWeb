@@ -10,7 +10,10 @@ import {
   fetchParsingStyles, 
   startParsing, 
   startOrdersParsing, 
-  startGoogleSheetsParsing 
+  startGoogleSheetsParsing,
+  startSheetsJob,
+  resetProducts,
+  startWorkspaceParsing,
 } from '../../services/parsingService';
 import { useTheme } from '../../contexts/ThemeContext';
 
@@ -252,7 +255,9 @@ const ParsingDialog: React.FC<ParsingDialogProps> = ({ open, onClose }) => {
   const [isPolling, setIsPolling] = useState<boolean>(false);
   const [jobSnapshot, setJobSnapshot] = useState<any | null>(null);
   const [ws, setWs] = useState<WebSocket | null>(null);
-  const [activeTab, setActiveTab] = useState<'general' | 'special'>('general');
+  const [activeTab, setActiveTab] = useState<'sheets' | 'general' | 'special'>('sheets');
+  const [sheetsLoading, setSheetsLoading] = useState<string | null>(null);
+  const [resetConfirm, setResetConfirm] = useState(false);
 
   // Fetch available parsing sources and styles
   const { data: sources = [] } = useQuery({
@@ -349,6 +354,46 @@ const ParsingDialog: React.FC<ParsingDialogProps> = ({ open, onClose }) => {
     startGoogleSheetsParsing().then(() => toast.success('Products parsing started')).catch(err => toast.error(String(err)));
   };
 
+  const handleSheetsAction = async (action: string, label: string) => {
+    setSheetsLoading(action);
+    try {
+      let data: { jobId: number };
+      if (action === 'workspace') {
+        data = await startWorkspaceParsing();
+      } else {
+        data = await startSheetsJob(action);
+      }
+      setActiveJobId(data.jobId);
+      setIsPolling(true);
+      toast.info(`${label} — запущено (job #${data.jobId})`);
+    } catch (err) {
+      toast.error(`Помилка: ${String(err)}`);
+    } finally {
+      setSheetsLoading(null);
+    }
+  };
+
+  const handleResetAndReparse = async () => {
+    if (!resetConfirm) {
+      setResetConfirm(true);
+      return;
+    }
+    setResetConfirm(false);
+    setSheetsLoading('reset_full');
+    try {
+      await resetProducts();
+      toast.info('Таблицю товарів очищено. Запускаємо повний парсинг...');
+      const data = await startSheetsJob('sheets_full_full');
+      setActiveJobId(data.jobId);
+      setIsPolling(true);
+      toast.success(`Повний перепарсинг запущено (job #${data.jobId})`);
+    } catch (err) {
+      toast.error(`Помилка: ${String(err)}`);
+    } finally {
+      setSheetsLoading(null);
+    }
+  };
+
   if (!open) return null;
 
   const isFormDisabled = startParsingMutation.isPending || isPolling;
@@ -367,19 +412,26 @@ const ParsingDialog: React.FC<ParsingDialogProps> = ({ open, onClose }) => {
         <DialogContent>
           <TabContainer>
             <TabButtons>
+              <TabButtonStyled
+                active={activeTab === 'sheets'}
+                isDarkTheme={isDark}
+                onClick={() => setActiveTab('sheets')}
+              >
+                📊 Google Sheets
+              </TabButtonStyled>
               <TabButtonStyled 
                 active={activeTab === 'general'} 
                 isDarkTheme={isDark}
                 onClick={() => setActiveTab('general')}
               >
-                General Parsing
+                Загальний
               </TabButtonStyled>
               <TabButtonStyled 
                 active={activeTab === 'special'} 
                 isDarkTheme={isDark}
                 onClick={() => setActiveTab('special')}
               >
-                Data Import Scripts
+                Застарілі скрипти
               </TabButtonStyled>
             </TabButtons>
           </TabContainer>
@@ -453,6 +505,102 @@ const ParsingDialog: React.FC<ParsingDialogProps> = ({ open, onClose }) => {
                 {startParsingMutation.isPending ? 'Starting...' : (isPolling ? 'Parsing...' : 'Start Parsing')}
               </ButtonStyled>
             </Form>
+          )}
+
+          {activeTab === 'sheets' && (
+            <SpecialParsersContainer>
+              {/* ── Товари ── */}
+              <ParserCard isDarkTheme={isDark}>
+                <ParserCardTitle>📦 Товари (Журнал)</ParserCardTitle>
+                <ParserCardDescription>
+                  Парсинг товарів з Google Sheets «Журнал».
+                </ParserCardDescription>
+                <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+                  <ButtonStyled type="button" disabled={!!sheetsLoading} onClick={() => handleSheetsAction('sheets_products_quick', 'Товари (швидко)')}>
+                    {sheetsLoading === 'sheets_products_quick' ? '⏳ Парсинг...' : '⚡ Швидко (30 аркушів)'}
+                  </ButtonStyled>
+                  <ButtonStyled type="button" variant="secondary" disabled={!!sheetsLoading} onClick={() => handleSheetsAction('sheets_products_full', 'Товари (повний)')}>
+                    {sheetsLoading === 'sheets_products_full' ? '⏳ Парсинг...' : '📦 Повний'}
+                  </ButtonStyled>
+                </div>
+              </ParserCard>
+
+              {/* ── Замовлення ── */}
+              <ParserCard isDarkTheme={isDark}>
+                <ParserCardTitle>🛒 Замовлення</ParserCardTitle>
+                <ParserCardDescription>
+                  Парсинг замовлень та клієнтів з Google Sheets «Замовлення».
+                </ParserCardDescription>
+                <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+                  <ButtonStyled type="button" disabled={!!sheetsLoading} onClick={() => handleSheetsAction('sheets_orders_quick', 'Замовлення (швидко)')}>
+                    {sheetsLoading === 'sheets_orders_quick' ? '⏳ Парсинг...' : '⚡ Швидко (30 аркушів)'}
+                  </ButtonStyled>
+                  <ButtonStyled type="button" variant="secondary" disabled={!!sheetsLoading} onClick={() => handleSheetsAction('sheets_orders_full', 'Замовлення (повний)')}>
+                    {sheetsLoading === 'sheets_orders_full' ? '⏳ Парсинг...' : '🛒 Повний'}
+                  </ButtonStyled>
+                </div>
+              </ParserCard>
+
+              {/* ── Воркспейс ── */}
+              <ParserCard isDarkTheme={isDark}>
+                <ParserCardTitle>🔀 Воркспейс</ParserCardTitle>
+                <ParserCardDescription>
+                  Парсинг «Воркспейс1»: товари зі збігом ≥4 з 5 характеристик зливаються з існуючими (номер → клони), решта додаються як нові (без номеру → «???»).
+                </ParserCardDescription>
+                <ButtonStyled type="button" disabled={!!sheetsLoading} onClick={() => handleSheetsAction('workspace', 'Воркспейс')}>
+                  {sheetsLoading === 'workspace' ? '⏳ Парсинг...' : '🔀 Запустити'}
+                </ButtonStyled>
+              </ParserCard>
+
+              {/* ── Все одразу ── */}
+              <ParserCard isDarkTheme={isDark}>
+                <ParserCardTitle>🔄 Все разом (товари + замовлення + воркспейс)</ParserCardTitle>
+                <ParserCardDescription>
+                  Послідовно: Журнал → Замовлення → Воркспейс.
+                </ParserCardDescription>
+                <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+                  <ButtonStyled type="button" disabled={!!sheetsLoading} onClick={() => handleSheetsAction('sheets_full_quick', 'Все (швидко)')}>
+                    {sheetsLoading === 'sheets_full_quick' ? '⏳ Парсинг...' : '⚡ Швидко'}
+                  </ButtonStyled>
+                  <ButtonStyled type="button" variant="secondary" disabled={!!sheetsLoading} onClick={() => handleSheetsAction('sheets_full_full', 'Все (повний)')}>
+                    {sheetsLoading === 'sheets_full_full' ? '⏳ Парсинг...' : '🔄 Повний'}
+                  </ButtonStyled>
+                </div>
+              </ParserCard>
+
+              {/* ── Скинути і перепарсити ── */}
+              <ParserCard isDarkTheme={isDark} style={{ borderColor: resetConfirm ? '#d32f2f' : undefined }}>
+                <ParserCardTitle>♻ Скинути товари і перепарсити повністю</ParserCardTitle>
+                <ParserCardDescription>
+                  <strong>Використовуй якщо змінив номери товарів у Журналі.</strong>{' '}
+                  Очищає таблицю products і запускає повний парсинг з нуля. Замовлення і клієнти не видаляються.
+                  {resetConfirm && (
+                    <span style={{ display: 'block', color: '#d32f2f', marginTop: '0.5rem', fontWeight: 600 }}>
+                      ⚠ Підтверди: всі товари будуть видалені і перепарсені заново!
+                    </span>
+                  )}
+                </ParserCardDescription>
+                <div style={{ display: 'flex', gap: '0.5rem' }}>
+                  <ButtonStyled
+                    type="button"
+                    variant="danger"
+                    disabled={!!sheetsLoading}
+                    onClick={handleResetAndReparse}
+                  >
+                    {sheetsLoading === 'reset_full'
+                      ? '⏳ Виконується...'
+                      : resetConfirm
+                        ? '⚠ Так, скинути і перепарсити'
+                        : '♻ Скинути і перепарсити'}
+                  </ButtonStyled>
+                  {resetConfirm && (
+                    <ButtonStyled type="button" variant="secondary" onClick={() => setResetConfirm(false)}>
+                      Скасувати
+                    </ButtonStyled>
+                  )}
+                </div>
+              </ParserCard>
+            </SpecialParsersContainer>
           )}
 
           {activeTab === 'special' && (

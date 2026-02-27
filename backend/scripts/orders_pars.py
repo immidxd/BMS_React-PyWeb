@@ -583,26 +583,69 @@ def get_or_create_default_client(cursor, connection):
 #   Робота з продуктами
 # -------------------------------------------------------
 def get_or_create_product(cursor, connection, product_number):
-   if not product_number:
-       product_number = "???"
-   cursor.execute("""
-       SELECT id, price, oldprice, statusid
-         FROM products
+    """Розумне створення товару з підтримкою ростовки."""
+    if not product_number:
+        product_number = "???"
+    
+    # Спочатку шукаємо точний номер
+    cursor.execute("""
+        SELECT id, price, oldprice, statusid
+        FROM products
         WHERE productnumber=%s
         LIMIT 1
-   """,(product_number,))
-   row = cursor.fetchone()
-   if row:
-       return row[0]
-
-   cursor.execute("""
-       INSERT INTO products (productnumber, created_at, updated_at, statusid)
-       VALUES (%s, now(), now(), %s)
-       RETURNING id
-   """,(product_number, PRODUCT_STATUS_NOT_SOLD))
-   pid = cursor.fetchone()[0]
-   connection.commit()
-   return pid
+    """, (product_number,))
+    row = cursor.fetchone()
+    if row:
+        return row[0]
+    
+    # Якщо точного номера немає, шукаємо базовий номер (без суфіксів)
+    import re
+    base_number = re.sub(r'\(\d+\)$', '', product_number).strip()
+    
+    if base_number != product_number:
+        # Це номер з суфіксом, шукаємо базовий
+        cursor.execute("""
+            SELECT id, price, oldprice, statusid
+            FROM products
+            WHERE productnumber=%s
+            LIMIT 1
+        """, (base_number,))
+        base_row = cursor.fetchone()
+        
+        if base_row:
+            # Знайшли базовий товар, це ростовка
+            logger.info(f"Знайдено базовий товар для {product_number} → {base_number}")
+            return base_row[0]
+    
+    # Товару немає в каталозі - НЕ створюємо автоматично!
+    logger.warning(f"⚠️ ТОВАР {product_number} НЕ ЗНАЙДЕНО В КАТАЛОЗІ!")
+    logger.warning(f"   Потрібно додати цей товар в Google Sheets 'Журнал'")
+    logger.warning(f"   Або запустити парсинг каталогу товарів")
+    
+    # Створюємо мінімальний запис тільки для технічних потреб
+    cursor.execute("""
+        INSERT INTO products (
+            productnumber, 
+            statusid,
+            quantity,
+            description,
+            created_at, 
+            updated_at
+        ) VALUES (%s, %s, %s, %s, now(), now())
+        RETURNING id
+    """, (
+        product_number, 
+        PRODUCT_STATUS_NOT_SOLD,
+        0,  # Нульова кількість - товар НЕ в наявності
+        f"⚠️ ВІДСУТНІЙ В КАТАЛОЗІ: {product_number} - потребує додавання в 'Журнал'"
+    ))
+    
+    pid = cursor.fetchone()[0]
+    connection.commit()
+    
+    logger.error(f"❌ СТВОРЕНО ЗАГЛУШКУ для {product_number} (ID: {pid})")
+    logger.error(f"   ЦЕЙ ТОВАР ПОТРІБНО ДОДАТИ В КАТАЛОГ!")
+    return pid
 
 def update_product_price(cursor, connection, product_id, new_price):
    if not product_id or new_price is None:

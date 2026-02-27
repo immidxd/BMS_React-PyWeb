@@ -875,6 +875,10 @@ def process_sheet_data(data, wtitle, all_product_numbers):
             type_name = validate_text(rowvals[13] if len(rowvals) > 13 else '')
             subtype_name = validate_text(rowvals[14] if len(rowvals) > 14 else '')
             description = None  # Для аркуша Data опис може бути в іншій колонці або відсутній
+            old_price = None
+            status_raw = ''
+            condition_raw = ''
+            extranote = ''
          else:
             # Для аркушів доставок номер в колонці 1 (індекс 0)
             p_num_ = str(rowvals[0] if len(rowvals) > 0 else '').strip()
@@ -896,6 +900,10 @@ def process_sheet_data(data, wtitle, all_product_numbers):
             size = validate_text(rowvals[13] if len(rowvals) > 13 else '')
             size_cm = validate_text(rowvals[14] if len(rowvals) > 14 else '')
             price = validate_decimal(rowvals[15] if len(rowvals) > 15 else '')
+            old_price = validate_decimal(rowvals[16] if len(rowvals) > 16 else '')
+            status_raw = validate_text(rowvals[17] if len(rowvals) > 17 else '')
+            condition_raw = validate_text(rowvals[18] if len(rowvals) > 18 else '')
+            extranote = validate_text(rowvals[19] if len(rowvals) > 19 else '')
 
          # Очищаємо номер товару (без додавання символу #)
          product_number = sanitize_product_number(p_num_) if p_num_ else ''
@@ -907,7 +915,10 @@ def process_sheet_data(data, wtitle, all_product_numbers):
             logger.debug(f"Аркуш '{wtitle}': рядок {row_index} пропущено - порожній номер товару")
             continue
 
-         # Створюємо словник даних товару
+         # Статус з колонки Sheets або дефолтний 'Непродано'
+         sheet_status = status_raw if status_raw else 'Непродано'
+         default_status_id = get_or_create_status(cursor, sheet_status, conn)
+
          product_data = {
             'productnumber': product_number,
             'clonednumbers': clones,
@@ -915,14 +926,16 @@ def process_sheet_data(data, wtitle, all_product_numbers):
             'marking': marking,
             'year': year,
             'price': price if price is not None else 0.0,
+            'oldprice': old_price,
             'sizeeu': size,
             'measurementscm': size_cm,
             'description': description,
+            'extranote': extranote,
             # ВАЖЛИВО: передаємо реальні datetime об'єкти, а не рядок 'now()'
             'created_at': datetime.now(),
             'updated_at': datetime.now(),
             'dateadded': import_date or datetime.now().date(),
-            'statusid': 2  # Непродано
+            'statusid': default_status_id
          }
 
          # Отримуємо або створюємо зв'язані об'єкти
@@ -972,6 +985,12 @@ def process_sheet_data(data, wtitle, all_product_numbers):
          if country_owner:
             o_country_id = get_or_create_country(cursor, country_owner, conn)
             product_data['ownercountryid'] = o_country_id
+
+         # Стан товару (колонка 18 Sheets)
+         if condition_raw:
+            condition_id = get_or_create_condition(cursor, condition_raw, conn)
+            if condition_id:
+               product_data['conditionid'] = condition_id
 
          # Додаємо до списку для обробки
          rows_data.append(product_data)

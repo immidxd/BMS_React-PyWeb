@@ -5,13 +5,13 @@ from datetime import date, datetime
 import logging
 
 from sqlalchemy import text
-from backend.models.models import (
+from models.models import (
     Order, OrderItem, Client, Product,
     OrderStatus, PaymentMethod,
     DeliveryMethod, DeliveryStatus, Address,
     Broadcast
 )
-from backend.schemas.order import OrderCreate, OrderUpdate, OrderFilters
+from schemas.order import OrderCreate, OrderUpdate, OrderFilters
 
 logger = logging.getLogger(__name__)
 

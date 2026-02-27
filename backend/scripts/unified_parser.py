@@ -779,77 +779,47 @@ def get_parsing_modes():
     """Повертає доступні режими парсингу."""
     return [
         {
-            "id": ParsingMode.FULL.value,
-            "name": "Повний парсинг",
-            "description": "Повний парсинг всіх товарів та замовлень",
-            "icon": "🔄",
-            "estimated_time": "1-2 години"
-        },
-        {
-            "id": ParsingMode.INCREMENTAL.value,
-            "name": "Оновлення змін",
-            "description": "Парсинг тільки нових та змінених даних",
-            "icon": "📈",
-            "estimated_time": "5-15 хвилин",
-            "params": {
-                "days": {
-                    "type": "number",
-                    "default": 7,
-                    "min": 1,
-                    "max": 30,
-                    "description": "Кількість днів для перевірки"
-                }
-            }
-        },
-        {
-            "id": ParsingMode.QUICK_UPDATE.value,
-            "name": "Швидке оновлення",
-            "description": "Оновлення за останні 3 дні",
+            "id": "sheets_products_quick",
+            "name": "Товари — швидко (30 аркушів)",
+            "description": "Парсинг товарів з Google Sheets «Журнал» — останні 30 партій",
             "icon": "⚡",
-            "estimated_time": "2-5 хвилин"
+            "estimated_time": "~2 хвилини"
         },
         {
-            "id": ParsingMode.PRODUCTS_ONLY.value,
-            "name": "Тільки товари",
-            "description": "Парсинг тільки каталогу товарів",
+            "id": "sheets_products_full",
+            "name": "Товари — повний",
+            "description": "Парсинг усіх партій товарів з Google Sheets «Журнал»",
             "icon": "📦",
-            "estimated_time": "30-60 хвилин"
+            "estimated_time": "~6 хвилин"
         },
         {
-            "id": ParsingMode.ORDERS_ONLY.value,
-            "name": "Тільки замовлення",
-            "description": "Парсинг тільки замовлень клієнтів",
+            "id": "sheets_orders_quick",
+            "name": "Замовлення — швидко (30 аркушів)",
+            "description": "Парсинг замовлень з Google Sheets «Замовлення» — останні 30 аркушів",
             "icon": "🛒",
-            "estimated_time": "30-60 хвилин"
+            "estimated_time": "~2 хвилини"
         },
         {
-            "id": ParsingMode.NEW_PRODUCTS.value,
-            "name": "Пошук новинок",
-            "description": "Пошук нових товарів в каталозі",
-            "icon": "🆕",
-            "estimated_time": "15-30 хвилин"
+            "id": "sheets_orders_full",
+            "name": "Замовлення — повний",
+            "description": "Парсинг усіх замовлень з Google Sheets «Замовлення»",
+            "icon": "�",
+            "estimated_time": "~6 хвилин"
         },
         {
-            "id": ParsingMode.PARALLEL_FULL.value,
-            "name": "⚡ Паралельний повний парсинг",
-            "description": "Прискорений повний парсинг з паралельною обробкою",
-            "icon": "🚀⚡",
-            "estimated_time": "30-45 хвилин"
+            "id": "sheets_full_quick",
+            "name": "Все — швидко (товари + замовлення)",
+            "description": "Швидкий парсинг і товарів, і замовлень (останні 30 аркушів кожного)",
+            "icon": "�",
+            "estimated_time": "~4 хвилини"
         },
         {
-            "id": ParsingMode.PARALLEL_PRODUCTS.value,
-            "name": "⚡ Паралельний парсинг товарів",
-            "description": "Прискорений парсинг товарів з паралельною обробкою",
-            "icon": "📦⚡",
-            "estimated_time": "15-25 хвилин"
+            "id": "sheets_full_full",
+            "name": "Все — повний парсинг",
+            "description": "Повний парсинг усіх товарів і замовлень з Google Sheets",
+            "icon": "�",
+            "estimated_time": "~12 хвилин"
         },
-        {
-            "id": ParsingMode.PARALLEL_ORDERS.value,
-            "name": "⚡ Паралельний парсинг замовлень",
-            "description": "Прискорений парсинг замовлень з паралельною обробкою",
-            "icon": "🛒⚡",
-            "estimated_time": "15-25 хвилин"
-        }
     ]
 
 async def test_parser():

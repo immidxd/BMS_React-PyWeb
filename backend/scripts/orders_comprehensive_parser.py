@@ -25,11 +25,12 @@ import os
 import re
 from collections import defaultdict, Counter
 from typing import Dict, List, Optional, Tuple, Any, Set
+from types import SimpleNamespace
 import asyncio
 import gspread
 from google.oauth2 import service_account
 from dotenv import load_dotenv
-from sqlalchemy import text, and_, or_
+from sqlalchemy import text, and_, or_, inspect
 
 # Додаємо шлях для імпортів
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -157,7 +158,7 @@ class ProductCache:
     
     def __init__(self, session):
         self.session = session
-        self.cache = {}
+        self.cache: Dict[str, int] = {}
         self.load_products()
     
     def load_products(self):
@@ -166,23 +167,25 @@ class ProductCache:
         products = self.session.query(Product).all()
         for product in products:
             # Кешуємо за номером товару (з # і без)
-            self.cache[product.productnumber] = product
+            self.cache[product.productnumber] = product.id
             if product.productnumber.startswith('#'):
-                self.cache[product.productnumber[1:]] = product
+                self.cache[product.productnumber[1:]] = product.id
             else:
-                self.cache[f"#{product.productnumber}"] = product
+                self.cache[f"#{product.productnumber}"] = product.id
         logger.info(f"Завантажено {len(products)} товарів у кеш")
     
     def get_product(self, product_code: str) -> Optional[Product]:
         """Отримує товар з кешу."""
         # Спробуємо знайти з # і без
-        product = self.cache.get(product_code)
-        if not product:
+        product_id = self.cache.get(product_code)
+        if product_id is None:
             if product_code.startswith('#'):
-                product = self.cache.get(product_code[1:])
+                product_id = self.cache.get(product_code[1:])
             else:
-                product = self.cache.get(f"#{product_code}")
-        return product
+                product_id = self.cache.get(f"#{product_code}")
+        if product_id is None:
+            return None
+        return self.session.get(Product, product_id)
 
 class PaymentMethodManager:
     """Клас для розпізнавання методів оплати."""
@@ -305,6 +308,16 @@ class ClientManager:
         for client in clients:
             self._cache_client(client)
         logger.info(f"Завантажено {len(clients)} клієнтів у кеш")
+
+    def _ensure_session_bound(self, client: Client) -> Client:
+        """Гарантує, що об'єкт клієнта підключено до поточної сесії."""
+        if client is None:
+            return None
+        client_state = inspect(client)
+        if client_state.session is not self.session:
+            client = self.session.merge(client, load=False)
+        self._cache_client(client)
+        return client
     
     def normalize_phone(self, phone: str) -> str:
         """Нормалізує номер телефону."""
@@ -328,7 +341,7 @@ class ClientManager:
         
         # Пошук за телефоном
         if phone and phone in self.phone_cache:
-            existing_client = self.phone_cache[phone]
+            existing_client = self._ensure_session_bound(self.phone_cache[phone])
             if self._update_client_info(existing_client, client_data):
                 self.stats['updated'] += 1
             else:
@@ -337,7 +350,7 @@ class ClientManager:
         
         # Пошук за Facebook
         if facebook and facebook in self.facebook_cache:
-            existing_client = self.facebook_cache[facebook]
+            existing_client = self._ensure_session_bound(self.facebook_cache[facebook])
             if self._update_client_info(existing_client, client_data):
                 self.stats['updated'] += 1
             else:
@@ -628,62 +641,56 @@ class OrdersComprehensiveParser:
     def get_or_create_reference_data(self):
         """Отримує або створює довідкові дані."""
         logger.info("Ініціалізація довідкових даних...")
-        
-        # Статуси замовлення - використовуємо існуючі
-        order_statuses = {}
-        # Мапінг наших назв на існуючі в БД
-        status_mapping = {
-            'Нове': 'Підтверджено',          # ID 1
-            'В обробці': 'В черзі',          # ID 8  
-            'Відправлено': 'Підтверджено',   # ID 1
-            'Доставлено': 'Підтверджено',    # ID 1
-            'Скасовано': 'Відміна'           # ID 5
-        }
-        
-        for our_name, db_name in status_mapping.items():
+
+        def build_lookup(rows, name_index: int) -> Dict[str, SimpleNamespace]:
+            lookup: Dict[str, SimpleNamespace] = {}
+            for row in rows:
+                raw_name = row[name_index] if len(row) > name_index else None
+                name = (raw_name or '').strip()
+                if not name:
+                    continue
+                lookup[name.lower()] = SimpleNamespace(id=row[0], name=name)
+            return lookup
+
+        order_status_rows = self.session.execute(
+            text("SELECT id, status_name FROM order_statuses")
+        ).fetchall()
+        order_statuses = build_lookup(order_status_rows, 1)
+
+        payment_status_rows = self.session.execute(
+            text("SELECT id, status_name FROM payment_statuses")
+        ).fetchall()
+        payment_statuses = build_lookup(payment_status_rows, 1)
+
+        delivery_method_rows = self.session.execute(
+            text("SELECT id, method_name FROM delivery_methods")
+        ).fetchall()
+        delivery_methods = build_lookup(delivery_method_rows, 1)
+
+        delivery_status_rows = self.session.execute(
+            text("SELECT id, status_name FROM delivery_statuses")
+        ).fetchall()
+        delivery_statuses = build_lookup(delivery_status_rows, 1)
+
+        payment_method_rows = self.session.execute(
+            text("SELECT id, method_name FROM payment_methods")
+        ).fetchall()
+        payment_methods = build_lookup(payment_method_rows, 1)
+
+        if 'термінал' not in payment_methods:
             result = self.session.execute(
-                text("SELECT id FROM order_statuses WHERE status_name = :name"),
-                {"name": db_name}
-            ).first()
-            order_statuses[our_name] = type('OrderStatus', (), {'id': result[0]})()
-        
-        # Статуси оплати - використовуємо існуючі
-        payment_statuses = {}
-        # Мапінг наших назв на існуючі в БД
-        payment_mapping = {
-            'Не оплачено': 'Не оплачено',    # ID 4
-            'Оплачено': 'Оплачено',          # ID 1
-            'Часткова оплата': 'Доплатити'   # ID 2
-        }
-        
-        for our_name, db_name in payment_mapping.items():
-            result = self.session.execute(
-                text("SELECT id FROM payment_statuses WHERE status_name = :name"),
-                {"name": db_name}
-            ).first()
-            payment_statuses[our_name] = type('PaymentStatus', (), {'id': result[0]})()
-        
-        # Методи доставки - використовуємо існуючі
-        delivery_methods = {}
-        # Мапінг наших назв на існуючі в БД
-        delivery_mapping = {
-            'Нова Пошта': 'нп',             # ID 1
-            'Укрпошта': 'уп',               # ID 2
-            'Самовивіз': 'самовивіз'        # ID 4
-        }
-        
-        for our_name, db_name in delivery_mapping.items():
-            result = self.session.execute(
-                text("SELECT id FROM delivery_methods WHERE method_name = :name"),
-                {"name": db_name}
-            ).first()
-            delivery_methods[our_name] = type('DeliveryMethod', (), {'id': result[0]})()
-        
-        return order_statuses, payment_statuses, delivery_methods
+                text("INSERT INTO payment_methods (method_name, created_at, updated_at) VALUES (:name, NOW(), NOW()) RETURNING id"),
+                {"name": "Термінал"}
+            )
+            new_id = result.scalar()
+            payment_methods['термінал'] = SimpleNamespace(id=new_id, name="Термінал")
+
+        return order_statuses, payment_statuses, delivery_methods, delivery_statuses, payment_methods
     
-    def parse_order_row(self, row: List[str], headers: List[str], 
-                       order_statuses: Dict, payment_statuses: Dict, 
-                       delivery_methods: Dict, sheet_date: datetime) -> bool:
+    def parse_order_row(self, row: List[str], headers: List[str],
+                       order_statuses: Dict, payment_statuses: Dict,
+                       delivery_methods: Dict, delivery_statuses: Dict,
+                       payment_methods: Dict, sheet_date: datetime) -> bool:
         """Парсить один рядок замовлення."""
         try:
             # Витягуємо дані з рядка
@@ -740,16 +747,30 @@ class OrdersComprehensiveParser:
             if clarification_text:
                 clarification_data = ClarificationParser.parse_clarification(clarification_text)
             
-            # Визначаємо статуси
+            # Визначаємо статуси/методи
             order_status_text = order_data.get('Статус відповіді', '').strip()
             payment_status_text = order_data.get('Статус оплати', '').strip()
             delivery_method_text = order_data.get('Доставка', '').strip()
-            
-            # Маппинг статусів на ID в БД
+            parcel_status_text = order_data.get('Статус посилки', '').strip()
+            comments_text = order_data.get('Коментарі', '').strip()
+            tracking_number_raw = order_data.get('Номер накладної', '').strip()
+
             order_status_id = self.map_order_status(order_status_text, order_statuses)
-            payment_status_id = self.map_payment_status(payment_status_text, payment_statuses)
+            payment_status_id, payment_status_value = self.map_payment_status(payment_status_text, payment_statuses)
             delivery_method_id = self.map_delivery_method(delivery_method_text, delivery_methods)
-            
+            delivery_status_id = self.map_delivery_status(
+                tracking_number_raw,
+                parcel_status_text,
+                order_status_text,
+                delivery_statuses
+            )
+            payment_method_id = self.map_payment_method(
+                comments_text,
+                clarification_data,
+                payment_status_value,
+                payment_methods
+            )
+
             # Дата відстрочки
             deferred_text = order_data.get('Відкладено до', '').strip()
             deferred_date = None
@@ -772,17 +793,19 @@ class OrdersComprehensiveParser:
                 client_id=client.id,
                 order_date=sheet_date,
                 order_status_id=order_status_id,
-                total_amount=float(order_data.get('Сума', 0) or 0),
+                total_amount=price,
                 payment_status_id=payment_status_id,
+                payment_status=payment_status_value,
+                payment_method_id=payment_method_id,
                 delivery_method_id=delivery_method_id,
-                tracking_number=order_data.get('Номер накладної', '').strip() or None,
+                delivery_status_id=delivery_status_id,
+                tracking_number=tracking_number_raw or None,
                 notes=comments,
                 priority=int(order_data.get('Пріорітетність', 0) or 0),
                 deferred_until=deferred_date
             )
-            
-            # Перевіряємо методи оплати в коментарях
-            comments_text = order_data.get('Коментарі', '').strip()
+
+            # Перевіряємо методи оплати в коментарях для історичних нотаток
             payment_method_from_comments = None
             if comments_text:
                 payment_method_from_comments = PaymentMethodManager.identify_payment_method(comments_text)
@@ -857,12 +880,12 @@ class OrdersComprehensiveParser:
                         self.session.add(new_product)
                         self.session.flush()
                         # Оновлюємо кеш для обох варіантів коду (#ХХХ і ХХХ)
-                        self.product_cache.cache[mp_code] = new_product
+                        self.product_cache.cache[mp_code] = new_product.id
                         if mp_code.startswith('#'):
-                            self.product_cache.cache[mp_code[1:]] = new_product
+                            self.product_cache.cache[mp_code[1:]] = new_product.id
                         else:
-                            self.product_cache.cache[f"#{mp_code}"] = new_product
-                        found_products.append((mp_code, new_product))
+                            self.product_cache.cache[f"#{mp_code}"] = new_product.id
+                        found_products.append((mp_code, self.product_cache.get_product(mp_code)))
                         logger.info(f"Створено базовий товар з коду замовлення: {mp_code} (id={new_product.id})")
                     except Exception as _e:
                         logger.error(f"Не вдалося створити товар {mp_code}: {_e}")
@@ -923,7 +946,15 @@ class OrdersComprehensiveParser:
                     pass
             return False
     
-    def parse_orders_sheet(self, worksheet, order_statuses, payment_statuses, delivery_methods):
+    def parse_orders_sheet(
+        self,
+        worksheet,
+        order_statuses,
+        payment_statuses,
+        delivery_methods,
+        delivery_statuses,
+        payment_methods
+    ):
         """Парсить один аркуш замовлень."""
         try:
             sheet_name = worksheet.title
@@ -968,8 +999,16 @@ class OrdersComprehensiveParser:
                     continue
                 
                 self.stats['total_orders'] += 1
-                success = self.parse_order_row(row, headers, order_statuses, 
-                                             payment_statuses, delivery_methods, sheet_date)
+                success = self.parse_order_row(
+                    row,
+                    headers,
+                    order_statuses,
+                    payment_statuses,
+                    delivery_methods,
+                    delivery_statuses,
+                    payment_methods,
+                    sheet_date
+                )
                 
                 if success and self.stats['total_orders'] % 100 == 0:
                     logger.info(f"Оброблено {self.stats['total_orders']} замовлень")
@@ -1052,7 +1091,7 @@ class OrdersComprehensiveParser:
             logger.info(f"✅ Документ відкрито: {doc.title}")
             
             # Отримуємо довідкові дані
-            order_statuses, payment_statuses, delivery_methods = self.get_or_create_reference_data()
+            order_statuses, payment_statuses, delivery_methods, delivery_statuses, payment_methods = self.get_or_create_reference_data()
             
             # Отримуємо всі аркуші
             worksheets = doc.worksheets()
@@ -1086,7 +1125,14 @@ class OrdersComprehensiveParser:
             
             for i, worksheet in enumerate(order_sheets, 1):
                 logger.info(f"Обробляємо аркуш {i}/{len(order_sheets)}: {worksheet.title}")
-                self.parse_orders_sheet(worksheet, order_statuses, payment_statuses, delivery_methods)
+                self.parse_orders_sheet(
+                    worksheet,
+                    order_statuses,
+                    payment_statuses,
+                    delivery_methods,
+                    delivery_statuses,
+                    payment_methods
+                )
                 
                 # Комітимо кожні 10 аркушів для збереження пам'яті
                 if i % 10 == 0:
@@ -1155,57 +1201,162 @@ class OrdersComprehensiveParser:
             if self.session:
                 self.session.close()
 
-    def map_order_status(self, status_text: str, order_statuses: Dict) -> int:
+    def map_order_status(self, status_text: str, order_statuses: Dict[str, SimpleNamespace]) -> int:
         """Маппить текстовий статус замовлення на ID в БД."""
-        status_mapping = {
-            'ПІДТВЕРДЖЕННО': 'Підтверджено',
-            'ПІДТВЕРДЖЕНО': 'Підтверджено', 
-            'НОВЕ': 'Підтверджено',
-            'В ОБРОБЦІ': 'В черзі',
-            'СКАСОВАНО': 'Відміна',
-            'ВІДМІНА': 'Відміна'
+        normalized = (status_text or '').strip().lower()
+        status_aliases = {
+            '': 'підтверджено',
+            'підтверджено': 'підтверджено',
+            'підтвердженно': 'підтверджено',
+            'нове': 'підтверджено',
+            'в обробці': 'в черзі',
+            'в черзі': 'в черзі',
+            'очікується': 'в черзі',
+            'уточнити': 'уточнити',
+            'уточнення': 'уточнити',
+            'фото': 'фото',
+            'відміна': 'відміна',
+            'скасовано': 'відміна',
+            'скасоване': 'відміна',
+            'ігнорування': 'ігнорування',
+            'ігнор': 'ігнорування',
+            'подарунок': 'подарунок',
+            'повернення': 'повернення',
+            'обмін': 'обмін'
         }
-        
-        mapped_status = status_mapping.get(status_text.upper(), 'Підтверджено')
-        status_obj = order_statuses.get(mapped_status)
+        canonical = status_aliases.get(normalized, normalized or 'підтверджено')
+        status_obj = order_statuses.get(canonical)
         if status_obj:
             return status_obj.id
-        # Fallback - повертаємо перший доступний статус
-        return list(order_statuses.values())[0].id
+        fallback = order_statuses.get('підтверджено') or next(iter(order_statuses.values()))
+        return fallback.id
     
-    def map_payment_status(self, status_text: str, payment_statuses: Dict) -> int:
-        """Маппить текстовий статус оплати на ID в БД."""
-        status_mapping = {
-            'ОПЛАЧЕНО': 'Оплачено',
-            'НЕ ОПЛАЧЕНО': 'Не оплачено',
-            'ДОПЛАТИТИ': 'Доплатити',
-            'ЧАСТКОВА ОПЛАТА': 'Доплатити'
+    def map_payment_status(self, status_text: str, payment_statuses: Dict[str, SimpleNamespace]) -> Tuple[int, Optional[str]]:
+        """Маппить текстовий статус оплати на ID в БД та повертає канонічну назву."""
+        normalized = (status_text or '').strip().lower()
+        status_aliases = {
+            'оплачено': 'оплачено',
+            'оплачена': 'оплачено',
+            'не оплачено': 'не оплачено',
+            'неоплачено': 'не оплачено',
+            'доплатити': 'доплатити',
+            'борг': 'доплатити',
+            'часткова оплата': 'доплатити',
+            'відкладено': 'відкладено'
         }
-        
-        mapped_status = status_mapping.get(status_text.upper(), 'Не оплачено')
-        status_obj = payment_statuses.get(mapped_status)
+        canonical = status_aliases.get(normalized, 'не оплачено')
+        status_obj = payment_statuses.get(canonical)
         if status_obj:
-            return status_obj.id
-        # Fallback - повертаємо перший доступний статус
-        return list(payment_statuses.values())[0].id
+            return status_obj.id, status_obj.name
+        fallback = payment_statuses.get('не оплачено') or next(iter(payment_statuses.values()))
+        return fallback.id, fallback.name
     
-    def map_delivery_method(self, method_text: str, delivery_methods: Dict) -> int:
+    def map_delivery_method(self, method_text: str, delivery_methods: Dict[str, SimpleNamespace]) -> Optional[int]:
         """Маппить текстовий метод доставки на ID в БД."""
-        method_mapping = {
-            'НОВА ПОШТА': 'нп',
-            'НП': 'нп',
-            'УКРПОШТА': 'уп',
-            'УП': 'уп',
-            'САМОВИВІЗ': 'самовивіз',
-            'МАГАЗИН': 'самовивіз'
+        normalized = (method_text or '').strip().lower()
+        method_aliases = {
+            'нп': 'нп',
+            'нова пошта': 'нп',
+            'нова-пошта': 'нп',
+            'укрпошта': 'уп',
+            'уп': 'уп',
+            'міст': 'міст',
+            'міст експрес': 'міст',
+            'самовивіз': 'самовивіз',
+            'магазин': 'магазин',
+            'місцевий': 'місцевий',
+            'відкладено': 'відкладено'
         }
-        
-        mapped_method = method_mapping.get(method_text.upper(), 'нп')
-        method_obj = delivery_methods.get(mapped_method)
-        if method_obj:
-            return method_obj.id
-        # Fallback - повертаємо перший доступний метод
-        return list(delivery_methods.values())[0].id
+        canonical = method_aliases.get(normalized)
+        if canonical:
+            method_obj = delivery_methods.get(canonical)
+            if method_obj:
+                return method_obj.id
+        return None
+
+    def map_delivery_status(
+        self,
+        tracking_number: str,
+        parcel_status_text: str,
+        order_status_text: str,
+        delivery_statuses: Dict[str, SimpleNamespace]
+    ) -> Optional[int]:
+        """Визначає статус доставки за правилами."""
+        tracking_has_digits = any(ch.isdigit() for ch in tracking_number) if tracking_number else False
+        parcel_status_norm = (parcel_status_text or '').strip().lower()
+        order_status_norm = (order_status_text or '').strip().lower()
+
+        if order_status_norm == 'повернення':
+            status = delivery_statuses.get('повернуто')
+            if status:
+                return status.id
+
+        if tracking_has_digits or parcel_status_norm == 'створено':
+            status = delivery_statuses.get('створено')
+            if status:
+                return status.id
+
+        return None
+
+    @staticmethod
+    def normalize_payment_method_name(name: str) -> Optional[str]:
+        """Нормалізує назву методу оплати до ключів довідника."""
+        if not name:
+            return None
+        normalized = name.strip().lower()
+        mapping = {
+            'карта': 'картка',
+            'картка': 'картка',
+            'готівка': 'готівка',
+            'наличка': 'готівка',
+            'наличні': 'готівка',
+            'переказ': 'переказ',
+            'термінал': 'термінал'
+        }
+        return mapping.get(normalized)
+
+    def map_payment_method(
+        self,
+        comments_text: str,
+        clarification_data: Optional[Dict[str, Any]],
+        payment_status_value: Optional[str],
+        payment_methods: Dict[str, SimpleNamespace]
+    ) -> Optional[int]:
+        """Визначає метод оплати на основі коментарів, уточнень та статусу оплати."""
+        comments_lower = (comments_text or '').strip().lower()
+
+        def get_method_id(key: str) -> Optional[int]:
+            method = payment_methods.get(key)
+            return method.id if method else None
+
+        if 'термінал' in comments_lower:
+            method_id = get_method_id('термінал')
+            if method_id:
+                return method_id
+
+        if 'готівк' in comments_lower:
+            method_id = get_method_id('готівка')
+            if method_id:
+                return method_id
+
+        if any(token in comments_lower for token in ('переказ', 'перевод', 'переказати', 'transfer')):
+            method_id = get_method_id('переказ')
+            if method_id:
+                return method_id
+
+        if clarification_data and clarification_data.get('type') == 'payment':
+            clarified = clarification_data['data'].get('method')
+            canonical = self.normalize_payment_method_name(clarified)
+            if canonical:
+                method_id = get_method_id(canonical)
+                if method_id:
+                    return method_id
+
+        paid_value = (payment_status_value or '').strip().lower()
+        if paid_value == 'оплачено':
+            return get_method_id('картка')
+
+        return None
 
     def parse_sheet(self, sheet_name: str) -> List[List[str]]:
         """Парсить конкретний аркуш з обробкою quota exceeded."""

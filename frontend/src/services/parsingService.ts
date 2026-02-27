@@ -114,6 +114,23 @@ export const startOrdersParsing = async () => {
   }
 };
 
+export const startSheetsJob = async (mode: string): Promise<{ jobId: number }> => {
+  const response = await fetch(`/api/parsing/run?mode=${mode}`, { method: 'POST' });
+  if (!response.ok) throw new Error((await response.json()).detail || 'Failed');
+  return response.json();
+};
+
+export const resetProducts = async (): Promise<void> => {
+  const response = await fetch('/api/parsing/sheets/reset-products', { method: 'POST' });
+  if (!response.ok) throw new Error((await response.json()).detail || 'Reset failed');
+};
+
+export const startWorkspaceParsing = async (): Promise<{ jobId: number }> => {
+  const response = await fetch('/api/parsing/sheets/workspace', { method: 'POST' });
+  if (!response.ok) throw new Error((await response.json()).detail || 'Failed');
+  return response.json();
+};
+
 // Function to start Google Sheets parsing script
 export const startGoogleSheetsParsing = async () => {
   try {

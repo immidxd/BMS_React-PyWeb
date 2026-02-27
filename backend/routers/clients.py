@@ -3,9 +3,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import or_
 
-from backend.models.database import get_db
-from backend.models.models import Client, Gender
-from backend.schemas.reference import Client as ClientSchema, ClientCreate, ClientUpdate, ClientList
+from models.database import get_db
+from models.models import Client, Gender
+from schemas.reference import Client as ClientSchema, ClientCreate, ClientUpdate, ClientList
 
 router = APIRouter()
 
