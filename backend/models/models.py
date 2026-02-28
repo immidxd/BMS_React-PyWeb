@@ -163,6 +163,7 @@ class Order(Base):
     deferred_until = Column(Date)
     priority = Column(Integer, default=0)
     broadcast_id = Column(Integer, ForeignKey("broadcasts.id"))
+    source_fingerprint = Column(String(64), index=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     

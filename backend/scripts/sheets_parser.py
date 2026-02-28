@@ -757,7 +757,8 @@ def _parse_orders_sheet(
         except ValueError:
             return default
 
-    orders_added = items_added = clients_added = skipped = 0
+    import hashlib
+    orders_added = orders_updated = items_added = clients_added = skipped = 0
     total = len(rows) - 1
 
     for i, row in enumerate(rows[1:], 1):
@@ -861,22 +862,66 @@ def _parse_orders_sheet(
 
         combined_notes = "; ".join(filter(None, [notes_raw, clarification, recipient]))
 
-        order = Order(
-            client_id         = client_id,
-            order_date        = order_date,
-            order_status_id   = order_status_id,
-            total_amount      = total_amount,
-            payment_status_id = pay_status_id,
-            delivery_method_id= delivery_id,
-            tracking_number   = tracking if tracking else None,
-            deferred_until    = deferred,
-            priority          = priority,
-            notes             = combined_notes if combined_notes else None,
-            created_at        = datetime.utcnow(),
-        )
-        session.add(order)
-        session.flush()
-        orders_added += 1
+        # ── Fingerprint для дедуплікації ──────────────────────────────────
+        # Стабільний ключ: client_name + date + sorted product nums + total
+        sorted_pnums = "|".join(sorted(product_nums))
+        fp_raw = f"{client_name.strip().lower()}|{order_date.isoformat()}|{sorted_pnums}|{total_amount}"
+        source_fp = hashlib.md5(fp_raw.encode("utf-8")).hexdigest()
+
+        existing_order = session.query(Order).filter(
+            Order.source_fingerprint == source_fp
+        ).first()
+
+        # Fallback для старих замовлень без fingerprint
+        if not existing_order:
+            notes_val = combined_notes if combined_notes else None
+            fb_q = session.query(Order).filter(
+                Order.client_id == client_id,
+                Order.order_date == order_date,
+                Order.total_amount == total_amount,
+                Order.source_fingerprint.is_(None),
+            )
+            if notes_val:
+                fb_q = fb_q.filter(Order.notes == notes_val)
+            else:
+                fb_q = fb_q.filter(Order.notes.is_(None))
+            existing_order = fb_q.first()
+            if existing_order:
+                existing_order.source_fingerprint = source_fp
+
+        if existing_order:
+            # Оновлюємо існуюче замовлення (статуси, трекінг, тощо)
+            existing_order.order_status_id   = order_status_id
+            existing_order.payment_status_id = pay_status_id
+            existing_order.delivery_method_id= delivery_id
+            existing_order.tracking_number   = tracking if tracking else None
+            existing_order.deferred_until    = deferred
+            existing_order.priority          = priority
+            existing_order.notes             = combined_notes if combined_notes else None
+            existing_order.updated_at        = datetime.utcnow()
+            # Видаляємо старі items і перестворюємо нижче
+            session.query(OrderItem).filter(OrderItem.order_id == existing_order.id).delete()
+            session.flush()
+            order = existing_order
+            orders_updated += 1
+        else:
+            order = Order(
+                client_id          = client_id,
+                order_date         = order_date,
+                order_status_id    = order_status_id,
+                total_amount       = total_amount,
+                payment_status_id  = pay_status_id,
+                delivery_method_id = delivery_id,
+                tracking_number    = tracking if tracking else None,
+                deferred_until     = deferred,
+                priority           = priority,
+                notes              = combined_notes if combined_notes else None,
+                source_fingerprint = source_fp,
+                created_at         = datetime.utcnow(),
+            )
+            session.add(order)
+            session.flush()
+            orders_added += 1
 
         for pnum, price in zip(product_nums, prices):
             # Strip emoji / special chars from product number
@@ -905,7 +950,8 @@ def _parse_orders_sheet(
 
         session.commit()
 
-    return {"orders": orders_added, "items": items_added, "clients": clients_added, "skipped": skipped}
+    return {"orders": orders_added, "items": items_added, "clients": clients_added,
+            "updated": orders_updated, "skipped": skipped}
 
 
 # ── Workspace parser ─────────────────────────────────────────────────────────
