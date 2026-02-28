@@ -741,8 +741,12 @@ def _parse_orders_sheet(
     sheet_date: date,
     session: Session,
     progress_cb: Optional[Callable] = None,
+    cutoff_date: date = None,
 ) -> dict:
     from backend.models.models import Order, OrderItem, Product
+
+    if cutoff_date is None:
+        cutoff_date = date.min
 
     rows = ws.get_all_values()
     if not rows:
@@ -846,6 +850,12 @@ def _parse_orders_sheet(
             except ValueError:
                 pass
 
+        # Пропускаємо carried-over замовлення: якщо order_date <= cutoff_date,
+        # це замовлення з попередньої вкладки, воно вже парсилось звідти.
+        if order_date <= cutoff_date:
+            skipped += 1
+            continue
+
         deferred_raw = col(row, "Відкладено до")
         deferred = None
         if deferred_raw:
@@ -863,9 +873,13 @@ def _parse_orders_sheet(
         combined_notes = "; ".join(filter(None, [notes_raw, clarification, recipient]))
 
         # ── Fingerprint для дедуплікації ──────────────────────────────────
-        # Стабільний ключ: client_name + date + sorted product nums + total
-        sorted_pnums = "|".join(sorted(product_nums))
-        fp_raw = f"{client_name.strip().lower()}|{order_date.isoformat()}|{sorted_pnums}|{total_amount}"
+        # Стабільний ключ: client_name + date + sorted product nums
+        # (без total_amount — він змінюється між версіями замовлення в різних вкладках)
+        norm_pnums = sorted(
+            re.sub(r"[^\wА-ЯҐЄІЇа-яґєії]", "", p).upper()
+            for p in product_nums if p.strip()
+        )
+        fp_raw = f"{client_name.strip().lower()}|{order_date.isoformat()}|{'|'.join(norm_pnums)}"
         source_fp = hashlib.md5(fp_raw.encode("utf-8")).hexdigest()
 
         existing_order = session.query(Order).filter(
@@ -1252,12 +1266,21 @@ def run_orders_parsing(
     if mode == "quick":
         order_sheets = order_sheets[:QUICK_SHEETS_COUNT]
 
-    total_orders = total_items = total_skipped = 0
+    total_orders = total_items = total_updated = total_skipped = 0
     total_sheets = len(order_sheets)
 
+    # Обчислюємо дати кожної вкладки (вкладки йдуть найновіша → найстаріша)
+    sheet_dates = [
+        parse_date_from_sheet_title(ws.title) or date.today()
+        for ws in order_sheets
+    ]
+
     for idx, ws in enumerate(order_sheets):
-        sheet_date = parse_date_from_sheet_title(ws.title) or date.today()
-        logger.info(f"[orders] Parsing sheet {idx+1}/{total_sheets}: {ws.title}")
+        sheet_date = sheet_dates[idx]
+        # cutoff: дата наступної (старішої) вкладки — замовлення з order_date <= cutoff
+        # є carried-over і вже парсились з їх "рідної" вкладки → пропускаємо
+        cutoff_date = sheet_dates[idx + 1] if idx + 1 < len(sheet_dates) else date.min
+        logger.info(f"[orders] Parsing sheet {idx+1}/{total_sheets}: {ws.title} (cutoff={cutoff_date})")
 
         def _cb(done, total, _ws=ws, _idx=idx):
             if progress_cb:
@@ -1268,9 +1291,10 @@ def run_orders_parsing(
         if idx > 0:
             time.sleep(SHEET_READ_DELAY_SEC)
 
-        result = _parse_orders_sheet(ws, sheet_date, session, _cb)
+        result = _parse_orders_sheet(ws, sheet_date, session, _cb, cutoff_date)
         total_orders  += result["orders"]
         total_items   += result["items"]
+        total_updated += result.get("updated", 0)
         total_skipped += result["skipped"]
 
     return {
@@ -1278,6 +1302,7 @@ def run_orders_parsing(
         "sheets":  total_sheets,
         "orders":  total_orders,
         "items":   total_items,
+        "updated": total_updated,
         "skipped": total_skipped,
     }
 
