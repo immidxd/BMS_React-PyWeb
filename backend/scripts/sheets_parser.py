@@ -230,6 +230,10 @@ def _parse_products_sheet(
 
     header = [h.strip() for h in rows[0]]
 
+    # ID статусу "Непродано" — він має пріоритет при кількох входженнях товару.
+    # Якщо хоча б один примірник "Непродано" — товар в наявності.
+    unsold_status_id = _get_or_create_status(session, "Непродано")
+
     def col(row, name):
         try:
             idx = header.index(name)
@@ -344,7 +348,14 @@ def _parse_products_sheet(
             cnt = seen_in_run.get(full_match.id, 0) + 1
             seen_in_run[full_match.id] = cnt
             full_match.quantity = cnt
-            full_match.statusid = status_id
+            # Статус: перше входження — ставимо як є.
+            # Наступні входження — оновлюємо ТІЛЬКИ якщо новий статус "Непродано".
+            # Це гарантує: якщо хоча б один примірник "в наявності" — товар
+            # відображається як "Непродано", навіть якщо інші копії продані.
+            if cnt == 1:
+                full_match.statusid = status_id
+            elif status_id == unsold_status_id:
+                full_match.statusid = status_id
             # Оновлюємо поля якщо нові дані непорожні
             if marking:
                 full_match.marking = marking
