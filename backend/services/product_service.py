@@ -81,7 +81,10 @@ def get_products(
                sup.name as supplier_name,
                st.subtypename as subtype_name,
                COALESCE(sold.sold_count, 0) AS sold_count,
-               GREATEST(0, COALESCE(p.quantity, 0) - COALESCE(sold.sold_count, 0)) AS available_qty
+               CASE
+                   WHEN s.statusname = 'Продано' THEN 0
+                   ELSE COALESCE(p.quantity, 0)
+               END AS available_qty
         FROM products p
         LEFT JOIN types t ON p.typeid = t.id
         LEFT JOIN brands b ON p.brandid = b.id  
