@@ -539,18 +539,31 @@ def _find_or_create_client(session: Session, name: str, phone: str,
     if not name:
         return None
 
+    # Очищення невалідних значень з Google Sheets (#N/A, #REF!, #VALUE! тощо)
+    _INVALID = {"#N/A", "#REF!", "#VALUE!", "#ERROR!", "#NAME?", "#NULL!", "#DIV/0!", "#NUM!"}
+    def _clean(val: str) -> str:
+        v = (val or "").strip()
+        return "" if v.upper() in _INVALID or v == "ㅤ" else v
+    phone    = _clean(phone)
+    facebook = _clean(facebook)
+    viber    = _clean(viber)
+    telegram = _clean(telegram)
+    instagram= _clean(instagram)
+    olx      = _clean(olx)
+    email    = _clean(email)
+
     parts = name.split(maxsplit=1)
     first = parts[0] if parts else name
     last  = parts[1] if len(parts) > 1 else ""
 
     # Dedup: match by phone (best signal), or by facebook/telegram, or by normalized name
     candidate = None
-    if phone and phone.strip():
-        candidate = session.query(Client).filter(Client.phone_number == phone.strip()).first()
+    if phone:
+        candidate = session.query(Client).filter(Client.phone_number == phone).first()
     if not candidate and facebook and "facebook.com" in facebook:
-        candidate = session.query(Client).filter(Client.facebook == facebook.strip()).first()
-    if not candidate and telegram and telegram.strip():
-        candidate = session.query(Client).filter(Client.telegram == telegram.strip()).first()
+        candidate = session.query(Client).filter(Client.facebook == facebook).first()
+    if not candidate and telegram:
+        candidate = session.query(Client).filter(Client.telegram == telegram).first()
     if not candidate:
         candidate = session.query(Client).filter(
             Client.first_name.ilike(first),
