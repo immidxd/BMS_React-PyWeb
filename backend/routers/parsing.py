@@ -828,13 +828,7 @@ async def run_orders_parsing(background_tasks: BackgroundTasks, db: Session = De
                 log.message = "Orders parsing completed successfully"
                 log.end_time = datetime.utcnow()
                 db_session.commit()
-                # Синхронізація статусів після парсингу замовлень
-                try:
-                    from services.product_service import sync_product_statuses
-                    sync_result = sync_product_statuses(db_session)
-                    logger.info(f"sync_product_statuses after orders: {sync_result}")
-                except Exception as sync_err:
-                    logger.warning(f"sync_product_statuses failed (non-fatal): {sync_err}")
+                # НЕ запускаємо sync_product_statuses — журнал є джерелом правди
             else:
                 log.status = "failed"
                 log.message = f"Orders parsing failed: {stderr.decode('utf-8')}"
@@ -903,13 +897,7 @@ async def run_googlesheets_parsing(background_tasks: BackgroundTasks, db: Sessio
                 log.message = "Google Sheets parsing completed successfully"
                 log.end_time = datetime.utcnow()
                 db_session.commit()
-                # Синхронізація статусів після парсингу товарів
-                try:
-                    from services.product_service import sync_product_statuses
-                    sync_result = sync_product_statuses(db_session)
-                    logger.info(f"sync_product_statuses after googlesheets: {sync_result}")
-                except Exception as sync_err:
-                    logger.warning(f"sync_product_statuses failed (non-fatal): {sync_err}")
+                # НЕ запускаємо sync_product_statuses — журнал є джерелом правди
             else:
                 log.status = "failed"
                 log.message = f"Google Sheets parsing failed: {stderr.decode('utf-8')}"
@@ -1096,15 +1084,12 @@ def _run_sheets_job(job_id: int, target: str, mode: str):
             job.logs_head = str(result)[:8000]
             sess.commit()
 
-        # Синхронізація статусів: Продано/Непродано за order_items + журнал
-        try:
-            progress_cb(98, "Синхронізація статусів товарів...")
-            from services.product_service import sync_product_statuses
-            sync_result = sync_product_statuses(sess)
-            progress_cb(100, f"Статуси синхронізовані: Продано={sync_result['prodano']}, Непродано={sync_result['neprodano']}")
-            logger.info(f"Sheets job {job_id}: sync_product_statuses -> {sync_result}")
-        except Exception as sync_err:
-            logger.warning(f"Sheets job {job_id}: sync_product_statuses failed (non-fatal): {sync_err}")
+        # НЕ запускаємо sync_product_statuses — журнал є джерелом правди
+        # для статусів товарів. sync_product_statuses перезаписувала статуси
+        # на основі кількості order_items, ігноруючи ручні зміни користувача
+        # в журналі (наприклад, повернення товару до "Непродано").
+        # Колонка "В наявності" (available_qty) вже коректно показує
+        # sold_count vs quantity незалежно від statusid.
 
         job = sess.query(ParsingJob).filter(ParsingJob.id == job_id).first()
         if job:
