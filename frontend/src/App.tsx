@@ -16,7 +16,7 @@ const ProductsPage = React.lazy(() => import('./pages/ProductsPage'));
 const OrdersPage = React.lazy(() => import('./pages/OrdersPage'));
 const ClientsPage = React.lazy(() => import('./pages/ClientsPage'));
 const SuppliersPage = React.lazy(() => import('./pages/SuppliersPage'));
-const DeliveriesPage = React.lazy(() => import('./pages/DeliveriesPage'));
+const ShipmentsPage = React.lazy(() => import('./pages/ShipmentsPage'));
 
 // Logo Component that switches based on theme
 const AppLogo: React.FC = () => {
@@ -76,7 +76,7 @@ const TABS: TabConfig[] = [
   { key: 'orders', label: 'Замовлення', component: OrdersPage },
   { key: 'clients', label: 'Клієнти', component: ClientsPage },
   { key: 'suppliers', label: 'Постачальники', component: SuppliersPage },
-  { key: 'deliveries', label: 'Поставки', component: DeliveriesPage },
+  { key: 'deliveries', label: 'Поставки', component: ShipmentsPage },
 ];
 
 const AppContent: React.FC = () => {

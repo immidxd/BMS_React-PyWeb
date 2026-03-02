@@ -84,7 +84,8 @@ def get_products(
                CASE
                    WHEN s.statusname = 'Продано' THEN 0
                    ELSE COALESCE(p.quantity, 0)
-               END AS available_qty
+               END AS available_qty,
+               COALESCE(dup.dup_brands, 0) AS pnum_dup_brands
         FROM products p
         LEFT JOIN types t ON p.typeid = t.id
         LEFT JOIN brands b ON p.brandid = b.id  
@@ -100,6 +101,12 @@ def get_products(
             WHERE product_id IS NOT NULL
             GROUP BY product_id
         ) sold ON sold.product_id = p.id
+        LEFT JOIN (
+            SELECT productnumber, COUNT(DISTINCT COALESCE(brandid, 0)) AS dup_brands
+            FROM products
+            GROUP BY productnumber
+            HAVING COUNT(DISTINCT COALESCE(brandid, 0)) > 1
+        ) dup ON dup.productnumber = p.productnumber
         """
         
         where_conditions = []
@@ -200,6 +207,19 @@ def get_products(
 
             if filters.only_unsold:
                 where_conditions.append("s.statusname = 'Непродано'")
+
+            if filters.only_problematic:
+                where_conditions.append("""(
+                    p.productnumber IS NULL
+                    OR p.productnumber = '???'
+                    OR p.productnumber LIKE '???\\_%'
+                    OR p.productnumber LIKE '__tmp_rename\\_%'
+                    OR p.typeid IS NULL
+                    OR p.price IS NULL OR p.price = 0
+                    OR p.supplierid IS NULL
+                    OR COALESCE(sold.sold_count, 0) > COALESCE(p.quantity, 0)
+                    OR COALESCE(dup.dup_brands, 0) > 1
+                )""")
 
             if filters.is_visible is not None:
                 where_conditions.append("p.is_visible = :is_visible")

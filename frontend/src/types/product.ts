@@ -65,6 +65,7 @@ export interface Product {
     // Computed from order_items
     sold_count?: number;
     available_qty?: number;
+    pnum_dup_brands?: number;
 }
 
 export interface ProductListResponse {

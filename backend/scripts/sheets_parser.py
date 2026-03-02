@@ -73,18 +73,80 @@ def parse_supplier_from_sheet_title(title: str) -> Optional[str]:
 
 
 def _get_or_create_supplier(session: Session, name: str) -> Optional[int]:
-    """Get or create a supplier row by name. Returns supplier ID."""
+    """Get or create a supplier row by name, using aliases for dedup.
+
+    Lookup order:
+      1. Check supplier_aliases for this name → existing supplier.
+      2. Check suppliers.name directly (legacy fallback).
+      3. Create new supplier + alias.
+    This ensures that merged suppliers are never re-created on re-parse.
+    """
     if not name or not name.strip():
         return None
     from sqlalchemy import text
     n = name.strip()
+
+    # 1. Alias lookup (canonical dedup mechanism)
+    row = session.execute(
+        text("SELECT supplier_id FROM supplier_aliases WHERE alias_name = :n"), {"n": n}
+    ).fetchone()
+    if row:
+        return row[0]
+
+    # 2. Direct name lookup (legacy data / first-time before alias exists)
     row = session.execute(
         text("SELECT id FROM suppliers WHERE name = :n"), {"n": n}
     ).fetchone()
     if row:
+        # Ensure alias exists for future lookups
+        session.execute(
+            text("INSERT INTO supplier_aliases (alias_name, supplier_id) VALUES (:n, :sid) ON CONFLICT DO NOTHING"),
+            {"n": n, "sid": row[0]}
+        )
+        session.flush()
         return row[0]
+
+    # 3. Create new supplier + alias
     row = session.execute(
         text("INSERT INTO suppliers (name) VALUES (:n) RETURNING id"), {"n": n}
+    ).fetchone()
+    session.flush()
+    sid = row[0] if row else None
+    if sid:
+        session.execute(
+            text("INSERT INTO supplier_aliases (alias_name, supplier_id) VALUES (:n, :sid) ON CONFLICT DO NOTHING"),
+            {"n": n, "sid": sid}
+        )
+        session.flush()
+    return sid
+
+
+def _get_or_create_shipment(session: Session, sheet_name: str,
+                             shipment_date: Optional[date],
+                             supplier_id: Optional[int]) -> Optional[int]:
+    """Get or create a shipment record for a sheet. Returns shipment ID.
+
+    Dedup by sheet_name — re-parsing the same sheet reuses the shipment.
+    """
+    if not sheet_name:
+        return None
+    from sqlalchemy import text
+    row = session.execute(
+        text("SELECT id FROM shipments WHERE sheet_name = :sn"),
+        {"sn": sheet_name}
+    ).fetchone()
+    if row:
+        # Update supplier_id if it changed (e.g. supplier was merged)
+        session.execute(
+            text("UPDATE shipments SET supplier_id = :sid, updated_at = NOW() WHERE id = :id"),
+            {"sid": supplier_id, "id": row[0]}
+        )
+        session.flush()
+        return row[0]
+    row = session.execute(
+        text("""INSERT INTO shipments (sheet_name, shipment_date, supplier_id)
+                VALUES (:sn, :sd, :sid) RETURNING id"""),
+        {"sn": sheet_name, "sd": shipment_date, "sid": supplier_id}
     ).fetchone()
     session.flush()
     return row[0] if row else None
@@ -189,6 +251,7 @@ def _parse_products_sheet(
     progress_cb: Optional[Callable] = None,
     seen_in_run: Optional[dict] = None,
     supplier_id: Optional[int] = None,
+    shipment_id: Optional[int] = None,
 ) -> dict:
     """
     Parse one batch sheet from Журнал into products table.
@@ -249,6 +312,9 @@ def _parse_products_sheet(
     # появи продукту між усіма аркушами в одному run.
     if seen_in_run is None:
         seen_in_run = {}
+    # Deferred productnumber renames: {product.id: desired_productnumber}
+    # Applied after the main loop to safely handle swaps (A↔B).
+    pending_renames: dict[int, str] = {}
 
     for i, row in enumerate(rows[1:], 1):
         if progress_cb and i % 20 == 0:
@@ -378,56 +444,106 @@ def _parse_products_sheet(
             elif price_float and not full_match.price:
                 full_match.price = price_float
             full_match.updated_at = datetime.utcnow()
+            if shipment_id and not full_match.shipment_id:
+                full_match.shipment_id = shipment_id
+            # ── Productnumber sync: якщо в Google Sheets номер відрізняється
+            # від того що в БД — запам'ятати для відкладеного перейменування.
+            # Застосовується після основного циклу двофазно (temp → final),
+            # щоб безпечно обробляти свопи (A↔B).
+            if pnum != full_match.productnumber:
+                pending_renames[full_match.id] = pnum
+                logger.info(
+                    f"[pnum-sync] id={full_match.id}: "
+                    f"'{full_match.productnumber}' → '{pnum}' (deferred)"
+                )
             updated += 1
 
         elif not existing_base:
-            # Case 5: brand new productnumber
-            product = Product(
-                productnumber         = pnum,
-                clonednumbers         = clones or None,
-                model                 = model_val or None,
-                marking               = marking or None,
-                year                  = year_int,
-                description           = desc_val or None,
-                price                 = price_float,
-                sizeeu                = size_val or None,
-                measurementscm        = cm_val or None,
-                dateadded             = sheet_date or date.today(),
-                quantity              = 1,
-                brandid               = brand_id,
-                typeid                = type_id,
-                subtypeid             = sub_id,
-                genderid              = gender_id,
-                colorid               = color_id,
-                conditionid           = cond_id,
-                statusid              = status_id,
-                manufacturercountryid = mfr_id,
-                ownercountryid        = own_id,
-                supplierid            = supplier_id,
-            )
-            session.add(product)
-            try:
-                session.flush()
-                seen_in_run[product.id] = 1
-                added += 1
-            except IntegrityError:
-                session.rollback()
-                # Conflict on uix_products_num_size: record was inserted by a
-                # previous row in this batch (flush not yet visible to query).
-                # Find it now and set quantity via seen_in_run.
-                existing_now = session.query(Product).filter(
-                    Product.productnumber == pnum,
+            # ── Global dedup: check for orphaned product with same marking+brand+sizeeu
+            # This catches products left with ???_ or __tmp_rename_ numbers after
+            # failed renames, preventing duplicate creation.
+            orphan = None
+            if marking and brand_id:
+                orphan = session.query(Product).filter(
+                    Product.marking == marking,
+                    Product.brandid == brand_id,
                     Product.sizeeu == (size_val or None),
+                    Product.productnumber.notlike(f"{base_pnum}%"),
                 ).first()
-                if existing_now:
-                    cnt = seen_in_run.get(existing_now.id, 0) + 1
-                    seen_in_run[existing_now.id] = cnt
-                    existing_now.quantity = cnt
-                    existing_now.updated_at = datetime.utcnow()
+            if orphan:
+                # Reclaim orphan: update its productnumber + data
+                cnt = seen_in_run.get(orphan.id, 0) + 1
+                seen_in_run[orphan.id] = cnt
+                orphan.quantity = cnt
+                if marking:
+                    orphan.marking = marking
+                if model_val:
+                    orphan.model = model_val
+                if desc_val:
+                    orphan.description = desc_val
+                if price_float:
+                    orphan.price = price_float
+                if supplier_id and not orphan.supplierid:
+                    orphan.supplierid = supplier_id
+                if shipment_id and not orphan.shipment_id:
+                    orphan.shipment_id = shipment_id
+                orphan.updated_at = datetime.utcnow()
+                if pnum != orphan.productnumber:
+                    pending_renames[orphan.id] = pnum
+                    logger.info(
+                        f"[dedup-orphan] Reclaimed id={orphan.id} "
+                        f"'{orphan.productnumber}' → '{pnum}' (deferred)"
+                    )
+                updated += 1
+            else:
+                # Case 5: brand new productnumber
+                product = Product(
+                    productnumber         = pnum,
+                    clonednumbers         = clones or None,
+                    model                 = model_val or None,
+                    marking               = marking or None,
+                    year                  = year_int,
+                    description           = desc_val or None,
+                    price                 = price_float,
+                    sizeeu                = size_val or None,
+                    measurementscm        = cm_val or None,
+                    dateadded             = sheet_date or date.today(),
+                    quantity              = 1,
+                    brandid               = brand_id,
+                    typeid                = type_id,
+                    subtypeid             = sub_id,
+                    genderid              = gender_id,
+                    colorid               = color_id,
+                    conditionid           = cond_id,
+                    statusid              = status_id,
+                    manufacturercountryid = mfr_id,
+                    ownercountryid        = own_id,
+                    supplierid            = supplier_id,
+                    shipment_id           = shipment_id,
+                )
+                session.add(product)
+                try:
                     session.flush()
-                    updated += 1
-                else:
-                    skipped += 1
+                    seen_in_run[product.id] = 1
+                    added += 1
+                except IntegrityError:
+                    session.rollback()
+                    # Conflict on uix_products_num_size: record was inserted by a
+                    # previous row in this batch (flush not yet visible to query).
+                    # Find it now and set quantity via seen_in_run.
+                    existing_now = session.query(Product).filter(
+                        Product.productnumber == pnum,
+                        Product.sizeeu == (size_val or None),
+                    ).first()
+                    if existing_now:
+                        cnt = seen_in_run.get(existing_now.id, 0) + 1
+                        seen_in_run[existing_now.id] = cnt
+                        existing_now.quantity = cnt
+                        existing_now.updated_at = datetime.utcnow()
+                        session.flush()
+                        updated += 1
+                    else:
+                        skipped += 1
 
         else:
             # Check whether any existing record has same base attrs (ростовка candidate)
@@ -464,6 +580,7 @@ def _parse_products_sheet(
                 manufacturercountryid = mfr_id,
                 ownercountryid        = own_id,
                 supplierid            = supplier_id,
+                shipment_id           = shipment_id,
             )
             session.add(product)
             try:
@@ -485,6 +602,53 @@ def _parse_products_sheet(
                     updated += 1
                 else:
                     skipped += 1
+
+    # ── Apply deferred productnumber renames (two-phase for swap safety) ──
+    if pending_renames:
+        logger.info(f"[pnum-sync] Applying {len(pending_renames)} deferred renames")
+        # Phase 1: rename affected records to temporary unique names,
+        # remembering original names so we can revert on conflict.
+        original_map: dict[int, str] = {}   # pid → original productnumber
+        for pid, desired in pending_renames.items():
+            prod = session.query(Product).get(pid)
+            if prod is None:
+                continue
+            original_map[pid] = prod.productnumber
+            tmp_name = f"__tmp_rename_{pid}"
+            logger.debug(f"[pnum-sync] Phase 1: id={pid} '{prod.productnumber}' → '{tmp_name}'")
+            prod.productnumber = tmp_name
+        session.flush()
+
+        # Phase 2: rename from temporary to final desired names
+        for pid, desired in pending_renames.items():
+            prod = session.query(Product).get(pid)
+            if prod is None:
+                continue
+            savepoint = session.begin_nested()
+            try:
+                prod.productnumber = desired
+                session.flush()
+                savepoint.commit()
+                logger.info(f"[pnum-sync] Phase 2: id={pid} → '{desired}' ✓")
+            except IntegrityError:
+                savepoint.rollback()
+                # Conflict: revert to original productnumber instead of
+                # leaving the __tmp_rename_ placeholder.
+                orig = original_map.get(pid, f"???_{pid}")
+                savepoint2 = session.begin_nested()
+                try:
+                    prod.productnumber = orig
+                    session.flush()
+                    savepoint2.commit()
+                except IntegrityError:
+                    savepoint2.rollback()
+                    # Even original conflicts (rare), use safe fallback
+                    prod.productnumber = f"???_{pid}"
+                    session.flush()
+                logger.warning(
+                    f"[pnum-sync] Phase 2: id={pid} → '{desired}' CONFLICT, "
+                    f"reverted to '{prod.productnumber}'"
+                )
 
     session.commit()
     return {"added": added, "updated": updated, "skipped": skipped}
@@ -1232,11 +1396,15 @@ def run_products_parsing(
     # по всьому журналу, а не лише в одному аркуші.
     seen_in_run: dict = {}
 
+    shipment_ids = []
     for idx, ws in enumerate(batch_sheets):
         sheet_date = parse_date_from_sheet_title(ws.title)
         supplier_name = parse_supplier_from_sheet_title(ws.title)
         supplier_id = _get_or_create_supplier(session, supplier_name) if supplier_name else None
-        logger.info(f"[products] Parsing sheet {idx+1}/{total_sheets}: {ws.title} (supplier={supplier_name})")
+        shipment_id = _get_or_create_shipment(session, ws.title, sheet_date, supplier_id)
+        if shipment_id:
+            shipment_ids.append(shipment_id)
+        logger.info(f"[products] Parsing sheet {idx+1}/{total_sheets}: {ws.title} (supplier={supplier_name}, shipment={shipment_id})")
 
         def _cb(done, total, _ws=ws, _idx=idx):
             if progress_cb:
@@ -1247,10 +1415,30 @@ def run_products_parsing(
         if idx > 0:
             time.sleep(SHEET_READ_DELAY_SEC)
 
-        result = _parse_products_sheet(ws, session, sheet_date, _cb, seen_in_run, supplier_id)
+        result = _parse_products_sheet(ws, session, sheet_date, _cb, seen_in_run, supplier_id, shipment_id)
         total_added   += result["added"]
         total_updated += result["updated"]
         total_skipped += result["skipped"]
+
+    # Update shipment aggregate stats (items_count, total_cost)
+    if shipment_ids:
+        from sqlalchemy import text
+        session.execute(text("""
+            UPDATE shipments s SET
+                items_count = sub.cnt,
+                total_cost  = sub.cost,
+                updated_at  = NOW()
+            FROM (
+                SELECT shipment_id,
+                       COUNT(*) AS cnt,
+                       COALESCE(SUM(price), 0) AS cost
+                FROM products
+                WHERE shipment_id = ANY(:ids)
+                GROUP BY shipment_id
+            ) sub
+            WHERE s.id = sub.shipment_id
+        """), {"ids": shipment_ids})
+        session.commit()
 
     return {
         "mode":    mode,

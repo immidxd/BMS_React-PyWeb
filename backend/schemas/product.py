@@ -209,6 +209,7 @@ class ProductList(BaseModel):
     # Computed from order_items
     sold_count: int = 0
     available_qty: Optional[int] = None
+    pnum_dup_brands: int = 0
     
     class Config:
         from_attributes = True
@@ -250,6 +251,7 @@ class ProductFilter(BaseModel):
     is_visible: Optional[bool] = None
     with_stock_only: Optional[bool] = None
     only_unsold: Optional[bool] = None
+    only_problematic: Optional[bool] = None
 
 # Модель для опцій фільтрів
 class FilterOptions(BaseModel):

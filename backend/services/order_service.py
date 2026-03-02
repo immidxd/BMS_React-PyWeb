@@ -187,21 +187,30 @@ class OrderDAO:
         if filters.priority_max is not None:
             query = query.filter(Order.priority <= filters.priority_max)
             
-        if filters.has_tracking:
-            query = query.filter(Order.tracking_number != None)
+        if filters.has_tracking is not None:
+            if filters.has_tracking:
+                query = query.filter(Order.tracking_number != None, Order.tracking_number != '')
+            else:
+                query = query.filter(or_(Order.tracking_number == None, Order.tracking_number == ''))
             
         if filters.is_deferred:
             query = query.filter(Order.deferred_until != None)
+
+        if hasattr(filters, 'amount_min') and filters.amount_min is not None:
+            query = query.filter(Order.total_amount >= filters.amount_min)
+        if hasattr(filters, 'amount_max') and filters.amount_max is not None:
+            query = query.filter(Order.total_amount <= filters.amount_max)
             
         # Get total count for pagination
         total = query.count()
-        
+
         # Apply ordering
         allowed = {
             "id": Order.id,
             "order_date": Order.order_date,
             "total_amount": Order.total_amount,
             "priority": Order.priority,
+            "client_name": Client.first_name,
         }
         sort_col = allowed.get(sort_by, Order.order_date)
         if sort_dir.lower() == 'asc':
@@ -236,20 +245,20 @@ class OrderDAO:
         order_statuses = self.db.query(OrderStatus).all()
         order_statuses_list = [{"id": s.id, "status_name": s.status_name} for s in order_statuses]
 
-        # payment_statuses: id, status_name
-        ps = self.db.execute(text("SELECT id, status_name FROM payment_statuses ORDER BY status_name")).fetchall()
+        # payment_statuses: id, name
+        ps = self.db.execute(text("SELECT id, name FROM payment_statuses ORDER BY id")).fetchall()
         payment_statuses_list = [{"id": r[0], "name": r[1]} for r in ps]
 
-        # payment_methods: id, method_name
-        pm = self.db.execute(text("SELECT id, method_name FROM payment_methods ORDER BY method_name")).fetchall()
+        # payment_methods: id, name
+        pm = self.db.execute(text("SELECT id, name FROM payment_methods ORDER BY id")).fetchall()
         payment_methods_list = [{"id": r[0], "name": r[1]} for r in pm]
 
-        # delivery_methods: id, method_name
-        dm = self.db.execute(text("SELECT id, method_name FROM delivery_methods ORDER BY method_name")).fetchall()
+        # delivery_methods: id, name
+        dm = self.db.execute(text("SELECT id, name FROM delivery_methods WHERE name != 'ㅤ' ORDER BY id")).fetchall()
         delivery_methods_list = [{"id": r[0], "name": r[1]} for r in dm]
 
-        # delivery_statuses: id, status_name
-        ds = self.db.execute(text("SELECT id, status_name FROM delivery_statuses ORDER BY status_name")).fetchall()
+        # delivery_statuses: id, name
+        ds = self.db.execute(text("SELECT id, name FROM delivery_statuses ORDER BY id")).fetchall()
         delivery_statuses_list = [{"id": r[0], "name": r[1]} for r in ds]
 
         clients = self.db.query(Client).order_by(Client.updated_at.desc()).limit(100).all()

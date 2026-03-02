@@ -38,6 +38,8 @@ async def get_orders(
     priority_max: Optional[int] = Query(None),
     has_tracking: Optional[bool] = Query(None),
     is_deferred: Optional[bool] = Query(None),
+    amount_min: Optional[float] = Query(None),
+    amount_max: Optional[float] = Query(None),
     db: Session = Depends(get_db)
 ):
     """
@@ -61,7 +63,9 @@ async def get_orders(
         priority_min=priority_min,
         priority_max=priority_max,
         has_tracking=has_tracking,
-        is_deferred=is_deferred
+        is_deferred=is_deferred,
+        amount_min=amount_min,
+        amount_max=amount_max,
     )
     
     # Use the DAO to get filtered orders

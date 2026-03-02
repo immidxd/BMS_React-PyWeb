@@ -1,19 +1,28 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { fetchSuppliers, mergeSuppliers, updateSupplier, deleteSupplier, type Supplier, type SupplierList } from '../../services/referenceService';
+import {
+  fetchSuppliers, mergeSuppliers, updateSupplier, deleteSupplier,
+  type Supplier, type SupplierList,
+} from '../../services/referenceService';
 import Pagination from '../common/Pagination';
+
+type SortCol = 'id' | 'name' | 'product_count' | 'shipments_count' | 'total_spent' | 'avg_price';
+
+const fmt = (n: number) => n.toLocaleString('uk-UA', { maximumFractionDigits: 0 });
+const fmtPrice = (n: number) => n.toLocaleString('uk-UA', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
 const SuppliersTable: React.FC = () => {
   const [items, setItems] = useState<Supplier[]>([]);
-  const [loading, setLoading] = useState<boolean>(true);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [page, setPage] = useState<number>(1);
-  const [perPage] = useState<number>(100);
-  const [total, setTotal] = useState<number>(0);
-  const [sortBy, setSortBy] = useState<'id' | 'name' | 'product_count'>('name');
+  const [page, setPage] = useState(1);
+  const [perPage] = useState(100);
+  const [total, setTotal] = useState(0);
+  const [sortBy, setSortBy] = useState<SortCol>('name');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [mergeTarget, setMergeTarget] = useState<number | null>(null);
+  const [mergeName, setMergeName] = useState('');
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editName, setEditName] = useState('');
   const navigate = useNavigate();
@@ -23,7 +32,7 @@ const SuppliersTable: React.FC = () => {
     setLoading(true);
     setError(null);
     try {
-      const data: SupplierList = await fetchSuppliers(undefined, page, perPage, sortBy, sortDir);
+      const data: SupplierList = await fetchSuppliers(undefined, page, perPage, sortBy as any, sortDir);
       setItems(data.items);
       setTotal(data.total);
     } catch (e) {
@@ -36,7 +45,6 @@ const SuppliersTable: React.FC = () => {
 
   useEffect(() => { loadData(); }, [loadData]);
 
-  // State -> URL sync
   useEffect(() => {
     const params = new URLSearchParams();
     params.set('page', String(page));
@@ -47,9 +55,9 @@ const SuppliersTable: React.FC = () => {
 
   const totalPages = Math.max(1, Math.ceil(total / perPage));
 
-  const toggleSort = (col: typeof sortBy) => {
+  const toggleSort = (col: SortCol) => {
     if (sortBy === col) setSortDir(d => d === 'asc' ? 'desc' : 'asc');
-    else { setSortBy(col); setSortDir('asc'); }
+    else { setSortBy(col); setSortDir(col === 'name' ? 'asc' : 'desc'); }
   };
 
   const toggleSelect = (id: number) => {
@@ -65,9 +73,10 @@ const SuppliersTable: React.FC = () => {
     const sourceIds = Array.from(selected).filter(id => id !== mergeTarget);
     if (sourceIds.length === 0) return;
     try {
-      await mergeSuppliers(mergeTarget, sourceIds);
+      await mergeSuppliers(mergeTarget, sourceIds, mergeName || undefined);
       setSelected(new Set());
       setMergeTarget(null);
+      setMergeName('');
       await loadData();
     } catch (e: any) {
       alert(e?.response?.data?.detail || 'Помилка злиття');
@@ -95,9 +104,9 @@ const SuppliersTable: React.FC = () => {
     }
   };
 
-  const sortIcon = (col: typeof sortBy) => {
+  const sortIcon = (col: SortCol) => {
     if (sortBy !== col) return '';
-    return sortDir === 'asc' ? ' ↑' : ' ↓';
+    return sortDir === 'asc' ? ' \u2191' : ' \u2193';
   };
 
   return (
@@ -117,6 +126,13 @@ const SuppliersTable: React.FC = () => {
               <option key={s.id} value={s.id}>{s.name} (ID {s.id})</option>
             ))}
           </select>
+          <input
+            type="text"
+            placeholder="Нова назва (необов'язково)"
+            value={mergeName}
+            onChange={e => setMergeName(e.target.value)}
+            className="text-sm border rounded px-2 py-1 w-48"
+          />
           <button
             onClick={handleMerge}
             disabled={!mergeTarget}
@@ -125,7 +141,7 @@ const SuppliersTable: React.FC = () => {
             Злити
           </button>
           <button
-            onClick={() => { setSelected(new Set()); setMergeTarget(null); }}
+            onClick={() => { setSelected(new Set()); setMergeTarget(null); setMergeName(''); }}
             className="px-3 py-1 text-sm text-gray-600 hover:text-red-600"
           >
             Скасувати
@@ -148,20 +164,23 @@ const SuppliersTable: React.FC = () => {
                   className="w-3.5 h-3.5"
                 />
               </th>
-              <th className="px-4 py-3 text-left font-semibold cursor-pointer w-16" onClick={() => toggleSort('id')}>ID{sortIcon('id')}</th>
-              <th className="px-4 py-3 text-left font-semibold cursor-pointer" onClick={() => toggleSort('name')}>Назва{sortIcon('name')}</th>
-              <th className="px-4 py-3 text-left font-semibold">Нотатки</th>
-              <th className="px-4 py-3 text-center font-semibold cursor-pointer w-28" onClick={() => toggleSort('product_count')}>Товарів{sortIcon('product_count')}</th>
-              <th className="px-4 py-3 text-center font-semibold w-24">Дії</th>
+              <th className="px-3 py-3 text-left font-semibold cursor-pointer w-14" onClick={() => toggleSort('id')}>ID{sortIcon('id')}</th>
+              <th className="px-3 py-3 text-left font-semibold cursor-pointer" onClick={() => toggleSort('name')}>Назва{sortIcon('name')}</th>
+              <th className="px-3 py-3 text-center font-semibold cursor-pointer w-20" onClick={() => toggleSort('product_count')}>Товарів{sortIcon('product_count')}</th>
+              <th className="px-3 py-3 text-center font-semibold cursor-pointer w-24" onClick={() => toggleSort('shipments_count')}>Поставок{sortIcon('shipments_count')}</th>
+              <th className="px-3 py-3 text-right font-semibold cursor-pointer w-28" onClick={() => toggleSort('total_spent')}>Витрачено{sortIcon('total_spent')}</th>
+              <th className="px-3 py-3 text-right font-semibold cursor-pointer w-24" onClick={() => toggleSort('avg_price')}>Сер. ціна{sortIcon('avg_price')}</th>
+              <th className="px-3 py-3 text-left font-semibold w-40">Бренди</th>
+              <th className="px-3 py-3 text-center font-semibold w-20">Дії</th>
             </tr>
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={6} className="text-center py-8 text-gray-400">Завантаження...</td></tr>
+              <tr><td colSpan={9} className="text-center py-8 text-gray-400">Завантаження...</td></tr>
             ) : error ? (
-              <tr><td colSpan={6} className="text-center py-8 text-red-500">{error}</td></tr>
+              <tr><td colSpan={9} className="text-center py-8 text-red-500">{error}</td></tr>
             ) : items.length === 0 ? (
-              <tr><td colSpan={6} className="text-center py-8 text-gray-400">Постачальників не знайдено</td></tr>
+              <tr><td colSpan={9} className="text-center py-8 text-gray-400">Постачальників не знайдено</td></tr>
             ) : (
               items.map(s => (
                 <tr key={s.id} className={`border-b last:border-b-0 hover:bg-gray-50 ${selected.has(s.id) ? 'bg-blue-50' : ''}`}>
@@ -173,8 +192,8 @@ const SuppliersTable: React.FC = () => {
                       className="w-3.5 h-3.5"
                     />
                   </td>
-                  <td className="px-4 py-2 text-gray-500">{s.id}</td>
-                  <td className="px-4 py-2">
+                  <td className="px-3 py-2 text-gray-400 text-xs">{s.id}</td>
+                  <td className="px-3 py-2">
                     {editingId === s.id ? (
                       <div className="flex gap-1">
                         <input
@@ -192,15 +211,26 @@ const SuppliersTable: React.FC = () => {
                       <span className="font-medium">{s.name}</span>
                     )}
                   </td>
-                  <td className="px-4 py-2 text-gray-500 max-w-[200px] truncate">{s.notes || '—'}</td>
-                  <td className="px-4 py-2 text-center">
+                  <td className="px-3 py-2 text-center">
                     <span className={`inline-flex items-center justify-center min-w-[24px] h-6 px-1.5 rounded-full text-xs font-bold ${
                       s.product_count > 0 ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'
-                    }`}>
-                      {s.product_count}
+                    }`}>{fmt(s.product_count)}</span>
+                  </td>
+                  <td className="px-3 py-2 text-center">
+                    <span className={`text-xs ${s.shipments_count > 0 ? 'text-indigo-600 font-medium' : 'text-gray-400'}`}>
+                      {s.shipments_count}
                     </span>
                   </td>
-                  <td className="px-4 py-2 text-center">
+                  <td className="px-3 py-2 text-right text-xs tabular-nums">
+                    {s.total_spent > 0 ? fmtPrice(s.total_spent) : '—'}
+                  </td>
+                  <td className="px-3 py-2 text-right text-xs tabular-nums">
+                    {s.avg_price > 0 ? fmtPrice(s.avg_price) : '—'}
+                  </td>
+                  <td className="px-3 py-2 text-xs text-gray-500 max-w-[160px] truncate" title={s.top_brands || ''}>
+                    {s.top_brands || '—'}
+                  </td>
+                  <td className="px-3 py-2 text-center">
                     <div className="flex gap-1 justify-center">
                       <button
                         onClick={() => { setEditingId(s.id); setEditName(s.name); }}

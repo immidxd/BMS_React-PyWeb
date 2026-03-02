@@ -155,6 +155,8 @@ class OrderFilters(BaseModel):
     priority_max: Optional[int] = None
     has_tracking: Optional[bool] = None
     is_deferred: Optional[bool] = None
+    amount_min: Optional[float] = None
+    amount_max: Optional[float] = None
 
 # Order with Products
 class OrderWithProducts(Order):

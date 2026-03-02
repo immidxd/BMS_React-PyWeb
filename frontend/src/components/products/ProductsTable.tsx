@@ -305,11 +305,16 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
                     pagination={false}
                     loading={loading}
                     onRow={(record: Product) => {
-                        const hasIssue = record.productnumber === '???' || !record.productnumber;
                         const issues: string[] = [];
-                        if (!record.productnumber || record.productnumber === '???') issues.push('Товар не має номера');
+                        if (!record.productnumber || record.productnumber === '???' || record.productnumber.startsWith('__tmp_rename_') || record.productnumber.startsWith('???_')) issues.push('Товар не має номера');
                         if (!record.type_name) issues.push('Не вказано тип');
                         if (!record.price) issues.push('Ціна = 0 або не вказана');
+                        if (!record.supplier_name) issues.push('Не вказано постачальника');
+                        const sold = record.sold_count ?? 0;
+                        const qty = record.quantity ?? 0;
+                        if (sold > qty) issues.push(`Перепродано: ${sold} продано з ${qty} наявних`);
+                        if ((record.pnum_dup_brands ?? 0) > 1) issues.push('Номер товару дублюється (різні бренди)');
+                        const hasIssue = issues.length > 0;
                         const conflictTitle = issues.join(' • ');
                         return {
                             title: hasIssue ? `⚠ ${conflictTitle}` : undefined,

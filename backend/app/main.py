@@ -34,6 +34,10 @@ try:
     from routers import suppliers  # optional
 except Exception:
     suppliers = None
+try:
+    from routers import shipments  # optional
+except Exception:
+    shipments = None
 
 # НАЛАШТУВАННЯ ЛОГУВАННЯ
 # Використовуємо абсолютний шлях і гарантуємо наявність директорії,
@@ -107,6 +111,8 @@ if suppliers:
     app.include_router(suppliers.router, tags=["suppliers"])  # routes already prefixed with /api
 if deliveries:
     app.include_router(deliveries.router, tags=["deliveries"])  # routes already prefixed with /api
+if shipments:
+    app.include_router(shipments.router, tags=["shipments"])  # routes already prefixed with /api
 
 # Mount static files from frontend build if available
 frontend_build_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../frontend/build"))

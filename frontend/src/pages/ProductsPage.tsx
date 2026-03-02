@@ -29,6 +29,7 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
   const navigate = useNavigate();
   const location = useLocation();
   const [onlyUnsold, setOnlyUnsold] = useState<boolean>(false);
+  const [onlyProblematic, setOnlyProblematic] = useState<boolean>(false);
   const [visibleOnly, setVisibleOnly] = useState<boolean>(false);
   const [sortBy, setSortBy] = useState<string>('id');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
@@ -78,6 +79,7 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
         sort_dir: sortDir,
         search: currentSearchTerm && currentSearchTerm.trim() ? currentSearchTerm.trim() : undefined,
         only_unsold: onlyUnsold || undefined,
+        only_problematic: onlyProblematic || undefined,
         is_visible: visibleOnly ? true : (selectedFilters.is_visible || undefined),
         min_price: selectedFilters.min_price,
         max_price: selectedFilters.max_price,
@@ -104,11 +106,12 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
   const handleResetFilters = () => {
     setSelectedFilters({});
     setOnlyUnsold(false);
+    setOnlyProblematic(false);
     setVisibleOnly(false);
     setPage(1);
   };
     
-    useEffect(() => { fetchProducts(); }, [page, perPage, currentSearchTerm, selectedFilters, onlyUnsold, visibleOnly]);
+    useEffect(() => { fetchProducts(); }, [page, perPage, currentSearchTerm, selectedFilters, onlyUnsold, onlyProblematic, visibleOnly, sortBy, sortDir]);
 
     useEffect(() => {
       // Load filter options once
@@ -123,12 +126,14 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
       const sb = params.get('sort_by') || 'id';
       const sd = (params.get('sort_dir') as 'asc' | 'desc') || 'desc';
       const ou = params.get('only_unsold') === 'true';
+      const op = params.get('only_problematic') === 'true';
       const vo = params.get('visible_only') === 'true';
       setPage(pn);
       setPerPage(ps);
       setSortBy(sb);
       setSortDir(sd);
       setOnlyUnsold(ou);
+      setOnlyProblematic(op);
       setVisibleOnly(vo);
       // basic selected filters
       const nf: ProductFilterType = {};
@@ -153,12 +158,13 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
       params.set('sort_by', sortBy);
       params.set('sort_dir', sortDir);
       if (onlyUnsold) params.set('only_unsold', 'true');
+      if (onlyProblematic) params.set('only_problematic', 'true');
       if (visibleOnly) params.set('visible_only', 'true');
       Object.entries(selectedFilters).forEach(([k, v]) => {
         if (v !== undefined && v !== null && typeof v !== 'object') params.set(k, String(v));
       });
       navigate({ pathname: location.pathname, search: params.toString() }, { replace: true });
-    }, [page, perPage, sortBy, sortDir, onlyUnsold, visibleOnly, selectedFilters, navigate, location.pathname]);
+    }, [page, perPage, sortBy, sortDir, onlyUnsold, onlyProblematic, visibleOnly, selectedFilters, navigate, location.pathname]);
 
     return (
     <MainLayout
@@ -187,6 +193,18 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
             )}
           </div>
           <div className="flex items-center gap-2">
+            <select value={`${sortBy}|${sortDir}`}
+              onChange={e => { const [f, d] = e.target.value.split('|'); setSortBy(f); setSortDir(d as 'asc' | 'desc'); setPage(1); }}
+              className="text-xs border border-gray-200 dark:border-gray-600 rounded px-2 py-1.5 bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-200 focus:outline-none focus:ring-1 focus:ring-blue-400">
+              <option value="id|desc">Нові спочатку (ID ↓)</option>
+              <option value="id|asc">Старі спочатку (ID ↑)</option>
+              <option value="price|desc">Від найдорожчого</option>
+              <option value="price|asc">Від найдешевшого</option>
+              <option value="dateadded|desc">Дата завозу (нові)</option>
+              <option value="dateadded|asc">Дата завозу (старі)</option>
+              <option value="created_at|desc">Дата додання (нові)</option>
+              <option value="created_at|asc">Дата додання (старі)</option>
+            </select>
             <Button type="primary" icon={<PlusOutlined />} onClick={() => navigate('/products/create')}>
               Додати товар
             </Button>
@@ -256,6 +274,15 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
                   className="h-4 w-4 text-primary-600 border-gray-300 rounded focus:ring-primary-500 dark:focus:ring-primary-400 dark:bg-gray-700 dark:border-gray-600"
                 />
                 <span className="ml-2">Тільки непродані</span>
+              </label>
+              <label className="inline-flex items-center text-sm text-gray-700 dark:text-gray-300">
+                <input
+                  type="checkbox"
+                  checked={onlyProblematic}
+                  onChange={(e) => { setOnlyProblematic(e.target.checked); setPage(1); }}
+                  className="h-4 w-4 text-orange-500 border-gray-300 rounded focus:ring-orange-400 dark:focus:ring-orange-400 dark:bg-gray-700 dark:border-gray-600"
+                />
+                <span className="ml-2">Тільки проблемні</span>
               </label>
             </div>
             <div className="order-1 md:order-none justify-self-center flex justify-center">

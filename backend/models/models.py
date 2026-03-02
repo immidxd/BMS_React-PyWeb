@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, Boolean, Text, Date, func
+from sqlalchemy import Column, Integer, String, Float, Numeric, DateTime, ForeignKey, Boolean, Text, Date, func
 from sqlalchemy.orm import relationship
 from datetime import datetime
 
@@ -188,6 +188,51 @@ class Supplier(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     products = relationship("Product", back_populates="supplier")
+    aliases = relationship("SupplierAlias", back_populates="supplier", cascade="all, delete-orphan")
+    shipments = relationship("Shipment", back_populates="supplier")
+
+
+class SupplierAlias(Base):
+    __tablename__ = "supplier_aliases"
+
+    id = Column(Integer, primary_key=True, index=True)
+    alias_name = Column(String(255), unique=True, nullable=False, index=True)
+    supplier_id = Column(Integer, ForeignKey("suppliers.id", ondelete="CASCADE"), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    supplier = relationship("Supplier", back_populates="aliases")
+
+
+class ShipmentGroup(Base):
+    __tablename__ = "shipment_groups"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(255), nullable=False)
+    notes = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    shipments = relationship("Shipment", back_populates="group")
+
+
+class Shipment(Base):
+    __tablename__ = "shipments"
+
+    id = Column(Integer, primary_key=True, index=True)
+    supplier_id = Column(Integer, ForeignKey("suppliers.id", ondelete="SET NULL"), nullable=True)
+    sheet_name = Column(String(255), nullable=True)
+    shipment_date = Column(Date, nullable=True)
+    items_count = Column(Integer, default=0)
+    total_cost = Column(Numeric(12, 2), default=0)
+    delivery_cost = Column(Numeric(10, 2), nullable=True)
+    notes = Column(Text, nullable=True)
+    group_id = Column(Integer, ForeignKey("shipment_groups.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    supplier = relationship("Supplier", back_populates="shipments")
+    group = relationship("ShipmentGroup", back_populates="shipments")
+    products = relationship("Product", back_populates="shipment")
 
 
 class Product(Base):
@@ -229,11 +274,13 @@ class Product(Base):
     importid = Column(Integer, nullable=True)
     deliveryid = Column(Integer, nullable=True)
     supplierid = Column(Integer, ForeignKey("suppliers.id"), nullable=True)
+    shipment_id = Column(Integer, ForeignKey("shipments.id", ondelete="SET NULL"), nullable=True)
     is_visible = Column(Boolean, default=True)
     
     # Relationships
     order_items = relationship("OrderItem", back_populates="product")
     supplier = relationship("Supplier", back_populates="products")
+    shipment = relationship("Shipment", back_populates="products")
     brand = relationship("Brand", foreign_keys=[brandid], primaryjoin="Product.brandid == Brand.id")
     type = relationship("Type", foreign_keys=[typeid], primaryjoin="Product.typeid == Type.id")
     subtype = relationship("Subtype", foreign_keys=[subtypeid], primaryjoin="Product.subtypeid == Subtype.id")
