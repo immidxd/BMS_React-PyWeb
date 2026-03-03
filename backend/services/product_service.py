@@ -300,6 +300,7 @@ def get_products(
                 'subtype_name': m.get('subtype_name'),
                 'sold_count': m.get('sold_count', 0),
                 'available_qty': m.get('available_qty'),
+                'pnum_dup_brands': m.get('pnum_dup_brands', 0),
             }
             items.append(product_dict)
         
