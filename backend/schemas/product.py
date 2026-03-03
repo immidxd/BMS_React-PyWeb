@@ -252,6 +252,7 @@ class ProductFilter(BaseModel):
     with_stock_only: Optional[bool] = None
     only_unsold: Optional[bool] = None
     only_problematic: Optional[bool] = None
+    shipment_id: Optional[int] = None
 
 # Модель для опцій фільтрів
 class FilterOptions(BaseModel):
@@ -263,6 +264,7 @@ class FilterOptions(BaseModel):
     statuses: List[Dict[str, Any]]
     conditions: List[Dict[str, Any]]
     countries: List[Dict[str, Any]] = []
+    shipments: List[Dict[str, Any]] = []
     price_range: Dict[str, float] = {"min_price": 0, "max_price": 0}
     size_ranges: Dict[str, List[str]] = {}
 

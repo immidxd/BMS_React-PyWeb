@@ -52,6 +52,7 @@ async def get_products(
     with_stock_only: Optional[bool] = Query(None),
     only_unsold: Optional[bool] = Query(None),
     only_problematic: Optional[bool] = Query(None),
+    shipment_id: Optional[int] = Query(None),
     sort_by: str = Query("id", description="Sort column"),
     sort_dir: str = Query("desc", description="Sort direction: asc|desc"),
     db: Session = Depends(get_db)
@@ -94,6 +95,7 @@ async def get_products(
             with_stock_only=with_stock_only,
             only_unsold=only_unsold,
             only_problematic=only_problematic,
+            shipment_id=shipment_id,
         )
 
         result = product_service.get_products(

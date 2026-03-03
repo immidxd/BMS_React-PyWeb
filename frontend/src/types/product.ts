@@ -85,6 +85,7 @@ export interface ProductFilters {
     statuses: ReferenceItem[];
     conditions: ReferenceItem[];
     genders: ReferenceItem[];
+    shipments: { id: number; name: string; date: string | null }[];
     price_range: {
         min_price: number;
         max_price: number;
@@ -132,4 +133,5 @@ export interface ProductFilter {
     countries?: number[];
     only_unsold?: boolean;
     visible_only?: boolean;
+    shipment_id?: number;
 }

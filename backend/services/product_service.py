@@ -221,6 +221,10 @@ def get_products(
                     OR COALESCE(dup.dup_brands, 0) > 1
                 )""")
 
+            if filters.shipment_id is not None:
+                where_conditions.append("p.shipment_id = :shipment_id")
+                params['shipment_id'] = filters.shipment_id
+
             if filters.is_visible is not None:
                 where_conditions.append("p.is_visible = :is_visible")
                 params['is_visible'] = filters.is_visible
@@ -382,6 +386,15 @@ def get_product_filters(db: Session) -> Dict[str, Any]:
 
         countries = fetch_pairs("SELECT id, countryname FROM countries ORDER BY countryname")
 
+        shipments_rows = db.execute(text(
+            """SELECT s.id, s.sheet_name, s.shipment_date, COUNT(p.id) AS product_count
+               FROM shipments s
+               JOIN products p ON p.shipment_id = s.id
+               GROUP BY s.id, s.sheet_name, s.shipment_date
+               HAVING COUNT(p.id) > 0
+               ORDER BY s.shipment_date DESC NULLS LAST, s.id DESC"""
+        )).fetchall()
+
         # Size ranges per system
         def fetch_sizes(col: str):
             rows = db.execute(text(f"SELECT DISTINCT {col} FROM products WHERE {col} IS NOT NULL AND {col} != '' ORDER BY {col}")).fetchall()
@@ -396,6 +409,7 @@ def get_product_filters(db: Session) -> Dict[str, Any]:
             "statuses": [{"id": s[0], "name": s[1]} for s in statuses],
             "conditions": [{"id": c[0], "name": c[1]} for c in conditions],
             "countries": [{"id": c[0], "name": c[1]} for c in countries],
+            "shipments": [{"id": s[0], "name": s[1], "date": str(s[2]) if s[2] else None, "count": s[3]} for s in shipments_rows],
             "price_range": {"min_price": min_price, "max_price": max_price},
             "size_ranges": {
                 "eu": fetch_sizes("sizeeu"),

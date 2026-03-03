@@ -30,6 +30,7 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
   const location = useLocation();
   const [onlyUnsold, setOnlyUnsold] = useState<boolean>(false);
   const [onlyProblematic, setOnlyProblematic] = useState<boolean>(false);
+  const [selectedShipmentId, setSelectedShipmentId] = useState<number | undefined>(undefined);
   const [visibleOnly, setVisibleOnly] = useState<boolean>(false);
   const [sortBy, setSortBy] = useState<string>('id');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
@@ -80,6 +81,7 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
         search: currentSearchTerm && currentSearchTerm.trim() ? currentSearchTerm.trim() : undefined,
         only_unsold: onlyUnsold || undefined,
         only_problematic: onlyProblematic || undefined,
+        shipment_id: selectedShipmentId,
         is_visible: visibleOnly ? true : (selectedFilters.is_visible || undefined),
         min_price: selectedFilters.min_price,
         max_price: selectedFilters.max_price,
@@ -107,11 +109,12 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
     setSelectedFilters({});
     setOnlyUnsold(false);
     setOnlyProblematic(false);
+    setSelectedShipmentId(undefined);
     setVisibleOnly(false);
     setPage(1);
   };
     
-    useEffect(() => { fetchProducts(); }, [page, perPage, currentSearchTerm, selectedFilters, onlyUnsold, onlyProblematic, visibleOnly, sortBy, sortDir]);
+    useEffect(() => { fetchProducts(); }, [page, perPage, currentSearchTerm, selectedFilters, onlyUnsold, onlyProblematic, selectedShipmentId, visibleOnly, sortBy, sortDir]);
 
     useEffect(() => {
       // Load filter options once
@@ -127,6 +130,7 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
       const sd = (params.get('sort_dir') as 'asc' | 'desc') || 'desc';
       const ou = params.get('only_unsold') === 'true';
       const op = params.get('only_problematic') === 'true';
+      const sh = params.get('shipment_id') ? Number(params.get('shipment_id')) : undefined;
       const vo = params.get('visible_only') === 'true';
       setPage(pn);
       setPerPage(ps);
@@ -134,6 +138,7 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
       setSortDir(sd);
       setOnlyUnsold(ou);
       setOnlyProblematic(op);
+      setSelectedShipmentId(sh);
       setVisibleOnly(vo);
       // basic selected filters
       const nf: ProductFilterType = {};
@@ -159,12 +164,13 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
       params.set('sort_dir', sortDir);
       if (onlyUnsold) params.set('only_unsold', 'true');
       if (onlyProblematic) params.set('only_problematic', 'true');
+      if (selectedShipmentId) params.set('shipment_id', String(selectedShipmentId));
       if (visibleOnly) params.set('visible_only', 'true');
       Object.entries(selectedFilters).forEach(([k, v]) => {
         if (v !== undefined && v !== null && typeof v !== 'object') params.set(k, String(v));
       });
       navigate({ pathname: location.pathname, search: params.toString() }, { replace: true });
-    }, [page, perPage, sortBy, sortDir, onlyUnsold, onlyProblematic, visibleOnly, selectedFilters, navigate, location.pathname]);
+    }, [page, perPage, sortBy, sortDir, onlyUnsold, onlyProblematic, selectedShipmentId, visibleOnly, selectedFilters, navigate, location.pathname]);
 
     return (
     <MainLayout
@@ -193,6 +199,16 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
             )}
           </div>
           <div className="flex items-center gap-2">
+            <select
+              value={selectedShipmentId ?? ''}
+              onChange={(e) => { setSelectedShipmentId(e.target.value ? Number(e.target.value) : undefined); setPage(1); }}
+              className="text-xs border border-gray-200 dark:border-gray-600 rounded px-2 py-1.5 bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-200 focus:outline-none focus:ring-1 focus:ring-blue-400 max-w-[200px]"
+            >
+              <option value="">Всі завози</option>
+              {filtersMeta?.shipments?.map((s: any) => (
+                <option key={s.id} value={s.id}>{s.name} ({s.count})</option>
+              ))}
+            </select>
             <select value={`${sortBy}|${sortDir}`}
               onChange={e => { const [f, d] = e.target.value.split('|'); setSortBy(f); setSortDir(d as 'asc' | 'desc'); setPage(1); }}
               className="text-xs border border-gray-200 dark:border-gray-600 rounded px-2 py-1.5 bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-200 focus:outline-none focus:ring-1 focus:ring-blue-400">
