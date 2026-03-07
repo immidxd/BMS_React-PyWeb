@@ -23,7 +23,7 @@ export const productService = {
     /**
      * Отримати список товарів з пагінацією та фільтрацією
      */
-    async getProducts(params: Record<string, any> = {}): Promise<ProductListResponse> {
+    async getProducts(params: Record<string, any> = {}, signal?: AbortSignal): Promise<ProductListResponse> {
         try {
             const { 
                 page,
@@ -63,7 +63,7 @@ export const productService = {
             
             while (retries < maxRetries) {
                 try {
-                    const response = await axios.get<ProductListResponse>(`${API_URL}?${queryParams.toString()}`);
+                    const response = await axios.get<ProductListResponse>(`${API_URL}?${queryParams.toString()}`, { signal });
                     console.log("Products fetched successfully:", response.data);
                     return response.data;
                 } catch (error) {

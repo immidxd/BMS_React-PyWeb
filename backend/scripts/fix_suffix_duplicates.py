@@ -147,7 +147,7 @@ def consolidate_specific_duplicate(base_number: str):
             
             if duplicate_ids:
                 cursor.execute("""
-                    UPDATE order_details 
+                    UPDATE order_items 
                     SET product_id = %s 
                     WHERE product_id = ANY(%s)
                 """, (main_item[0], duplicate_ids))

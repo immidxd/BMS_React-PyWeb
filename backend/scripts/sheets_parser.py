@@ -52,6 +52,85 @@ def is_skip_sheet(title: str) -> bool:
     return bool(SKIP_SHEETS_PATTERNS.match(title.strip()))
 
 
+_MEASUREMENT_RE = re.compile(r'\d+[хxХX]\d+')
+_NUMERIC_SLASH_RE = re.compile(r'^(\d+(?:\.\d+)?)/(\d+(?:\.\d+)?)$')
+
+
+def _normalize_size(val: str) -> str:
+    """Normalize a size value from Google Sheets.
+
+    - commas → dots  (46,6 → 46.6)
+    - measurements like 40x32x14 → '' (not a size)
+    - slash → dash for numeric ranges (41/42 → 41-42)
+    - 3XL → XXXL, 3/L → L, 4/XL → XL, М(cyrillic) → M
+    - M (48/50) → 48-50
+    - trailing dots removed (42. → 42)
+    - garbage values removed (.12-13, 7340734, 86/92)
+    """
+    s = val.strip().replace(",", ".")
+    if not s:
+        return ""
+    # Measurements (contain 'x' between digits)
+    if _MEASUREMENT_RE.search(s):
+        return ""
+    # Garbage: leading dot, pure long digits, children ranges
+    if s.startswith('.') or (s.isdigit() and len(s) > 4):
+        return ""
+    # Special text sizes
+    upper = s.upper()
+    if upper == '3XL':
+        return 'XXXL'
+    if upper in ('3/L',):
+        return 'L'
+    if upper in ('4/XL',):
+        return 'XL'
+    # Cyrillic М → Latin M
+    if s == 'М':
+        return 'M'
+    # M (48/50) → 48-50
+    m = re.match(r'^[A-Za-zА-Яа-я]+\s*\((\d+)/(\d+)\)$', s)
+    if m:
+        return f"{m.group(1)}-{m.group(2)}"
+    # Numeric slash → dash (41/42 → 41-42)
+    m = _NUMERIC_SLASH_RE.match(s)
+    if m:
+        return f"{m.group(1)}-{m.group(2)}"
+    # Trailing dot (42. → 42)
+    if s.endswith('.'):
+        s = s[:-1]
+    return s
+
+
+_GENDER_MAP = {
+    'жіноча': 'Жіноча',
+    'жіночий': 'Жіноча',
+    'жіноча': 'Жіноча',
+    'чоловіча': 'Чоловіча',
+    'чоловічий': 'Чоловіча',
+    'унісекс': 'Унісекс',
+    'дитяча': 'Унісекс',
+    'дитячий': 'Унісекс',
+}
+
+
+def _normalize_gender(val: str) -> str:
+    """Normalize gender value: case-insensitive mapping to canonical form.
+
+    'жіноча' / 'жіночий' / 'Жіноча' → 'Жіноча'
+    'чоловіча' / 'чоловічий' → 'Чоловіча'
+    'унісекс' → 'Унісекс'
+    Garbage (e.g. 'чорний, сірий...') → '' (empty = skip)
+    """
+    s = val.strip()
+    if not s:
+        return ""
+    canonical = _GENDER_MAP.get(s.lower())
+    if canonical:
+        return canonical
+    # If not in map, might be garbage — return empty to skip
+    return ""
+
+
 def parse_date_from_sheet_title(title: str) -> Optional[date]:
     """Extract date from sheet title like '24.02.2026' or '24.02.2026(Андрій)'."""
     m = re.match(r"(\d{2})\.(\d{2})\.(\d{4})", title.strip())
@@ -236,12 +315,17 @@ def _next_suffix_pnum(session: Session, base_pnum: str) -> str:
 
 
 def _fields_match(a, b) -> bool:
-    """Compare two values for duplication check: treat None/''/0 as equal."""
-    def norm(v):
-        if v is None:
-            return ""
-        return str(v).strip().lower()
-    return norm(a) == norm(b)
+    """Compare two values for duplication check.
+    
+    If either value is None/empty/0 → treat as 'no data' → match (True).
+    Only return False when BOTH values are non-empty AND different.
+    This prevents false -2 duplicates when one sheet lacks a column.
+    """
+    def is_empty(v):
+        return v is None or str(v).strip() == "" or v == 0
+    if is_empty(a) or is_empty(b):
+        return True
+    return str(a).strip().lower() == str(b).strip().lower()
 
 
 def _parse_products_sheet(
@@ -293,9 +377,9 @@ def _parse_products_sheet(
 
     header = [h.strip() for h in rows[0]]
 
-    # ID статусу "Непродано" — він має пріоритет при кількох входженнях товару.
-    # Якщо хоча б один примірник "Непродано" — товар в наявності.
-    unsold_status_id = _get_or_create_status(session, "Непродано")
+    # ID статусу "Продано" — він має пріоритет при кількох входженнях товару.
+    # Якщо хоча б один примірник "Продано" — товар проданий.
+    sold_status_id = _get_or_create_status(session, "Продано")
 
     def col(row, name):
         try:
@@ -332,14 +416,14 @@ def _parse_products_sheet(
         model_val  = col(row, "Модель")
         marking    = col(row, "Маркування")
         year_val   = col(row, "Рік")
-        gender_val = col(row, "Стать")
+        gender_val = _normalize_gender(col(row, "Стать"))
         color_val  = col(row, "Колір")
         cond_val   = col(row, "Стан")
         status_val = col(row, "Статус") if "Статус" in header else ""
         mfr_cntry  = col(row, "Країна-виробник")
         own_cntry  = col(row, "Країна-власник")
-        size_val   = col(row, "Розмір")
-        cm_val     = col(row, "СМ")
+        size_val   = _normalize_size(col(row, "Розмір"))
+        cm_val     = _normalize_size(col(row, "СМ"))
         price_val  = col(row, "Ціна")
         desc_val   = col(row, "Опис") if "Опис" in header else ""
 
@@ -415,12 +499,12 @@ def _parse_products_sheet(
             seen_in_run[full_match.id] = cnt
             full_match.quantity = cnt
             # Статус: перше входження — ставимо як є.
-            # Наступні входження — оновлюємо ТІЛЬКИ якщо новий статус "Непродано".
-            # Це гарантує: якщо хоча б один примірник "в наявності" — товар
-            # відображається як "Непродано", навіть якщо інші копії продані.
+            # Наступні входження — оновлюємо якщо новий статус "Продано".
+            # Це гарантує: якщо хоча б один примірник "Продано" — товар
+            # відображається як "Продано".
             if cnt == 1:
                 full_match.statusid = status_id
-            elif status_id == unsold_status_id:
+            elif status_id == sold_status_id:
                 full_match.statusid = status_id
             # Оновлюємо поля якщо нові дані непорожні
             if marking:
@@ -552,56 +636,104 @@ def _parse_products_sheet(
             if base_m:
                 # Case 3: ростовка — same brand/type/condition/color, different size
                 # → new DB record, same productnumber (e.g. both are #125)
-                target_pnum = base_pnum
-            else:
-                # Case 4: accidental duplicate number (different brand/type/condition/color)
-                # → new DB record with suffix
-                target_pnum = _next_suffix_pnum(session, base_pnum)
-
-            product = Product(
-                productnumber         = target_pnum,
-                clonednumbers         = clones or None,
-                model                 = model_val or None,
-                marking               = marking or None,
-                year                  = year_int,
-                description           = desc_val or None,
-                price                 = price_float,
-                sizeeu                = size_val or None,
-                measurementscm        = cm_val or None,
-                dateadded             = sheet_date or date.today(),
-                quantity              = 1,
-                brandid               = brand_id,
-                typeid                = type_id,
-                subtypeid             = sub_id,
-                genderid              = gender_id,
-                colorid               = color_id,
-                conditionid           = cond_id,
-                statusid              = status_id,
-                manufacturercountryid = mfr_id,
-                ownercountryid        = own_id,
-                supplierid            = supplier_id,
-                shipment_id           = shipment_id,
-            )
-            session.add(product)
-            try:
-                session.flush()
-                seen_in_run[product.id] = 1
-                added += 1
-            except IntegrityError:
-                session.rollback()
-                existing_now = session.query(Product).filter(
-                    Product.productnumber == target_pnum,
-                    Product.sizeeu == (size_val or None),
-                ).first()
-                if existing_now:
-                    cnt = seen_in_run.get(existing_now.id, 0) + 1
-                    seen_in_run[existing_now.id] = cnt
-                    existing_now.quantity = cnt
-                    existing_now.updated_at = datetime.utcnow()
+                product = Product(
+                    productnumber         = base_pnum,
+                    clonednumbers         = clones or None,
+                    model                 = model_val or None,
+                    marking               = marking or None,
+                    year                  = year_int,
+                    description           = desc_val or None,
+                    price                 = price_float,
+                    sizeeu                = size_val or None,
+                    measurementscm        = cm_val or None,
+                    dateadded             = sheet_date or date.today(),
+                    quantity              = 1,
+                    brandid               = brand_id,
+                    typeid                = type_id,
+                    subtypeid             = sub_id,
+                    genderid              = gender_id,
+                    colorid               = color_id,
+                    conditionid           = cond_id,
+                    statusid              = status_id,
+                    manufacturercountryid = mfr_id,
+                    ownercountryid        = own_id,
+                    supplierid            = supplier_id,
+                    shipment_id           = shipment_id,
+                )
+                session.add(product)
+                try:
                     session.flush()
-                    updated += 1
-                else:
-                    skipped += 1
+                    seen_in_run[product.id] = 1
+                    added += 1
+                except IntegrityError:
+                    session.rollback()
+                    existing_now = session.query(Product).filter(
+                        Product.productnumber == base_pnum,
+                        Product.sizeeu == (size_val or None),
+                    ).first()
+                    if existing_now:
+                        cnt = seen_in_run.get(existing_now.id, 0) + 1
+                        seen_in_run[existing_now.id] = cnt
+                        existing_now.quantity = cnt
+                        existing_now.updated_at = datetime.utcnow()
+                        session.flush()
+                        updated += 1
+                    else:
+                        skipped += 1
+            else:
+                # Case 4: genuine duplicate number — both records have non-empty
+                # identity fields that differ (e.g. brand=Nike vs brand=Adidas).
+                # _fields_match treats NULL as 'no data' (match), so this only
+                # triggers for real conflicts → create new record with -2 suffix.
+                target_pnum = _next_suffix_pnum(session, base_pnum)
+                logger.info(
+                    f"[dup-number] Genuine duplicate: {base_pnum} → {target_pnum} "
+                    f"(brand={brand_id}, type={type_id}, color={color_id})"
+                )
+                product = Product(
+                    productnumber         = target_pnum,
+                    clonednumbers         = clones or None,
+                    model                 = model_val or None,
+                    marking               = marking or None,
+                    year                  = year_int,
+                    description           = desc_val or None,
+                    price                 = price_float,
+                    sizeeu                = size_val or None,
+                    measurementscm        = cm_val or None,
+                    dateadded             = sheet_date or date.today(),
+                    quantity              = 1,
+                    brandid               = brand_id,
+                    typeid                = type_id,
+                    subtypeid             = sub_id,
+                    genderid              = gender_id,
+                    colorid               = color_id,
+                    conditionid           = cond_id,
+                    statusid              = status_id,
+                    manufacturercountryid = mfr_id,
+                    ownercountryid        = own_id,
+                    supplierid            = supplier_id,
+                    shipment_id           = shipment_id,
+                )
+                session.add(product)
+                try:
+                    session.flush()
+                    seen_in_run[product.id] = 1
+                    added += 1
+                except IntegrityError:
+                    session.rollback()
+                    existing_now = session.query(Product).filter(
+                        Product.productnumber == target_pnum,
+                        Product.sizeeu == (size_val or None),
+                    ).first()
+                    if existing_now:
+                        cnt = seen_in_run.get(existing_now.id, 0) + 1
+                        seen_in_run[existing_now.id] = cnt
+                        existing_now.quantity = cnt
+                        existing_now.updated_at = datetime.utcnow()
+                        session.flush()
+                        updated += 1
+                    else:
+                        skipped += 1
 
     # ── Apply deferred productnumber renames (two-phase for swap safety) ──
     if pending_renames:
@@ -949,9 +1081,18 @@ def _parse_orders_sheet(
         product_nums_raw = col(row, "Номера товарів")
         client_name      = col(row, "Клієнт")
 
-        if not product_nums_raw.strip() or not client_name.strip():
+        if not product_nums_raw.strip():
             skipped += 1
             continue
+
+        # Для магазинних / walk-in продажів без клієнта —
+        # підставляємо placeholder, щоб замовлення не пропускалось.
+        if not client_name.strip():
+            delivery_hint = col(row, "Доставка").strip().upper()
+            if delivery_hint == "МАГАЗИН":
+                client_name = "Магазин (walk-in)"
+            else:
+                client_name = "Невідомий клієнт"
 
         # Parse product numbers (semicolon-separated)
         product_nums = [p.strip().rstrip(";").strip() for p in product_nums_raw.split(";") if p.strip().rstrip(";").strip()]
@@ -1139,6 +1280,20 @@ def _parse_orders_sheet(
             session.add(item)
             items_added += 1
 
+            # ── Автооновлення статусу на "Продано" ────────────────────────
+            # Якщо продукт залінкований і замовлення оплачене —
+            # ставимо "Продано" (id=2), якщо товар ще не має спецстатусу.
+            # Спецстатуси (Повернуто=6, Пошкоджений=8) не перезаписуються.
+            SOLD_STATUS_ID = 2
+            PAID_STATUSES = (pay_status_id,) if pay_status_id in (1, 2) else ()
+            SPECIAL_STATUSES = {6, 8}  # Повернуто, Пошкоджений
+            if (product
+                    and pay_status_id in (1, 2)
+                    and product.statusid not in SPECIAL_STATUSES
+                    and product.statusid != SOLD_STATUS_ID):
+                product.statusid = SOLD_STATUS_ID
+                product.updated_at = datetime.utcnow()
+
         session.commit()
 
     return {"orders": orders_added, "items": items_added, "clients": clients_added,
@@ -1229,13 +1384,13 @@ def _parse_workspace_sheet(
         model_val  = col(row, "Модель")
         marking    = col(row, "Маркування")
         year_val   = col(row, "Рік")
-        gender_val = col(row, "Стать")
+        gender_val = _normalize_gender(col(row, "Стать"))
         color_val  = col(row, "Колір")
         cond_val   = col(row, "Стан")
         mfr_cntry  = col(row, "Країна-виробник")
         own_cntry  = col(row, "Країна-власник")
-        size_val   = col(row, "Розмір")
-        cm_val     = col(row, "СМ")
+        size_val   = _normalize_size(col(row, "Розмір"))
+        cm_val     = _normalize_size(col(row, "СМ"))
         price_val  = col(row, "Ціна")
         desc_val   = col(row, "Опис") or col(row, "Екстра примітка")
 

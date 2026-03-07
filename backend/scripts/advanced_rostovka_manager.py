@@ -292,9 +292,9 @@ class RostovkaManager:
         if duplicate_ids:
             logger.info(f"Видаляємо {len(duplicate_ids)} дублікатів ростовки")
             
-            # Спочатку переносимо зв'язки з замовленнями (order_details та order_items)
+            # Спочатку переносимо зв'язки з замовленнями (order_items та order_items)
             self.cursor.execute("""
-                UPDATE order_details 
+                UPDATE order_items 
                 SET product_id = %s 
                 WHERE product_id = ANY(%s)
             """, (main_id, duplicate_ids))
@@ -519,7 +519,7 @@ def batch_consolidate_all_rostovka(conn):
                         if duplicate_ids:
                             # Переносимо зв'язки з замовленнями (обидві таблиці)
                             cursor.execute("""
-                                UPDATE order_details 
+                                UPDATE order_items 
                                 SET product_id = %s 
                                 WHERE product_id = ANY(%s)
                             """, (main_id, duplicate_ids))

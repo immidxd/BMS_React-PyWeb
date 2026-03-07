@@ -115,7 +115,7 @@ def fix_all_auto_duplicates():
                         dup_id = dup_item[0]
                         
                         # Переносимо зв'язки
-                        cursor.execute("UPDATE order_details SET product_id = %s WHERE product_id = %s", (main_id, dup_id))
+                        cursor.execute("UPDATE order_items SET product_id = %s WHERE product_id = %s", (main_id, dup_id))
                         cursor.execute("UPDATE order_items SET product_id = %s WHERE product_id = %s", (main_id, dup_id))
                         
                         # Видаляємо дублікат

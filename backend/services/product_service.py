@@ -1,9 +1,11 @@
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import text, func, desc, asc
 from sqlalchemy.sql.expression import or_, and_
-from typing import Optional, List, Dict, Any, Tuple
+from typing import Optional, List, Dict, Any, Tuple, Set
 from datetime import datetime
 import logging
+import re
+import math
 
 from models import models
 from schemas import product as schemas
@@ -54,6 +56,58 @@ def get_product_by_number(db: Session, product_number: str) -> Optional[models.P
         logger.error(f"Error getting product by number {product_number}: {str(e)}")
         raise
 
+def _fmt_size(v: float) -> str:
+    """Format a numeric size value: 41.0→'41', 37.5→'37.5', 36.6→'36.6'."""
+    if v == int(v):
+        return str(int(v))
+    return f"{v:g}"
+
+
+_RANGE_RE = re.compile(r'^(\d+(?:\.\d+)?)\s*-\s*(\d+(?:\.\d+)?)$')
+
+
+def _expand_sizes_for_filters(raw_sizes: List[str]) -> List[str]:
+    """Expand range sizes into individual sizes for the filter panel.
+
+    '41-42' → adds 41, 42  (integer step when both ends are integers)
+    '36.6-37.5' → adds 36.6, 37, 37.5  (0.5 step, keep exact endpoints)
+    '39-43' → adds 39, 40, 41, 42, 43
+    Non-range values (e.g. '41', 'XL') are kept as-is.
+    """
+    individual: Set[str] = set()
+    for s in raw_sizes:
+        m = _RANGE_RE.match(s.strip())
+        if not m:
+            individual.add(s.strip())
+            continue
+        lo, hi = float(m.group(1)), float(m.group(2))
+        if lo > hi:
+            individual.add(s.strip())
+            continue
+        # Always include exact endpoints
+        individual.add(_fmt_size(lo))
+        individual.add(_fmt_size(hi))
+        # Step: 1 when both ends are integers, else 0.5
+        both_int = (lo == int(lo) and hi == int(hi))
+        step = 1.0 if both_int else 0.5
+        cur = lo + step
+        while cur < hi - 0.001:
+            individual.add(_fmt_size(cur))
+            cur += step
+
+    # Sort: numeric values first (by value), then text values alphabetically
+    nums = []
+    texts = []
+    for s in individual:
+        try:
+            nums.append((float(s), s))
+        except ValueError:
+            texts.append(s)
+    nums.sort(key=lambda x: x[0])
+    texts.sort()
+    return [s for _, s in nums] + texts
+
+
 def get_products(
     db: Session,
     skip: int = 0,
@@ -81,10 +135,7 @@ def get_products(
                sup.name as supplier_name,
                st.subtypename as subtype_name,
                COALESCE(sold.sold_count, 0) AS sold_count,
-               CASE
-                   WHEN s.statusname = 'Продано' THEN 0
-                   ELSE COALESCE(p.quantity, 0)
-               END AS available_qty,
+               GREATEST(COALESCE(p.quantity, 0) - COALESCE(sold.sold_count, 0), 0) AS available_qty,
                COALESCE(dup.dup_brands, 0) AS pnum_dup_brands
         FROM products p
         LEFT JOIN types t ON p.typeid = t.id
@@ -96,10 +147,12 @@ def get_products(
         LEFT JOIN suppliers sup ON p.supplierid = sup.id
         LEFT JOIN subtypes st ON p.subtypeid = st.id
         LEFT JOIN (
-            SELECT product_id, COUNT(*) AS sold_count
-            FROM order_items
-            WHERE product_id IS NOT NULL
-            GROUP BY product_id
+            SELECT oi.product_id, COUNT(*) AS sold_count
+            FROM order_items oi
+            JOIN orders o ON o.id = oi.order_id
+            WHERE oi.product_id IS NOT NULL
+              AND o.order_status_id NOT IN (5)
+            GROUP BY oi.product_id
         ) sold ON sold.product_id = p.id
         LEFT JOIN (
             SELECT productnumber, COUNT(DISTINCT COALESCE(brandid, 0)) AS dup_brands
@@ -197,16 +250,49 @@ def get_products(
                 where_conditions.append("p.price <= :max_price")
                 params['max_price'] = filters.max_price
 
-            # Size EU filter
+            # Size EU filter (multi-select) — also matches range sizes
             if filters.sizeeu:
-                where_conditions.append("p.sizeeu = :sizeeu")
+                # Exact match for selected sizes
+                # PLUS range match: product "39-43" matches filter "41"
+                numeric_vals = []
+                for s in filters.sizeeu:
+                    try:
+                        numeric_vals.append(float(s))
+                    except (ValueError, TypeError):
+                        pass
+                if numeric_vals:
+                    # Build individual range checks for each numeric size
+                    range_checks = []
+                    for i, v in enumerate(numeric_vals):
+                        pname = f"sz_num_{i}"
+                        range_checks.append(f"""(
+                            CAST(split_part(p.sizeeu, '-', 1) AS numeric) <= :{pname}
+                            AND CAST(split_part(p.sizeeu, '-', 2) AS numeric) >= :{pname}
+                        )""")
+                        params[pname] = v
+                    range_sql = " OR ".join(range_checks)
+                    where_conditions.append(f"""(
+                        p.sizeeu = ANY(:sizeeu)
+                        OR (
+                            p.sizeeu ~ '^[0-9]+\\.?[0-9]*-[0-9]+\\.?[0-9]*$'
+                            AND ({range_sql})
+                        )
+                    )""")
+                else:
+                    where_conditions.append("p.sizeeu = ANY(:sizeeu)")
                 params['sizeeu'] = filters.sizeeu
 
             if filters.with_stock_only:
                 where_conditions.append("p.quantity > 0")
 
             if filters.only_unsold:
-                where_conditions.append("s.statusname = 'Непродано'")
+                # Must match frontend display logic (ProductsTable.tsx):
+                # Frontend shows "Продано" when sold_count >= quantity && quantity > 0,
+                # regardless of DB statusname. So we exclude those too.
+                where_conditions.append("""(
+                    (s.statusname IS NULL OR s.statusname = 'Непродано')
+                    AND COALESCE(sold.sold_count, 0) = 0
+                )""")
 
             if filters.only_problematic:
                 where_conditions.append("""(
@@ -395,10 +481,11 @@ def get_product_filters(db: Session) -> Dict[str, Any]:
                ORDER BY s.shipment_date DESC NULLS LAST, s.id DESC"""
         )).fetchall()
 
-        # Size ranges per system
+        # Size ranges per system — expand range values into individual sizes
         def fetch_sizes(col: str):
             rows = db.execute(text(f"SELECT DISTINCT {col} FROM products WHERE {col} IS NOT NULL AND {col} != '' ORDER BY {col}")).fetchall()
-            return [r[0] for r in rows]
+            raw = [r[0] for r in rows]
+            return _expand_sizes_for_filters(raw)
 
         result = {
             "types": [{"id": t[0], "name": t[1]} for t in types],

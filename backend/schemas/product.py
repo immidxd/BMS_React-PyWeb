@@ -245,8 +245,8 @@ class ProductFilter(BaseModel):
     # Price range
     min_price: Optional[float] = None
     max_price: Optional[float] = None
-    # Size filter
-    sizeeu: Optional[str] = None
+    # Size filter (multi-select)
+    sizeeu: Optional[List[str]] = None
     # Visibility
     is_visible: Optional[bool] = None
     with_stock_only: Optional[bool] = None

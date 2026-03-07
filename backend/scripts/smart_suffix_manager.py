@@ -224,7 +224,7 @@ class SmartSuffixManager:
             
             # Переносимо зв'язки з замовленнями
             self.cursor.execute("""
-                UPDATE order_details 
+                UPDATE order_items 
                 SET product_id = %s 
                 WHERE product_id = ANY(%s)
             """, (main_id, duplicate_ids))

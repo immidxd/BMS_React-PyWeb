@@ -141,7 +141,7 @@ const ProductFiltersPanel: React.FC<ProductFiltersPanelProps> = ({ filters, sele
     'typeids','brandids','genderids','colorids','conditionids','statusids',
   ].reduce((acc, f) => acc + countActive(f), 0)
     + (selectedFilters.min_price !== undefined || selectedFilters.max_price !== undefined ? 1 : 0)
-    + (selectedFilters.sizeeu ? 1 : 0);
+    + (selectedFilters.sizeeu?.length || 0);
 
   const euSizes = useMemo(() => {
     const raw = filters.size_ranges?.eu || [];
@@ -230,25 +230,29 @@ const ProductFiltersPanel: React.FC<ProductFiltersPanelProps> = ({ filters, sele
 
       {/* Розмір EU */}
       {euSizes.length > 0 && (
-        <FilterSection title="Розмір (EU)" badge={selectedFilters.sizeeu ? 1 : 0}>
+        <FilterSection title="Розмір (EU)" badge={selectedFilters.sizeeu?.length || 0}>
           <div className="flex flex-wrap gap-1">
-            {euSizes.map(size => (
-              <button
-                key={size}
-                type="button"
-                onClick={() => onFilterChange({
-                  ...selectedFilters,
-                  sizeeu: selectedFilters.sizeeu === size ? undefined : size,
-                })}
-                className={`px-2 py-0.5 rounded text-xs border transition-colors ${
-                  selectedFilters.sizeeu === size
-                    ? 'bg-blue-500 border-blue-500 text-white font-semibold'
-                    : 'border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:border-blue-400 hover:text-blue-600'
-                }`}
-              >
-                {size}
-              </button>
-            ))}
+            {euSizes.map(size => {
+              const selected = (selectedFilters.sizeeu || []).includes(size);
+              return (
+                <button
+                  key={size}
+                  type="button"
+                  onClick={() => {
+                    const current = selectedFilters.sizeeu || [];
+                    const updated = selected ? current.filter(s => s !== size) : [...current, size];
+                    onFilterChange({ ...selectedFilters, sizeeu: updated.length > 0 ? updated : undefined });
+                  }}
+                  className={`px-2 py-0.5 rounded text-xs border transition-colors ${
+                    selected
+                      ? 'bg-blue-500 border-blue-500 text-white font-semibold'
+                      : 'border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:border-blue-400 hover:text-blue-600'
+                  }`}
+                >
+                  {size}
+                </button>
+              );
+            })}
           </div>
         </FilterSection>
       )}

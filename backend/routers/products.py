@@ -46,7 +46,7 @@ async def get_products(
     # Price / size
     min_price: Optional[float] = Query(None, ge=0),
     max_price: Optional[float] = Query(None, ge=0),
-    sizeeu: Optional[str] = Query(None),
+    sizeeu: Optional[List[str]] = Query(None),
     # Visibility / stock
     is_visible: Optional[bool] = Query(None),
     with_stock_only: Optional[bool] = Query(None),
@@ -68,7 +68,7 @@ async def get_products(
             computed_limit = limit
 
         logger.info(
-            f"Requesting products: page={page}, per_page={per_page}, skip={skip}, limit={limit}, search={search}, sort={sort_by} {sort_dir}"
+            f"Requesting products: page={page}, per_page={per_page}, skip={skip}, limit={limit}, search={search}, sort={sort_by} {sort_dir}, only_unsold={only_unsold}, sizeeu={sizeeu}"
         )
 
         # Формуємо фільтри

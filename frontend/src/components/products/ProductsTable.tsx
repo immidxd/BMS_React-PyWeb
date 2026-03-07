@@ -226,19 +226,28 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
                     </Tooltip>
                 );
             } },
-        status_name: { title: 'Статус', dataIndex: 'status_name', key: 'status_name', width: 110,
-            render: (status: string) => {
+        status_name: { title: 'Статус', key: 'status_name', width: 110,
+            render: (_: any, record: Product) => {
+                const sold = record.sold_count ?? 0;
+                const qty = record.quantity ?? 0;
+                const staticStatus = record.status_name || '';
+                let displayStatus = staticStatus;
+                if (sold > 0 && sold >= qty && qty > 0) {
+                    displayStatus = 'Продано';
+                } else if (sold > 0 && sold < qty) {
+                    displayStatus = `Продано ${sold}/${qty}`;
+                }
                 const colorMap: Record<string, string> = {
                     'Непродано': 'green',
                     'Продано':   'red',
                 };
-                const color = colorMap[status] || (status ? 'geekblue' : 'default');
+                const color = displayStatus.startsWith('Продано') ? 'red' : (colorMap[displayStatus] || (displayStatus ? 'geekblue' : 'default'));
                 return (
                     <Tag
                         color={color}
                         style={{ display: 'block', maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', padding: '0 6px', fontSize: 12 }}
                     >
-                        {status || 'Не вказано'}
+                        {displayStatus || 'Не вказано'}
                     </Tag>
                 );
             } },

@@ -162,7 +162,7 @@ def consolidate_same_size_items(base_number: str):
                 # Переносимо зв'язки та видаляємо дублікати
                 for dup in duplicates:
                     # Переносимо зв'язки
-                    cursor.execute("UPDATE order_details SET product_id = %s WHERE product_id = %s", (main_item['id'], dup['id']))
+                    cursor.execute("UPDATE order_items SET product_id = %s WHERE product_id = %s", (main_item['id'], dup['id']))
                     cursor.execute("UPDATE order_items SET product_id = %s WHERE product_id = %s", (main_item['id'], dup['id']))
                     
                     # Видаляємо дублікат

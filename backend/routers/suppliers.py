@@ -47,24 +47,34 @@ async def get_suppliers(
 
     rows = db.execute(text(f"""
         SELECT s.id, s.name, s.notes,
-               COUNT(DISTINCT p.id)  AS product_count,
-               COUNT(DISTINCT sh.id) AS shipments_count,
-               COALESCE(SUM(p.price), 0)::float AS total_spent,
-               CASE WHEN COUNT(p.id) > 0
-                    THEN ROUND((SUM(p.price) / COUNT(p.id))::numeric, 2)::float
-                    ELSE 0 END AS avg_price,
-               (SELECT string_agg(DISTINCT b.brandname, ', ' ORDER BY b.brandname)
-                FROM products p2
-                JOIN brands b ON b.id = p2.brandid
-                WHERE p2.supplierid = s.id
-                LIMIT 1) AS top_brands,
+               COALESCE(ps.product_count, 0)  AS product_count,
+               COALESCE(shs.shipments_count, 0) AS shipments_count,
+               COALESCE(ps.total_spent, 0)::float AS total_spent,
+               COALESCE(ps.avg_price, 0)::float  AS avg_price,
+               ps.top_brands,
                s.created_at, s.updated_at
         FROM suppliers s
         LEFT JOIN supplier_aliases sa ON sa.supplier_id = s.id
-        LEFT JOIN products p ON p.supplierid = s.id
-        LEFT JOIN shipments sh ON sh.supplier_id = s.id
+        LEFT JOIN LATERAL (
+            SELECT COUNT(*)            AS product_count,
+                   COALESCE(SUM(p.price), 0) AS total_spent,
+                   CASE WHEN COUNT(*) > 0
+                        THEN ROUND((SUM(p.price) / COUNT(*))::numeric, 2)
+                        ELSE 0 END    AS avg_price,
+                   string_agg(DISTINCT b.brandname, ', ' ORDER BY b.brandname) AS top_brands
+            FROM products p
+            LEFT JOIN brands b ON b.id = p.brandid
+            WHERE p.supplierid = s.id
+        ) ps ON true
+        LEFT JOIN LATERAL (
+            SELECT COUNT(*) AS shipments_count
+            FROM shipments sh
+            WHERE sh.supplier_id = s.id
+        ) shs ON true
         {where}
-        GROUP BY s.id
+        GROUP BY s.id, s.name, s.notes, s.created_at, s.updated_at,
+                 ps.product_count, ps.total_spent, ps.avg_price, ps.top_brands,
+                 shs.shipments_count
         ORDER BY {order_col} {order_dir}, s.id
         OFFSET :offset LIMIT :limit
     """), {**params, "offset": (page - 1) * per_page, "limit": per_page}).mappings().all()
@@ -83,18 +93,27 @@ async def get_suppliers(
 async def get_supplier(supplier_id: int = Path(..., ge=1), db: Session = Depends(get_db)):
     row = db.execute(text("""
         SELECT s.id, s.name, s.notes,
-               COUNT(DISTINCT p.id) AS product_count,
-               COUNT(DISTINCT sh.id) AS shipments_count,
-               COALESCE(SUM(p.price), 0)::float AS total_spent,
-               CASE WHEN COUNT(p.id) > 0
-                    THEN ROUND((SUM(p.price) / COUNT(p.id))::numeric, 2)::float
-                    ELSE 0 END AS avg_price,
+               COALESCE(ps.product_count, 0) AS product_count,
+               COALESCE(shs.shipments_count, 0) AS shipments_count,
+               COALESCE(ps.total_spent, 0)::float AS total_spent,
+               COALESCE(ps.avg_price, 0)::float AS avg_price,
                s.created_at, s.updated_at
         FROM suppliers s
-        LEFT JOIN products p ON p.supplierid = s.id
-        LEFT JOIN shipments sh ON sh.supplier_id = s.id
+        LEFT JOIN LATERAL (
+            SELECT COUNT(*) AS product_count,
+                   COALESCE(SUM(p.price), 0) AS total_spent,
+                   CASE WHEN COUNT(*) > 0
+                        THEN ROUND((SUM(p.price) / COUNT(*))::numeric, 2)
+                        ELSE 0 END AS avg_price
+            FROM products p
+            WHERE p.supplierid = s.id
+        ) ps ON true
+        LEFT JOIN LATERAL (
+            SELECT COUNT(*) AS shipments_count
+            FROM shipments sh
+            WHERE sh.supplier_id = s.id
+        ) shs ON true
         WHERE s.id = :id
-        GROUP BY s.id
     """), {"id": supplier_id}).mappings().first()
     if not row:
         raise HTTPException(status_code=404, detail="Supplier not found")

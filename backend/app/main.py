@@ -38,6 +38,10 @@ try:
     from routers import shipments  # optional
 except Exception:
     shipments = None
+try:
+    from routers import statistics  # optional
+except Exception:
+    statistics = None
 
 # НАЛАШТУВАННЯ ЛОГУВАННЯ
 # Використовуємо абсолютний шлях і гарантуємо наявність директорії,
@@ -83,6 +87,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Prevent caching of API responses (PyWebView / browser may cache GET responses)
+@app.middleware("http")
+async def no_cache_api(request: Request, call_next):
+    response = await call_next(request)
+    if request.url.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+    return response
+
 # Global exception handler
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
@@ -113,6 +126,8 @@ if deliveries:
     app.include_router(deliveries.router, tags=["deliveries"])  # routes already prefixed with /api
 if shipments:
     app.include_router(shipments.router, tags=["shipments"])  # routes already prefixed with /api
+if statistics:
+    app.include_router(statistics.router, tags=["statistics"])  # routes already prefixed with /api
 
 # Mount static files from frontend build if available
 frontend_build_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../frontend/build"))

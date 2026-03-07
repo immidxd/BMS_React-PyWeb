@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import MainLayout from '../layouts/MainLayout';
 import ProductsTable from '../components/products/ProductsTable';
 import { productService, type ProductListResponse } from '../services/productService';
@@ -36,6 +36,8 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
   const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([]);
   const [searchInsights, setSearchInsights] = useState<any>(null);
+  const abortRef = useRef<AbortController | null>(null);
+  const fetchIdRef = useRef(0);
             
   // Effect to react to global search changes and fetch insights
   useEffect(() => {
@@ -71,6 +73,12 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
   };
 
   const fetchProducts = async () => {
+    // Cancel any in-flight request to prevent stale responses from overwriting fresh ones
+    if (abortRef.current) abortRef.current.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+    const myFetchId = ++fetchIdRef.current;
+
     setLoading(true);
     try {
       const params: Record<string, any> = {
@@ -85,7 +93,6 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
         is_visible: visibleOnly ? true : (selectedFilters.is_visible || undefined),
         min_price: selectedFilters.min_price,
         max_price: selectedFilters.max_price,
-        sizeeu: selectedFilters.sizeeu,
       };
       // Append multi-id arrays as repeated query params
       const appendIds = (key: string, ids?: number[]) => { if (ids && ids.length > 0) params[key] = ids; };
@@ -96,10 +103,17 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
       appendIds('colorids', selectedFilters.colorids);
       appendIds('statusids', selectedFilters.statusids);
       appendIds('conditionids', selectedFilters.conditionids);
-      const res = await productService.getProducts(params);
-      setProducts(res);
+      if (selectedFilters.sizeeu && selectedFilters.sizeeu.length > 0) params['sizeeu'] = selectedFilters.sizeeu;
+      const res = await productService.getProducts(params, controller.signal);
+      // Only apply result if this is still the latest request
+      if (myFetchId === fetchIdRef.current) {
+        setProducts(res);
+      }
+    } catch (err: any) {
+      if (err?.name === 'CanceledError' || err?.code === 'ERR_CANCELED') return; // aborted — ignore
+      throw err;
     } finally {
-      setLoading(false);
+      if (myFetchId === fetchIdRef.current) setLoading(false);
     }
   };
 

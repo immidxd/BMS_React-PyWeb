@@ -598,24 +598,39 @@ def get_or_create_product(cursor, connection, product_number):
     if row:
         return row[0]
     
-    # Якщо точного номера немає, шукаємо базовий номер (без суфіксів)
-    import re
-    base_number = re.sub(r'\(\d+\)$', '', product_number).strip()
-    
-    if base_number != product_number:
-        # Це номер з суфіксом, шукаємо базовий
+    # Продукти в каталозі зберігаються з '#' префіксом (#Ф1344),
+    # а з аркуша замовлень приходять без нього (Ф1344).
+    # Пробуємо з '#' префіксом.
+    if not product_number.startswith('#'):
+        hash_number = f"#{product_number}"
         cursor.execute("""
             SELECT id, price, oldprice, statusid
             FROM products
             WHERE productnumber=%s
             LIMIT 1
-        """, (base_number,))
-        base_row = cursor.fetchone()
-        
-        if base_row:
-            # Знайшли базовий товар, це ростовка
-            logger.info(f"Знайдено базовий товар для {product_number} → {base_number}")
-            return base_row[0]
+        """, (hash_number,))
+        row = cursor.fetchone()
+        if row:
+            logger.debug(f"Знайдено продукт з '#' префіксом: {product_number} → {hash_number}")
+            return row[0]
+    
+    # Якщо точного номера немає, шукаємо базовий номер (без суфіксів)
+    import re
+    base_number = re.sub(r'\(\d+\)$', '', product_number).strip()
+    
+    if base_number != product_number:
+        # Це номер з суфіксом, шукаємо базовий (з '#' і без)
+        for candidate in [base_number, f"#{base_number}"]:
+            cursor.execute("""
+                SELECT id, price, oldprice, statusid
+                FROM products
+                WHERE productnumber=%s
+                LIMIT 1
+            """, (candidate,))
+            base_row = cursor.fetchone()
+            if base_row:
+                logger.info(f"Знайдено базовий товар для {product_number} → {candidate}")
+                return base_row[0]
     
     # Товару немає в каталозі - НЕ створюємо автоматично!
     logger.warning(f"⚠️ ТОВАР {product_number} НЕ ЗНАЙДЕНО В КАТАЛОЗІ!")
@@ -764,7 +779,7 @@ def parse_discount_str(discount_str):
        return (discount_type, total_val if total_val else None)
 
 # -------------------------------------------------------
-#   Робота з таблицями orders, order_details
+#   Робота з таблицями orders, order_items
 # -------------------------------------------------------
 def find_exact_order(
    cursor,
@@ -888,7 +903,7 @@ def find_duplicate_order(cursor, client_id, product_numbers, order_date=None, pa
     base_query = """
         SELECT o.id, o.total_amount, o.order_date, o.payment_status as payment_status, COUNT(od.id) as product_count
         FROM orders o
-        LEFT JOIN order_details od ON o.id = od.order_id
+        LEFT JOIN order_items od ON o.id = od.order_id
         WHERE o.client_id = %s
     """
     
@@ -933,7 +948,7 @@ def find_duplicate_order(cursor, client_id, product_numbers, order_date=None, pa
                 
             cursor.execute("""
                 SELECT p.productnumber 
-                FROM order_details od
+                FROM order_items od
                 JOIN products p ON p.id = od.product_id
                 WHERE od.order_id = %s
             """, (order_id,))
@@ -991,7 +1006,7 @@ def find_duplicate_order(cursor, client_id, product_numbers, order_date=None, pa
                 
             cursor.execute("""
                 SELECT p.productnumber, p.id, od.price
-                FROM order_details od
+                FROM order_items od
                 JOIN products p ON p.id = od.product_id
                 WHERE od.order_id = %s
             """, (order_id,))
@@ -1034,7 +1049,7 @@ def find_duplicate_order(cursor, client_id, product_numbers, order_date=None, pa
     logger.info(f"find_duplicate_order: Не знайдено дублікатів для клієнта '{client_name}' з продуктами: {', '.join(product_numbers)}")
     return None
 
-def create_or_update_order_details(
+def create_or_update_order_items(
    cursor,
    connection,
    order_id,
@@ -1048,7 +1063,7 @@ def create_or_update_order_details(
    cursor.execute("""
        SELECT id, price, discount_type, discount_value,
               additional_operation, additional_operation_value, quantity
-         FROM order_details
+         FROM order_items
         WHERE order_id=%s AND product_id=%s
         LIMIT 1
    """,(order_id, product_id))
@@ -1063,7 +1078,7 @@ def create_or_update_order_details(
        new_qty = old_qty if old_qty else 1
 
        cursor.execute("""
-           UPDATE order_details
+           UPDATE order_items
               SET price=%s,
                   discount_type=%s,
                   discount_value=%s,
@@ -1076,7 +1091,7 @@ def create_or_update_order_details(
        connection.commit()
    else:
        cursor.execute("""
-           INSERT INTO order_details (
+           INSERT INTO order_items (
                order_id,
                product_id,
                quantity,
@@ -1122,7 +1137,7 @@ def recalc_order_total(cursor, connection, order_id, order_status_id):
            END
            + additional_operation_value
        ), 0)
-       FROM order_details
+       FROM order_items
        WHERE order_id=%s
    """,(order_id,))
    sm = cursor.fetchone()[0] or 0
@@ -1146,7 +1161,7 @@ def set_products_sold_if_paid(cursor, connection, order_id, payment_status_text)
                   updated_at=now()
             WHERE id IN (
               SELECT product_id
-                FROM order_details
+                FROM order_items
                WHERE order_id=%s
             )
        """,(PRODUCT_STATUS_SOLD, order_id))
@@ -1763,7 +1778,7 @@ def process_orders_sheet_data(rows, sheet_name, force_process=False):
                 
                 # Видаляємо старі деталі замовлення, щоб замінити їх на нові
                 transaction_cur.execute("""
-                    DELETE FROM order_details
+                    DELETE FROM order_items
                     WHERE order_id = %s
                 """, (duplicate_order_id,))
                 
@@ -1894,7 +1909,7 @@ def process_orders_sheet_data(rows, sheet_name, force_process=False):
                         used_discount = True
 
                     # Додавання деталей замовлення
-                    create_or_update_order_details(
+                    create_or_update_order_items(
                         transaction_cur,
                         transaction_conn,
                         order_id,
@@ -1982,7 +1997,7 @@ def process_orders_sheet_data(rows, sheet_name, force_process=False):
 def remove_redundant_order_duplicates():
    """
    Знаходить і видаляє дублікати замовлень за такими критеріями:
-   1. Дублі в order_details (однакові (order_id, product_id))
+   1. Дублі в order_items (однакові (order_id, product_id))
    2. Замовлення з однаковими клієнтами та однаковими наборами продуктів
    3. Замовлення з однаковими клієнтами, продуктами та сумами
    """
@@ -1992,8 +2007,8 @@ def remove_redundant_order_duplicates():
        return
    cur = conn.cursor()
    try:
-       # 1. Видалення дублікатів у order_details
-       logger.info("Видаляємо дублікати у order_details (за (order_id, product_id))...")
+       # 1. Видалення дублікатів у order_items
+       logger.info("Видаляємо дублікати у order_items (за (order_id, product_id))...")
        cur.execute("""
            WITH duplicates AS (
                SELECT
@@ -2001,9 +2016,9 @@ def remove_redundant_order_duplicates():
                  order_id,
                  product_id,
                  ROW_NUMBER() OVER(PARTITION BY order_id, product_id ORDER BY id) AS rn
-               FROM order_details
+               FROM order_items
            )
-           DELETE FROM order_details
+           DELETE FROM order_items
            WHERE id IN (
                SELECT id
                FROM duplicates
@@ -2013,7 +2028,7 @@ def remove_redundant_order_duplicates():
        """)
        deleted_details = cur.fetchall()
        dd_count = len(deleted_details)
-       logger.info(f"Видалено дублів у order_details: {dd_count}")
+       logger.info(f"Видалено дублів у order_items: {dd_count}")
        
        if dd_count > 0:
            for detail_id, order_id, product_id in deleted_details:
@@ -2053,7 +2068,7 @@ def remove_redundant_order_duplicates():
            for order_id, total, created_at, payment_status, order_status_id, delivery_method_id, order_date in client_orders:
                cur.execute("""
                    SELECT p.productnumber, p.id
-                   FROM order_details od
+                   FROM order_items od
                    JOIN products p ON p.id = od.product_id
                    WHERE od.order_id = %s
                """, (order_id,))
@@ -2146,7 +2161,7 @@ def remove_redundant_order_duplicates():
                                logger.debug(f"Встановлено статус 'Продано' для продукту ID={prod_id} у видаленому замовленні")
                        
                        # Спочатку видаляємо деталі замовлення
-                       cur.execute("DELETE FROM order_details WHERE order_id = %s RETURNING id, product_id", (order_id,))
+                       cur.execute("DELETE FROM order_items WHERE order_id = %s RETURNING id, product_id", (order_id,))
                        deleted_details = cur.fetchall()
                        details_deleted = len(deleted_details)
                        
@@ -2663,7 +2678,7 @@ def split_unknown_client_orders():
         cur.execute("""
             SELECT o.id, COUNT(od.id) AS product_count
             FROM orders o
-            JOIN order_details od ON o.id = od.order_id
+            JOIN order_items od ON o.id = od.order_id
             WHERE o.client_id = %s
             GROUP BY o.id
             HAVING COUNT(od.id) > 1
@@ -2682,7 +2697,7 @@ def split_unknown_client_orders():
                 SELECT o.id AS order_id, p.id AS product_id, p.productnumber,
                        o.order_date, o.payment_status, o.total_amount
                 FROM orders o
-                JOIN order_details od ON o.id = od.order_id
+                JOIN order_items od ON o.id = od.order_id
                 JOIN products p ON p.id = od.product_id
                 WHERE o.client_id = %s
                 GROUP BY o.id, p.id
@@ -2720,21 +2735,21 @@ def split_unknown_client_orders():
                 WHERE id = %s
             """, (order_id,))
             
-            order_details_row = cur.fetchone()
-            if not order_details_row:
+            order_items_row = cur.fetchone()
+            if not order_items_row:
                 logger.warning(f"Не вдалося отримати деталі замовлення ID={order_id}.")
                 continue
             
             (order_date, order_status_id, payment_status_id, payment_status,
              delivery_method_id, delivery_status_id, tracking_number,
-             deferred_until, priority, notes, total_amount) = order_details_row
+             deferred_until, priority, notes, total_amount) = order_items_row
             
             # Отримуємо всі продукти замовлення
             cur.execute("""
                 SELECT od.product_id, od.price, od.discount_type, od.discount_value,
                        od.additional_operation, od.additional_operation_value,
                        p.productnumber
-                FROM order_details od
+                FROM order_items od
                 JOIN products p ON p.id = od.product_id
                 WHERE od.order_id = %s
             """, (order_id,))
@@ -2797,7 +2812,7 @@ def split_unknown_client_orders():
                     
                     # Додаємо деталь замовлення
                     cur.execute("""
-                        INSERT INTO order_details (
+                        INSERT INTO order_items (
                             order_id, product_id, quantity, price,
                             discount_type, discount_value,
                             additional_operation, additional_operation_value,
@@ -2838,7 +2853,7 @@ def split_unknown_client_orders():
             if products_processed == len(product_details):
                 try:
                     # Спочатку видаляємо деталі замовлення
-                    cur.execute("DELETE FROM order_details WHERE order_id = %s", (order_id,))
+                    cur.execute("DELETE FROM order_items WHERE order_id = %s", (order_id,))
                     
                     # Потім видаляємо саме замовлення
                     cur.execute("DELETE FROM orders WHERE id = %s", (order_id,))
@@ -2947,17 +2962,17 @@ def read_orders_without_lock(limit=100, offset=0, client_id=None, order_status_i
             # Окремий запит для отримання товарів замовлення
             cursor.execute("""
                 SELECT od.id, p.productnumber, p.id as product_id, od.price
-                FROM order_details od
+                FROM order_items od
                 JOIN products p ON od.product_id = p.id
                 WHERE od.order_id = %s
                 ORDER BY od.id
             """, (order_id,))
             
-            order_details = cursor.fetchall()
+            order_items = cursor.fetchall()
             
             result.append({
                 "order": order,
-                "details": order_details
+                "details": order_items
             })
         
         cursor.close()
