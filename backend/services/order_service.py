@@ -245,20 +245,20 @@ class OrderDAO:
         order_statuses = self.db.query(OrderStatus).all()
         order_statuses_list = [{"id": s.id, "status_name": s.status_name} for s in order_statuses]
 
-        # payment_statuses: id, name
-        ps = self.db.execute(text("SELECT id, name FROM payment_statuses ORDER BY id")).fetchall()
+        # payment_statuses: id, status_name
+        ps = self.db.execute(text("SELECT id, status_name FROM payment_statuses ORDER BY id")).fetchall()
         payment_statuses_list = [{"id": r[0], "name": r[1]} for r in ps]
 
-        # payment_methods: id, name
-        pm = self.db.execute(text("SELECT id, name FROM payment_methods ORDER BY id")).fetchall()
+        # payment_methods: id, method_name
+        pm = self.db.execute(text("SELECT id, method_name FROM payment_methods ORDER BY id")).fetchall()
         payment_methods_list = [{"id": r[0], "name": r[1]} for r in pm]
 
-        # delivery_methods: id, name
-        dm = self.db.execute(text("SELECT id, name FROM delivery_methods WHERE name != 'ㅤ' ORDER BY id")).fetchall()
+        # delivery_methods: id, method_name
+        dm = self.db.execute(text("SELECT id, method_name FROM delivery_methods WHERE method_name != 'ㅤ' ORDER BY id")).fetchall()
         delivery_methods_list = [{"id": r[0], "name": r[1]} for r in dm]
 
-        # delivery_statuses: id, name
-        ds = self.db.execute(text("SELECT id, name FROM delivery_statuses ORDER BY id")).fetchall()
+        # delivery_statuses: id, status_name
+        ds = self.db.execute(text("SELECT id, status_name FROM delivery_statuses ORDER BY id")).fetchall()
         delivery_statuses_list = [{"id": r[0], "name": r[1]} for r in ds]
 
         clients = self.db.query(Client).order_by(Client.updated_at.desc()).limit(100).all()

@@ -132,7 +132,6 @@ def get_products(
                c.colorname as color_name,
                cond.conditionname as condition_name,
                g.gendername as gender_name,
-               sup.name as supplier_name,
                st.subtypename as subtype_name,
                COALESCE(sold.sold_count, 0) AS sold_count,
                GREATEST(COALESCE(p.quantity, 0) - COALESCE(sold.sold_count, 0), 0) AS available_qty,
@@ -144,7 +143,6 @@ def get_products(
         LEFT JOIN colors c ON p.colorid = c.id
         LEFT JOIN conditions cond ON p.conditionid = cond.id
         LEFT JOIN genders g ON p.genderid = g.id
-        LEFT JOIN suppliers sup ON p.supplierid = sup.id
         LEFT JOIN subtypes st ON p.subtypeid = st.id
         LEFT JOIN (
             SELECT oi.product_id, COUNT(*) AS sold_count
@@ -302,18 +300,11 @@ def get_products(
                     OR p.productnumber LIKE '__tmp_rename\\_%'
                     OR p.typeid IS NULL
                     OR p.price IS NULL OR p.price = 0
-                    OR p.supplierid IS NULL
                     OR COALESCE(sold.sold_count, 0) > COALESCE(p.quantity, 0)
                     OR COALESCE(dup.dup_brands, 0) > 1
                 )""")
 
-            if filters.shipment_id is not None:
-                where_conditions.append("p.shipment_id = :shipment_id")
-                params['shipment_id'] = filters.shipment_id
-
-            if filters.is_visible is not None:
-                where_conditions.append("p.is_visible = :is_visible")
-                params['is_visible'] = filters.is_visible
+            # shipment_id and is_visible columns don't exist in real DB — removed
         
         # Build WHERE clause
         if where_conditions:
@@ -386,7 +377,7 @@ def get_products(
                 'color_name': m.get('color_name'),
                 'condition_name': m.get('condition_name'),
                 'gender_name': m.get('gender_name'),
-                'supplier_name': m.get('supplier_name'),
+                'supplier_name': None,
                 'subtype_name': m.get('subtype_name'),
                 'sold_count': m.get('sold_count', 0),
                 'available_qty': m.get('available_qty'),
@@ -459,7 +450,7 @@ def get_product_filters(db: Session) -> Dict[str, Any]:
             return db.execute(text(sql)).fetchall()
 
         types = fetch_pairs("SELECT id, typename FROM types ORDER BY typename")
-        subtypes_rows = db.execute(text("SELECT id, subtypename, type_id FROM subtypes ORDER BY subtypename")).fetchall()
+        subtypes_rows = db.execute(text("SELECT id, subtypename, typeid FROM subtypes ORDER BY subtypename")).fetchall()
         brands = fetch_pairs("SELECT id, brandname FROM brands ORDER BY brandname")
         genders = fetch_pairs("SELECT id, gendername FROM genders ORDER BY gendername")
         colors = fetch_pairs("SELECT id, colorname FROM colors ORDER BY colorname")

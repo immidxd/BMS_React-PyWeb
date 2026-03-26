@@ -113,14 +113,15 @@ class Client(Base):
     # Relationships
     gender = relationship("Gender", back_populates="clients")
     orders = relationship("Order", back_populates="client")
-    addresses = relationship("Address", back_populates="client")
 
 class DeliveryMethod(Base):
     __tablename__ = "delivery_methods"
     
     id = Column(Integer, primary_key=True, index=True)
-    name = Column(String, unique=True, index=True)
-    color_code = Column(String, default="#808080")
+    method_name = Column(String, unique=True, index=True)
+    description = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
     # Relationships
     orders = relationship("Order", back_populates="delivery_method")
@@ -129,8 +130,10 @@ class PaymentStatus(Base):
     __tablename__ = "payment_statuses"
     
     id = Column(Integer, primary_key=True, index=True)
-    name = Column(String, unique=True, index=True)
-    color_code = Column(String, default="#808080")
+    status_name = Column(String, unique=True, index=True)
+    status_description = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
     # Relationships
     orders = relationship("Order", back_populates="payment_status_rel")
@@ -163,7 +166,6 @@ class Order(Base):
     deferred_until = Column(Date)
     priority = Column(Integer, default=0)
     broadcast_id = Column(Integer, ForeignKey("broadcasts.id"))
-    source_fingerprint = Column(String(64), index=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
@@ -182,57 +184,19 @@ class Supplier(Base):
     __tablename__ = "suppliers"
 
     id = Column(Integer, primary_key=True, index=True)
-    name = Column(String(255), unique=True, nullable=False)
-    notes = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-
-    products = relationship("Product", back_populates="supplier")
-    aliases = relationship("SupplierAlias", back_populates="supplier", cascade="all, delete-orphan")
-    shipments = relationship("Shipment", back_populates="supplier")
-
-
-class SupplierAlias(Base):
-    __tablename__ = "supplier_aliases"
-
-    id = Column(Integer, primary_key=True, index=True)
-    alias_name = Column(String(255), unique=True, nullable=False, index=True)
-    supplier_id = Column(Integer, ForeignKey("suppliers.id", ondelete="CASCADE"), nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
-
-    supplier = relationship("Supplier", back_populates="aliases")
-
-
-class ShipmentGroup(Base):
-    __tablename__ = "shipment_groups"
-
-    id = Column(Integer, primary_key=True, index=True)
-    name = Column(String(255), nullable=False)
-    notes = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-
-    shipments = relationship("Shipment", back_populates="group")
-
-
-class Shipment(Base):
-    __tablename__ = "shipments"
-
-    id = Column(Integer, primary_key=True, index=True)
-    supplier_id = Column(Integer, ForeignKey("suppliers.id", ondelete="SET NULL"), nullable=True)
-    sheet_name = Column(String(255), nullable=True)
-    shipment_date = Column(Date, nullable=True)
-    items_count = Column(Integer, default=0)
-    total_cost = Column(Numeric(12, 2), default=0)
-    delivery_cost = Column(Numeric(10, 2), nullable=True)
-    notes = Column(Text, nullable=True)
-    group_id = Column(Integer, ForeignKey("shipment_groups.id", ondelete="SET NULL"), nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-
-    supplier = relationship("Supplier", back_populates="shipments")
-    group = relationship("ShipmentGroup", back_populates="shipments")
-    products = relationship("Product", back_populates="shipment")
+    company_name = Column(String(200), nullable=True)
+    contact_person = Column(String(200), nullable=True)
+    synonyms_json = Column(Text, nullable=True)
+    country_location_id = Column(Integer, ForeignKey("countries.id"), nullable=True)
+    country_dispatch_id = Column(Integer, ForeignKey("countries.id"), nullable=True)
+    city_location = Column(String(200), nullable=True)
+    address_location = Column(Text, nullable=True)
+    address_dispatch = Column(Text, nullable=True)
+    supply_volume = Column(String(100), nullable=True)
+    payment_requisites = Column(Text, nullable=True)
+    description = Column(Text, nullable=True)
+    status = Column(String(50), default='Активний')
+    priority = Column(Integer, default=0)
 
 
 class Product(Base):
@@ -273,14 +237,9 @@ class Product(Base):
     conditionid = Column(Integer, ForeignKey("conditions.id"), nullable=True)
     importid = Column(Integer, nullable=True)
     deliveryid = Column(Integer, nullable=True)
-    supplierid = Column(Integer, ForeignKey("suppliers.id"), nullable=True)
-    shipment_id = Column(Integer, ForeignKey("shipments.id", ondelete="SET NULL"), nullable=True)
-    is_visible = Column(Boolean, default=True)
     
     # Relationships
     order_items = relationship("OrderItem", back_populates="product")
-    supplier = relationship("Supplier", back_populates="products")
-    shipment = relationship("Shipment", back_populates="products")
     brand = relationship("Brand", foreign_keys=[brandid], primaryjoin="Product.brandid == Brand.id")
     type = relationship("Type", foreign_keys=[typeid], primaryjoin="Product.typeid == Type.id")
     subtype = relationship("Subtype", foreign_keys=[subtypeid], primaryjoin="Product.subtypeid == Subtype.id")
@@ -387,8 +346,10 @@ class PaymentMethod(Base):
     __tablename__ = "payment_methods"
     
     id = Column(Integer, primary_key=True, index=True)
-    name = Column(String, unique=True, index=True)
-    color_code = Column(String, default="#808080")
+    method_name = Column(String, unique=True, index=True)
+    description = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
     # Relationships
     payment_orders = relationship("Order", back_populates="payment_method")
@@ -397,26 +358,24 @@ class Address(Base):
     __tablename__ = "addresses"
     
     id = Column(Integer, primary_key=True, index=True)
-    client_id = Column(Integer, ForeignKey("clients.id"))
-    city = Column(String(100))
-    street = Column(String(100))
-    building = Column(String(20))
-    apartment = Column(String(20))
-    postal_code = Column(String(20))
-    is_default = Column(Boolean, default=False)
-    notes = Column(Text)
+    address_line1 = Column(String(255), nullable=True)
+    address_line2 = Column(String(255), nullable=True)
+    city = Column(String(100), nullable=True)
+    state = Column(String(100), nullable=True)
+    postal_code = Column(String(20), nullable=True)
+    country_id = Column(Integer, ForeignKey("countries.id"), nullable=True)
+    recipient_name = Column(String(255), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-    
-    # Relationships
-    client = relationship("Client", back_populates="addresses")
 
 class DeliveryStatus(Base):
     __tablename__ = "delivery_statuses"
     
     id = Column(Integer, primary_key=True, index=True)
-    name = Column(String, unique=True, index=True)
-    color_code = Column(String, default="#808080")
+    status_name = Column(String, unique=True, index=True)
+    status_description = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
     # Relationships
     orders = relationship("Order", back_populates="delivery_status")
@@ -425,11 +384,15 @@ class Broadcast(Base):
     __tablename__ = "broadcasts"
     
     id = Column(Integer, primary_key=True, index=True)
-    name = Column(String, unique=True, index=True)
-    description = Column(Text)
-    start_date = Column(Date)
-    end_date = Column(Date)
-    is_active = Column(Boolean, default=True)
+    broadcast_date = Column(Date, nullable=True)
+    platform_id = Column(Integer, nullable=True)
+    broadcast_topic = Column(String(255), nullable=True)
+    description = Column(Text, nullable=True)
+    notes = Column(Text, nullable=True)
+    revenue = Column(Numeric(12, 2), default=0)
+    duration = Column(Text, nullable=True)
+    has_giveaway = Column(Boolean, default=False)
+    has_gifts = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     

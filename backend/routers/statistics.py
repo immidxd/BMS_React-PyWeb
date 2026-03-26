@@ -33,7 +33,7 @@ async def get_sales_stats(
         conditions.append("EXTRACT(YEAR FROM o.order_date) = :year")
         params["year"] = year
     if supplier_id:
-        conditions.append("p.supplierid = :supplier_id")
+        conditions.append("EXISTS (SELECT 1 FROM deliveries d WHERE d.id = p.deliveryid AND d.supplier_id = :supplier_id)")
         params["supplier_id"] = supplier_id
 
     where = " AND ".join(conditions)
@@ -92,7 +92,7 @@ async def get_sales_stats(
     return {"period_type": period, "data": data}
 
 
-# ── Shipments statistics ─────────────────────────────────────────────────────
+# ── Deliveries (shipments) statistics ─────────────────────────────────────────
 @router.get("/api/statistics/shipments")
 async def get_shipments_stats(
     period: str = Query("month", regex="^(month|quarter|year)$"),
@@ -100,47 +100,51 @@ async def get_shipments_stats(
     supplier_id: Optional[int] = Query(None),
     db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
-    """Shipment stats: total cost, avg price per item, items count, sell efficiency."""
-    conditions = ["sh.shipment_date IS NOT NULL"]
+    """Delivery stats: total cost, avg price per item, items count, sell efficiency."""
+    conditions = ["d.deliverydate IS NOT NULL"]
     params: Dict[str, Any] = {}
 
     if year:
-        conditions.append("EXTRACT(YEAR FROM sh.shipment_date) = :year")
+        conditions.append("EXTRACT(YEAR FROM d.deliverydate) = :year")
         params["year"] = year
     if supplier_id:
-        conditions.append("sh.supplier_id = :supplier_id")
+        conditions.append("d.supplier_id = :supplier_id")
         params["supplier_id"] = supplier_id
 
     where = " AND ".join(conditions)
 
     if period == "month":
-        group_expr = "TO_CHAR(sh.shipment_date, 'YYYY-MM')"
+        group_expr = "TO_CHAR(d.deliverydate, 'YYYY-MM')"
     elif period == "quarter":
-        group_expr = "TO_CHAR(sh.shipment_date, 'YYYY') || '-Q' || EXTRACT(QUARTER FROM sh.shipment_date)::int"
+        group_expr = "TO_CHAR(d.deliverydate, 'YYYY') || '-Q' || EXTRACT(QUARTER FROM d.deliverydate)::int"
     else:
-        group_expr = "TO_CHAR(sh.shipment_date, 'YYYY')"
+        group_expr = "TO_CHAR(d.deliverydate, 'YYYY')"
 
     rows = db.execute(text(f"""
         SELECT {group_expr} AS period_label,
-               COUNT(DISTINCT sh.id) AS shipments_count,
-               COALESCE(SUM(sh.items_count), 0) AS total_items,
-               COALESCE(SUM(sh.total_cost), 0)::float AS total_cost,
-               CASE WHEN SUM(sh.items_count) > 0
-                    THEN ROUND((SUM(sh.total_cost) / SUM(sh.items_count))::numeric, 2)::float
+               COUNT(DISTINCT d.id) AS shipments_count,
+               COALESCE(SUM(ps.items_count), 0) AS total_items,
+               COALESCE(SUM(ps.total_cost), 0)::float AS total_cost,
+               CASE WHEN SUM(ps.items_count) > 0
+                    THEN ROUND((SUM(ps.total_cost) / SUM(ps.items_count))::numeric, 2)::float
                     ELSE 0 END AS avg_item_price
-        FROM shipments sh
+        FROM deliveries d
+        LEFT JOIN LATERAL (
+            SELECT COUNT(*) AS items_count, COALESCE(SUM(p.price), 0) AS total_cost
+            FROM products p WHERE p.deliveryid = d.id
+        ) ps ON true
         WHERE {where}
         GROUP BY {group_expr}
         ORDER BY {group_expr}
     """), params).mappings().all()
 
-    # Revenue from products of these shipments (sell efficiency)
+    # Revenue from products of these deliveries (sell efficiency)
     revenue_rows = db.execute(text(f"""
         SELECT {group_expr} AS period_label,
                COALESCE(SUM(oi.price * oi.quantity), 0)::float AS revenue,
                COUNT(DISTINCT oi.product_id) AS sold_items
-        FROM shipments sh
-        JOIN products p ON p.shipment_id = sh.id
+        FROM deliveries d
+        JOIN products p ON p.deliveryid = d.id
         JOIN order_items oi ON oi.product_id = p.id
         JOIN orders o ON o.id = oi.order_id AND o.order_status_id != 5
         WHERE {where}
@@ -183,15 +187,8 @@ async def get_suppliers_stats(
     params: Dict[str, Any] = {"lim": limit}
 
     if period == "total":
-        # Overall stats per supplier
-        conditions = []
-        if year:
-            conditions.append("EXTRACT(YEAR FROM sh.shipment_date) = :year")
-            params["year"] = year
-        where_sh = (" AND " + " AND ".join(conditions)) if conditions else ""
-
         rows = db.execute(text(f"""
-            SELECT s.id, s.name,
+            SELECT s.id, s.company_name AS name,
                    COALESCE(ps.product_count, 0) AS product_count,
                    COALESCE(ps.total_cost, 0)::float AS total_cost,
                    COALESCE(ps.avg_price, 0)::float AS avg_price,
@@ -199,13 +196,14 @@ async def get_suppliers_stats(
                    COALESCE(rev.sold_items, 0) AS sold_items
             FROM suppliers s
             LEFT JOIN LATERAL (
-                SELECT COUNT(*) AS product_count,
+                SELECT COUNT(DISTINCT p.id) AS product_count,
                        COALESCE(SUM(p.price), 0) AS total_cost,
-                       CASE WHEN COUNT(*) > 0
-                            THEN ROUND((SUM(p.price) / COUNT(*))::numeric, 2)
+                       CASE WHEN COUNT(DISTINCT p.id) > 0
+                            THEN ROUND((SUM(p.price) / COUNT(DISTINCT p.id))::numeric, 2)
                             ELSE 0 END AS avg_price
-                FROM products p
-                WHERE p.supplierid = s.id
+                FROM deliveries d
+                JOIN products p ON p.deliveryid = d.id
+                WHERE d.supplier_id = s.id
             ) ps ON true
             LEFT JOIN LATERAL (
                 SELECT COALESCE(SUM(oi.price * oi.quantity), 0) AS revenue,
@@ -213,7 +211,8 @@ async def get_suppliers_stats(
                 FROM order_items oi
                 JOIN orders o ON o.id = oi.order_id AND o.order_status_id != 5
                 JOIN products p ON p.id = oi.product_id
-                WHERE p.supplierid = s.id
+                JOIN deliveries d ON d.id = p.deliveryid
+                WHERE d.supplier_id = s.id
             ) rev ON true
             WHERE ps.product_count > 0
             ORDER BY ps.total_cost DESC
@@ -225,32 +224,35 @@ async def get_suppliers_stats(
             "data": [dict(r) for r in rows],
         }
     else:
-        # By time period
-        conditions = ["sh.shipment_date IS NOT NULL"]
+        conditions = ["d.deliverydate IS NOT NULL"]
         if year:
-            conditions.append("EXTRACT(YEAR FROM sh.shipment_date) = :year")
+            conditions.append("EXTRACT(YEAR FROM d.deliverydate) = :year")
             params["year"] = year
         where = " AND ".join(conditions)
 
         if period == "month":
-            group_expr = "TO_CHAR(sh.shipment_date, 'YYYY-MM')"
+            group_expr = "TO_CHAR(d.deliverydate, 'YYYY-MM')"
         elif period == "quarter":
-            group_expr = "TO_CHAR(sh.shipment_date, 'YYYY') || '-Q' || EXTRACT(QUARTER FROM sh.shipment_date)::int"
+            group_expr = "TO_CHAR(d.deliverydate, 'YYYY') || '-Q' || EXTRACT(QUARTER FROM d.deliverydate)::int"
         else:
-            group_expr = "TO_CHAR(sh.shipment_date, 'YYYY')"
+            group_expr = "TO_CHAR(d.deliverydate, 'YYYY')"
 
         rows = db.execute(text(f"""
-            SELECT s.name AS supplier_name,
+            SELECT s.company_name AS supplier_name,
                    {group_expr} AS period_label,
-                   SUM(sh.total_cost)::float AS total_cost,
-                   SUM(sh.items_count) AS items_count,
-                   CASE WHEN SUM(sh.items_count) > 0
-                        THEN ROUND((SUM(sh.total_cost) / SUM(sh.items_count))::numeric, 2)::float
+                   COALESCE(SUM(ps.total_cost), 0)::float AS total_cost,
+                   COALESCE(SUM(ps.items_count), 0) AS items_count,
+                   CASE WHEN SUM(ps.items_count) > 0
+                        THEN ROUND((SUM(ps.total_cost) / SUM(ps.items_count))::numeric, 2)::float
                         ELSE 0 END AS avg_price
-            FROM shipments sh
-            JOIN suppliers s ON s.id = sh.supplier_id
+            FROM deliveries d
+            JOIN suppliers s ON s.id = d.supplier_id
+            LEFT JOIN LATERAL (
+                SELECT COUNT(*) AS items_count, COALESCE(SUM(p.price), 0) AS total_cost
+                FROM products p WHERE p.deliveryid = d.id
+            ) ps ON true
             WHERE {where}
-            GROUP BY s.name, {group_expr}
+            GROUP BY s.company_name, {group_expr}
             ORDER BY {group_expr}, total_cost DESC
         """), params).mappings().all()
 
@@ -282,8 +284,8 @@ async def get_summary_stats(
              JOIN products p ON p.id = oi.product_id) AS total_purchase_cost,
             (SELECT COALESCE(SUM(price), 0)::float FROM products) AS total_inventory_cost,
             (SELECT COUNT(*) FROM suppliers) AS total_suppliers,
-            (SELECT COUNT(*) FROM shipments) AS total_shipments,
-            (SELECT COALESCE(SUM(total_cost), 0)::float FROM shipments) AS total_shipment_cost
+            (SELECT COUNT(*) FROM deliveries) AS total_shipments,
+            (SELECT COALESCE(SUM(p.price), 0)::float FROM products p WHERE p.deliveryid IS NOT NULL) AS total_shipment_cost
     """)).mappings().first()
 
     return dict(row) if row else {}
@@ -296,7 +298,7 @@ async def get_available_years(db: Session = Depends(get_db)) -> Dict[str, Any]:
         "SELECT DISTINCT EXTRACT(YEAR FROM order_date)::int AS yr FROM orders WHERE order_date IS NOT NULL ORDER BY yr"
     )).scalars().all()
     shipment_years = db.execute(text(
-        "SELECT DISTINCT EXTRACT(YEAR FROM shipment_date)::int AS yr FROM shipments WHERE shipment_date IS NOT NULL ORDER BY yr"
+        "SELECT DISTINCT EXTRACT(YEAR FROM deliverydate)::int AS yr FROM deliveries WHERE deliverydate IS NOT NULL ORDER BY yr"
     )).scalars().all()
     all_years = sorted(set(order_years) | set(shipment_years))
     return {"years": all_years}
