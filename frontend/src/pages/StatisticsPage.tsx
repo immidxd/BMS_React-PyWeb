@@ -11,6 +11,7 @@ import {
   type DeliveryDetailStats,
   type SupplierDetailStats,
   type ClientsStatsResponse,
+  type ProductsStatsResponse,
 } from '../services/statisticsService';
 import {
   BarChart, Bar, LineChart, Line, AreaChart, Area,
@@ -173,6 +174,10 @@ const StatisticsPage: React.FC<StatisticsPageProps> = () => {
   const [clientStats, setClientStats] = useState<ClientsStatsResponse | null>(null);
   const [clientStatsLoading, setClientStatsLoading] = useState(false);
 
+  // Products statistics state
+  const [productStats, setProductStats] = useState<ProductsStatsResponse | null>(null);
+  const [productStatsLoading, setProductStatsLoading] = useState(false);
+
   // Load years + summary
   useEffect(() => {
     statisticsService.getYears().then(r => setYears(r.years)).catch(console.error);
@@ -254,6 +259,17 @@ const StatisticsPage: React.FC<StatisticsPageProps> = () => {
   }, []);
   useEffect(() => { loadClientStats(); }, [loadClientStats]);
 
+  // Load product statistics
+  const loadProductStats = useCallback(async () => {
+    setProductStatsLoading(true);
+    try {
+      const res = await statisticsService.getProductsStats(15);
+      setProductStats(res);
+    } catch (e) { console.error(e); }
+    finally { setProductStatsLoading(false); }
+  }, []);
+  useEffect(() => { loadProductStats(); }, [loadProductStats]);
+
   const shipMetrics = [
     { key: 'total_cost', label: 'Вартість завозу' },
     { key: 'avg_price', label: 'Сер. ціна пари' },
@@ -276,8 +292,8 @@ const StatisticsPage: React.FC<StatisticsPageProps> = () => {
           </p>
         </div>
       }
-      onRefresh={() => { loadSales(); loadShipments(); loadSuppliers(); loadDeliveries(); loadClientStats(); statisticsService.getSummary().then(setSummary); }}
-      isRefreshing={salesLoading || shipLoading || supLoading || delLoading || clientStatsLoading}
+      onRefresh={() => { loadSales(); loadShipments(); loadSuppliers(); loadDeliveries(); loadClientStats(); loadProductStats(); statisticsService.getSummary().then(setSummary); }}
+      isRefreshing={salesLoading || shipLoading || supLoading || delLoading || clientStatsLoading || productStatsLoading}
       onResetFilters={() => {
         setSalesPeriod('month'); setSalesYear(undefined);
         setShipPeriod('month'); setShipYear(undefined);
@@ -762,6 +778,134 @@ const StatisticsPage: React.FC<StatisticsPageProps> = () => {
                   </div>
                 </div>
               )}
+            </div>
+          ) : (
+            <div className="h-40 flex items-center justify-center text-gray-400 text-sm">Немає даних</div>
+          )}
+        </Section>
+
+        {/* ── 7. Product Statistics ─────────────────────────────── */}
+        <Section title="Статистика по товарах">
+          {productStatsLoading ? (
+            <div className="h-40 flex items-center justify-center text-gray-400">Завантаження...</div>
+          ) : productStats ? (
+            <div className="space-y-5">
+              {/* Inventory summary KPIs */}
+              {productStats.inventory_summary && (
+                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+                  {[
+                    { label: 'Всього товарів', value: productStats.inventory_summary.total_products, color: 'text-blue-700' },
+                    { label: 'Одиниць', value: productStats.inventory_summary.total_units, color: 'text-indigo-700' },
+                    { label: 'Доступно', value: productStats.inventory_summary.fully_available, color: 'text-green-700' },
+                    { label: 'Частково продано', value: productStats.inventory_summary.partially_sold, color: 'text-orange-700' },
+                    { label: 'Продано повністю', value: productStats.inventory_summary.fully_sold, color: 'text-red-700' },
+                    { label: 'Ростовок', value: productStats.inventory_summary.rostovkas, color: 'text-purple-700' },
+                  ].map(kpi => (
+                    <div key={kpi.label} className="bg-gray-50 dark:bg-gray-800 rounded-lg p-3 text-center">
+                      <div className={`text-xl font-bold ${kpi.color}`}>{fmtNum(kpi.value)}</div>
+                      <div className="text-[11px] text-gray-500 mt-0.5">{kpi.label}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+                {/* Top brands */}
+                <div>
+                  <h4 className="text-sm font-semibold text-gray-600 dark:text-gray-300 mb-2">Топ брендів (по виторгу)</h4>
+                  <div className="space-y-1.5">
+                    {productStats.top_brands.slice(0, 10).map((b, i) => {
+                      const maxRev = productStats.top_brands[0]?.revenue || 1;
+                      const pct = Math.round((b.revenue / maxRev) * 100);
+                      return (
+                        <div key={b.brand} className="flex items-center gap-2">
+                          <span className="text-[10px] text-gray-400 w-4 text-right">{i + 1}</span>
+                          <span className="text-xs font-medium text-gray-700 dark:text-gray-200 w-28 truncate">{b.brand}</span>
+                          <div className="flex-1 bg-gray-100 dark:bg-gray-700 rounded-full h-4 relative">
+                            <div className="h-4 bg-blue-400 rounded-full" style={{ width: `${pct}%` }} />
+                            <span className="absolute inset-0 flex items-center justify-end pr-1.5 text-[9px] font-semibold text-gray-600 dark:text-gray-200">{fmtShort(b.revenue)}₴</span>
+                          </div>
+                          <span className="text-[10px] text-gray-400 w-8 text-right">{b.sold_count}шт</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Type distribution */}
+                <div>
+                  <h4 className="text-sm font-semibold text-gray-600 dark:text-gray-300 mb-2">Розподіл по типах товарів</h4>
+                  <ResponsiveContainer width="100%" height={220}>
+                    <BarChart data={productStats.type_distribution} layout="vertical" margin={{ left: 8, right: 40 }}>
+                      <CartesianGrid strokeDasharray="3 3" horizontal={false} />
+                      <XAxis type="number" tick={{ fontSize: 10 }} tickFormatter={fmtShort} />
+                      <YAxis type="category" dataKey="type" tick={{ fontSize: 10 }} width={80} />
+                      <Tooltip formatter={(v: any) => [`${fmtNum(Number(v))} шт`, 'Продано']} />
+                      <Bar dataKey="sold_count" fill="#6366f1" radius={[0, 3, 3, 0]} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+
+              {/* Channel distribution */}
+              {productStats.channel_distribution.length > 0 && (
+                <div>
+                  <h4 className="text-sm font-semibold text-gray-600 dark:text-gray-300 mb-2">Канали продажу</h4>
+                  <div className="flex flex-wrap gap-2">
+                    {productStats.channel_distribution.map(ch => {
+                      const colorMap: Record<string, string> = {
+                        'Ефір': 'bg-sky-100 text-sky-700 border-sky-200',
+                        'Telegram': 'bg-blue-100 text-blue-700 border-blue-200',
+                        'OLX': 'bg-orange-100 text-orange-700 border-orange-200',
+                        'Viber': 'bg-violet-100 text-violet-700 border-violet-200',
+                        'Instagram': 'bg-pink-100 text-pink-700 border-pink-200',
+                        'GRAILED': 'bg-gray-100 text-gray-700 border-gray-200',
+                        'Магазин': 'bg-green-100 text-green-700 border-green-200',
+                      };
+                      return (
+                        <div key={ch.channel} className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border text-xs font-medium ${colorMap[ch.channel] || 'bg-gray-100 text-gray-700 border-gray-200'}`}>
+                          <span>{ch.channel}</span>
+                          <span className="font-bold">{fmtNum(ch.orders_count)}</span>
+                          <span className="opacity-70">замовл.</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* Top products */}
+              <div>
+                <h4 className="text-sm font-semibold text-gray-600 dark:text-gray-300 mb-2">Топ товарів по продажах</h4>
+                <div className="overflow-x-auto">
+                  <table className="min-w-full text-xs">
+                    <thead>
+                      <tr className="bg-gray-50 dark:bg-gray-800 text-gray-500 dark:text-gray-400">
+                        <th className="px-2 py-1.5 text-left font-medium">#</th>
+                        <th className="px-2 py-1.5 text-left font-medium">Номер</th>
+                        <th className="px-2 py-1.5 text-left font-medium">Модель</th>
+                        <th className="px-2 py-1.5 text-left font-medium">Бренд</th>
+                        <th className="px-2 py-1.5 text-left font-medium">Тип</th>
+                        <th className="px-2 py-1.5 text-right font-medium">Продано</th>
+                        <th className="px-2 py-1.5 text-right font-medium">Виторг</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {productStats.top_products.map((p, i) => (
+                        <tr key={p.productnumber} className={i % 2 === 0 ? 'bg-white dark:bg-gray-900' : 'bg-gray-50 dark:bg-gray-800'}>
+                          <td className="px-2 py-1 text-gray-400">{i + 1}</td>
+                          <td className="px-2 py-1 font-mono text-blue-600">{p.productnumber}</td>
+                          <td className="px-2 py-1 text-gray-700 dark:text-gray-300 max-w-[120px] truncate">{p.model || '—'}</td>
+                          <td className="px-2 py-1 text-gray-600 dark:text-gray-400">{p.brand || '—'}</td>
+                          <td className="px-2 py-1 text-gray-500">{p.type || '—'}</td>
+                          <td className="px-2 py-1 text-right font-semibold text-indigo-700">{p.sold_count}</td>
+                          <td className="px-2 py-1 text-right font-semibold text-green-700">{fmtShort(p.revenue)}₴</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
             </div>
           ) : (
             <div className="h-40 flex items-center justify-center text-gray-400 text-sm">Немає даних</div>

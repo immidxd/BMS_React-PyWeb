@@ -40,6 +40,7 @@ async def get_orders(
     is_deferred: Optional[bool] = Query(None),
     amount_min: Optional[float] = Query(None),
     amount_max: Optional[float] = Query(None),
+    sales_channels: Optional[List[str]] = Query(None),
     db: Session = Depends(get_db)
 ):
     """
@@ -66,6 +67,7 @@ async def get_orders(
         is_deferred=is_deferred,
         amount_min=amount_min,
         amount_max=amount_max,
+        sales_channels=sales_channels,
     )
     
     # Use the DAO to get filtered orders

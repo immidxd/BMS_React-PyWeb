@@ -136,6 +136,21 @@ export interface ClientsStatsResponse {
   rating_distribution: { category: string; count: number }[];
 }
 
+export interface ProductsStatsResponse {
+  top_products: { productnumber: string; model: string | null; brand: string | null; type: string | null; sold_count: number; revenue: number }[];
+  top_brands: { brand: string; orders_count: number; sold_count: number; revenue: number }[];
+  type_distribution: { type: string; sold_count: number; revenue: number }[];
+  channel_distribution: { channel: string; orders_count: number; revenue: number }[];
+  inventory_summary: {
+    total_products: number;
+    total_units: number;
+    fully_sold: number;
+    fully_available: number;
+    partially_sold: number;
+    rostovkas: number;
+  };
+}
+
 export const statisticsService = {
   async getSalesStats(period: string = 'month', year?: number, supplierId?: number): Promise<SalesStatsResponse> {
     const params = new URLSearchParams({ period });
@@ -191,6 +206,11 @@ export const statisticsService = {
 
   async getClientsStats(limit = 15): Promise<ClientsStatsResponse> {
     const res = await axios.get(`/api/statistics/clients?limit=${limit}`);
+    return res.data;
+  },
+
+  async getProductsStats(limit = 15): Promise<ProductsStatsResponse> {
+    const res = await axios.get(`/api/statistics/products?limit=${limit}`);
     return res.data;
   },
 };

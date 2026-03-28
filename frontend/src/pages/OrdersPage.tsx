@@ -37,6 +37,8 @@ interface Order {
   notes: string | null;
   priority: number;
   order_items: OrderItem[];
+  sales_channel: string | null;
+  deferred_until: string | null;
 }
 
 interface FilterOption { id: number; name?: string; status_name?: string; }
@@ -49,6 +51,19 @@ interface FilterOptions {
   clients: { id: number; name: string }[];
 }
 
+const SALES_CHANNELS = ['Ефір', 'Telegram', 'OLX', 'Viber', 'Instagram', 'GRAILED', 'Магазин'] as const;
+type SalesChannel = typeof SALES_CHANNELS[number];
+
+const CHANNEL_COLORS: Record<SalesChannel, string> = {
+  'Ефір': 'bg-sky-100 text-sky-700 border-sky-200',
+  'Telegram': 'bg-blue-100 text-blue-700 border-blue-200',
+  'OLX': 'bg-orange-100 text-orange-700 border-orange-200',
+  'Viber': 'bg-violet-100 text-violet-700 border-violet-200',
+  'Instagram': 'bg-pink-100 text-pink-700 border-pink-200',
+  'GRAILED': 'bg-gray-100 text-gray-700 border-gray-200',
+  'Магазин': 'bg-green-100 text-green-700 border-green-200',
+};
+
 interface ActiveFilters {
   order_status_ids?: number[];
   payment_status_ids?: number[];
@@ -58,6 +73,7 @@ interface ActiveFilters {
   amount_max?: number;
   date_from?: string;
   date_to?: string;
+  sales_channels?: string[];
 }
 
 interface OrdersPageProps {
@@ -180,7 +196,7 @@ const OrdersFilterPanel: React.FC<{
   };
   const totalActive = countActive('order_status_ids') + countActive('payment_status_ids') + countActive('delivery_method_ids')
     + (filters.has_tracking !== undefined ? 1 : 0) + (filters.amount_min !== undefined || filters.amount_max !== undefined ? 1 : 0)
-    + (filters.date_from || filters.date_to ? 1 : 0);
+    + (filters.date_from || filters.date_to ? 1 : 0) + countActive('sales_channels');
 
   const applyAmount = () => {
     onChange({
@@ -238,6 +254,34 @@ const OrdersFilterPanel: React.FC<{
       {/* Спосіб доставки */}
       <FilterSection title="Доставка" badge={countActive('delivery_method_ids')}>
         <CheckList items={filterOpts.delivery_methods} selected={filters.delivery_method_ids || []} onToggle={toggleArr('delivery_method_ids')} />
+      </FilterSection>
+
+      {/* Канал продажу */}
+      <FilterSection title="Канал продажу" badge={countActive('sales_channels')}>
+        <div className="flex flex-wrap gap-1.5">
+          {SALES_CHANNELS.map(ch => {
+            const active = filters.sales_channels?.includes(ch) ?? false;
+            const colorClass = CHANNEL_COLORS[ch as SalesChannel];
+            return (
+              <button key={ch} type="button"
+                onClick={() => {
+                  const current = filters.sales_channels || [];
+                  const updated = active ? current.filter(x => x !== ch) : [...current, ch];
+                  onChange({ ...filters, sales_channels: updated.length > 0 ? updated : undefined });
+                }}
+                className={`px-2 py-0.5 rounded-full text-xs font-medium border transition-all ${
+                  active ? colorClass + ' ring-2 ring-offset-1 ring-current' : 'border-gray-200 text-gray-500 hover:border-gray-400 bg-white dark:bg-gray-700 dark:border-gray-600 dark:text-gray-300'
+                }`}
+              >
+                {ch}
+              </button>
+            );
+          })}
+        </div>
+        {filters.sales_channels && filters.sales_channels.length > 0 && (
+          <button type="button" onClick={() => onChange({ ...filters, sales_channels: undefined })}
+            className="mt-1.5 w-full py-0.5 text-xs text-gray-400 hover:text-red-500 transition-colors">✕ Скинути</button>
+        )}
       </FilterSection>
 
       {/* Діапазон суми */}
@@ -344,6 +388,7 @@ const OrdersPage: React.FC<OrdersPageProps> = ({ currentSearchTerm }) => {
     if (filters.amount_max !== undefined) p.set('amount_max', String(filters.amount_max));
     if (filters.date_from) p.set('date_from', filters.date_from);
     if (filters.date_to) p.set('date_to', filters.date_to);
+    if (filters.sales_channels?.length) filters.sales_channels.forEach(ch => p.append('sales_channels', ch));
     return p;
   }, [page, perPage, sortBy, sortDir, currentSearchTerm, filters]);
 
@@ -471,13 +516,14 @@ const OrdersPage: React.FC<OrdersPageProps> = ({ currentSearchTerm }) => {
                   <th className="px-3 py-3 text-left font-semibold text-gray-600 dark:text-gray-300">Оплата</th>
                   <th className="px-3 py-3 text-left font-semibold text-gray-600 dark:text-gray-300">Доставка</th>
                   <th className="px-3 py-3 text-left font-semibold text-gray-600 dark:text-gray-300">Трекінг</th>
+                  <th className="px-3 py-3 text-left font-semibold text-gray-600 dark:text-gray-300">Канал</th>
                   <th className="px-3 py-3 text-left font-semibold text-gray-600 dark:text-gray-300">Нотатки</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
                 {orders.length === 0 ? (
                   <tr>
-                    <td colSpan={10} className="text-center py-12 text-gray-400">Замовлень не знайдено</td>
+                    <td colSpan={11} className="text-center py-12 text-gray-400">Замовлень не знайдено</td>
                   </tr>
                 ) : orders.map(order => {
                   const conflicts = getOrderConflicts(order);
@@ -527,13 +573,29 @@ const OrdersPage: React.FC<OrdersPageProps> = ({ currentSearchTerm }) => {
                       <td className="px-3 py-2 font-mono text-xs text-gray-500 dark:text-gray-400">
                         {order.tracking_number || '—'}
                       </td>
+                      <td className="px-3 py-2">
+                        {(() => {
+                          const ch = (order.sales_channel || 'Ефір') as SalesChannel;
+                          const cls = CHANNEL_COLORS[ch] || 'bg-gray-100 text-gray-600 border-gray-200';
+                          return (
+                            <div className="flex flex-col gap-0.5">
+                              <span className={`inline-flex px-1.5 py-0 rounded text-[10px] font-semibold border ${cls}`}>{ch}</span>
+                              {order.deferred_until && (
+                                <span className="inline-flex items-center gap-0.5 px-1 py-0 rounded text-[9px] font-medium bg-orange-100 text-orange-700 border border-orange-200">
+                                  ⏰ до {fmtDate(order.deferred_until)}
+                                </span>
+                              )}
+                            </div>
+                          );
+                        })()}
+                      </td>
                       <td className="px-3 py-2 text-gray-500 dark:text-gray-400 text-xs max-w-[160px] truncate">
                         {order.notes || '—'}
                       </td>
                     </tr>
                     {expandedId === order.id && order.order_items?.length > 0 && (
                       <tr className="bg-blue-50 dark:bg-blue-900/20">
-                        <td colSpan={10} className="px-6 py-3">
+                        <td colSpan={11} className="px-6 py-3">
                           <div className="text-xs font-semibold text-gray-500 dark:text-gray-400 mb-2">Позиції замовлення:</div>
                           <table className="w-full text-xs">
                             <thead>

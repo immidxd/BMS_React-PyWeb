@@ -200,7 +200,10 @@ class OrderDAO:
             query = query.filter(Order.total_amount >= filters.amount_min)
         if hasattr(filters, 'amount_max') and filters.amount_max is not None:
             query = query.filter(Order.total_amount <= filters.amount_max)
-            
+
+        if hasattr(filters, 'sales_channels') and filters.sales_channels:
+            query = query.filter(Order.sales_channel.in_(filters.sales_channels))
+
         # Get total count for pagination
         total = query.count()
 

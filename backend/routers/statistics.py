@@ -679,3 +679,106 @@ async def get_clients_stats(
         "avg_check_trend": [dict(r) for r in avg_check_trend],
         "rating_distribution": [dict(r) for r in rating_dist],
     }
+
+
+# ── Products statistics ───────────────────────────────────────────────────────
+@router.get("/api/statistics/products")
+async def get_products_stats(
+    limit: int = Query(15, ge=1, le=50),
+    db: Session = Depends(get_db),
+) -> Dict[str, Any]:
+    """Product analytics: top selling products, top brands, type distribution, channel distribution."""
+    logger.info("Fetching product statistics")
+
+    # Top selling products (by sold count)
+    top_products = db.execute(text("""
+        SELECT p.productnumber, p.model,
+               b.brandname AS brand,
+               t.typename AS type,
+               COUNT(oi.id) AS sold_count,
+               COALESCE(SUM(oi.price * oi.quantity), 0)::float AS revenue
+        FROM order_items oi
+        JOIN products p ON p.id = oi.product_id
+        LEFT JOIN brands b ON b.id = p.brandid
+        LEFT JOIN types t ON t.id = p.typeid
+        JOIN orders o ON o.id = oi.order_id
+        WHERE o.order_status_id NOT IN (5, 6)
+          AND oi.product_id IS NOT NULL
+        GROUP BY p.productnumber, p.model, b.brandname, t.typename
+        ORDER BY sold_count DESC
+        LIMIT :limit
+    """), {"limit": limit}).fetchall()
+
+    # Top brands by revenue
+    top_brands = db.execute(text("""
+        SELECT b.brandname AS brand,
+               COUNT(DISTINCT o.id) AS orders_count,
+               COUNT(oi.id) AS sold_count,
+               COALESCE(SUM(oi.price * oi.quantity), 0)::float AS revenue
+        FROM order_items oi
+        JOIN products p ON p.id = oi.product_id
+        JOIN brands b ON b.id = p.brandid
+        JOIN orders o ON o.id = oi.order_id
+        WHERE o.order_status_id NOT IN (5, 6)
+          AND oi.product_id IS NOT NULL
+          AND b.brandname IS NOT NULL
+        GROUP BY b.brandname
+        ORDER BY revenue DESC
+        LIMIT :limit
+    """), {"limit": limit}).fetchall()
+
+    # Type distribution
+    type_dist = db.execute(text("""
+        SELECT t.typename AS type,
+               COUNT(oi.id) AS sold_count,
+               COALESCE(SUM(oi.price * oi.quantity), 0)::float AS revenue
+        FROM order_items oi
+        JOIN products p ON p.id = oi.product_id
+        JOIN types t ON t.id = p.typeid
+        JOIN orders o ON o.id = oi.order_id
+        WHERE o.order_status_id NOT IN (5, 6)
+          AND oi.product_id IS NOT NULL
+          AND t.typename IS NOT NULL
+        GROUP BY t.typename
+        ORDER BY sold_count DESC
+        LIMIT 10
+    """)).fetchall()
+
+    # Sales channel distribution (orders count and revenue)
+    channel_dist = db.execute(text("""
+        SELECT COALESCE(o.sales_channel, 'Ефір') AS channel,
+               COUNT(DISTINCT o.id) AS orders_count,
+               COALESCE(SUM(oi.price * oi.quantity), 0)::float AS revenue
+        FROM orders o
+        LEFT JOIN order_items oi ON oi.order_id = o.id
+        WHERE o.order_status_id NOT IN (5, 6)
+        GROUP BY COALESCE(o.sales_channel, 'Ефір')
+        ORDER BY orders_count DESC
+    """)).fetchall()
+
+    # Inventory summary: available vs sold by status
+    inventory_summary = db.execute(text("""
+        SELECT
+            COUNT(*) FILTER (WHERE p.quantity > 0) AS total_products,
+            COALESCE(SUM(p.quantity), 0) AS total_units,
+            COUNT(*) FILTER (WHERE COALESCE(sold.sold_count, 0) >= p.quantity AND p.quantity > 0) AS fully_sold,
+            COUNT(*) FILTER (WHERE COALESCE(sold.sold_count, 0) = 0 AND p.quantity > 0) AS fully_available,
+            COUNT(*) FILTER (WHERE COALESCE(sold.sold_count, 0) > 0 AND COALESCE(sold.sold_count, 0) < p.quantity) AS partially_sold,
+            COUNT(*) FILTER (WHERE p.quantity > 1) AS rostovkas
+        FROM products p
+        LEFT JOIN (
+            SELECT oi.product_id, COUNT(*) AS sold_count
+            FROM order_items oi
+            JOIN orders o ON o.id = oi.order_id
+            WHERE o.order_status_id NOT IN (5)
+            GROUP BY oi.product_id
+        ) sold ON sold.product_id = p.id
+    """)).fetchone()
+
+    return {
+        "top_products": [dict(r._mapping) for r in top_products],
+        "top_brands": [dict(r._mapping) for r in top_brands],
+        "type_distribution": [dict(r._mapping) for r in type_dist],
+        "channel_distribution": [dict(r._mapping) for r in channel_dist],
+        "inventory_summary": dict(inventory_summary._mapping) if inventory_summary else {},
+    }

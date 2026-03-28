@@ -123,9 +123,9 @@ def get_products(
         from sqlalchemy import text
         
         base_sql = """
-        SELECT p.*, 
+        SELECT p.*,
                t.typename as type_name,
-               b.brandname as brand_name, 
+               b.brandname as brand_name,
                s.statusname as status_name,
                c.colorname as color_name,
                cond.conditionname as condition_name,
@@ -133,7 +133,17 @@ def get_products(
                st.subtypename as subtype_name,
                COALESCE(sold.sold_count, 0) AS sold_count,
                GREATEST(COALESCE(p.quantity, 0) - COALESCE(sold.sold_count, 0), 0) AS available_qty,
-               COALESCE(dup.dup_brands, 0) AS pnum_dup_brands
+               COALESCE(dup.dup_brands, 0) AS pnum_dup_brands,
+               -- Ростовка: quantity>1 АБО extranote містить "ростовка" АБО (n)-суфікс
+               (
+                   p.quantity > 1
+                   OR LOWER(COALESCE(p.extranote, '')) LIKE '%ростовка%'
+                   OR p.productnumber ~ '^.+\\([0-9]+\\)$'
+                   OR EXISTS (
+                       SELECT 1 FROM products p2
+                       WHERE p2.productnumber = p.productnumber || '(1)'
+                   )
+               ) AS is_rostovka
         FROM products p
         LEFT JOIN types t ON p.typeid = t.id
         LEFT JOIN brands b ON p.brandid = b.id  
@@ -303,7 +313,20 @@ def get_products(
                 )""")
 
             if filters.only_rostovka:
-                where_conditions.append("p.quantity > 1")
+                # Ростовка = набір розмірів:
+                # 1) quantity > 1 (кілька одиниць/розмірів в одному записі)
+                # 2) extranote містить "ростовка" (явна мітка)
+                # 3) productnumber з (n) суфіксом (варіанти, розбиті по рядках)
+                # 4) базовий продукт з (n) дочірнім записом
+                where_conditions.append("""(
+                    p.quantity > 1
+                    OR LOWER(COALESCE(p.extranote, '')) LIKE '%ростовка%'
+                    OR p.productnumber ~ '^.+\\([0-9]+\\)$'
+                    OR EXISTS (
+                        SELECT 1 FROM products p_sib
+                        WHERE p_sib.productnumber = p.productnumber || '(1)'
+                    )
+                )""")
 
             # shipment_id and is_visible columns don't exist in real DB — removed
         
@@ -383,6 +406,7 @@ def get_products(
                 'sold_count': m.get('sold_count', 0),
                 'available_qty': m.get('available_qty'),
                 'pnum_dup_brands': m.get('pnum_dup_brands', 0),
+                'is_rostovka': bool(m.get('is_rostovka', False)),
             }
             items.append(product_dict)
         

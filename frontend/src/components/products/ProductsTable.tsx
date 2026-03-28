@@ -187,9 +187,18 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
             title: 'ID', dataIndex: 'id', key: 'id', width: 45, sorter: true,
         },
         productnumber: {
-            title: 'Номер', dataIndex: 'productnumber', key: 'productnumber', width: 55,
+            title: 'Номер', dataIndex: 'productnumber', key: 'productnumber', width: 80,
             render: (text: string, record: Product) => (
-                <button className="text-primary-600 hover:underline text-xs" onClick={() => { setDetailsId(record.id); setDetailsOpen(true); }}>{text}</button>
+                <div className="flex flex-col gap-0.5">
+                    <button className="text-primary-600 hover:underline text-xs text-left" onClick={() => { setDetailsId(record.id); setDetailsOpen(true); }}>{text}</button>
+                    {record.is_rostovka && (
+                        <Tooltip title={`Ростовка — набір розмірів (${record.quantity} од.)`}>
+                            <span className="inline-flex items-center gap-0.5 px-1 py-0 rounded text-[9px] font-semibold bg-purple-100 text-purple-700 border border-purple-200 w-fit cursor-help">
+                                ▤ Рост.
+                            </span>
+                        </Tooltip>
+                    )}
+                </div>
             ),
         },
         model: { title: 'Модель', dataIndex: 'model', key: 'model', width: 140 },
@@ -198,8 +207,19 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
         subtype_name: { title: 'Підтип', dataIndex: 'subtype_name', key: 'subtype_name', width: 120 },
         gender_name: { title: 'Стать', dataIndex: 'gender_name', key: 'gender_name', width: 75 },
         color_name: { title: 'Колір', dataIndex: 'color_name', key: 'color_name', width: 65 },
-        sizeeu: { title: 'Розмір', dataIndex: 'sizeeu', key: 'sizeeu', width: 50,
-            render: (text: string) => <span className="text-xs">{text}</span> },
+        sizeeu: { title: 'Розмір (EU)', dataIndex: 'sizeeu', key: 'sizeeu', width: 70,
+            render: (text: string, record: Product) => {
+                const isRost = record.is_rostovka;
+                if (!text) return <span className="text-gray-300 text-xs">—</span>;
+                return (
+                    <span className={`text-xs ${isRost ? 'text-purple-700 font-medium' : ''}`}>
+                        {text}
+                        {isRost && record.quantity > 1 && (
+                            <span className="text-purple-400 ml-0.5">×{record.quantity}</span>
+                        )}
+                    </span>
+                );
+            }},
         measurementscm: { title: 'СМ', dataIndex: 'measurementscm', key: 'measurementscm', width: 60,
             render: (text: string) => <span className="text-xs">{text}</span> },
         price: { title: 'Ціна', dataIndex: 'price', key: 'price', width: 50, sorter: true,

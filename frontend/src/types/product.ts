@@ -66,6 +66,9 @@ export interface Product {
     sold_count?: number;
     available_qty?: number;
     pnum_dup_brands?: number;
+
+    // Rostovka detection: quantity>1, OR (n) suffix variant, OR has (n) child
+    is_rostovka?: boolean;
 }
 
 export interface ProductListResponse {

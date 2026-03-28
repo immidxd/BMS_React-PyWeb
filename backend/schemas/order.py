@@ -159,6 +159,7 @@ class OrderFilters(BaseModel):
     is_deferred: Optional[bool] = None
     amount_min: Optional[float] = None
     amount_max: Optional[float] = None
+    sales_channels: Optional[List[str]] = None
 
 # Order with Products
 class OrderWithProducts(Order):
