@@ -1,4 +1,5 @@
 import React, { useState, useMemo } from 'react';
+import { Select } from 'antd';
 import type { ProductFilters, ProductFilter } from '../../types/product';
 
 interface ProductFiltersPanelProps {
@@ -231,28 +232,41 @@ const ProductFiltersPanel: React.FC<ProductFiltersPanelProps> = ({ filters, sele
       {/* Розмір EU */}
       {euSizes.length > 0 && (
         <FilterSection title="Розмір (EU)" badge={selectedFilters.sizeeu?.length || 0}>
-          <div className="flex flex-wrap gap-1">
-            {euSizes.map(size => {
-              const selected = (selectedFilters.sizeeu || []).includes(size);
-              return (
-                <button
-                  key={size}
-                  type="button"
-                  onClick={() => {
-                    const current = selectedFilters.sizeeu || [];
-                    const updated = selected ? current.filter(s => s !== size) : [...current, size];
-                    onFilterChange({ ...selectedFilters, sizeeu: updated.length > 0 ? updated : undefined });
-                  }}
-                  className={`px-2 py-0.5 rounded text-xs border transition-colors ${
-                    selected
-                      ? 'bg-blue-500 border-blue-500 text-white font-semibold'
-                      : 'border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:border-blue-400 hover:text-blue-600'
-                  }`}
-                >
-                  {size}
-                </button>
-              );
-            })}
+          <div className="space-y-1.5">
+            <Select
+              mode="multiple"
+              allowClear
+              showSearch
+              placeholder="Оберіть розміри..."
+              value={selectedFilters.sizeeu || []}
+              onChange={(values: string[]) => {
+                onFilterChange({ ...selectedFilters, sizeeu: values.length > 0 ? values : undefined });
+              }}
+              options={euSizes.map(size => ({ label: size, value: size }))}
+              style={{ width: '100%' }}
+              maxTagCount={4}
+              maxTagPlaceholder={(omitted) => `+${omitted.length}...`}
+              size="small"
+              filterOption={(input, option) =>
+                (option?.label as string)?.toLowerCase().includes(input.toLowerCase()) ?? false
+              }
+            />
+            <div className="flex gap-1.5">
+              <button
+                type="button"
+                onClick={() => onFilterChange({ ...selectedFilters, sizeeu: [...euSizes] })}
+                className="flex-1 py-0.5 text-[10px] text-blue-500 hover:text-blue-700 hover:underline transition-colors"
+              >
+                Вибрати все
+              </button>
+              <button
+                type="button"
+                onClick={() => onFilterChange({ ...selectedFilters, sizeeu: undefined })}
+                className="flex-1 py-0.5 text-[10px] text-gray-400 hover:text-red-500 hover:underline transition-colors"
+              >
+                Очистити
+              </button>
+            </div>
           </div>
         </FilterSection>
       )}

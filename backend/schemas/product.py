@@ -252,6 +252,7 @@ class ProductFilter(BaseModel):
     with_stock_only: Optional[bool] = None
     only_unsold: Optional[bool] = None
     only_problematic: Optional[bool] = None
+    only_rostovka: Optional[bool] = None
     shipment_id: Optional[int] = None
 
 # Модель для опцій фільтрів

@@ -30,6 +30,7 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
   const location = useLocation();
   const [onlyUnsold, setOnlyUnsold] = useState<boolean>(false);
   const [onlyProblematic, setOnlyProblematic] = useState<boolean>(false);
+  const [onlyRostovka, setOnlyRostovka] = useState<boolean>(false);
   const [selectedShipmentId, setSelectedShipmentId] = useState<number | undefined>(undefined);
   const [visibleOnly, setVisibleOnly] = useState<boolean>(false);
   const [sortBy, setSortBy] = useState<string>('id');
@@ -89,6 +90,7 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
         search: currentSearchTerm && currentSearchTerm.trim() ? currentSearchTerm.trim() : undefined,
         only_unsold: onlyUnsold || undefined,
         only_problematic: onlyProblematic || undefined,
+        only_rostovka: onlyRostovka || undefined,
         shipment_id: selectedShipmentId,
         is_visible: visibleOnly ? true : (selectedFilters.is_visible || undefined),
         min_price: selectedFilters.min_price,
@@ -128,7 +130,7 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
     setPage(1);
   };
     
-    useEffect(() => { fetchProducts(); }, [page, perPage, currentSearchTerm, selectedFilters, onlyUnsold, onlyProblematic, selectedShipmentId, visibleOnly, sortBy, sortDir]);
+    useEffect(() => { fetchProducts(); }, [page, perPage, currentSearchTerm, selectedFilters, onlyUnsold, onlyProblematic, onlyRostovka, selectedShipmentId, visibleOnly, sortBy, sortDir]);
 
     useEffect(() => {
       // Load filter options once
@@ -144,6 +146,7 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
       const sd = (params.get('sort_dir') as 'asc' | 'desc') || 'desc';
       const ou = params.get('only_unsold') === 'true';
       const op = params.get('only_problematic') === 'true';
+      const or_ = params.get('only_rostovka') === 'true';
       const sh = params.get('shipment_id') ? Number(params.get('shipment_id')) : undefined;
       const vo = params.get('visible_only') === 'true';
       setPage(pn);
@@ -152,6 +155,7 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
       setSortDir(sd);
       setOnlyUnsold(ou);
       setOnlyProblematic(op);
+      setOnlyRostovka(or_);
       setSelectedShipmentId(sh);
       setVisibleOnly(vo);
       // basic selected filters
@@ -178,13 +182,14 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
       params.set('sort_dir', sortDir);
       if (onlyUnsold) params.set('only_unsold', 'true');
       if (onlyProblematic) params.set('only_problematic', 'true');
+      if (onlyRostovka) params.set('only_rostovka', 'true');
       if (selectedShipmentId) params.set('shipment_id', String(selectedShipmentId));
       if (visibleOnly) params.set('visible_only', 'true');
       Object.entries(selectedFilters).forEach(([k, v]) => {
         if (v !== undefined && v !== null && typeof v !== 'object') params.set(k, String(v));
       });
       navigate({ pathname: location.pathname, search: params.toString() }, { replace: true });
-    }, [page, perPage, sortBy, sortDir, onlyUnsold, onlyProblematic, selectedShipmentId, visibleOnly, selectedFilters, navigate, location.pathname]);
+    }, [page, perPage, sortBy, sortDir, onlyUnsold, onlyProblematic, onlyRostovka, selectedShipmentId, visibleOnly, selectedFilters, navigate, location.pathname]);
 
     return (
     <MainLayout
@@ -313,6 +318,15 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
                   className="h-4 w-4 text-orange-500 border-gray-300 rounded focus:ring-orange-400 dark:focus:ring-orange-400 dark:bg-gray-700 dark:border-gray-600"
                 />
                 <span className="ml-2">Тільки проблемні</span>
+              </label>
+              <label className="inline-flex items-center text-sm text-gray-700 dark:text-gray-300">
+                <input
+                  type="checkbox"
+                  checked={onlyRostovka}
+                  onChange={(e) => { setOnlyRostovka(e.target.checked); setPage(1); }}
+                  className="h-4 w-4 text-blue-500 border-gray-300 rounded focus:ring-blue-400 dark:focus:ring-blue-400 dark:bg-gray-700 dark:border-gray-600"
+                />
+                <span className="ml-2">Тільки ростовки</span>
               </label>
             </div>
             <div className="order-1 md:order-none justify-self-center flex justify-center">

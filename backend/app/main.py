@@ -77,11 +77,16 @@ logger.info("Database connection ready")
 app = FastAPI()
 
 # Add CORS middleware with explicit origins
-# В розробці дозволяємо запити з розширеного списку origins
-logger.info("Setting up CORS middleware")
+allowed_origins = os.getenv("CORS_ORIGINS", "").split(",") if os.getenv("CORS_ORIGINS") else [
+    "http://localhost:3000",
+    "http://localhost:8000",
+    "http://127.0.0.1:3000",
+    "http://127.0.0.1:8000",
+]
+logger.info(f"Setting up CORS middleware with origins: {allowed_origins}")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Simplify by allowing all origins for testing
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -102,7 +107,7 @@ async def global_exception_handler(request: Request, exc: Exception):
     logger.error(f"Global exception handler caught: {str(exc)}", exc_info=True)
     return JSONResponse(
         status_code=500,
-        content={"detail": str(exc)},
+        content={"detail": "Internal server error"},
     )
 
 # Health check endpoint

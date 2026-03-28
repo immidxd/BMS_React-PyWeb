@@ -42,6 +42,7 @@ async def get_suppliers(
         "shipments_count": "deliveries_count",
         "total_spent": "total_spent",
         "avg_price": "avg_price",
+        "revenue": "revenue",
     }
     order_col = allowed.get(sort_by, "s.company_name")
     order_dir = "ASC" if sort_dir.lower() == "asc" else "DESC"
@@ -57,7 +58,8 @@ async def get_suppliers(
                CASE WHEN COALESCE(ds.product_count, 0) > 0
                     THEN ROUND((ds.total_spent / ds.product_count)::numeric, 2)::float
                     ELSE 0 END AS avg_price,
-               ds.top_brands
+               ds.top_brands,
+               COALESCE(rev.revenue, 0)::float AS revenue
         FROM suppliers s
         LEFT JOIN LATERAL (
             SELECT COUNT(DISTINCT d.id) AS deliveries_count,
@@ -69,6 +71,13 @@ async def get_suppliers(
             LEFT JOIN brands b ON b.id = p.brandid
             WHERE d.supplier_id = s.id
         ) ds ON true
+        LEFT JOIN LATERAL (
+            SELECT COALESCE(SUM(oi.price * oi.quantity), 0) AS revenue
+            FROM order_items oi
+            JOIN products p ON p.id = oi.product_id
+            JOIN deliveries d ON d.id = p.deliveryid
+            WHERE d.supplier_id = s.id
+        ) rev ON true
         {where}
         ORDER BY {order_col} {order_dir}, s.id
         OFFSET :offset LIMIT :limit

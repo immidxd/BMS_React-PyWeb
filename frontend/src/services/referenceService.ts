@@ -29,6 +29,16 @@ export interface Client {
   gender_id: number | null;
   address: string | null;
   notes: string | null;
+  order_count?: number;
+  total_order_amount?: number;
+  average_order_value?: number;
+  city_of_residence?: string | null;
+  confirmed_orders: number;
+  cancelled_count: number;
+  ignored_count: number;
+  return_exchange_count: number;
+  has_deferred: boolean;
+  rating: number | null;
 }
 
 export interface ReferenceList<T> {

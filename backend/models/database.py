@@ -65,6 +65,8 @@ def init_db():
         with engine.begin() as conn:
             conn.execute(text("alter table if exists parsing_jobs add column if not exists logs_head text"))
             conn.execute(text("alter table if exists parsing_jobs add column if not exists cancel_requested boolean default false"))
+            conn.execute(text("alter table if exists deliveries add column if not exists delivery_cost numeric(12,2) default 0"))
+            conn.execute(text("alter table if exists orders add column if not exists sales_channel varchar(50) default 'Ефір'"))
         
         # Populate initial reference data (only adds basic reference data, no test data)
         from .seed_data import populate_initial_data

@@ -25,7 +25,6 @@ def get_product(db: Session, product_id: int) -> Optional[models.Product]:
             joinedload(models.Product.manufacturer_country),
             joinedload(models.Product.status),
             joinedload(models.Product.condition),
-            joinedload(models.Product.import_record),
             joinedload(models.Product.delivery)
         ).filter(models.Product.id == product_id).first()
         logger.debug(f"Retrieved product: {product}")
@@ -47,7 +46,6 @@ def get_product_by_number(db: Session, product_number: str) -> Optional[models.P
             joinedload(models.Product.manufacturer_country),
             joinedload(models.Product.status),
             joinedload(models.Product.condition),
-            joinedload(models.Product.import_record),
             joinedload(models.Product.delivery)
         ).filter(models.Product.productnumber == product_number).first()
         logger.debug(f"Retrieved product by number: {product}")
@@ -303,6 +301,9 @@ def get_products(
                     OR COALESCE(sold.sold_count, 0) > COALESCE(p.quantity, 0)
                     OR COALESCE(dup.dup_brands, 0) > 1
                 )""")
+
+            if filters.only_rostovka:
+                where_conditions.append("p.quantity > 1")
 
             # shipment_id and is_visible columns don't exist in real DB — removed
         

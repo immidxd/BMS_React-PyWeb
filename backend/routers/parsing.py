@@ -5,6 +5,7 @@ import asyncio
 import datetime
 import logging
 import json
+import threading
 import sys
 import os
 
@@ -121,6 +122,9 @@ if 'UnifiedParser' not in globals():
 
 # Active parsing tasks
 active_parsing_tasks = {}
+
+# Thread-safe lock для захисту глобального стану парсингу
+_parser_lock = threading.Lock()
 
 # Зв'язка job_id -> UnifiedParser для адресного скасування
 job_parsers: Dict[int, "UnifiedParser"] = {}
@@ -383,8 +387,9 @@ async def run_parsing_job(mode: str = "quick_update", params: Optional[Dict] = N
         parser = UnifiedParser(status_callback=status_cb)
         # робимо доступним для глобального скасування та адресного по job_id
         global current_parser
-        current_parser = parser
-        job_parsers[job_id] = parser
+        with _parser_lock:
+            current_parser = parser
+            job_parsers[job_id] = parser
 
         def _describe_mode(m: str) -> str:
             m = m or ''
@@ -456,17 +461,18 @@ async def run_parsing_job(mode: str = "quick_update", params: Optional[Dict] = N
                     sess.close()
                 raise
             finally:
-                # при завершенні очищаємо мапу парсерів
-                try:
-                    if job_parsers.get(job_id) is parser:
-                        del job_parsers[job_id]
-                except Exception:
-                    pass
-                try:
-                    if current_parser is parser:
-                        current_parser = None
-                except Exception:
-                    pass
+                # при завершенні очищаємо мапу парсерів (thread-safe)
+                with _parser_lock:
+                    try:
+                        if job_parsers.get(job_id) is parser:
+                            del job_parsers[job_id]
+                    except Exception:
+                        pass
+                    try:
+                        if current_parser is parser:
+                            current_parser = None
+                    except Exception:
+                        pass
 
         # Фонова корутина — не завершуємо HTTP-відповідь завершеним статусом,
         # просто повертаємо jobId; фінальний статус виставить runner() після parse().
@@ -555,7 +561,8 @@ async def cancel_parsing():
     """Скасовує поточний парсинг незалежно від поточного індикатора стану."""
     global current_parser
     try:
-        parser = current_parser
+        with _parser_lock:
+            parser = current_parser
         if parser:
             logger.info("Cancel requested: invoking parser.cancel()")
             parser.cancel()
@@ -632,12 +639,13 @@ async def run_parsing(mode: ParsingMode, params: Dict):
         })
     finally:
         # Якщо користувач натиснув "Скасувати", гарантуємо зупинку підпроцесу
-        try:
-            if current_parser and getattr(current_parser, 'current_process', None) and current_parser.current_process.returncode is None:
-                current_parser.current_process.terminate()
-        except Exception:
-            pass
-        current_parser = None
+        with _parser_lock:
+            try:
+                if current_parser and getattr(current_parser, 'current_process', None) and current_parser.current_process.returncode is None:
+                    current_parser.current_process.terminate()
+            except Exception:
+                pass
+            current_parser = None
 
 @router.get("/modes")
 async def get_available_modes():

@@ -187,6 +187,33 @@ class ProductCache:
             return None
         return self.session.get(Product, product_id)
 
+class SalesChannelDetector:
+    """Розпізнавання каналу продажу з коментарів та методу доставки."""
+
+    CHANNELS = {
+        'Telegram': [r'\bтг\b', r'\btg\b', r'\btelegram\b', r'\bтелеграм\b'],
+        'OLX': [r'\bolx\b', r'\bолх\b'],
+        'Viber': [r'\bvb\b', r'\bviber\b', r'\bвайбер\b', r'\bвб\b'],
+        'Instagram': [r'\binst\b', r'\binstagram\b', r'\binsta\b', r'\big\b', r'\bінст\b'],
+        'GRAILED': [r'\bgrailed\b'],
+        'Магазин': [r'\bмагазин\b', r'\bshop\b'],
+    }
+
+    @staticmethod
+    def detect(comments: str = '', delivery_method: str = '') -> str:
+        """Повертає назву каналу продажу. За замовчуванням — 'Ефір'."""
+        text = f"{comments} {delivery_method}".lower().strip()
+        if not text:
+            return 'Ефір'
+        if 'магазин' in delivery_method.lower():
+            return 'Магазин'
+        for channel, patterns in SalesChannelDetector.CHANNELS.items():
+            for pattern in patterns:
+                if re.search(pattern, text):
+                    return channel
+        return 'Ефір'
+
+
 class PaymentMethodManager:
     """Клас для розпізнавання методів оплати."""
     
@@ -788,6 +815,12 @@ class OrdersComprehensiveParser:
                     comments_parts.append(comment)
             comments = '; '.join(comments_parts) if comments_parts else None
 
+            # Канал продажу
+            sales_channel = SalesChannelDetector.detect(
+                comments=comments or '',
+                delivery_method=delivery_method_text,
+            )
+
             # Створюємо замовлення
             order = Order(
                 client_id=client.id,
@@ -802,7 +835,8 @@ class OrdersComprehensiveParser:
                 tracking_number=tracking_number_raw or None,
                 notes=comments,
                 priority=int(order_data.get('Пріорітетність', 0) or 0),
-                deferred_until=deferred_date
+                deferred_until=deferred_date,
+                sales_channel=sales_channel,
             )
 
             # Перевіряємо методи оплати в коментарях для історичних нотаток

@@ -33,6 +33,7 @@ export interface Order {
   deferred_until: string | null;
   priority: number;
   broadcast_id: number | null;
+  sales_channel: string | null;
   created_at: string;
   updated_at: string;
 }

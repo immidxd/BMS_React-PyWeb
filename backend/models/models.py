@@ -166,6 +166,7 @@ class Order(Base):
     deferred_until = Column(Date)
     priority = Column(Integer, default=0)
     broadcast_id = Column(Integer, ForeignKey("broadcasts.id"))
+    sales_channel = Column(String(50), default='Ефір', nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
@@ -197,6 +198,25 @@ class Supplier(Base):
     description = Column(Text, nullable=True)
     status = Column(String(50), default='Активний')
     priority = Column(Integer, default=0)
+
+    # Relationships
+    deliveries = relationship("Delivery", back_populates="supplier")
+
+
+class Delivery(Base):
+    __tablename__ = "deliveries"
+
+    id = Column(Integer, primary_key=True, index=True)
+    deliveryname = Column(String(100), nullable=True)
+    description = Column(Text, nullable=True)
+    deliverydate = Column(Date, nullable=True)
+    supplier_id = Column(Integer, ForeignKey("suppliers.id"), nullable=True)
+    delivery_cost = Column(Numeric(12, 2), default=0)
+    created_at = Column(Date, default=func.current_date())
+
+    # Relationships
+    supplier = relationship("Supplier", back_populates="deliveries")
+    products = relationship("Product", back_populates="delivery")
 
 
 class Product(Base):
@@ -236,10 +256,11 @@ class Product(Base):
     statusid = Column(Integer, ForeignKey("statuses.id"), nullable=True)
     conditionid = Column(Integer, ForeignKey("conditions.id"), nullable=True)
     importid = Column(Integer, nullable=True)
-    deliveryid = Column(Integer, nullable=True)
-    
+    deliveryid = Column(Integer, ForeignKey("deliveries.id"), nullable=True)
+
     # Relationships
     order_items = relationship("OrderItem", back_populates="product")
+    delivery = relationship("Delivery", back_populates="products", foreign_keys=[deliveryid])
     brand = relationship("Brand", foreign_keys=[brandid], primaryjoin="Product.brandid == Brand.id")
     type = relationship("Type", foreign_keys=[typeid], primaryjoin="Product.typeid == Type.id")
     subtype = relationship("Subtype", foreign_keys=[subtypeid], primaryjoin="Product.subtypeid == Subtype.id")

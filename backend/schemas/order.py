@@ -48,6 +48,7 @@ class OrderBase(BaseModel):
     deferred_until: Optional[date] = None
     priority: int = 0
     broadcast_id: Optional[int] = None
+    sales_channel: Optional[str] = 'Ефір'
 
 class OrderCreate(OrderBase):
     order_items: List[OrderItemCreate]
@@ -110,6 +111,7 @@ class OrderListItem(BaseModel):
     tracking_number: Optional[str] = None
     items_count: int
     priority: int = 0
+    sales_channel: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 

@@ -106,6 +106,14 @@ class Client(ClientBase):
     order_count: Optional[int] = None
     total_order_amount: Optional[float] = None
     average_order_value: Optional[float] = None
+    # Order breakdown counts
+    confirmed_orders: int = 0
+    cancelled_count: int = 0
+    ignored_count: int = 0
+    return_exchange_count: int = 0
+    has_deferred: bool = False
+    # Client rating (0-10)
+    rating: Optional[float] = None
 
     class Config:
         from_attributes = True

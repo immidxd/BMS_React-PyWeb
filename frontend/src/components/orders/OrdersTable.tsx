@@ -192,6 +192,7 @@ const OrdersTable: React.FC<OrdersTableProps> = ({
               <th className="px-4 py-3 text-left font-semibold">Оплата</th>
               <th className="px-4 py-3 text-left font-semibold">Доставка</th>
               <th className="px-4 py-3 text-left font-semibold">Трекінг</th>
+              <th className="px-4 py-3 text-left font-semibold">Канал</th>
               <th className="px-4 py-3 text-left font-semibold cursor-pointer" onClick={() => { setSortBy('priority'); setSortDir(sortDir === 'asc' ? 'desc' : 'asc'); }}>Товарів</th>
               <th className="px-4 py-3 text-left font-semibold">Дії</th>
             </tr>
@@ -199,7 +200,7 @@ const OrdersTable: React.FC<OrdersTableProps> = ({
           <tbody>
             {orders.length === 0 ? (
               <tr>
-                <td colSpan={10} className="text-center py-8 text-gray-400">Замовлень не знайдено</td>
+                <td colSpan={12} className="text-center py-8 text-gray-400">Замовлень не знайдено</td>
               </tr>
             ) : (
               orders.map(order => (
@@ -210,9 +211,17 @@ const OrdersTable: React.FC<OrdersTableProps> = ({
                   <td className="px-4 py-2 whitespace-nowrap">{formatPrice(order.total_amount)}</td>
                   <td className="px-4 py-2 whitespace-nowrap">{formatDate(order.order_date)}</td>
                   <td className="px-4 py-2">
-                    <span className="inline-block px-2 py-1 rounded text-xs font-semibold" style={{background:getStatusColor(order.order_status_id, filterOptions.order_statuses),color:'#fff'}}>
-                      {order.order_status_name || 'Не вказано'}
-                    </span>
+                    <div className="flex flex-col gap-1">
+                      <span className="inline-block px-2 py-1 rounded text-xs font-semibold w-fit" style={{background:getStatusColor(order.order_status_id, filterOptions.order_statuses),color:'#fff'}}>
+                        {order.order_status_name || 'Не вказано'}
+                      </span>
+                      {order.deferred_until && (
+                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-orange-100 text-orange-700 border border-orange-200 w-fit" title={`Відкладено до ${formatDate(order.deferred_until)}`}>
+                          <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                          до {formatDate(order.deferred_until)}
+                        </span>
+                      )}
+                    </div>
                   </td>
                   <td className="px-4 py-2">
                     <span className="inline-block px-2 py-1 rounded text-xs font-semibold" style={{background:getStatusColor(order.payment_status_id, filterOptions.payment_statuses),color:'#fff'}}>
@@ -221,6 +230,25 @@ const OrdersTable: React.FC<OrdersTableProps> = ({
                   </td>
                   <td className="px-4 py-2">{order.delivery_method_name || 'Не вказано'}</td>
                   <td className="px-4 py-2">{order.tracking_number || '—'}</td>
+                  <td className="px-4 py-2">
+                    {(() => {
+                      const ch = order.sales_channel || 'Ефір';
+                      const channelColors: Record<string, string> = {
+                        'Telegram': 'bg-blue-100 text-blue-700',
+                        'OLX': 'bg-orange-100 text-orange-700',
+                        'Viber': 'bg-violet-100 text-violet-700',
+                        'Instagram': 'bg-pink-100 text-pink-700',
+                        'GRAILED': 'bg-gray-100 text-gray-700',
+                        'Магазин': 'bg-green-100 text-green-700',
+                        'Ефір': 'bg-sky-100 text-sky-700',
+                      };
+                      return (
+                        <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-medium whitespace-nowrap ${channelColors[ch] || 'bg-gray-100 text-gray-600'}`}>
+                          {ch}
+                        </span>
+                      );
+                    })()}
+                  </td>
                   <td className="px-4 py-2 text-center">{getOrderItemsCount(order)}</td>
                   <td className="px-4 py-2">
                     <div className="flex gap-2">

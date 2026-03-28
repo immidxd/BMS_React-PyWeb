@@ -161,11 +161,12 @@ async def get_orders(
             "priority": order.priority,
             "broadcast_id": order.broadcast_id,
             "broadcast_name": broadcast_name,
+            "sales_channel": getattr(order, 'sales_channel', None) or 'Ефір',
             "created_at": order.created_at,
             "updated_at": order.updated_at,
             "order_items": order_items
         }
-        
+
         items.append(order_dict)
     
     # Create the response
@@ -310,6 +311,7 @@ async def get_order(order_id: int = Path(..., ge=1), db: Session = Depends(get_d
         "priority": order.priority,
         "broadcast_id": order.broadcast_id,
         "broadcast_name": broadcast_name,
+        "sales_channel": getattr(order, 'sales_channel', None) or 'Ефір',
         "created_at": order.created_at,
         "updated_at": order.updated_at,
         "order_items": order_items

@@ -7,6 +7,10 @@ import {
   type SuppliersStatsResponse,
   type SummaryStats,
   type SupplierTotalData,
+  type DeliveriesListResponse,
+  type DeliveryDetailStats,
+  type SupplierDetailStats,
+  type ClientsStatsResponse,
 } from '../services/statisticsService';
 import {
   BarChart, Bar, LineChart, Line, AreaChart, Area,
@@ -152,6 +156,23 @@ const StatisticsPage: React.FC<StatisticsPageProps> = () => {
   const [supLoading, setSupLoading] = useState(false);
   const [supMetric, setSupMetric] = useState<'total_cost' | 'avg_price'>('total_cost');
 
+  // Deliveries list state
+  const [delData, setDelData] = useState<DeliveriesListResponse | null>(null);
+  const [delLoading, setDelLoading] = useState(false);
+  const [delPage, setDelPage] = useState(1);
+  const [delDetail, setDelDetail] = useState<DeliveryDetailStats | null>(null);
+  const [delDetailLoading, setDelDetailLoading] = useState(false);
+  const [delDetailId, setDelDetailId] = useState<number | null>(null);
+
+  // Supplier detail state
+  const [supDetailId, setSupDetailId] = useState<number | null>(null);
+  const [supDetail, setSupDetail] = useState<SupplierDetailStats | null>(null);
+  const [supDetailLoading, setSupDetailLoading] = useState(false);
+
+  // Client statistics state
+  const [clientStats, setClientStats] = useState<ClientsStatsResponse | null>(null);
+  const [clientStatsLoading, setClientStatsLoading] = useState(false);
+
   // Load years + summary
   useEffect(() => {
     statisticsService.getYears().then(r => setYears(r.years)).catch(console.error);
@@ -191,6 +212,48 @@ const StatisticsPage: React.FC<StatisticsPageProps> = () => {
   }, [supPeriod, supYear]);
   useEffect(() => { loadSuppliers(); }, [loadSuppliers]);
 
+  // Load deliveries list
+  const loadDeliveries = useCallback(async () => {
+    setDelLoading(true);
+    try {
+      const res = await statisticsService.getDeliveriesList(delPage, 15);
+      setDelData(res);
+    } catch (e) { console.error(e); }
+    finally { setDelLoading(false); }
+  }, [delPage]);
+  useEffect(() => { loadDeliveries(); }, [loadDeliveries]);
+
+  // Load delivery detail
+  useEffect(() => {
+    if (delDetailId === null) { setDelDetail(null); return; }
+    setDelDetailLoading(true);
+    statisticsService.getDeliveryDetail(delDetailId)
+      .then(setDelDetail)
+      .catch(console.error)
+      .finally(() => setDelDetailLoading(false));
+  }, [delDetailId]);
+
+  // Load supplier detail
+  useEffect(() => {
+    if (supDetailId === null) { setSupDetail(null); return; }
+    setSupDetailLoading(true);
+    statisticsService.getSupplierDetail(supDetailId)
+      .then(setSupDetail)
+      .catch(console.error)
+      .finally(() => setSupDetailLoading(false));
+  }, [supDetailId]);
+
+  // Load client statistics
+  const loadClientStats = useCallback(async () => {
+    setClientStatsLoading(true);
+    try {
+      const res = await statisticsService.getClientsStats(15);
+      setClientStats(res);
+    } catch (e) { console.error(e); }
+    finally { setClientStatsLoading(false); }
+  }, []);
+  useEffect(() => { loadClientStats(); }, [loadClientStats]);
+
   const shipMetrics = [
     { key: 'total_cost', label: 'Вартість завозу' },
     { key: 'avg_price', label: 'Сер. ціна пари' },
@@ -213,8 +276,8 @@ const StatisticsPage: React.FC<StatisticsPageProps> = () => {
           </p>
         </div>
       }
-      onRefresh={() => { loadSales(); loadShipments(); loadSuppliers(); statisticsService.getSummary().then(setSummary); }}
-      isRefreshing={salesLoading || shipLoading || supLoading}
+      onRefresh={() => { loadSales(); loadShipments(); loadSuppliers(); loadDeliveries(); loadClientStats(); statisticsService.getSummary().then(setSummary); }}
+      isRefreshing={salesLoading || shipLoading || supLoading || delLoading || clientStatsLoading}
       onResetFilters={() => {
         setSalesPeriod('month'); setSalesYear(undefined);
         setShipPeriod('month'); setShipYear(undefined);
@@ -471,6 +534,237 @@ const StatisticsPage: React.FC<StatisticsPageProps> = () => {
             )
           ) : (
             <div className="h-40 flex items-center justify-center text-gray-400 text-sm">Немає даних за обраний період</div>
+          )}
+        </Section>
+
+        {/* ── 4. Deliveries Table ─────────────────────────────────────── */}
+        <Section title="Статистика по завозах">
+          {delLoading ? (
+            <div className="h-40 flex items-center justify-center text-gray-400">Завантаження...</div>
+          ) : delData && delData.items.length > 0 ? (
+            <div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead className="bg-gray-50 dark:bg-gray-700 border-b">
+                    <tr>
+                      <th className="px-3 py-2 text-left font-semibold">Назва</th>
+                      <th className="px-3 py-2 text-left font-semibold">Дата</th>
+                      <th className="px-3 py-2 text-left font-semibold">Постачальник</th>
+                      <th className="px-3 py-2 text-right font-semibold">Пар</th>
+                      <th className="px-3 py-2 text-right font-semibold">Продано%</th>
+                      <th className="px-3 py-2 text-right font-semibold">Виторг</th>
+                      <th className="px-3 py-2 text-right font-semibold">Прибуток</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {delData.items.map(d => (
+                      <tr
+                        key={d.id}
+                        className={`border-b hover:bg-gray-50 dark:hover:bg-gray-700 cursor-pointer ${delDetailId === d.id ? 'bg-blue-50 dark:bg-blue-900/20' : ''}`}
+                        onClick={() => setDelDetailId(delDetailId === d.id ? null : d.id)}
+                      >
+                        <td className="px-3 py-2 text-blue-600 hover:underline">{d.deliveryname || `#${d.id}`}</td>
+                        <td className="px-3 py-2 whitespace-nowrap">{d.deliverydate ? new Date(d.deliverydate).toLocaleDateString('uk-UA') : '—'}</td>
+                        <td className="px-3 py-2">{d.supplier_name || '—'}</td>
+                        <td className="px-3 py-2 text-right">{d.total_pairs}</td>
+                        <td className="px-3 py-2 text-right">
+                          <span className={`font-medium ${d.sell_rate >= 70 ? 'text-green-600' : d.sell_rate >= 40 ? 'text-yellow-600' : 'text-red-500'}`}>
+                            {d.sell_rate}%
+                          </span>
+                        </td>
+                        <td className="px-3 py-2 text-right whitespace-nowrap">{fmtPrice(d.revenue)}</td>
+                        <td className={`px-3 py-2 text-right whitespace-nowrap font-medium ${d.profit >= 0 ? 'text-green-600' : 'text-red-500'}`}>{fmtPrice(d.profit)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* Pagination */}
+              {delData.pages > 1 && (
+                <div className="flex justify-center items-center gap-2 mt-3">
+                  <button
+                    disabled={delPage <= 1}
+                    onClick={() => setDelPage(p => p - 1)}
+                    className="px-2 py-1 text-xs border rounded disabled:opacity-30"
+                  >Назад</button>
+                  <span className="text-xs text-gray-500">Сторінка {delPage} з {delData.pages}</span>
+                  <button
+                    disabled={delPage >= delData.pages}
+                    onClick={() => setDelPage(p => p + 1)}
+                    className="px-2 py-1 text-xs border rounded disabled:opacity-30"
+                  >Далі</button>
+                </div>
+              )}
+
+              {/* Delivery detail panel */}
+              {delDetailId !== null && (
+                <div className="mt-4 p-4 bg-gray-50 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600">
+                  {delDetailLoading ? (
+                    <div className="text-center text-gray-400 py-4">Завантаження деталей...</div>
+                  ) : delDetail ? (
+                    <div className="space-y-4">
+                      <div className="flex items-center justify-between">
+                        <h3 className="text-sm font-semibold text-gray-800 dark:text-gray-200">
+                          {delDetail.delivery.deliveryname || `Завоз #${delDetail.delivery.id}`}
+                          {delDetail.delivery.supplier_name && <span className="text-gray-400 font-normal ml-2">({delDetail.delivery.supplier_name})</span>}
+                        </h3>
+                        <button onClick={() => setDelDetailId(null)} className="text-xs text-gray-400 hover:text-gray-600">Закрити</button>
+                      </div>
+
+                      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                        <div className="text-center p-2 bg-white dark:bg-gray-800 rounded border">
+                          <div className="text-lg font-bold text-gray-800 dark:text-white">{delDetail.total_pairs}</div>
+                          <div className="text-[10px] text-gray-400">Всього пар</div>
+                        </div>
+                        <div className="text-center p-2 bg-white dark:bg-gray-800 rounded border">
+                          <div className="text-lg font-bold text-green-600">{delDetail.sold_count} <span className="text-xs font-normal">({delDetail.sell_rate}%)</span></div>
+                          <div className="text-[10px] text-gray-400">Продано</div>
+                        </div>
+                        <div className="text-center p-2 bg-white dark:bg-gray-800 rounded border">
+                          <div className="text-lg font-bold text-amber-600">{fmtPrice(delDetail.cost_per_pair)}</div>
+                          <div className="text-[10px] text-gray-400">Собівартість/пара</div>
+                        </div>
+                        <div className={`text-center p-2 bg-white dark:bg-gray-800 rounded border`}>
+                          <div className={`text-lg font-bold ${delDetail.net_revenue >= 0 ? 'text-green-600' : 'text-red-500'}`}>{fmtPrice(delDetail.net_revenue)}</div>
+                          <div className="text-[10px] text-gray-400">Чистий прибуток</div>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        {/* Type distribution */}
+                        {delDetail.type_distribution.length > 0 && (
+                          <div>
+                            <h4 className="text-xs font-semibold text-gray-500 mb-2">Розподіл типів</h4>
+                            <div className="space-y-1">
+                              {delDetail.type_distribution.map(t => {
+                                const pct = delDetail.total_pairs > 0 ? Math.round(t.count / delDetail.total_pairs * 100) : 0;
+                                return (
+                                  <div key={t.type_name} className="flex items-center gap-2 text-xs">
+                                    <span className="w-24 truncate text-gray-600 dark:text-gray-300">{t.type_name}</span>
+                                    <div className="flex-1 bg-gray-200 dark:bg-gray-600 rounded-full h-2">
+                                      <div className="bg-blue-500 h-2 rounded-full" style={{ width: `${pct}%` }} />
+                                    </div>
+                                    <span className="w-10 text-right text-gray-500">{t.count}</span>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        )}
+                        {/* Size distribution */}
+                        {delDetail.size_distribution.length > 0 && (
+                          <div>
+                            <h4 className="text-xs font-semibold text-gray-500 mb-2">Розподіл розмірів (EU)</h4>
+                            <ResponsiveContainer width="100%" height={150}>
+                              <BarChart data={delDetail.size_distribution} margin={{ top: 5, right: 5, bottom: 5, left: 5 }}>
+                                <XAxis dataKey="size" tick={{ fontSize: 9 }} />
+                                <YAxis tick={{ fontSize: 9 }} />
+                                <Bar dataKey="count" fill="#6366f1" radius={[3, 3, 0, 0]} />
+                              </BarChart>
+                            </ResponsiveContainer>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="h-40 flex items-center justify-center text-gray-400 text-sm">Немає даних про завози</div>
+          )}
+        </Section>
+
+        {/* ── 5. Client Statistics ────────────────────────────────────── */}
+        <Section title="Статистика клієнтів">
+          {clientStatsLoading ? (
+            <div className="h-40 flex items-center justify-center text-gray-400">Завантаження...</div>
+          ) : clientStats ? (
+            <div className="space-y-6">
+              {/* Top clients by revenue */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div>
+                  <h3 className="text-sm font-medium text-gray-600 dark:text-gray-300 mb-2">Топ клієнтів за виторгом</h3>
+                  <div className="space-y-1">
+                    {clientStats.top_by_revenue.slice(0, 10).map((c, i) => (
+                      <div key={c.id} className="flex items-center gap-2 text-xs py-1">
+                        <span className="w-5 text-right text-gray-400 font-medium">{i + 1}.</span>
+                        <span className="flex-1 truncate text-gray-700 dark:text-gray-300">{c.name}</span>
+                        <span className="text-gray-400">{c.orders_count} зам.</span>
+                        <span className="font-medium text-green-600 w-24 text-right">{fmtPrice(c.total_revenue)}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+                <div>
+                  <h3 className="text-sm font-medium text-gray-600 dark:text-gray-300 mb-2">Топ клієнтів за к-стю замовлень</h3>
+                  <div className="space-y-1">
+                    {clientStats.top_by_orders.slice(0, 10).map((c, i) => (
+                      <div key={c.id} className="flex items-center gap-2 text-xs py-1">
+                        <span className="w-5 text-right text-gray-400 font-medium">{i + 1}.</span>
+                        <span className="flex-1 truncate text-gray-700 dark:text-gray-300">{c.name}</span>
+                        <span className="font-bold text-blue-600">{c.orders_count}</span>
+                        <span className="text-gray-400 w-24 text-right">{fmtPrice(c.total_revenue)}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              {/* New clients trend + Average check trend */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                {clientStats.new_clients_trend.length > 0 && (
+                  <div>
+                    <h3 className="text-sm font-medium text-gray-600 dark:text-gray-300 mb-2">Нові клієнти по місяцях</h3>
+                    <ResponsiveContainer width="100%" height={200}>
+                      <BarChart data={clientStats.new_clients_trend.slice(-12)} margin={{ top: 5, right: 10, bottom: 5, left: 10 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                        <XAxis dataKey="month" tick={{ fontSize: 10 }} />
+                        <YAxis tick={{ fontSize: 10 }} />
+                        <Tooltip />
+                        <Bar dataKey="new_clients" name="Нових клієнтів" fill={COLORS.orders} radius={[3, 3, 0, 0]} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                )}
+                {clientStats.avg_check_trend.length > 0 && (
+                  <div>
+                    <h3 className="text-sm font-medium text-gray-600 dark:text-gray-300 mb-2">Середній чек (тренд)</h3>
+                    <ResponsiveContainer width="100%" height={200}>
+                      <AreaChart data={clientStats.avg_check_trend.slice(-12)} margin={{ top: 5, right: 10, bottom: 5, left: 10 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                        <XAxis dataKey="month" tick={{ fontSize: 10 }} />
+                        <YAxis tick={{ fontSize: 10 }} tickFormatter={fmtShort} />
+                        <Tooltip content={<CustomTooltip />} />
+                        <Area dataKey="avg_check" name="Середній чек" fill={COLORS.revenue} fillOpacity={0.2} stroke={COLORS.revenue} strokeWidth={2} />
+                      </AreaChart>
+                    </ResponsiveContainer>
+                  </div>
+                )}
+              </div>
+
+              {/* Rating distribution */}
+              {clientStats.rating_distribution.length > 0 && (
+                <div>
+                  <h3 className="text-sm font-medium text-gray-600 dark:text-gray-300 mb-2">Розподіл рейтингів клієнтів</h3>
+                  <div className="flex gap-4 flex-wrap">
+                    {clientStats.rating_distribution.map(r => {
+                      const colors: Record<string, string> = { excellent: 'bg-green-100 text-green-700', good: 'bg-blue-100 text-blue-700', average: 'bg-yellow-100 text-yellow-700', low: 'bg-red-100 text-red-700' };
+                      const labels: Record<string, string> = { excellent: 'Відмінний (8+)', good: 'Хороший (6-8)', average: 'Середній (4-6)', low: 'Низький (<4)' };
+                      return (
+                        <div key={r.category} className={`flex items-center gap-2 px-3 py-2 rounded-lg ${colors[r.category] || 'bg-gray-100 text-gray-700'}`}>
+                          <span className="text-xs font-medium">{labels[r.category] || r.category}</span>
+                          <span className="text-lg font-bold">{r.count}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="h-40 flex items-center justify-center text-gray-400 text-sm">Немає даних</div>
           )}
         </Section>
       </div>
