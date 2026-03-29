@@ -76,6 +76,8 @@ def init_db():
             conn.execute(text("alter table if exists types alter column typename type varchar(100)"))
             conn.execute(text("alter table if exists subtypes alter column subtypename type varchar(100)"))
             conn.execute(text("alter table if exists conditions alter column conditionname type varchar(100)"))
+            # Знімаємо обмеження total_amount >= 0: повернення/знижки можуть мати від'ємну суму
+            conn.execute(text("alter table if exists orders drop constraint if exists orders_total_amount_check"))
 
         
         # Populate initial reference data (only adds basic reference data, no test data)
