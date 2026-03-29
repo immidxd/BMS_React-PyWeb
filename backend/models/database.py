@@ -70,6 +70,12 @@ def init_db():
             conn.execute(text("alter table if exists orders add column if not exists source_fingerprint varchar(64)"))
             conn.execute(text("create index if not exists ix_orders_source_fingerprint on orders (source_fingerprint)"))
             conn.execute(text("create unique index if not exists uix_products_num_size on products (productnumber, COALESCE(sizeeu, ''))"))
+            # Розширюємо поля довідників — в Google Sheets значення можуть бути довшими за 50 символів
+            conn.execute(text("alter table if exists colors alter column colorname type varchar(100)"))
+            conn.execute(text("alter table if exists brands alter column brandname type varchar(150)"))
+            conn.execute(text("alter table if exists types alter column typename type varchar(100)"))
+            conn.execute(text("alter table if exists subtypes alter column subtypename type varchar(100)"))
+            conn.execute(text("alter table if exists conditions alter column conditionname type varchar(100)"))
 
         
         # Populate initial reference data (only adds basic reference data, no test data)

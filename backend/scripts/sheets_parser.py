@@ -229,6 +229,8 @@ def _get_or_create(session: Session, model, unique_field: str, value: str):
     value = value.strip()
     if not value:
         return None
+    # Safety truncation to 100 chars — prevents VARCHAR overflow for any reference field
+    value = value[:100]
     val_lower = value.lower()
     all_rows = session.query(model).all()
     for row in all_rows:
@@ -413,7 +415,9 @@ def _parse_products_sheet(
         marking    = col(row, "Маркування")
         year_val   = col(row, "Рік")
         gender_val = _normalize_gender(col(row, "Стать"))
-        color_val  = col(row, "Колір")
+        color_raw  = col(row, "Колір")
+        # Якщо в клітинці кілька кольорів через кому — беремо перший
+        color_val  = color_raw.split(",")[0].strip() if color_raw else ""
         cond_val   = col(row, "Стан")
         status_val = col(row, "Статус") if "Статус" in header else ""
         mfr_cntry  = col(row, "Країна-виробник")
@@ -1387,7 +1391,9 @@ def _parse_workspace_sheet(
         marking    = col(row, "Маркування")
         year_val   = col(row, "Рік")
         gender_val = _normalize_gender(col(row, "Стать"))
-        color_val  = col(row, "Колір")
+        color_raw  = col(row, "Колір")
+        # Якщо в клітинці кілька кольорів через кому — беремо перший
+        color_val  = color_raw.split(",")[0].strip() if color_raw else ""
         cond_val   = col(row, "Стан")
         mfr_cntry  = col(row, "Країна-виробник")
         own_cntry  = col(row, "Країна-власник")
