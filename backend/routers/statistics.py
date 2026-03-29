@@ -640,34 +640,36 @@ async def get_clients_stats(
 
     # Rating distribution (using same formula as in clients endpoint)
     rating_dist = db.execute(text("""
-        SELECT
-            CASE
-                WHEN rating >= 8 THEN 'excellent'
-                WHEN rating >= 6 THEN 'good'
-                WHEN rating >= 4 THEN 'average'
-                ELSE 'low'
-            END AS category,
-            COUNT(*) AS count
+        SELECT category, COUNT(*) AS count
         FROM (
-            SELECT c.id,
-                GREATEST(0, LEAST(10,
-                    5.0
-                    + LEAST(COALESCE(stats.confirmed_orders, 0) * 0.5, 3.0)
-                    - LEAST(COALESCE(stats.cancelled_count, 0) * 1.0, 3.0)
-                    - LEAST(COALESCE(stats.ignored_count, 0) * 0.5, 2.0)
-                    - LEAST(COALESCE(stats.return_exchange_count, 0) * 0.3, 1.0)
-                    + LEAST(COALESCE(c.total_order_amount, 0) / 10000.0, 2.0)
-                )) AS rating
-            FROM clients c
-            LEFT JOIN LATERAL (
-                SELECT
-                    COUNT(*) FILTER (WHERE o.order_status_id NOT IN (5,6,9,10)) AS confirmed_orders,
-                    COUNT(*) FILTER (WHERE o.order_status_id = 5) AS cancelled_count,
-                    COUNT(*) FILTER (WHERE o.order_status_id = 6) AS ignored_count,
-                    COUNT(*) FILTER (WHERE o.order_status_id IN (9,10)) AS return_exchange_count
-                FROM orders o WHERE o.client_id = c.id
-            ) stats ON true
-        ) rated
+            SELECT
+                CASE
+                    WHEN rating >= 8 THEN 'excellent'
+                    WHEN rating >= 6 THEN 'good'
+                    WHEN rating >= 4 THEN 'average'
+                    ELSE 'low'
+                END AS category
+            FROM (
+                SELECT c.id,
+                    GREATEST(0, LEAST(10,
+                        5.0
+                        + LEAST(COALESCE(stats.confirmed_orders, 0) * 0.5, 3.0)
+                        - LEAST(COALESCE(stats.cancelled_count, 0) * 1.0, 3.0)
+                        - LEAST(COALESCE(stats.ignored_count, 0) * 0.5, 2.0)
+                        - LEAST(COALESCE(stats.return_exchange_count, 0) * 0.3, 1.0)
+                        + LEAST(COALESCE(c.total_order_amount, 0) / 10000.0, 2.0)
+                    )) AS rating
+                FROM clients c
+                LEFT JOIN LATERAL (
+                    SELECT
+                        COUNT(*) FILTER (WHERE o.order_status_id NOT IN (5,6,9,10)) AS confirmed_orders,
+                        COUNT(*) FILTER (WHERE o.order_status_id = 5) AS cancelled_count,
+                        COUNT(*) FILTER (WHERE o.order_status_id = 6) AS ignored_count,
+                        COUNT(*) FILTER (WHERE o.order_status_id IN (9,10)) AS return_exchange_count
+                    FROM orders o WHERE o.client_id = c.id
+                ) stats ON true
+            ) rated
+        ) categorized
         GROUP BY category
         ORDER BY CASE category WHEN 'excellent' THEN 1 WHEN 'good' THEN 2 WHEN 'average' THEN 3 ELSE 4 END
     """)).mappings().all()

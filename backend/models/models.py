@@ -167,6 +167,7 @@ class Order(Base):
     priority = Column(Integer, default=0)
     broadcast_id = Column(Integer, ForeignKey("broadcasts.id"))
     sales_channel = Column(String(50), default='Ефір', nullable=True)
+    source_fingerprint = Column(String(64), index=True, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     

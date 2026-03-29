@@ -54,7 +54,7 @@ async def get_products(
     only_problematic: Optional[bool] = Query(None),
     only_rostovka: Optional[bool] = Query(None),
     shipment_id: Optional[int] = Query(None),
-    sort_by: str = Query("id", description="Sort column"),
+    sort_by: str = Query("created_at", description="Sort mode: created_at, created_at_asc, delivery_date, last_sold, price_desc, price_asc, id, dateadded"),
     sort_dir: str = Query("desc", description="Sort direction: asc|desc"),
     db: Session = Depends(get_db)
 ):

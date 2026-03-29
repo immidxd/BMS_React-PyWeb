@@ -1058,6 +1058,12 @@ def _run_sheets_job(job_id: int, target: str, mode: str):
         job.current_step = "initializing"
         sess.commit()
 
+        import time as _time
+        import re as _re
+        _job_start = _time.time()
+        _last_sheet = [None]
+        _sheet_start = [_time.time()]
+
         def progress_cb(pct, msg):
             s = SessionLocal()
             try:
@@ -1067,6 +1073,29 @@ def _run_sheets_job(job_id: int, target: str, mode: str):
                     j.current_step = str(msg)[:255]
                     j.updated_at = datetime.datetime.utcnow()
                     j.last_heartbeat_at = j.updated_at
+
+                    # Parse done/total from message like "sheet_title: 60/72"
+                    m = _re.search(r'(\d+)/(\d+)', str(msg))
+                    if m:
+                        done, total = int(m.group(1)), int(m.group(2))
+                        j.processed_items = done
+                        j.total_items = total
+
+                        # Detect sheet change → reset per-sheet timer
+                        sheet_id = str(msg).split(':')[0].strip() if ':' in str(msg) else ''
+                        if sheet_id != _last_sheet[0]:
+                            _last_sheet[0] = sheet_id
+                            _sheet_start[0] = _time.time()
+
+                        sheet_elapsed = _time.time() - _sheet_start[0]
+                        if sheet_elapsed > 1 and done > 0:
+                            j.items_per_sec = round(done / sheet_elapsed, 1)
+
+                    # ETA from overall percent
+                    elapsed = _time.time() - _job_start
+                    if elapsed > 1 and pct > 0:
+                        j.eta_seconds = max(0, int(elapsed * (100 - pct) / pct))
+
                     s.commit()
             except Exception:
                 s.rollback()

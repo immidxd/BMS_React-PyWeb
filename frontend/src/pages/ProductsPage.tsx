@@ -33,7 +33,7 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
   const [onlyRostovka, setOnlyRostovka] = useState<boolean>(false);
   const [selectedShipmentId, setSelectedShipmentId] = useState<number | undefined>(undefined);
   const [visibleOnly, setVisibleOnly] = useState<boolean>(false);
-  const [sortBy, setSortBy] = useState<string>('id');
+  const [sortBy, setSortBy] = useState<string>('created_at');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
   const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([]);
   const [searchInsights, setSearchInsights] = useState<any>(null);
@@ -142,7 +142,7 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
       const params = new URLSearchParams(location.search);
       const pn = Number(params.get('page')) || 1;
       const ps = Number(params.get('per_page')) || 20;
-      const sb = params.get('sort_by') || 'id';
+      const sb = params.get('sort_by') || 'created_at';
       const sd = (params.get('sort_dir') as 'asc' | 'desc') || 'desc';
       const ou = params.get('only_unsold') === 'true';
       const op = params.get('only_problematic') === 'true';
@@ -228,17 +228,15 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
                 <option key={s.id} value={s.id}>{s.name} ({s.count})</option>
               ))}
             </select>
-            <select value={`${sortBy}|${sortDir}`}
-              onChange={e => { const [f, d] = e.target.value.split('|'); setSortBy(f); setSortDir(d as 'asc' | 'desc'); setPage(1); }}
+            <select value={sortBy}
+              onChange={e => { setSortBy(e.target.value); setSortDir('desc'); setPage(1); }}
               className="text-xs border border-gray-200 dark:border-gray-600 rounded px-2 py-1.5 bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-200 focus:outline-none focus:ring-1 focus:ring-blue-400">
-              <option value="id|desc">Нові спочатку (ID ↓)</option>
-              <option value="id|asc">Старі спочатку (ID ↑)</option>
-              <option value="price|desc">Від найдорожчого</option>
-              <option value="price|asc">Від найдешевшого</option>
-              <option value="dateadded|desc">Дата завозу (нові)</option>
-              <option value="dateadded|asc">Дата завозу (старі)</option>
-              <option value="created_at|desc">Дата додання (нові)</option>
-              <option value="created_at|asc">Дата додання (старі)</option>
+              <option value="created_at">Найновіші</option>
+              <option value="created_at_asc">Найстаріші</option>
+              <option value="delivery_date">По завозу</option>
+              <option value="last_sold">Останні продані</option>
+              <option value="price_desc">Від найдорожчого</option>
+              <option value="price_asc">Від найдешевшого</option>
             </select>
             <Button type="primary" icon={<PlusOutlined />} onClick={() => navigate('/products/create')}>
               Додати товар

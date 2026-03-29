@@ -157,7 +157,7 @@ def get_products(
             FROM order_items oi
             JOIN orders o ON o.id = oi.order_id
             WHERE oi.product_id IS NOT NULL
-              AND o.order_status_id NOT IN (5)
+              AND o.order_status_id IN (1, 7)
             GROUP BY oi.product_id
         ) sold ON sold.product_id = p.id
         LEFT JOIN (
@@ -166,6 +166,15 @@ def get_products(
             GROUP BY productnumber
             HAVING COUNT(DISTINCT COALESCE(brandid, 0)) > 1
         ) dup ON dup.productnumber = p.productnumber
+        LEFT JOIN deliveries d ON p.deliveryid = d.id
+        LEFT JOIN (
+            SELECT oi.product_id, MAX(o.order_date) AS last_sale_date
+            FROM order_items oi
+            JOIN orders o ON o.id = oi.order_id
+            WHERE oi.product_id IS NOT NULL
+              AND o.order_status_id IN (1, 7)
+            GROUP BY oi.product_id
+        ) last_sale ON last_sale.product_id = p.id
         """
         
         where_conditions = []
@@ -339,14 +348,26 @@ def get_products(
         total_result = db.execute(text(count_sql), params)
         total = total_result.scalar()
         
-        # Add ORDER BY
-        allowed_sort_columns = {"id", "dateadded", "price", "created_at", "updated_at"}
-        if sort_by in allowed_sort_columns:
-            sort_col = f"p.{sort_by}"
-            order_dir = "ASC" if sort_dir.lower() == "asc" else "DESC"
-            base_sql += f" ORDER BY {sort_col} {order_dir}"
+        # Add ORDER BY — compound sort modes + simple column fallback
+        sort_map = {
+            "created_at":     "p.created_at DESC",
+            "created_at_asc": "p.created_at ASC",
+            "delivery_date":  "d.deliverydate DESC NULLS LAST, p.created_at DESC",
+            "last_sold":      "last_sale.last_sale_date DESC NULLS LAST, p.id DESC",
+            "price_desc":     "p.price DESC NULLS LAST",
+            "price_asc":      "p.price ASC NULLS LAST",
+        }
+        sort_key = sort_by if sort_by in sort_map else f"{sort_by}_{sort_dir}"
+        if sort_key in sort_map:
+            base_sql += f" ORDER BY {sort_map[sort_key]}"
         else:
-            base_sql += " ORDER BY p.id DESC"
+            # Fallback for simple column sorts
+            allowed_simple = {"id", "dateadded", "price", "created_at", "updated_at"}
+            if sort_by in allowed_simple:
+                order_dir = "ASC" if sort_dir.lower() == "asc" else "DESC"
+                base_sql += f" ORDER BY p.{sort_by} {order_dir}"
+            else:
+                base_sql += " ORDER BY p.created_at DESC"
         
         # Add LIMIT and OFFSET
         base_sql += " LIMIT :limit OFFSET :offset"
@@ -666,10 +687,12 @@ def sync_product_statuses(db: Session) -> Dict[str, int]:
         r1 = db.execute(text("""
             WITH
             id_sold AS (
-                SELECT product_id, COUNT(*) AS cnt
-                FROM order_items
-                WHERE product_id IS NOT NULL
-                GROUP BY product_id
+                SELECT oi.product_id, COUNT(*) AS cnt
+                FROM order_items oi
+                JOIN orders o ON o.id = oi.order_id
+                WHERE oi.product_id IS NOT NULL
+                  AND o.order_status_id IN (1, 7)
+                GROUP BY oi.product_id
             ),
             notes_sold AS (
                 SELECT p.id, COUNT(oi.id) AS cnt
@@ -719,7 +742,9 @@ def sync_product_statuses(db: Session) -> Dict[str, int]:
                           p2.id,
                           COALESCE(
                               (SELECT COUNT(*) FROM order_items oi
-                               WHERE oi.product_id = p2.id), 0
+                               JOIN orders o ON o.id = oi.order_id
+                               WHERE oi.product_id = p2.id
+                                 AND o.order_status_id IN (1, 7)), 0
                           ) AS sold_count,
                           COALESCE(p2.quantity, 1) AS qty
                       FROM products p2

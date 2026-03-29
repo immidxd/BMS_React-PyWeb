@@ -190,7 +190,7 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
             title: 'Номер', dataIndex: 'productnumber', key: 'productnumber', width: 80,
             render: (text: string, record: Product) => (
                 <div className="flex flex-col gap-0.5">
-                    <button className="text-primary-600 hover:underline text-xs text-left" onClick={() => { setDetailsId(record.id); setDetailsOpen(true); }}>{text}</button>
+                    <span className="text-xs text-left font-medium text-gray-800 dark:text-gray-200">{text}</span>
                     {record.is_rostovka && (
                         <Tooltip title={`Ростовка — набір розмірів (${record.quantity} од.)`}>
                             <span className="inline-flex items-center gap-0.5 px-1 py-0 rounded text-[9px] font-semibold bg-purple-100 text-purple-700 border border-purple-200 w-fit cursor-help">
@@ -256,6 +256,10 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
                     displayStatus = 'Продано';
                 } else if (sold > 0 && sold < qty) {
                     displayStatus = `Продано ${sold}/${qty}`;
+                } else if (sold === 0 && !staticStatus) {
+                    // sold_count=0 + немає статусу в БД → вважаємо непроданим
+                    // (узгоджено з backend only_unsold: NULL OR 'Непродано')
+                    displayStatus = 'Непродано';
                 }
                 const colorMap: Record<string, string> = {
                     'Непродано': 'green',
@@ -323,7 +327,7 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
 
     return (
         <TableContainer className="max-h-[calc(100vh-220px)]" onContextMenu={handleContextMenu}>
-            <ProductDetailsModal productId={detailsId} open={detailsOpen} onClose={() => setDetailsOpen(false)} onSaved={() => setDetailsOpen(false)} />
+            <ProductDetailsModal productId={detailsId} open={detailsOpen} onClose={() => setDetailsOpen(false)} />
             
             <div className="overflow-x-auto rounded-lg shadow-md border border-gray-200 bg-white dark:bg-gray-800 dark:border-gray-700">
                 <Table
@@ -347,9 +351,10 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
                         const conflictTitle = issues.join(' • ');
                         return {
                             title: hasIssue ? `⚠ ${conflictTitle}` : undefined,
-                            className: hasIssue
+                            className: `cursor-pointer ${hasIssue
                                 ? 'bg-orange-50 dark:bg-orange-900/20 border-l-4 border-orange-400 hover:bg-orange-100 dark:hover:bg-orange-900/40'
-                                : '',
+                                : 'hover:bg-gray-50 dark:hover:bg-gray-700/50'}`,
+                            onDoubleClick: () => { setDetailsId(record.id); setDetailsOpen(true); },
                         };
                     }}
                     // y: заповнюємо висоту вікна мінус шапка сторінки

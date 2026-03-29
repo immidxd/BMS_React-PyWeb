@@ -152,78 +152,65 @@ def parse_supplier_from_sheet_title(title: str) -> Optional[str]:
 
 
 def _get_or_create_supplier(session: Session, name: str) -> Optional[int]:
-    """Get or create a supplier row by name, using aliases for dedup.
+    """Get or create a supplier row by company_name.
 
     Lookup order:
-      1. Check supplier_aliases for this name → existing supplier.
-      2. Check suppliers.name directly (legacy fallback).
-      3. Create new supplier + alias.
-    This ensures that merged suppliers are never re-created on re-parse.
+      1. Check suppliers.company_name directly.
+      2. Check synonyms_json for alias match.
+      3. Create new supplier.
     """
     if not name or not name.strip():
         return None
     from sqlalchemy import text
     n = name.strip()
 
-    # 1. Alias lookup (canonical dedup mechanism)
+    # 1. Direct company_name lookup
     row = session.execute(
-        text("SELECT supplier_id FROM supplier_aliases WHERE alias_name = :n"), {"n": n}
+        text("SELECT id FROM suppliers WHERE company_name = :n"), {"n": n}
     ).fetchone()
     if row:
         return row[0]
 
-    # 2. Direct name lookup (legacy data / first-time before alias exists)
+    # 2. Synonyms lookup (jsonb array of alias strings)
     row = session.execute(
-        text("SELECT id FROM suppliers WHERE name = :n"), {"n": n}
+        text("SELECT id FROM suppliers WHERE synonyms_json IS NOT NULL AND synonyms_json @> CAST(:syn AS jsonb)"),
+        {"syn": f'["{n}"]'}
     ).fetchone()
     if row:
-        # Ensure alias exists for future lookups
-        session.execute(
-            text("INSERT INTO supplier_aliases (alias_name, supplier_id) VALUES (:n, :sid) ON CONFLICT DO NOTHING"),
-            {"n": n, "sid": row[0]}
-        )
-        session.flush()
         return row[0]
 
-    # 3. Create new supplier + alias
+    # 3. Create new supplier
     row = session.execute(
-        text("INSERT INTO suppliers (name) VALUES (:n) RETURNING id"), {"n": n}
+        text("INSERT INTO suppliers (company_name) VALUES (:n) RETURNING id"), {"n": n}
     ).fetchone()
     session.flush()
-    sid = row[0] if row else None
-    if sid:
-        session.execute(
-            text("INSERT INTO supplier_aliases (alias_name, supplier_id) VALUES (:n, :sid) ON CONFLICT DO NOTHING"),
-            {"n": n, "sid": sid}
-        )
-        session.flush()
-    return sid
+    return row[0] if row else None
 
 
 def _get_or_create_shipment(session: Session, sheet_name: str,
                              shipment_date: Optional[date],
                              supplier_id: Optional[int]) -> Optional[int]:
-    """Get or create a shipment record for a sheet. Returns shipment ID.
+    """Get or create a delivery record for a sheet. Returns delivery ID.
 
-    Dedup by sheet_name — re-parsing the same sheet reuses the shipment.
+    Dedup by deliveryname — re-parsing the same sheet reuses the delivery.
     """
     if not sheet_name:
         return None
     from sqlalchemy import text
     row = session.execute(
-        text("SELECT id FROM shipments WHERE sheet_name = :sn"),
+        text("SELECT id FROM deliveries WHERE deliveryname = :sn"),
         {"sn": sheet_name}
     ).fetchone()
     if row:
         # Update supplier_id if it changed (e.g. supplier was merged)
         session.execute(
-            text("UPDATE shipments SET supplier_id = :sid, updated_at = NOW() WHERE id = :id"),
+            text("UPDATE deliveries SET supplier_id = :sid WHERE id = :id"),
             {"sid": supplier_id, "id": row[0]}
         )
         session.flush()
         return row[0]
     row = session.execute(
-        text("""INSERT INTO shipments (sheet_name, shipment_date, supplier_id)
+        text("""INSERT INTO deliveries (deliveryname, deliverydate, supplier_id)
                 VALUES (:sn, :sd, :sid) RETURNING id"""),
         {"sn": sheet_name, "sd": shipment_date, "sid": supplier_id}
     ).fetchone()
@@ -233,33 +220,42 @@ def _get_or_create_shipment(session: Session, sheet_name: str,
 
 # ── Reference-table helpers ──────────────────────────────────────────────────
 def _get_or_create(session: Session, model, unique_field: str, value: str):
-    """Get or create a reference-table row by unique string field."""
+    """Get or create a reference-table row by unique string field.
+
+    NOTE: DB collation is 'C' so ILIKE/LOWER don't work for Cyrillic.
+    We load all rows and compare via Python lower() instead.
+    Reference tables are tiny (< 100 rows) so this is safe.
+    """
     value = value.strip()
     if not value:
         return None
-    obj = session.query(model).filter(
-        getattr(model, unique_field).ilike(value)
-    ).first()
-    if not obj:
-        obj = model(**{unique_field: value})
-        session.add(obj)
-        session.flush()
+    val_lower = value.lower()
+    all_rows = session.query(model).all()
+    for row in all_rows:
+        db_val = getattr(row, unique_field, None)
+        if db_val and db_val.strip().lower() == val_lower:
+            return row
+    obj = model(**{unique_field: value})
+    session.add(obj)
+    session.flush()
     return obj
 
 
 # ── Products parser ───────────────────────────────────────────────────────────
 
 def _get_or_create_condition(session: Session, name: str) -> Optional[int]:
-    """Get or create a condition row by name."""
+    """Get or create a condition row by name.
+    Uses Python lower() comparison (DB collation 'C' breaks SQL LOWER for Cyrillic).
+    """
     if not name or not name.strip():
         return None
     from sqlalchemy import text
     n = name.strip()
-    row = session.execute(
-        text("SELECT id FROM conditions WHERE LOWER(conditionname)=LOWER(:n)"), {"n": n}
-    ).fetchone()
-    if row:
-        return row[0]
+    n_lower = n.lower()
+    rows = session.execute(text("SELECT id, conditionname FROM conditions")).fetchall()
+    for r in rows:
+        if r[1] and r[1].strip().lower() == n_lower:
+            return r[0]
     row = session.execute(
         text("INSERT INTO conditions (conditionname) VALUES (:n) RETURNING id"), {"n": n}
     ).fetchone()
@@ -519,8 +515,6 @@ def _parse_products_sheet(
                 full_match.clonednumbers = clones
             if cm_val:
                 full_match.measurementscm = cm_val
-            if supplier_id and not full_match.supplierid:
-                full_match.supplierid = supplier_id
             # Логіка oldprice: якщо ціна з журналу відрізняється — зберегти стару
             if price_float and full_match.price and price_float != full_match.price:
                 full_match.oldprice = full_match.price
@@ -528,8 +522,8 @@ def _parse_products_sheet(
             elif price_float and not full_match.price:
                 full_match.price = price_float
             full_match.updated_at = datetime.utcnow()
-            if shipment_id and not full_match.shipment_id:
-                full_match.shipment_id = shipment_id
+            if shipment_id and not full_match.deliveryid:
+                full_match.deliveryid = shipment_id
             # ── Productnumber sync: якщо в Google Sheets номер відрізняється
             # від того що в БД — запам'ятати для відкладеного перейменування.
             # Застосовується після основного циклу двофазно (temp → final),
@@ -567,10 +561,8 @@ def _parse_products_sheet(
                     orphan.description = desc_val
                 if price_float:
                     orphan.price = price_float
-                if supplier_id and not orphan.supplierid:
-                    orphan.supplierid = supplier_id
-                if shipment_id and not orphan.shipment_id:
-                    orphan.shipment_id = shipment_id
+                if shipment_id and not orphan.deliveryid:
+                    orphan.deliveryid = shipment_id
                 orphan.updated_at = datetime.utcnow()
                 if pnum != orphan.productnumber:
                     pending_renames[orphan.id] = pnum
@@ -602,8 +594,7 @@ def _parse_products_sheet(
                     statusid              = status_id,
                     manufacturercountryid = mfr_id,
                     ownercountryid        = own_id,
-                    supplierid            = supplier_id,
-                    shipment_id           = shipment_id,
+                    deliveryid            = shipment_id,
                 )
                 session.add(product)
                 try:
@@ -657,8 +648,7 @@ def _parse_products_sheet(
                     statusid              = status_id,
                     manufacturercountryid = mfr_id,
                     ownercountryid        = own_id,
-                    supplierid            = supplier_id,
-                    shipment_id           = shipment_id,
+                    deliveryid            = shipment_id,
                 )
                 session.add(product)
                 try:
@@ -711,8 +701,7 @@ def _parse_products_sheet(
                     statusid              = status_id,
                     manufacturercountryid = mfr_id,
                     ownercountryid        = own_id,
-                    supplierid            = supplier_id,
-                    shipment_id           = shipment_id,
+                    deliveryid            = shipment_id,
                 )
                 session.add(product)
                 try:
@@ -791,11 +780,11 @@ def _get_or_create_country(session: Session, name: str) -> Optional[int]:
         return None
     from sqlalchemy import text
     name = name.strip()
-    row = session.execute(
-        text("SELECT id FROM countries WHERE LOWER(countryname)=LOWER(:n)"), {"n": name}
-    ).fetchone()
-    if row:
-        return row[0]
+    name_lower = name.lower()
+    rows = session.execute(text("SELECT id, countryname FROM countries")).fetchall()
+    for r in rows:
+        if r[1] and r[1].strip().lower() == name_lower:
+            return r[0]
     row = session.execute(
         text("INSERT INTO countries (countryname) VALUES (:n) RETURNING id"), {"n": name}
     ).fetchone()
@@ -808,13 +797,13 @@ def _get_or_create_subtype(session: Session, name: str, type_id: Optional[int]) 
         return None
     from sqlalchemy import text
     name = name.strip()
+    name_lower = name.lower()
+    rows = session.execute(text("SELECT id, subtypename FROM subtypes")).fetchall()
+    for r in rows:
+        if r[1] and r[1].strip().lower() == name_lower:
+            return r[0]
     row = session.execute(
-        text("SELECT id FROM subtypes WHERE LOWER(subtypename)=LOWER(:n)"), {"n": name}
-    ).fetchone()
-    if row:
-        return row[0]
-    row = session.execute(
-        text("INSERT INTO subtypes (subtypename, type_id) VALUES (:n, :t) RETURNING id"),
+        text("INSERT INTO subtypes (subtypename, typeid) VALUES (:n, :t) RETURNING id"),
         {"n": name, "t": type_id}
     ).fetchone()
     session.flush()
@@ -861,10 +850,16 @@ def _find_or_create_client(session: Session, name: str, phone: str,
     if not candidate and telegram:
         candidate = session.query(Client).filter(Client.telegram == telegram).first()
     if not candidate:
-        candidate = session.query(Client).filter(
-            Client.first_name.ilike(first),
-            Client.last_name.ilike(last) if last else Client.last_name.is_(None),
-        ).first()
+        # Python-side name comparison (collation 'C' breaks ilike for Cyrillic)
+        first_lower = first.lower()
+        last_lower = last.lower() if last else None
+        all_clients = session.query(Client).all()
+        for c in all_clients:
+            c_first = (c.first_name or '').strip().lower()
+            c_last = (c.last_name or '').strip().lower() if c.last_name else None
+            if c_first == first_lower and c_last == last_lower:
+                candidate = c
+                break
 
     if candidate:
         # Enrich existing client with any new contact data
@@ -932,7 +927,8 @@ def _resolve_payment_status(session: Session, raw: str) -> Optional[int]:
     raw_up = raw.strip().upper()
     for key, mapped in _PAYMENT_STATUS_MAP.items():
         if key in raw_up:
-            ps = session.query(PaymentStatus).filter(PaymentStatus.name.ilike(mapped)).first()
+            all_ps = session.query(PaymentStatus).all()
+            ps = next((p for p in all_ps if p.status_name and p.status_name.strip().lower() == mapped.lower()), None)
             if ps:
                 return ps.id
     return None
@@ -956,11 +952,12 @@ def _resolve_delivery_method(session: Session, raw: str) -> Optional[int]:
                 mapped = val
                 break
     target_name = mapped or raw_clean
-    dm = session.query(DeliveryMethod).filter(DeliveryMethod.name.ilike(target_name)).first()
+    all_dm = session.query(DeliveryMethod).all()
+    dm = next((d for d in all_dm if d.method_name and d.method_name.strip().lower() == target_name.lower()), None)
     if dm:
         return dm.id
     from backend.models.models import DeliveryMethod as DM
-    dm = DM(name=target_name)
+    dm = DM(method_name=target_name)
     session.add(dm)
     session.flush()
     return dm.id
@@ -973,11 +970,13 @@ def _resolve_order_status(session: Session, raw: str) -> Optional[int]:
     raw_up = raw.strip().upper()
     mapped = _ORDER_STATUS_MAP.get(raw_up)
     if mapped:
-        os = session.query(OrderStatus).filter(OrderStatus.status_name.ilike(mapped)).first()
+        all_os = session.query(OrderStatus).all()
+        os = next((o for o in all_os if o.status_name and o.status_name.strip().lower() == mapped.lower()), None)
         if os:
             return os.id
     # Fallback: "Нове"
-    os = session.query(OrderStatus).filter(OrderStatus.status_name == "Нове").first()
+    all_os = session.query(OrderStatus).all()
+    os = next((o for o in all_os if o.status_name and o.status_name.strip().lower() == 'нове'), None)
     return os.id if os else None
 
 
@@ -1041,7 +1040,7 @@ def _resolve_order_product(session, pnum_clean: str, size_hints: dict):
 
     # ── Step 3: clonednumbers fallback ───────────────────────────────────────
     return session.query(Product).filter(
-        Product.clonednumbers.ilike(f"%{pnum_with_hash}%")
+        Product.clonednumbers.like(f"%{pnum_with_hash}%")
     ).first()
 
 
@@ -1263,8 +1262,12 @@ def _parse_orders_sheet(
 
             product = _resolve_order_product(session, pnum_clean, size_hints)
 
+            if not product:
+                logger.debug("Product not found for pnum=%s, skipping order_item", pnum_clean)
+                continue
+
             # Oldprice logic: якщо ціна продажу відрізняється від журнальної
-            if product and price and price > 0 and product.price:
+            if price and price > 0 and product.price:
                 if price != product.price:
                     product.oldprice = product.price
                     product.price = price
@@ -1272,10 +1275,9 @@ def _parse_orders_sheet(
 
             item = OrderItem(
                 order_id   = order.id,
-                product_id = product.id if product else None,
+                product_id = product.id,
                 quantity   = 1,
                 price      = price,
-                notes      = pnum if not product else None,  # keep raw if unresolved
             )
             session.add(item)
             items_added += 1
@@ -1575,24 +1577,7 @@ def run_products_parsing(
         total_updated += result["updated"]
         total_skipped += result["skipped"]
 
-    # Update shipment aggregate stats (items_count, total_cost)
     if shipment_ids:
-        from sqlalchemy import text
-        session.execute(text("""
-            UPDATE shipments s SET
-                items_count = sub.cnt,
-                total_cost  = sub.cost,
-                updated_at  = NOW()
-            FROM (
-                SELECT shipment_id,
-                       COUNT(*) AS cnt,
-                       COALESCE(SUM(price), 0) AS cost
-                FROM products
-                WHERE shipment_id = ANY(:ids)
-                GROUP BY shipment_id
-            ) sub
-            WHERE s.id = sub.shipment_id
-        """), {"ids": shipment_ids})
         session.commit()
 
     return {
