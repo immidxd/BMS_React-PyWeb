@@ -361,11 +361,11 @@ def get_products(
         
         # Add ORDER BY — compound sort modes + simple column fallback
         sort_map = {
-            # dateadded = дата з назви аркуша журналу (реальна дата завозу/запису)
-            # created_at = дата вставки в БД (залежить від порядку парсингу, не від дати запису)
-            "created_at":     "p.dateadded DESC NULLS LAST, p.id DESC",
-            "created_at_asc": "p.dateadded ASC NULLS LAST, p.id ASC",
-            "delivery_date":  "d.deliverydate DESC NULLS LAST, p.dateadded DESC NULLS LAST, p.id DESC",
+            # d.deliverydate = дата з delivery (назва аркуша журналу = реальна дата завозу)
+            # p.dateadded = fallback дата, для аркушів без парсованої дати = date.today()
+            "created_at":     "d.deliverydate DESC NULLS LAST, p.dateadded DESC NULLS LAST, p.id DESC",
+            "created_at_asc": "d.deliverydate ASC NULLS LAST, p.dateadded ASC NULLS LAST, p.id ASC",
+            "delivery_date":  "d.deliverydate DESC NULLS LAST, p.id DESC",
             "last_sold":      "last_sale.last_sale_date DESC NULLS LAST, p.id DESC",
             "price_desc":     "p.price DESC NULLS LAST",
             "price_asc":      "p.price ASC NULLS LAST",
@@ -533,12 +533,12 @@ def get_product_filters(db: Session) -> Dict[str, Any]:
         countries = fetch_pairs("SELECT id, countryname FROM countries ORDER BY countryname")
 
         shipments_rows = db.execute(text(
-            """SELECT s.id, s.sheet_name, s.shipment_date, COUNT(p.id) AS product_count
-               FROM shipments s
-               JOIN products p ON p.shipment_id = s.id
-               GROUP BY s.id, s.sheet_name, s.shipment_date
+            """SELECT d.id, d.deliveryname, d.deliverydate, COUNT(p.id) AS product_count
+               FROM deliveries d
+               JOIN products p ON p.deliveryid = d.id
+               GROUP BY d.id, d.deliveryname, d.deliverydate
                HAVING COUNT(p.id) > 0
-               ORDER BY s.shipment_date DESC NULLS LAST, s.id DESC"""
+               ORDER BY d.deliverydate DESC NULLS LAST, d.id DESC"""
         )).fetchall()
 
         # Size ranges per system — expand range values into individual sizes
