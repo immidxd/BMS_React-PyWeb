@@ -361,9 +361,11 @@ def get_products(
         
         # Add ORDER BY — compound sort modes + simple column fallback
         sort_map = {
-            "created_at":     "p.created_at DESC",
-            "created_at_asc": "p.created_at ASC",
-            "delivery_date":  "d.deliverydate DESC NULLS LAST, p.created_at DESC",
+            # dateadded = дата з назви аркуша журналу (реальна дата завозу/запису)
+            # created_at = дата вставки в БД (залежить від порядку парсингу, не від дати запису)
+            "created_at":     "p.dateadded DESC NULLS LAST, p.id DESC",
+            "created_at_asc": "p.dateadded ASC NULLS LAST, p.id ASC",
+            "delivery_date":  "d.deliverydate DESC NULLS LAST, p.dateadded DESC NULLS LAST, p.id DESC",
             "last_sold":      "last_sale.last_sale_date DESC NULLS LAST, p.id DESC",
             "price_desc":     "p.price DESC NULLS LAST",
             "price_asc":      "p.price ASC NULLS LAST",
