@@ -256,10 +256,6 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
                     displayStatus = 'Продано';
                 } else if (sold > 0 && sold < qty) {
                     displayStatus = `Продано ${sold}/${qty}`;
-                } else if (sold === 0 && !staticStatus) {
-                    // sold_count=0 + немає статусу в БД → вважаємо непроданим
-                    // (узгоджено з backend only_unsold: NULL OR 'Непродано')
-                    displayStatus = 'Непродано';
                 }
                 const colorMap: Record<string, string> = {
                     'Непродано': 'green',

@@ -41,6 +41,7 @@ async def get_products(
     brandids: Optional[List[int]] = Query(None),
     genderids: Optional[List[int]] = Query(None),
     colorids: Optional[List[int]] = Query(None),
+    color_group_ids: Optional[List[int]] = Query(None),
     statusids: Optional[List[int]] = Query(None),
     conditionids: Optional[List[int]] = Query(None),
     # Price / size
@@ -87,6 +88,7 @@ async def get_products(
             brandids=brandids,
             genderids=genderids,
             colorids=colorids,
+            color_group_ids=color_group_ids,
             statusids=statusids,
             conditionids=conditionids,
             min_price=min_price,

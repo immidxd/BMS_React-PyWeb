@@ -1111,6 +1111,11 @@ def _run_sheets_job(job_id: int, target: str, mode: str):
         else:
             result = run_full_parsing(sess, mode=mode, progress_cb=progress_cb)
 
+        # Strip internal tracking sets before logging
+        for _key in ("seen_product_ids", "touched_product_ids"):
+            if isinstance(result, dict):
+                result.pop(_key, None)
+
         job = sess.query(ParsingJob).filter(ParsingJob.id == job_id).first()
         if job:
             job.status = "succeeded"

@@ -248,6 +248,17 @@ def get_products(
                 where_conditions.append("p.colorid = ANY(:colorids)")
                 params['colorids'] = filters.colorids
 
+            # Фільтр по кольоровій групі (базовий колір)
+            if hasattr(filters, 'color_group_ids') and filters.color_group_ids:
+                where_conditions.append("""
+                    EXISTS (
+                        SELECT 1 FROM color_group_members cgm
+                        WHERE cgm.color_id = p.colorid
+                        AND cgm.group_id = ANY(:color_group_ids)
+                    )
+                """)
+                params['color_group_ids'] = filters.color_group_ids
+
             if filters.statusids:
                 where_conditions.append("p.statusid = ANY(:statusids)")
                 params['statusids'] = filters.statusids
@@ -500,6 +511,16 @@ def get_product_filters(db: Session) -> Dict[str, Any]:
         brands = fetch_pairs("SELECT id, brandname FROM brands ORDER BY brandname")
         genders = fetch_pairs("SELECT id, gendername FROM genders ORDER BY gendername")
         colors = fetch_pairs("SELECT id, colorname FROM colors ORDER BY colorname")
+        # Кольорові групи + відтінки (для нового UI фільтра)
+        color_groups_rows = db.execute(text("""
+            SELECT cg.id, cg.name, cg.hex_code, cg.display_order,
+                   COUNT(DISTINCT p.id) as product_count
+            FROM color_groups cg
+            LEFT JOIN color_group_members cgm ON cgm.group_id = cg.id
+            LEFT JOIN products p ON p.colorid = cgm.color_id
+            GROUP BY cg.id, cg.name, cg.hex_code, cg.display_order
+            ORDER BY cg.display_order
+        """)).fetchall()
         statuses = fetch_pairs("SELECT id, statusname FROM statuses ORDER BY statusname")
         conditions = fetch_pairs("SELECT id, conditionname FROM conditions ORDER BY conditionname")
 
@@ -530,6 +551,10 @@ def get_product_filters(db: Session) -> Dict[str, Any]:
             "brands": [{"id": b[0], "name": b[1]} for b in brands],
             "genders": [{"id": g[0], "name": g[1]} for g in genders],
             "colors": [{"id": c[0], "name": c[1]} for c in colors],
+            "color_groups": [
+                {"id": cg[0], "name": cg[1], "hex": cg[2], "order": cg[3], "count": cg[4]}
+                for cg in color_groups_rows
+            ],
             "statuses": [{"id": s[0], "name": s[1]} for s in statuses],
             "conditions": [{"id": c[0], "name": c[1]} for c in conditions],
             "countries": [{"id": c[0], "name": c[1]} for c in countries],

@@ -47,9 +47,27 @@ class Status(Base):
     statusname = Column(String(100), unique=True, nullable=False)
     statusdescription = Column(Text, nullable=True)
 
+class ColorGroup(Base):
+    """Базові (прості) кольори: чорний, білий, сірий, ..."""
+    __tablename__ = "color_groups"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(50), unique=True, nullable=False)       # "чорний"
+    hex_code = Column(String(7), nullable=True)                   # "#000000" for UI
+    display_order = Column(Integer, default=0)
+
+
+class ColorGroupMember(Base):
+    """M2M: відтінок може належати кільком базовим групам."""
+    __tablename__ = "color_group_members"
+
+    color_id = Column(Integer, ForeignKey("colors.id", ondelete="CASCADE"), primary_key=True)
+    group_id = Column(Integer, ForeignKey("color_groups.id", ondelete="CASCADE"), primary_key=True)
+
+
 class Color(Base):
     __tablename__ = "colors"
-    
+
     id = Column(Integer, primary_key=True, index=True)
     colorname = Column(String(100), unique=True, nullable=False)
 

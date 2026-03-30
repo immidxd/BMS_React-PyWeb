@@ -79,11 +79,20 @@ export interface ProductListResponse {
     pages: number;
 }
 
+export interface ColorGroup {
+    id: number;
+    name: string;
+    hex: string;
+    order: number;
+    count: number;
+}
+
 export interface ProductFilters {
     brands: ReferenceItem[];
     types: ReferenceItem[];
     subtypes: ReferenceItem[];
     colors: ReferenceItem[];
+    color_groups?: ColorGroup[];
     countries: ReferenceItem[];
     statuses: ReferenceItem[];
     conditions: ReferenceItem[];
@@ -119,6 +128,7 @@ export interface ProductFilter {
     brandids?: number[];
     genderids?: number[];
     colorids?: number[];
+    color_group_ids?: number[];
     statusids?: number[];
     conditionids?: number[];
     // Price range

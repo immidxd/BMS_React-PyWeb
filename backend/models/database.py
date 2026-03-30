@@ -76,8 +76,26 @@ def init_db():
             conn.execute(text("alter table if exists types alter column typename type varchar(100)"))
             conn.execute(text("alter table if exists subtypes alter column subtypename type varchar(100)"))
             conn.execute(text("alter table if exists conditions alter column conditionname type varchar(100)"))
+            # phone_number varchar(20) → 255 (Google Sheets іноді містить URL замість телефону)
+            conn.execute(text("alter table if exists clients alter column phone_number type varchar(255)"))
             # Знімаємо обмеження total_amount >= 0: повернення/знижки можуть мати від'ємну суму
             conn.execute(text("alter table if exists orders drop constraint if exists orders_total_amount_check"))
+            # Таблиці для системи кольорових груп
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS color_groups (
+                    id SERIAL PRIMARY KEY,
+                    name VARCHAR(50) UNIQUE NOT NULL,
+                    hex_code VARCHAR(7),
+                    display_order INT DEFAULT 0
+                )
+            """))
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS color_group_members (
+                    color_id INT REFERENCES colors(id) ON DELETE CASCADE,
+                    group_id INT REFERENCES color_groups(id) ON DELETE CASCADE,
+                    PRIMARY KEY (color_id, group_id)
+                )
+            """))
 
         
         # Populate initial reference data (only adds basic reference data, no test data)

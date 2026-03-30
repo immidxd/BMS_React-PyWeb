@@ -1,6 +1,6 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useCallback } from 'react';
 import { Select } from 'antd';
-import type { ProductFilters, ProductFilter } from '../../types/product';
+import type { ProductFilters, ProductFilter, ColorGroup } from '../../types/product';
 
 interface ProductFiltersPanelProps {
   filters: ProductFilters;
@@ -121,12 +121,24 @@ const ProductFiltersPanel: React.FC<ProductFiltersPanelProps> = ({ filters, sele
     selectedFilters.max_price !== undefined ? String(selectedFilters.max_price) : ''
   );
 
-  const toggle = (field: 'typeids' | 'brandids' | 'genderids' | 'colorids' | 'conditionids' | 'statusids') =>
+  const toggle = (field: 'typeids' | 'brandids' | 'genderids' | 'colorids' | 'conditionids' | 'statusids' | 'color_group_ids') =>
     (id: number, checked: boolean) => {
       const current: number[] = (selectedFilters as any)[field] || [];
       const updated = checked ? [...current.filter(x => x !== id), id] : current.filter(x => x !== id);
       onFilterChange({ ...selectedFilters, [field]: updated.length > 0 ? updated : undefined });
     };
+
+  const toggleColorGroup = useCallback((groupId: number) => {
+    const current = selectedFilters.color_group_ids || [];
+    const isActive = current.includes(groupId);
+    const updated = isActive ? current.filter(x => x !== groupId) : [...current, groupId];
+    onFilterChange({
+      ...selectedFilters,
+      color_group_ids: updated.length > 0 ? updated : undefined,
+      // Очищуємо colorids при виборі групи
+      colorids: undefined,
+    });
+  }, [selectedFilters, onFilterChange]);
 
   const applyPrice = () => {
     onFilterChange({
@@ -139,7 +151,7 @@ const ProductFiltersPanel: React.FC<ProductFiltersPanelProps> = ({ filters, sele
   const countActive = (field: string) => ((selectedFilters as any)[field] || []).length;
 
   const totalActive = [
-    'typeids','brandids','genderids','colorids','conditionids','statusids',
+    'typeids','brandids','genderids','colorids','color_group_ids','conditionids','statusids',
   ].reduce((acc, f) => acc + countActive(f), 0)
     + (selectedFilters.min_price !== undefined || selectedFilters.max_price !== undefined ? 1 : 0)
     + (selectedFilters.sizeeu?.length || 0);
@@ -194,16 +206,71 @@ const ProductFiltersPanel: React.FC<ProductFiltersPanelProps> = ({ filters, sele
         </FilterSection>
       )}
 
-      {/* Колір */}
-      {filters.colors?.length > 0 && (
-        <FilterSection title={SECTION_LABELS.colors} badge={countActive('colorids')}>
-          <MultiCheckList
-            items={filters.colors}
-            selected={(selectedFilters as any).colorids || []}
-            onToggle={toggle('colorids')}
-          />
-        </FilterSection>
-      )}
+      {/* Колір — базові групи + пошук відтінків */}
+      <FilterSection
+        title={SECTION_LABELS.colors}
+        badge={(selectedFilters.color_group_ids?.length || 0) + (selectedFilters.colorids?.length || 0)}
+      >
+        {/* Базові кольори — чіпи */}
+        {filters.color_groups && filters.color_groups.length > 0 && (
+          <div className="flex flex-wrap gap-1.5 mb-2">
+            {filters.color_groups.map((cg: ColorGroup) => {
+              const isActive = (selectedFilters.color_group_ids || []).includes(cg.id);
+              const isWhite = cg.hex?.toLowerCase() === '#ffffff';
+              return (
+                <button
+                  key={cg.id}
+                  type="button"
+                  onClick={() => toggleColorGroup(cg.id)}
+                  title={`${cg.name} (${cg.count})`}
+                  className={`inline-flex items-center gap-1 px-2 py-1 rounded-full text-[11px] font-medium transition-all border ${
+                    isActive
+                      ? 'ring-2 ring-blue-400 border-blue-400 bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300'
+                      : 'border-gray-200 dark:border-gray-600 hover:border-gray-400 text-gray-600 dark:text-gray-300 hover:text-gray-800'
+                  }`}
+                >
+                  <span
+                    className={`inline-block w-3 h-3 rounded-full flex-shrink-0 ${isWhite ? 'border border-gray-300' : ''}`}
+                    style={{ backgroundColor: cg.hex || '#ccc' }}
+                  />
+                  <span className="truncate max-w-[80px]">{cg.name}</span>
+                </button>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Пошук конкретного відтінку */}
+        {filters.colors?.length > 0 && (
+          <div>
+            <div className="text-[10px] text-gray-400 mb-1 uppercase tracking-wider">Або конкретний відтінок:</div>
+            <Select
+              mode="multiple"
+              allowClear
+              showSearch
+              placeholder="Пошук відтінку..."
+              value={selectedFilters.colorids || []}
+              onChange={(values: number[]) => {
+                onFilterChange({
+                  ...selectedFilters,
+                  colorids: values.length > 0 ? values : undefined,
+                  // Очищуємо групи при виборі конкретного відтінку
+                  color_group_ids: undefined,
+                });
+              }}
+              options={filters.colors.map(c => ({ label: c.name, value: c.id }))}
+              filterOption={(input, option) =>
+                (option?.label as string)?.toLowerCase().includes(input.toLowerCase()) ?? false
+              }
+              maxTagCount={3}
+              maxTagPlaceholder={(omitted) => `+${omitted.length}...`}
+              size="small"
+              className="w-full"
+              style={{ fontSize: '12px' }}
+            />
+          </div>
+        )}
+      </FilterSection>
 
       {/* Стан */}
       {filters.conditions?.length > 0 && (

@@ -219,6 +219,32 @@ def _get_or_create_shipment(session: Session, sheet_name: str,
 
 
 # ── Reference-table helpers ──────────────────────────────────────────────────
+def _auto_classify_color(session: Session, color_id: int, color_name: str):
+    """Auto-classify a new color into base color groups (M2M)."""
+    try:
+        from backend.scripts.color_migration import classify_color
+        from sqlalchemy import text
+        groups = classify_color(color_name)
+        if not groups:
+            return
+        for gname in groups:
+            gid = session.execute(
+                text("SELECT id FROM color_groups WHERE name = :n"), {"n": gname}
+            ).scalar()
+            if gid:
+                existing = session.execute(
+                    text("SELECT 1 FROM color_group_members WHERE color_id = :cid AND group_id = :gid"),
+                    {"cid": color_id, "gid": gid}
+                ).fetchone()
+                if not existing:
+                    session.execute(
+                        text("INSERT INTO color_group_members (color_id, group_id) VALUES (:cid, :gid)"),
+                        {"cid": color_id, "gid": gid}
+                    )
+    except Exception:
+        pass  # Non-critical — classification can be done later via migration
+
+
 def _get_or_create(session: Session, model, unique_field: str, value: str):
     """Get or create a reference-table row by unique string field.
 
@@ -226,11 +252,23 @@ def _get_or_create(session: Session, model, unique_field: str, value: str):
     We load all rows and compare via Python lower() instead.
     Reference tables are tiny (< 100 rows) so this is safe.
     """
+    from backend.models.models import Color
     value = value.strip()
     if not value:
         return None
     # Safety truncation to 100 chars — prevents VARCHAR overflow for any reference field
     value = value[:100]
+
+    # Normalize color names before lookup (synonyms, typos, plurals, Latin→Cyrillic)
+    if model is Color:
+        try:
+            from backend.scripts.color_migration import normalize_color_name
+            value = normalize_color_name(value)
+            if not value:
+                return None
+        except ImportError:
+            pass
+
     val_lower = value.lower()
     all_rows = session.query(model).all()
     for row in all_rows:
@@ -240,6 +278,11 @@ def _get_or_create(session: Session, model, unique_field: str, value: str):
     obj = model(**{unique_field: value})
     session.add(obj)
     session.flush()
+
+    # Auto-classify new colors into color groups
+    if model is Color:
+        _auto_classify_color(session, obj.id, value)
+
     return obj
 
 
@@ -841,6 +884,16 @@ def _find_or_create_client(session: Session, name: str, phone: str,
     olx      = _clean(olx)
     email    = _clean(email)
 
+    # Якщо в phone_number стоїть URL (Facebook, Telegram тощо) — переносимо в відповідне поле
+    if phone and phone.startswith(("http://", "https://")):
+        if "facebook.com" in phone and not facebook:
+            facebook = phone
+        elif "t.me" in phone and not telegram:
+            telegram = phone
+        elif "instagram.com" in phone and not instagram:
+            instagram = phone
+        phone = ""  # URL — не телефон
+
     parts = name.split(maxsplit=1)
     first = parts[0] if parts else name
     last  = parts[1] if len(parts) > 1 else ""
@@ -1371,6 +1424,7 @@ def _parse_workspace_sheet(
             return ""
 
     merged = added = skipped = 0
+    touched_product_ids: set = set()
     total = len(rows) - 1
 
     for i, row in enumerate(rows[1:], 1):
@@ -1467,6 +1521,7 @@ def _parse_workspace_sheet(
             best_product.updated_at = datetime.utcnow()
             session.flush()
             merged += 1
+            touched_product_ids.add(best_product.id)
             logger.info(
                 "[workspace] MERGED pnum=%s → product id=%s (score=%d)",
                 pnum or "(none)", best_product.id, best_score
@@ -1512,6 +1567,7 @@ def _parse_workspace_sheet(
             try:
                 session.flush()
                 added += 1
+                touched_product_ids.add(product.id)
                 logger.info(
                     "[workspace] NEW product pnum=%s (score=%d, no match)",
                     target_pnum, best_score
@@ -1530,7 +1586,7 @@ def _parse_workspace_sheet(
                     logger.warning("[workspace] SKIPPED unresolvable conflict pnum=%s", target_pnum)
 
     session.commit()
-    return {"merged": merged, "added": added, "skipped": skipped}
+    return {"merged": merged, "added": added, "skipped": skipped, "touched_product_ids": touched_product_ids}
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
@@ -1592,6 +1648,7 @@ def run_products_parsing(
         "added":   total_added,
         "updated": total_updated,
         "skipped": total_skipped,
+        "seen_product_ids": set(seen_in_run.keys()),
     }
 
 
@@ -1678,6 +1735,7 @@ def run_workspace_parsing(
         "merged": result["merged"],
         "added":  result["added"],
         "skipped":result["skipped"],
+        "touched_product_ids": result["touched_product_ids"],
     }
 
 
@@ -1703,8 +1761,97 @@ def run_full_parsing(
     orders_result    = run_orders_parsing(session, mode=mode, progress_cb=orders_cb)
     workspace_result = run_workspace_parsing(session, progress_cb=workspace_cb)
 
+    # ── Mark & Sweep: delete orphan products after full parse ────────────
+    from sqlalchemy import text
+    sweep_deleted = 0
+    if mode == "full":
+        keep_ids = products_result.get("seen_product_ids", set()) | workspace_result.get("touched_product_ids", set())
+        if keep_ids:
+            all_ids = {r[0] for r in session.execute(text("SELECT id FROM products")).fetchall()}
+            orphan_ids = all_ids - keep_ids
+            if orphan_ids:
+                result = session.execute(text("""
+                    DELETE FROM products
+                    WHERE id = ANY(:ids)
+                      AND NOT EXISTS (
+                          SELECT 1 FROM order_items oi WHERE oi.product_id = products.id
+                      )
+                    RETURNING id
+                """), {"ids": list(orphan_ids)})
+                deleted_ids = [r[0] for r in result.fetchall()]
+                sweep_deleted = len(deleted_ids)
+                session.commit()
+                logger.info(
+                    "[sweep] Products: kept %d, orphans %d, deleted %d (skipped %d with orders)",
+                    len(keep_ids), len(orphan_ids), sweep_deleted, len(orphan_ids) - sweep_deleted
+                )
+
+    # ── Mark & Sweep: delete duplicate orders after full parse ─────────
+    orders_sweep_deleted = 0
+    if mode == "full":
+        r_items = session.execute(text("""
+            DELETE FROM order_items WHERE order_id IN (
+                SELECT o_old.id FROM orders o_old
+                WHERE o_old.source_fingerprint IS NULL
+                AND EXISTS (
+                    SELECT 1 FROM orders o_new
+                    WHERE o_new.source_fingerprint IS NOT NULL
+                    AND o_new.client_id = o_old.client_id
+                    AND o_new.order_date = o_old.order_date
+                    AND o_new.total_amount = o_old.total_amount
+                )
+            )
+        """))
+        r_orders = session.execute(text("""
+            DELETE FROM orders WHERE id IN (
+                SELECT o_old.id FROM orders o_old
+                WHERE o_old.source_fingerprint IS NULL
+                AND EXISTS (
+                    SELECT 1 FROM orders o_new
+                    WHERE o_new.source_fingerprint IS NOT NULL
+                    AND o_new.client_id = o_old.client_id
+                    AND o_new.order_date = o_old.order_date
+                    AND o_new.total_amount = o_old.total_amount
+                )
+            )
+        """))
+        orders_sweep_deleted = r_orders.rowcount
+        r2_items = session.execute(text("""
+            DELETE FROM order_items WHERE order_id IN (
+                SELECT o.id FROM orders o
+                WHERE source_fingerprint IS NULL
+                AND o.id NOT IN (
+                    SELECT MIN(id) FROM orders
+                    WHERE source_fingerprint IS NULL
+                    GROUP BY client_id, order_date, total_amount
+                )
+            )
+        """))
+        r2_orders = session.execute(text("""
+            DELETE FROM orders
+            WHERE source_fingerprint IS NULL
+            AND id NOT IN (
+                SELECT MIN(id) FROM orders
+                WHERE source_fingerprint IS NULL
+                GROUP BY client_id, order_date, total_amount
+            )
+        """))
+        orders_sweep_deleted += r2_orders.rowcount
+        if orders_sweep_deleted > 0:
+            session.commit()
+            logger.info(
+                "[sweep] Orders: deleted %d duplicates (%d overlap + %d no-fp dups)",
+                orders_sweep_deleted, r_orders.rowcount, r2_orders.rowcount
+            )
+
+    # Strip internal tracking sets before returning
+    products_result.pop("seen_product_ids", None)
+    workspace_result.pop("touched_product_ids", None)
+
     return {
         "products":  products_result,
         "orders":    orders_result,
         "workspace": workspace_result,
+        "sweep_deleted": sweep_deleted,
+        "orders_sweep_deleted": orders_sweep_deleted,
     }

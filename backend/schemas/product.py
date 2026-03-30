@@ -240,6 +240,7 @@ class ProductFilter(BaseModel):
     brandids: Optional[List[int]] = None
     genderids: Optional[List[int]] = None
     colorids: Optional[List[int]] = None
+    color_group_ids: Optional[List[int]] = None
     statusids: Optional[List[int]] = None
     conditionids: Optional[List[int]] = None
     # Price range

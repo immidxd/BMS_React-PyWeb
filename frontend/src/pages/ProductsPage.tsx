@@ -103,6 +103,7 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
       appendIds('brandids', selectedFilters.brandids);
       appendIds('genderids', selectedFilters.genderids);
       appendIds('colorids', selectedFilters.colorids);
+      appendIds('color_group_ids', selectedFilters.color_group_ids);
       appendIds('statusids', selectedFilters.statusids);
       appendIds('conditionids', selectedFilters.conditionids);
       if (selectedFilters.sizeeu && selectedFilters.sizeeu.length > 0) params['sizeeu'] = selectedFilters.sizeeu;
