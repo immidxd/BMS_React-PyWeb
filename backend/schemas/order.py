@@ -33,7 +33,7 @@ class OrderItem(OrderItemBase):
 
 # Order Schema with nested OrderItem
 class OrderBase(BaseModel):
-    client_id: int
+    client_id: Optional[int] = None
     order_date: date = Field(default_factory=date.today)
     order_status_id: Optional[int] = None
     total_amount: float = 0.0
@@ -92,8 +92,8 @@ class OrderResponse(Order):
 
 class OrderListItem(BaseModel):
     id: int
-    client_id: int
-    client_name: str
+    client_id: Optional[int] = None
+    client_name: Optional[str] = None
     order_status_id: Optional[int] = None
     order_status_name: Optional[str] = None
     payment_status_id: Optional[int] = None
@@ -117,7 +117,7 @@ class OrderListItem(BaseModel):
 
 # Enhanced Order for display with related information
 class OrderWithDetails(Order):
-    client_name: str  # Combined first_name and last_name
+    client_name: Optional[str] = None  # Combined first_name and last_name, None for anonymous
     order_status_name: Optional[str] = None
     payment_status_name: Optional[str] = None
     payment_method_name: Optional[str] = None

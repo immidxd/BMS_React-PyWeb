@@ -213,9 +213,13 @@ class ClientManager:
             self._update_client_info(existing_client, client_data)
             return existing_client
         
+        # Якщо немає жодних даних — анонімне замовлення
+        if not name and not phone and not facebook:
+            return None
+
         # Створюємо нового клієнта
         new_client = Client(
-            name=name or 'Невідомий клієнт',
+            name=name or None,
             phone=phone or None,
             facebook=facebook or None,
             viber=client_data.get('viber', '').strip() or None,

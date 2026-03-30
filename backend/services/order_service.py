@@ -114,7 +114,7 @@ class OrderDAO:
         """Get orders with filters and pagination"""
         # Build base query with joins
         query = self.db.query(Order).\
-            join(Client, Order.client_id == Client.id)
+            outerjoin(Client, Order.client_id == Client.id)
             
         # Apply optional joins based on filters
         if filters.order_status_ids:

@@ -114,45 +114,109 @@ async def get_clients(
         "pages": pages,
     }
 
-@router.get("/api/clients/{client_id}", response_model=ClientSchema, tags=["clients"])
+@router.get("/api/clients/{client_id}", tags=["clients"])
 async def get_client(client_id: int, db: Session = Depends(get_db)):
     """
-    Get client by ID with order breakdown counts and rating.
+    Get client by ID with full statistics for the client card.
+    Includes order breakdown by status, purchased models count, and recent orders.
     """
+    # Основні дані клієнта + повна статистика замовлень
     sql = text("""
         SELECT
             c.*,
             COALESCE(c.first_name, '') || ' ' || COALESCE(c.last_name, '') AS full_name,
+            COALESCE(stats.total_orders, 0) AS total_orders,
             COALESCE(stats.confirmed_orders, 0) AS confirmed_orders,
             COALESCE(stats.cancelled_count, 0) AS cancelled_count,
             COALESCE(stats.ignored_count, 0) AS ignored_count,
             COALESCE(stats.return_exchange_count, 0) AS return_exchange_count,
+            COALESCE(stats.queue_count, 0) AS queue_count,
+            COALESCE(stats.gift_count, 0) AS gift_count,
+            COALESCE(stats.clarify_count, 0) AS clarify_count,
             COALESCE(stats.has_deferred, false) AS has_deferred,
+            COALESCE(stats.total_amount, 0) AS computed_total_amount,
+            COALESCE(stats.avg_amount, 0) AS computed_avg_amount,
+            COALESCE(stats.max_amount, 0) AS computed_max_amount,
+            COALESCE(stats.first_order, c.first_order_date) AS computed_first_order,
+            COALESCE(stats.last_order, c.last_order_date) AS computed_last_order,
+            COALESCE(models.purchased_models, 0) AS purchased_models,
+            -- Rating formula: base 5.0 + order bonus - penalties + amount bonus, clamped 0-10
             GREATEST(0, LEAST(10,
                 5.0
                 + LEAST(COALESCE(stats.confirmed_orders, 0) * 0.5, 3.0)
                 - LEAST(COALESCE(stats.cancelled_count, 0) * 1.0, 3.0)
                 - LEAST(COALESCE(stats.ignored_count, 0) * 0.5, 2.0)
                 - LEAST(COALESCE(stats.return_exchange_count, 0) * 0.3, 1.0)
-                + LEAST(COALESCE(c.total_order_amount, 0) / 10000.0, 2.0)
+                + LEAST(COALESCE(stats.total_amount, 0) / 10000.0, 2.0)
             )) AS rating
         FROM clients c
         LEFT JOIN LATERAL (
             SELECT
+                COUNT(*) AS total_orders,
                 COUNT(*) FILTER (WHERE o.order_status_id NOT IN (5, 6, 9, 10)) AS confirmed_orders,
                 COUNT(*) FILTER (WHERE o.order_status_id = 5) AS cancelled_count,
                 COUNT(*) FILTER (WHERE o.order_status_id = 6) AS ignored_count,
                 COUNT(*) FILTER (WHERE o.order_status_id IN (9, 10)) AS return_exchange_count,
-                BOOL_OR(o.deferred_until IS NOT NULL) AS has_deferred
+                COUNT(*) FILTER (WHERE o.order_status_id = 8) AS queue_count,
+                COUNT(*) FILTER (WHERE o.order_status_id = 7) AS gift_count,
+                COUNT(*) FILTER (WHERE o.order_status_id = 3) AS clarify_count,
+                BOOL_OR(o.deferred_until IS NOT NULL) AS has_deferred,
+                SUM(o.total_amount) FILTER (WHERE o.order_status_id NOT IN (5, 6)) AS total_amount,
+                AVG(o.total_amount) FILTER (WHERE o.order_status_id NOT IN (5, 6)) AS avg_amount,
+                MAX(o.total_amount) FILTER (WHERE o.order_status_id NOT IN (5, 6)) AS max_amount,
+                MIN(o.order_date) AS first_order,
+                MAX(o.order_date) AS last_order
             FROM orders o
             WHERE o.client_id = c.id
         ) stats ON true
+        LEFT JOIN LATERAL (
+            SELECT COUNT(DISTINCT oi.product_id) AS purchased_models
+            FROM orders o2
+            JOIN order_items oi ON oi.order_id = o2.id
+            WHERE o2.client_id = c.id
+        ) models ON true
         WHERE c.id = :client_id
     """)
     row = db.execute(sql, {"client_id": client_id}).mappings().first()
     if not row:
         raise HTTPException(status_code=404, detail="Client not found")
-    return dict(row)
+
+    result = dict(row)
+
+    # Останні замовлення клієнта (до 20)
+    orders_sql = text("""
+        SELECT
+            o.id,
+            o.order_date,
+            o.total_amount,
+            o.tracking_number,
+            o.notes,
+            o.sales_channel,
+            os.status_name AS order_status,
+            ps.status_name AS payment_status,
+            dm.method_name AS delivery_method,
+            COALESCE(items.product_numbers, '') AS product_numbers,
+            COALESCE(items.item_count, 0) AS item_count
+        FROM orders o
+        LEFT JOIN order_statuses os ON os.id = o.order_status_id
+        LEFT JOIN payment_statuses ps ON ps.id = o.payment_status_id
+        LEFT JOIN delivery_methods dm ON dm.id = o.delivery_method_id
+        LEFT JOIN LATERAL (
+            SELECT
+                STRING_AGG(p.productnumber, ', ' ORDER BY oi.id) AS product_numbers,
+                COUNT(*) AS item_count
+            FROM order_items oi
+            LEFT JOIN products p ON p.id = oi.product_id
+            WHERE oi.order_id = o.id
+        ) items ON true
+        WHERE o.client_id = :client_id
+        ORDER BY o.order_date DESC, o.id DESC
+        LIMIT 20
+    """)
+    orders_rows = db.execute(orders_sql, {"client_id": client_id}).mappings().all()
+    result["recent_orders"] = [dict(r) for r in orders_rows]
+
+    return result
 
 @router.post("/api/clients", response_model=ClientSchema, tags=["clients"])
 async def create_client(client: ClientCreate, db: Session = Depends(get_db)):

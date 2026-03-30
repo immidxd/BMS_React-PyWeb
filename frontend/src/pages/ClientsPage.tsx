@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import MainLayout from '../layouts/MainLayout';
 import Pagination from '../components/common/Pagination';
+import ClientDetailsModal from '../components/clients/ClientDetailsModal';
 
 interface Client {
   id: number;
@@ -57,6 +58,8 @@ const ClientsPage: React.FC<ClientsPageProps> = ({ currentSearchTerm }) => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [selectedClientId, setSelectedClientId] = useState<number | null>(null);
+  const [modalOpen, setModalOpen] = useState(false);
 
   const fetchClients = useCallback(async () => {
     setLoading(true);
@@ -182,7 +185,7 @@ const ClientsPage: React.FC<ClientsPageProps> = ({ currentSearchTerm }) => {
                     <td colSpan={8} className="text-center py-12 text-gray-400">Клієнтів не знайдено</td>
                   </tr>
                 ) : clients.map(c => (
-                  <tr key={c.id} className="hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors">
+                  <tr key={c.id} className="hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors cursor-pointer" onDoubleClick={() => { setSelectedClientId(c.id); setModalOpen(true); }}>
                     <td className="px-3 py-2 text-gray-500 dark:text-gray-400 font-mono text-xs">{c.id}</td>
                     <td className="px-3 py-2 font-medium text-gray-900 dark:text-gray-100 max-w-[200px]">
                       <span className="block truncate">{c.full_name || '—'}</span>
@@ -215,6 +218,13 @@ const ClientsPage: React.FC<ClientsPageProps> = ({ currentSearchTerm }) => {
             </table>
           </div>
         )}
+
+        {/* Client card modal */}
+        <ClientDetailsModal
+          clientId={selectedClientId}
+          open={modalOpen}
+          onClose={() => { setModalOpen(false); setSelectedClientId(null); }}
+        />
 
         {/* Footer pagination */}
         <div className="fixed bottom-0 left-0 right-0 px-4 py-3 bg-white/95 dark:bg-gray-800/95 backdrop-blur border-t border-gray-100 dark:border-gray-700 z-20">

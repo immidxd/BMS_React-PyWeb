@@ -78,7 +78,7 @@ async def get_orders(
     items = []
     for order in result["items"]:
         # Get client name
-        client_name = f"{order.client.first_name} {order.client.last_name}" if order.client else "Unknown"
+        client_name = f"{order.client.first_name or ''} {order.client.last_name or ''}".strip() if order.client else None
         
         # Get order status name
         order_status_name = order.order_status.status_name if order.order_status else None
@@ -231,7 +231,7 @@ async def get_order(order_id: int = Path(..., ge=1), db: Session = Depends(get_d
         raise HTTPException(status_code=404, detail="Order not found")
     
     # Get client name
-    client_name = f"{order.client.first_name} {order.client.last_name}" if order.client else "Unknown"
+    client_name = f"{order.client.first_name or ''} {order.client.last_name or ''}".strip() if order.client else None
     
     # Get order status name
     order_status_name = order.order_status.status_name if order.order_status else None
@@ -324,10 +324,11 @@ async def create_order(order: OrderCreate, db: Session = Depends(get_db)):
     """
     Create a new order with order items
     """
-    # Validate client exists
-    client = db.query(Client).filter(Client.id == order.client_id).first()
-    if not client:
-        raise HTTPException(status_code=404, detail="Client not found")
+    # Validate client exists (if specified)
+    if order.client_id is not None:
+        client = db.query(Client).filter(Client.id == order.client_id).first()
+        if not client:
+            raise HTTPException(status_code=404, detail="Client not found")
     
     # Validate products exist
     for item in order.order_items:

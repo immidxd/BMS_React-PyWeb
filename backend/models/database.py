@@ -78,6 +78,10 @@ def init_db():
             conn.execute(text("alter table if exists conditions alter column conditionname type varchar(100)"))
             # phone_number varchar(20) → 255 (Google Sheets іноді містить URL замість телефону)
             conn.execute(text("alter table if exists clients alter column phone_number type varchar(255)"))
+            # nickname — для клієнтів з нікнеймами замість реальних імен
+            conn.execute(text("alter table if exists clients add column if not exists nickname varchar(255)"))
+            # orders.client_id — дозволити NULL (анонімні покупки, продаж в магазині)
+            conn.execute(text("alter table if exists orders alter column client_id drop not null"))
             # Знімаємо обмеження total_amount >= 0: повернення/знижки можуть мати від'ємну суму
             conn.execute(text("alter table if exists orders drop constraint if exists orders_total_amount_check"))
             # Таблиці для системи кольорових груп

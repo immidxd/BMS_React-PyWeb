@@ -22,8 +22,8 @@ interface OrderItem {
 
 interface Order {
   id: number;
-  client_id: number;
-  client_name: string;
+  client_id: number | null;
+  client_name: string | null;
   order_date: string;
   order_status_id: number | null;
   order_status_name: string | null;
@@ -544,7 +544,11 @@ const OrdersPage: React.FC<OrdersPageProps> = ({ currentSearchTerm }) => {
                         </span>
                       </td>
                       <td className="px-3 py-2 whitespace-nowrap text-gray-700 dark:text-gray-300">{fmtDate(order.order_date)}</td>
-                      <td className="px-3 py-2 font-medium text-gray-900 dark:text-gray-100 max-w-[160px] truncate">{order.client_name}</td>
+                      <td className="px-3 py-2 font-medium max-w-[160px] truncate">
+                        {order.client_name
+                          ? <span className="text-gray-900 dark:text-gray-100">{order.client_name}</span>
+                          : <span className="text-gray-400 dark:text-gray-500 italic">Анонімний</span>}
+                      </td>
                       <td className="px-3 py-2 text-gray-500 dark:text-gray-400 text-center">
                         <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-gray-100 dark:bg-gray-600 text-xs font-semibold">
                           {order.order_items?.length || 0}

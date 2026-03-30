@@ -513,33 +513,36 @@ def parse_broadcast_sheet_name(sheet_name):
 def get_or_create_client(cursor, connection, full_name):
    if not full_name:
        return None
-   parts = full_name.split()
-   if len(parts) == 1:
-       first_name = parts[0]
-       last_name = None
-       middle_name = None
-   elif len(parts) == 2:
-       first_name, last_name = parts
-       middle_name = None
+
+   from backend.utils.name_parser import parse_client_name
+
+   # Розумний парсинг імені: ім'я/прізвище/нікнейм + стать
+   parsed = parse_client_name(full_name)
+   first_name = parsed.first_name
+   last_name = parsed.last_name
+   nickname = parsed.nickname
+   guessed_gender_id = parsed.gender_id if parsed.gender_id else GENDER_ID_UNISEX
+
+   # Дедуплікація: за нікнеймом або за ім'ям+прізвищем
+   if nickname:
+       cursor.execute("""
+           SELECT id, gender_id FROM clients
+           WHERE lower(trim(coalesce(nickname, ''))) = lower(trim(%s))
+           LIMIT 1
+       """, (nickname,))
    else:
-       first_name = parts[0]
-       last_name = parts[1]
-       middle_name = " ".join(parts[2:])
+       cursor.execute("""
+           SELECT id, gender_id
+             FROM clients
+            WHERE lower(trim(coalesce(first_name, ''))) = lower(trim(%s))
+              AND lower(trim(coalesce(last_name, ''))) = lower(trim(%s))
+            LIMIT 1
+       """, (first_name or "", last_name or ""))
 
-   guessed_gender_id = guess_gender_by_last_name(last_name) if last_name else GENDER_ID_UNISEX
-
-   cursor.execute("""
-       SELECT id, gender_id
-         FROM clients
-        WHERE lower(trim(first_name)) = lower(trim(%s))
-          AND lower(trim(coalesce(last_name, ''))) = lower(trim(%s))
-          AND lower(trim(coalesce(middle_name, ''))) = lower(trim(%s))
-        LIMIT 1
-   """, (first_name or "", last_name or "", middle_name or ""))
    row = cursor.fetchone()
    if row:
        cid, old_gender_id = row
-       if old_gender_id == GENDER_ID_UNISEX and guessed_gender_id != GENDER_ID_UNISEX:
+       if (old_gender_id is None or old_gender_id == GENDER_ID_UNISEX or old_gender_id == 0) and guessed_gender_id not in (GENDER_ID_UNISEX, 0):
            cursor.execute("""
                UPDATE clients
                   SET gender_id=%s,
@@ -550,34 +553,17 @@ def get_or_create_client(cursor, connection, full_name):
        return cid
 
    cursor.execute("""
-       INSERT INTO clients (first_name, last_name, middle_name, gender_id, created_at, updated_at)
+       INSERT INTO clients (first_name, last_name, nickname, gender_id, created_at, updated_at)
        VALUES (%s, %s, %s, %s, now(), now())
        RETURNING id
-   """,(first_name, last_name, middle_name, guessed_gender_id))
+   """,(first_name, last_name, nickname, guessed_gender_id))
    new_cid = cursor.fetchone()[0]
    connection.commit()
    return new_cid
 
-def get_or_create_default_client(cursor, connection):
-    """Отримати або створити клієнта за замовчуванням для замовлень без вказаного клієнта"""
-    cursor.execute("""
-        SELECT id FROM clients
-        WHERE first_name = 'Невідомий' AND last_name IS NULL AND middle_name IS NULL
-        LIMIT 1
-    """)
-    row = cursor.fetchone()
-    if row:
-        return row[0]
-    
-    # Створити клієнта за замовчуванням
-    cursor.execute("""
-        INSERT INTO clients (first_name, last_name, middle_name, gender_id, created_at, updated_at)
-        VALUES ('Невідомий', NULL, NULL, %s, now(), now())
-        RETURNING id
-    """, (GENDER_ID_UNISEX,))
-    new_id = cursor.fetchone()[0]
-    connection.commit()
-    return new_id
+## get_or_create_default_client — ВИДАЛЕНО
+## Раніше створювала фейкових клієнтів "Невідомий".
+## Тепер замовлення без клієнта мають client_id = NULL (анонімні).
 
 # -------------------------------------------------------
 #   Робота з продуктами
@@ -809,7 +795,7 @@ def find_exact_order(
    cursor.execute("""
        SELECT id
          FROM orders
-        WHERE client_id=%s
+        WHERE (client_id = %s OR (client_id IS NULL AND %s IS NULL))
           AND coalesce(order_date,'1970-01-01'::date) = coalesce(%s::date,'1970-01-01'::date)
           AND coalesce(order_status_id,0) = coalesce(%s,0)
           AND coalesce(payment_status_id,0) = coalesce(%s,0)
@@ -821,6 +807,7 @@ def find_exact_order(
           AND coalesce(notes,'') = coalesce(%s,'')
         LIMIT 1
    """, (
+       client_id,
        client_id,
        order_date,
        order_status_id,
@@ -1185,8 +1172,7 @@ def upsert_order(
    priority_val,
    notes
 ):
-   if not client_id:
-       client_id = get_or_create_default_client(cursor, connection)
+   # client_id = None дозволено — анонімне замовлення
    if not order_date:
        order_date = datetime.now().date()
 
@@ -1556,15 +1542,12 @@ def process_orders_sheet_data(rows, sheet_name, force_process=False):
                 rows_invalid += 1
                 continue
                 
-            # Обробка клієнта (порожнє поле - це нормально, створюємо "Невідомий")
-            if not client_name:
-                logger.info(f"[{sheet_name}] Рядок {actual_row_index}: відсутнє ім'я клієнта, використовуємо клієнта за замовчуванням")
-                client_id = get_or_create_default_client(transaction_cur, transaction_conn)
-            else:
+            # Обробка клієнта (порожнє поле → client_id = None, анонімне замовлення)
+            client_id = None
+            if client_name:
                 client_id = get_or_create_client(transaction_cur, transaction_conn, client_name)
                 if not client_id:
-                    logger.warning(f"[{sheet_name}] Рядок {actual_row_index}: не вдалося створити клієнта '{client_name}', використовуємо клієнта за замовчуванням")
-                    client_id = get_or_create_default_client(transaction_cur, transaction_conn)
+                    logger.warning(f"[{sheet_name}] Рядок {actual_row_index}: не вдалося створити клієнта '{client_name}', замовлення буде анонімним")
 
             # Обробка дати відкладення
             deferred_until = parse_date_dd_mm_yyyy(raw_deferred_until)

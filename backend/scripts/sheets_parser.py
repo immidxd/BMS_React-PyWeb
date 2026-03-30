@@ -906,6 +906,7 @@ def _find_or_create_client(session: Session, name: str, phone: str,
                             facebook: str, viber: str, telegram: str,
                             instagram: str, olx: str, email: str) -> int:
     from backend.models.models import Client
+    from backend.utils.name_parser import parse_client_name
 
     name = name.strip()
     if not name:
@@ -934,11 +935,14 @@ def _find_or_create_client(session: Session, name: str, phone: str,
             instagram = phone
         phone = ""  # URL — не телефон
 
-    parts = name.split(maxsplit=1)
-    first = parts[0] if parts else name
-    last  = parts[1] if len(parts) > 1 else ""
+    # Розумний парсинг імені: ім'я/прізвище/нікнейм + стать
+    parsed = parse_client_name(name)
+    first = parsed.first_name or ""
+    last  = parsed.last_name or ""
+    nickname = parsed.nickname
+    gender_id = parsed.gender_id if parsed.gender_id else None
 
-    # Dedup: match by phone (best signal), or by facebook/telegram, or by normalized name
+    # Dedup: match by phone (best signal), or by facebook/telegram, or by normalized name/nickname
     candidate = None
     if phone:
         candidate = session.query(Client).filter(Client.phone_number == phone).first()
@@ -948,15 +952,25 @@ def _find_or_create_client(session: Session, name: str, phone: str,
         candidate = session.query(Client).filter(Client.telegram == telegram).first()
     if not candidate:
         # Python-side name comparison (collation 'C' breaks ilike for Cyrillic)
-        first_lower = first.lower()
-        last_lower = last.lower() if last else None
-        all_clients = session.query(Client).all()
-        for c in all_clients:
-            c_first = (c.first_name or '').strip().lower()
-            c_last = (c.last_name or '').strip().lower() if c.last_name else None
-            if c_first == first_lower and c_last == last_lower:
-                candidate = c
-                break
+        if nickname:
+            # Дедуплікація за нікнеймом
+            nick_lower = nickname.lower()
+            all_clients = session.query(Client).all()
+            for c in all_clients:
+                c_nick = (c.nickname or '').strip().lower()
+                if c_nick and c_nick == nick_lower:
+                    candidate = c
+                    break
+        if not candidate and (first or last):
+            first_lower = first.lower() if first else ""
+            last_lower = last.lower() if last else None
+            all_clients = session.query(Client).all() if not candidate else []
+            for c in all_clients:
+                c_first = (c.first_name or '').strip().lower()
+                c_last = (c.last_name or '').strip().lower() if c.last_name else None
+                if c_first == first_lower and c_last == last_lower:
+                    candidate = c
+                    break
 
     if candidate:
         # Enrich existing client with any new contact data
@@ -967,12 +981,20 @@ def _find_or_create_client(session: Session, name: str, phone: str,
         if instagram and not candidate.instagram:  candidate.instagram    = instagram.strip()
         if olx     and not candidate.olx:          candidate.olx          = olx.strip()
         if email   and not candidate.email:        candidate.email        = email.strip()
+        # Оновити стать якщо не була визначена раніше
+        if gender_id and (not candidate.gender_id or candidate.gender_id == 0):
+            candidate.gender_id = gender_id
+        # Оновити нікнейм якщо з'явився
+        if nickname and not candidate.nickname:
+            candidate.nickname = nickname
         session.flush()
         return candidate.id
 
     client = Client(
-        first_name   = first,
+        first_name   = first if first else None,
         last_name    = last if last else None,
+        nickname     = nickname,
+        gender_id    = gender_id,
         phone_number = phone.strip()    if phone    else None,
         facebook     = facebook.strip() if facebook else None,
         viber        = viber.strip()    if viber    else None,
@@ -1181,14 +1203,13 @@ def _parse_orders_sheet(
             skipped += 1
             continue
 
-        # Для магазинних / walk-in продажів без клієнта —
-        # підставляємо placeholder, щоб замовлення не пропускалось.
+        # Визначаємо sales_channel для замовлень без клієнта
+        _sales_channel = None
         if not client_name.strip():
             delivery_hint = col(row, "Доставка").strip().upper()
             if delivery_hint == "МАГАЗИН":
-                client_name = "Магазин (walk-in)"
-            else:
-                client_name = "Невідомий клієнт"
+                _sales_channel = "Магазин"
+            # client_id залишиться None — не створюємо фейкових клієнтів
 
         # Parse product numbers (semicolon-separated)
         product_nums = [p.strip().rstrip(";").strip() for p in product_nums_raw.split(";") if p.strip().rstrip(";").strip()]
@@ -1217,21 +1238,20 @@ def _parse_orders_sheet(
         except ValueError:
             total_amount = sum(prices)
 
-        # Client
-        client_id = _find_or_create_client(
-            session,
-            name      = client_name,
-            phone     = col(row, "Контактний номер"),
-            facebook  = col(row, "Facebook"),
-            viber     = col(row, "Viber"),
-            telegram  = col(row, "Telegram"),
-            instagram = col(row, "Instagram"),
-            olx       = col(row, "Olx"),
-            email     = col(row, "E-mail"),
-        )
-        if client_id is None:
-            skipped += 1
-            continue
+        # Client (None якщо ім'я порожнє — анонімне замовлення)
+        client_id = None
+        if client_name.strip():
+            client_id = _find_or_create_client(
+                session,
+                name      = client_name,
+                phone     = col(row, "Контактний номер"),
+                facebook  = col(row, "Facebook"),
+                viber     = col(row, "Viber"),
+                telegram  = col(row, "Telegram"),
+                instagram = col(row, "Instagram"),
+                olx       = col(row, "Olx"),
+                email     = col(row, "E-mail"),
+            )
 
         delivery_raw = col(row, "Доставка")
         pay_status_id   = _resolve_payment_status(session, col(row, "Статус оплати"))
@@ -1293,7 +1313,7 @@ def _parse_orders_sheet(
             re.sub(r"[^\wА-ЯҐЄІЇа-яґєії]", "", p).upper()
             for p in product_nums if p.strip()
         )
-        fp_raw = f"{client_name.strip().lower()}|{order_date.isoformat()}|{'|'.join(norm_pnums)}"
+        fp_raw = f"{(client_name or '').strip().lower()}|{order_date.isoformat()}|{'|'.join(norm_pnums)}"
         source_fp = hashlib.md5(fp_raw.encode("utf-8")).hexdigest()
 
         existing_order = session.query(Order).filter(
@@ -1344,6 +1364,7 @@ def _parse_orders_sheet(
                 deferred_until     = deferred,
                 priority           = priority,
                 notes              = combined_notes if combined_notes else None,
+                sales_channel      = _sales_channel if _sales_channel else None,
                 source_fingerprint = source_fp,
                 created_at         = datetime.utcnow(),
             )

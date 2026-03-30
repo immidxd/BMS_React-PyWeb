@@ -85,6 +85,7 @@ class Client(Base):
     first_name = Column(String, nullable=True)
     last_name = Column(String, nullable=True)
     middle_name = Column(String, nullable=True)
+    nickname = Column(String, nullable=True)
     phone_number = Column(String, nullable=True)
     email = Column(String, nullable=True)
     date_of_birth = Column(Date, nullable=True)
@@ -169,7 +170,7 @@ class Order(Base):
     __tablename__ = "orders"
     
     id = Column(Integer, primary_key=True, index=True)
-    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=True)
     order_date = Column(Date, default=func.current_date(), nullable=False)
     order_status_id = Column(Integer, ForeignKey("order_statuses.id"))
     total_amount = Column(Float, default=0.0, nullable=False)

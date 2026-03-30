@@ -360,8 +360,10 @@ class ClientManager:
         url = url.replace('https://', '').replace('http://', '').replace('www.', '')
         return url
     
-    def find_or_create_client(self, client_data: Dict[str, str]) -> Client:
+    def find_or_create_client(self, client_data: Dict[str, str]) -> 'Client | None':
         """Знаходить існуючого клієнта або створює нового з дедуплікацією."""
+        from backend.utils.name_parser import parse_client_name
+
         name = client_data.get('name', '').strip()
         phone = self.normalize_phone(client_data.get('phone', ''))
         facebook = self.normalize_facebook(client_data.get('facebook', ''))
@@ -384,14 +386,31 @@ class ClientManager:
                 self.stats['found'] += 1
             return existing_client
         
-        # Створюємо нового клієнта (використовуємо реальну структуру БД)
-        name_parts = name.split(' ', 1) if name else ['Невідомий', 'клієнт']
-        first_name = name_parts[0] if name_parts else 'Невідомий'
-        last_name = name_parts[1] if len(name_parts) > 1 else 'клієнт'
-        
+        # Розумний парсинг імені: ім'я/прізвище/нікнейм + стать
+        parsed = parse_client_name(name) if name else None
+        first_name = parsed.first_name if parsed else None
+        last_name = parsed.last_name if parsed else None
+        nickname = parsed.nickname if parsed else None
+        gender_id = parsed.gender_id if parsed and parsed.gender_id else None
+
+        if not first_name and not last_name and not nickname:
+            # Без імені і без контактних даних — анонімне замовлення
+            has_contacts = any([
+                phone,
+                facebook,
+                client_data.get('email', '').strip(),
+                client_data.get('viber', '').strip(),
+                client_data.get('telegram', '').strip(),
+                client_data.get('instagram', '').strip(),
+            ])
+            if not has_contacts:
+                return None
+
         new_client = Client(
             first_name=first_name,
             last_name=last_name,
+            nickname=nickname,
+            gender_id=gender_id,
             phone_number=phone or None,
             email=client_data.get('email', '').strip() or None,
             facebook=facebook or None,
@@ -752,7 +771,8 @@ class OrdersComprehensiveParser:
             }
             
             client = self.client_manager.find_or_create_client(client_data)
-            
+            # client може бути None — анонімне замовлення
+
             # Парсимо ціну
             price_text = order_data.get('Сума', '').replace(',', '.').strip()
             try:
@@ -823,7 +843,7 @@ class OrdersComprehensiveParser:
 
             # Створюємо замовлення
             order = Order(
-                client_id=client.id,
+                client_id=client.id if client else None,
                 order_date=sheet_date,
                 order_status_id=order_status_id,
                 total_amount=price,
