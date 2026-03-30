@@ -228,13 +228,16 @@ def get_products(
                 params['conditionid'] = filters.conditionid
 
             # Multi-ID filters (arrays) — use ANY(:arr)
+            # Тип + Підвид: об'єднуємо через OR (один фільтр на UI)
+            _type_or = []
             if filters.typeids:
-                where_conditions.append("p.typeid = ANY(:typeids)")
+                _type_or.append("p.typeid = ANY(:typeids)")
                 params['typeids'] = filters.typeids
-
             if filters.subtypeids:
-                where_conditions.append("p.subtypeid = ANY(:subtypeids)")
+                _type_or.append("p.subtypeid = ANY(:subtypeids)")
                 params['subtypeids'] = filters.subtypeids
+            if _type_or:
+                where_conditions.append("(" + " OR ".join(_type_or) + ")")
 
             if filters.brandids:
                 where_conditions.append("p.brandid = ANY(:brandids)")
@@ -312,9 +315,7 @@ def get_products(
                 where_conditions.append("p.quantity > 0")
 
             if filters.only_unsold:
-                # Must match frontend display logic (ProductsTable.tsx):
-                # Frontend shows "Продано" when sold_count >= quantity && quantity > 0,
-                # regardless of DB statusname. So we exclude those too.
+                # "Подаровано" прирівнюється до "Продано" — товару немає в наявності
                 where_conditions.append("""(
                     (s.statusname IS NULL OR s.statusname = 'Непродано')
                     AND COALESCE(sold.sold_count, 0) = 0
@@ -671,54 +672,55 @@ def bulk_update_products(db: Session, product_ids: List[int], update_data: Dict[
         raise
 
 
+def _ensure_status_id(db: Session, name: str) -> int:
+    """Get or create a product status by name, return its id."""
+    row = db.execute(
+        text("SELECT id FROM statuses WHERE statusname = :n LIMIT 1"), {"n": name}
+    ).fetchone()
+    if row:
+        return row[0]
+    row = db.execute(
+        text("INSERT INTO statuses (statusname) VALUES (:n) RETURNING id"), {"n": name}
+    ).fetchone()
+    db.flush()
+    return row[0]
+
+
 def sync_product_statuses(db: Session) -> Dict[str, int]:
     """
     Синхронізує статуси товарів після парсингу.
 
     Логіка:
-      - "Продано"   якщо товар є в order_items АБО журнал вже встановив "Продано"
-      - "Непродано" в усіх інших випадках
+      - "Продано"    якщо є хоча б одне підтверджене замовлення (order_status 1)
+                     і загальна кількість (підтверджено+подарунок) >= quantity
+      - "Подаровано" якщо є ТІЛЬКИ подарункові замовлення (order_status 7)
+                     і gift_count >= quantity
+      - "Непродано"  в усіх інших випадках
 
-    Повертає: {'prodano': <кількість>, 'neprodano': <кількість>}
+    Повертає: {'prodano': N, 'neprodano': N, 'podarovano': N}
     """
     try:
-        # Отримуємо ID статусів; якщо немає — створюємо
-        prodano_row = db.execute(
-            text("SELECT id FROM statuses WHERE statusname = 'Продано' LIMIT 1")
-        ).fetchone()
-        if not prodano_row:
-            db.execute(text("INSERT INTO statuses (statusname) VALUES ('Продано')"))
-            db.commit()
-            prodano_row = db.execute(
-                text("SELECT id FROM statuses WHERE statusname = 'Продано' LIMIT 1")
-            ).fetchone()
+        prodano_id    = _ensure_status_id(db, "Продано")
+        neprodano_id  = _ensure_status_id(db, "Непродано")
+        podarovano_id = _ensure_status_id(db, "Подаровано")
 
-        neprodano_row = db.execute(
-            text("SELECT id FROM statuses WHERE statusname = 'Непродано' LIMIT 1")
-        ).fetchone()
-        if not neprodano_row:
-            db.execute(text("INSERT INTO statuses (statusname) VALUES ('Непродано')"))
-            db.commit()
-            neprodano_row = db.execute(
-                text("SELECT id FROM statuses WHERE statusname = 'Непродано' LIMIT 1")
-            ).fetchone()
-
-        prodano_id   = prodano_row[0]
-        neprodano_id = neprodano_row[0]
-
-        # Рахуємо кількість продажів по product_id (точний метод)
-        # та по notes для не-ростовок (де тільки 1 товар з таким номером)
-        # Статус "Продано" — тільки якщо sold_count >= quantity (всі одиниці продано)
-        # Статус "Непродано" — якщо 0 < sold_count < quantity (частково продано)
-        # Без продажів — не чіпаємо (залишаємо статус з журналу)
+        # Крок 1: оновити товари що мають продажі або подарунки
         r1 = db.execute(text("""
             WITH
-            id_sold AS (
+            id_confirmed AS (
                 SELECT oi.product_id, COUNT(*) AS cnt
                 FROM order_items oi
                 JOIN orders o ON o.id = oi.order_id
                 WHERE oi.product_id IS NOT NULL
-                  AND o.order_status_id IN (1, 7)
+                  AND o.order_status_id = 1
+                GROUP BY oi.product_id
+            ),
+            id_gifted AS (
+                SELECT oi.product_id, COUNT(*) AS cnt
+                FROM order_items oi
+                JOIN orders o ON o.id = oi.order_id
+                WHERE oi.product_id IS NOT NULL
+                  AND o.order_status_id = 7
                 GROUP BY oi.product_id
             ),
             notes_sold AS (
@@ -728,7 +730,7 @@ def sync_product_statuses(db: Session) -> Dict[str, int]:
                     ON oi.product_id IS NULL
                    AND oi.notes IS NOT NULL
                    AND oi.notes != ''
-                   AND oi.notes NOT LIKE '% %'
+                   AND oi.notes NOT LIKE '%% %%'
                    AND '#' || LTRIM(oi.notes, '#') = p.productnumber
                 WHERE (
                     SELECT COUNT(*) FROM products p2
@@ -739,30 +741,34 @@ def sync_product_statuses(db: Session) -> Dict[str, int]:
             sold_counts AS (
                 SELECT
                     p.id,
-                    COALESCE(i.cnt, 0) + COALESCE(n.cnt, 0) AS sold_count,
-                    COALESCE(p.quantity, 1)                  AS qty
+                    COALESCE(c.cnt, 0) + COALESCE(n.cnt, 0) AS confirmed_count,
+                    COALESCE(g.cnt, 0)                       AS gift_count,
+                    COALESCE(c.cnt, 0) + COALESCE(n.cnt, 0)
+                        + COALESCE(g.cnt, 0)                 AS total_count,
+                    COALESCE(p.quantity, 1)                   AS qty
                 FROM products p
-                LEFT JOIN id_sold    i ON i.product_id = p.id
-                LEFT JOIN notes_sold n ON n.id          = p.id
-                WHERE COALESCE(i.cnt, 0) + COALESCE(n.cnt, 0) > 0
+                LEFT JOIN id_confirmed c ON c.product_id = p.id
+                LEFT JOIN id_gifted    g ON g.product_id = p.id
+                LEFT JOIN notes_sold   n ON n.id         = p.id
+                WHERE COALESCE(c.cnt, 0) + COALESCE(g.cnt, 0) + COALESCE(n.cnt, 0) > 0
             )
             UPDATE products p
             SET statusid = CASE
-                WHEN sc.sold_count >= sc.qty THEN :prodano_id
+                WHEN sc.confirmed_count > 0 AND sc.total_count >= sc.qty THEN :prodano_id
+                WHEN sc.confirmed_count = 0 AND sc.gift_count  >= sc.qty THEN :podarovano_id
                 ELSE :neprodano_id
             END
             FROM sold_counts sc
             WHERE p.id = sc.id
-        """), {"prodano_id": prodano_id, "neprodano_id": neprodano_id})
+        """), {"prodano_id": prodano_id, "neprodano_id": neprodano_id,
+               "podarovano_id": podarovano_id})
         total_updated = r1.rowcount
 
-        # Крок 2: скинути хибний "Продано" з журналу для товарів де
-        # фактично sold_count < quantity (або взагалі 0 продажів).
-        # Товари зі спеціальними статусами (Повернуто, Пошкоджений тощо) — не чіпаємо.
+        # Крок 2: скинути хибний "Продано"/"Подаровано" де фактично sold_count < quantity
         r2 = db.execute(text("""
             UPDATE products p
             SET statusid = :neprodano_id
-            WHERE p.statusid = :prodano_id
+            WHERE p.statusid IN (:prodano_id, :podarovano_id)
               AND p.id NOT IN (
                   SELECT sc.id FROM (
                       SELECT
@@ -775,28 +781,35 @@ def sync_product_statuses(db: Session) -> Dict[str, int]:
                           ) AS sold_count,
                           COALESCE(p2.quantity, 1) AS qty
                       FROM products p2
-                      WHERE p2.statusid = :prodano_id
+                      WHERE p2.statusid IN (:prodano_id, :podarovano_id)
                   ) sc
                   WHERE sc.sold_count >= sc.qty AND sc.qty > 0
               )
-        """), {"prodano_id": prodano_id, "neprodano_id": neprodano_id})
+        """), {"prodano_id": prodano_id, "neprodano_id": neprodano_id,
+               "podarovano_id": podarovano_id})
         total_updated += r2.rowcount
-        logger.info(f"sync_product_statuses: fixed {r2.rowcount} false 'Продано' → 'Непродано'")
+        logger.info(f"sync_product_statuses: fixed {r2.rowcount} false statuses → 'Непродано'")
 
-        # Рахуємо фінальний розподіл для логу
+        # Фінальний розподіл
         counts = db.execute(text("""
             SELECT s.statusname, COUNT(p.id) as cnt
             FROM products p JOIN statuses s ON p.statusid = s.id
             GROUP BY s.statusname
         """)).fetchall()
-        prodano_count   = next((r.cnt for r in counts if r.statusname == 'Продано'),   0)
-        neprodano_count = next((r.cnt for r in counts if r.statusname == 'Непродано'), 0)
+        prodano_count    = next((r.cnt for r in counts if r.statusname == 'Продано'),    0)
+        neprodano_count  = next((r.cnt for r in counts if r.statusname == 'Непродано'),  0)
+        podarovano_count = next((r.cnt for r in counts if r.statusname == 'Подаровано'), 0)
 
         db.commit()
         logger.info(
-            f"sync_product_statuses: Продано={prodano_count}, Непродано={neprodano_count}"
+            f"sync_product_statuses: Продано={prodano_count}, "
+            f"Непродано={neprodano_count}, Подаровано={podarovano_count}"
         )
-        return {"prodano": prodano_count, "neprodano": neprodano_count}
+        return {
+            "prodano": prodano_count,
+            "neprodano": neprodano_count,
+            "podarovano": podarovano_count,
+        }
 
     except Exception as e:
         db.rollback()

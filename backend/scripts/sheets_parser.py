@@ -245,6 +245,22 @@ def _auto_classify_color(session: Session, color_id: int, color_name: str):
         pass  # Non-critical — classification can be done later via migration
 
 
+def _is_garbage_ref_value(value: str) -> bool:
+    """Reject values that are clearly prices, sizes, or other numeric garbage.
+    Used for Type, Subtype, Condition, Status reference fields.
+    """
+    import re
+    return bool(re.match(r'^[\d\s,.\-₴]+$', value))
+
+
+def _normalize_ref_name(value: str) -> str:
+    """Normalize reference table value: strip, capitalize first letter."""
+    value = value.strip()
+    if value and value[0].islower():
+        value = value[0].upper() + value[1:]
+    return value
+
+
 def _get_or_create(session: Session, model, unique_field: str, value: str):
     """Get or create a reference-table row by unique string field.
 
@@ -252,12 +268,16 @@ def _get_or_create(session: Session, model, unique_field: str, value: str):
     We load all rows and compare via Python lower() instead.
     Reference tables are tiny (< 100 rows) so this is safe.
     """
-    from backend.models.models import Color
+    from backend.models.models import Color, Type, Subtype
     value = value.strip()
     if not value:
         return None
     # Safety truncation to 100 chars — prevents VARCHAR overflow for any reference field
     value = value[:100]
+
+    # Reject numeric garbage for Type (prices/sizes leaked from wrong column)
+    if model is Type and _is_garbage_ref_value(value):
+        return None
 
     # Normalize color names before lookup (synonyms, typos, plurals, Latin→Cyrillic)
     if model is Color:
@@ -268,6 +288,10 @@ def _get_or_create(session: Session, model, unique_field: str, value: str):
                 return None
         except ImportError:
             pass
+
+    # Capitalize first letter for types
+    if model is Type:
+        value = _normalize_ref_name(value)
 
     val_lower = value.lower()
     all_rows = session.query(model).all()
@@ -291,11 +315,16 @@ def _get_or_create(session: Session, model, unique_field: str, value: str):
 def _get_or_create_condition(session: Session, name: str) -> Optional[int]:
     """Get or create a condition row by name.
     Uses Python lower() comparison (DB collation 'C' breaks SQL LOWER for Cyrillic).
+    Rejects numeric/price values that indicate a wrong column was parsed.
     """
+    import re
     if not name or not name.strip():
         return None
-    from sqlalchemy import text
     n = name.strip()
+    # Відхиляємо числові значення (ціни, розміри) — вони не є станом товару
+    if re.match(r'^[\d\s,.\-₴]+$', n):
+        return None
+    from sqlalchemy import text
     n_lower = n.lower()
     rows = session.execute(text("SELECT id, conditionname FROM conditions")).fetchall()
     for r in rows:
@@ -309,11 +338,17 @@ def _get_or_create_condition(session: Session, name: str) -> Optional[int]:
 
 
 def _get_or_create_status(session: Session, name: str) -> Optional[int]:
-    """Get or create a status row by name."""
+    """Get or create a status row by name.
+    Rejects numeric/price values that indicate a wrong column was parsed.
+    """
+    import re
     if not name or not name.strip():
         return None
     from sqlalchemy import text
     n = name.strip()
+    # Відхиляємо числові значення (ціни, розміри) — вони не є статусом товару
+    if re.match(r'^[\d\s,.\-₴]+$', n):
+        return None
     # Нормалізація варіантів написання
     _STATUS_ALIASES = {
         "Не продано": "Непродано",
@@ -844,6 +879,11 @@ def _get_or_create_subtype(session: Session, name: str, type_id: Optional[int]) 
         return None
     from sqlalchemy import text
     name = name.strip()
+    # Reject numeric garbage (prices/sizes)
+    if _is_garbage_ref_value(name):
+        return None
+    # Capitalize first letter
+    name = _normalize_ref_name(name)
     name_lower = name.lower()
     rows = session.execute(text("SELECT id, subtypename FROM subtypes")).fetchall()
     for r in rows:

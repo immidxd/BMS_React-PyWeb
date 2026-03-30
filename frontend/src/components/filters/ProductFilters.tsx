@@ -113,6 +113,9 @@ function MultiCheckList({
   );
 }
 
+// Offset for subtype-only IDs to avoid collision with type IDs in combined list
+const SUBTYPE_OFFSET = 1_000_000;
+
 const ProductFiltersPanel: React.FC<ProductFiltersPanelProps> = ({ filters, selectedFilters, onFilterChange }) => {
   const [priceMin, setPriceMin] = useState<string>(
     selectedFilters.min_price !== undefined ? String(selectedFilters.min_price) : ''
@@ -121,7 +124,71 @@ const ProductFiltersPanel: React.FC<ProductFiltersPanelProps> = ({ filters, sele
     selectedFilters.max_price !== undefined ? String(selectedFilters.max_price) : ''
   );
 
-  const toggle = (field: 'typeids' | 'brandids' | 'genderids' | 'colorids' | 'conditionids' | 'statusids' | 'color_group_ids') =>
+  // ─── Combined type + subtype list (deduplicated by name) ───
+  const typeSubtypeMap = useMemo(() => {
+    const byName = new Map<string, { displayName: string; typeId?: number; subtypeId?: number }>();
+
+    for (const t of (filters.types || [])) {
+      const key = t.name.toLowerCase();
+      const entry = byName.get(key) || { displayName: t.name };
+      entry.typeId = t.id;
+      byName.set(key, entry);
+    }
+    for (const s of (filters.subtypes || [])) {
+      const key = s.name.toLowerCase();
+      const entry = byName.get(key) || { displayName: s.name };
+      entry.subtypeId = s.id;
+      byName.set(key, entry);
+    }
+
+    const items: { id: number; name: string }[] = [];
+    const idMap = new Map<number, { typeId?: number; subtypeId?: number }>();
+
+    Array.from(byName.values()).forEach(entry => {
+      const displayId = entry.typeId ?? (entry.subtypeId! + SUBTYPE_OFFSET);
+      items.push({ id: displayId, name: entry.displayName });
+      idMap.set(displayId, { typeId: entry.typeId, subtypeId: entry.subtypeId });
+    });
+
+    items.sort((a, b) => a.name.localeCompare(b.name, 'uk'));
+    return { items, idMap };
+  }, [filters.types, filters.subtypes]);
+
+  const combinedTypeSelection = useMemo(() => {
+    const selected: number[] = [];
+    Array.from(typeSubtypeMap.idMap.entries()).forEach(([displayId, entry]) => {
+      const tSel = entry.typeId != null && (selectedFilters.typeids || []).includes(entry.typeId);
+      const sSel = entry.subtypeId != null && (selectedFilters.subtypeids || []).includes(entry.subtypeId);
+      if (tSel || sSel) selected.push(displayId);
+    });
+    return selected;
+  }, [selectedFilters.typeids, selectedFilters.subtypeids, typeSubtypeMap]);
+
+  const toggleTypeOrSubtype = useCallback((displayId: number, checked: boolean) => {
+    const entry = typeSubtypeMap.idMap.get(displayId);
+    if (!entry) return;
+
+    let tids = [...(selectedFilters.typeids || [])];
+    let sids = [...(selectedFilters.subtypeids || [])];
+
+    if (entry.typeId != null) {
+      tids = checked ? [...tids.filter(x => x !== entry.typeId), entry.typeId!] : tids.filter(x => x !== entry.typeId);
+    }
+    if (entry.subtypeId != null) {
+      sids = checked ? [...sids.filter(x => x !== entry.subtypeId), entry.subtypeId!] : sids.filter(x => x !== entry.subtypeId);
+    }
+
+    onFilterChange({
+      ...selectedFilters,
+      typeids: tids.length > 0 ? tids : undefined,
+      subtypeids: sids.length > 0 ? sids : undefined,
+    });
+  }, [selectedFilters, onFilterChange, typeSubtypeMap]);
+
+  const typeFilterBadge = combinedTypeSelection.length;
+  // ────────────────────────────────────────────────────────────
+
+  const toggle = (field: 'brandids' | 'genderids' | 'colorids' | 'conditionids' | 'statusids' | 'color_group_ids') =>
     (id: number, checked: boolean) => {
       const current: number[] = (selectedFilters as any)[field] || [];
       const updated = checked ? [...current.filter(x => x !== id), id] : current.filter(x => x !== id);
@@ -151,8 +218,9 @@ const ProductFiltersPanel: React.FC<ProductFiltersPanelProps> = ({ filters, sele
   const countActive = (field: string) => ((selectedFilters as any)[field] || []).length;
 
   const totalActive = [
-    'typeids','brandids','genderids','colorids','color_group_ids','conditionids','statusids',
+    'brandids','genderids','colorids','color_group_ids','conditionids','statusids',
   ].reduce((acc, f) => acc + countActive(f), 0)
+    + typeFilterBadge
     + (selectedFilters.min_price !== undefined || selectedFilters.max_price !== undefined ? 1 : 0)
     + (selectedFilters.sizeeu?.length || 0);
 
@@ -172,13 +240,13 @@ const ProductFiltersPanel: React.FC<ProductFiltersPanelProps> = ({ filters, sele
         </div>
       )}
 
-      {/* Тип */}
-      {filters.types?.length > 0 && (
-        <FilterSection title={SECTION_LABELS.types} badge={countActive('typeids')} defaultOpen>
+      {/* Тип (об'єднано: види + підвиди, дедупліковано по назві) */}
+      {typeSubtypeMap.items.length > 0 && (
+        <FilterSection title={SECTION_LABELS.types} badge={typeFilterBadge} defaultOpen>
           <MultiCheckList
-            items={filters.types}
-            selected={(selectedFilters as any).typeids || []}
-            onToggle={toggle('typeids')}
+            items={typeSubtypeMap.items}
+            selected={combinedTypeSelection}
+            onToggle={toggleTypeOrSubtype}
           />
         </FilterSection>
       )}

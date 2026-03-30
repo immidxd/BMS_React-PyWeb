@@ -252,14 +252,17 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
                 const qty = record.quantity ?? 0;
                 const staticStatus = record.status_name || '';
                 let displayStatus = staticStatus;
-                if (sold > 0 && sold >= qty && qty > 0) {
+                if (staticStatus === 'Подаровано') {
+                    displayStatus = 'Подаровано';
+                } else if (sold > 0 && sold >= qty && qty > 0) {
                     displayStatus = 'Продано';
                 } else if (sold > 0 && sold < qty) {
                     displayStatus = `Продано ${sold}/${qty}`;
                 }
                 const colorMap: Record<string, string> = {
-                    'Непродано': 'green',
-                    'Продано':   'red',
+                    'Непродано':  'green',
+                    'Продано':    'red',
+                    'Подаровано': 'purple',
                 };
                 const color = displayStatus.startsWith('Продано') ? 'red' : (colorMap[displayStatus] || (displayStatus ? 'geekblue' : 'default'));
                 return (
