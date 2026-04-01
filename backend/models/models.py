@@ -14,11 +14,25 @@ class Gender(Base):
     # Relationships
     clients = relationship("Client", back_populates="gender")
 
+class BrandConcern(Base):
+    __tablename__ = "brand_concerns"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(200), unique=True, nullable=False)
+    country = Column(String(100), nullable=True)
+    description = Column(Text, nullable=True)
+
+    brands = relationship("Brand", back_populates="concern")
+
 class Brand(Base):
     __tablename__ = "brands"
-    
+
     id = Column(Integer, primary_key=True, index=True)
-    brandname = Column(String(100), unique=True, nullable=False)
+    brandname = Column(String(150), unique=True, nullable=False)
+    normalized_name = Column(Text, nullable=True)
+    concern_id = Column(Integer, ForeignKey("brand_concerns.id"), nullable=True)
+
+    concern = relationship("BrandConcern", back_populates="brands")
 
 class Type(Base):
     __tablename__ = "types"

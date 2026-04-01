@@ -18,6 +18,7 @@ const ClientsPage = React.lazy(() => import('./pages/ClientsPage'));
 const SuppliersPage = React.lazy(() => import('./pages/SuppliersPage'));
 const ShipmentsPage = React.lazy(() => import('./pages/ShipmentsPage'));
 const StatisticsPage = React.lazy(() => import('./pages/StatisticsPage'));
+const BrandsPage = React.lazy(() => import('./pages/BrandsPage'));
 
 // Logo Component that switches based on theme
 const AppLogo: React.FC = () => {
@@ -64,7 +65,7 @@ const FilterToggleButton: React.FC = () => {
   );
 };
 
-type TabKey = 'products' | 'orders' | 'clients' | 'suppliers' | 'deliveries' | 'statistics';
+type TabKey = 'products' | 'orders' | 'clients' | 'suppliers' | 'deliveries' | 'brands' | 'statistics';
 
 interface TabConfig {
   key: TabKey;
@@ -78,6 +79,7 @@ const TABS: TabConfig[] = [
   { key: 'clients', label: 'Клієнти', component: ClientsPage },
   { key: 'suppliers', label: 'Постачальники', component: SuppliersPage },
   { key: 'deliveries', label: 'Поставки', component: ShipmentsPage },
+  { key: 'brands', label: 'Бренди', component: BrandsPage },
   { key: 'statistics', label: 'Статистика', component: StatisticsPage },
 ];
 

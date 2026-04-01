@@ -78,6 +78,14 @@ def init_db():
             conn.execute(text("alter table if exists conditions alter column conditionname type varchar(100)"))
             # phone_number varchar(20) → 255 (Google Sheets іноді містить URL замість телефону)
             conn.execute(text("alter table if exists clients alter column phone_number type varchar(255)"))
+            # brand_concerns — групування брендів за консерном/компанією-власником
+            conn.execute(text("""CREATE TABLE IF NOT EXISTS brand_concerns (
+                id SERIAL PRIMARY KEY,
+                name VARCHAR(200) UNIQUE NOT NULL,
+                country VARCHAR(100),
+                description TEXT
+            )"""))
+            conn.execute(text("ALTER TABLE IF EXISTS brands ADD COLUMN IF NOT EXISTS concern_id INTEGER REFERENCES brand_concerns(id) ON DELETE SET NULL"))
             # nickname — для клієнтів з нікнеймами замість реальних імен
             conn.execute(text("alter table if exists clients add column if not exists nickname varchar(255)"))
             # orders.client_id — дозволити NULL (анонімні покупки, продаж в магазині)
@@ -100,8 +108,30 @@ def init_db():
                     PRIMARY KEY (color_id, group_id)
                 )
             """))
+            # brand_blocklist — типи взуття, які помилково потрапили в бренди
+            conn.execute(text("""
+                INSERT INTO brand_blocklist (normalized_name, reason) VALUES
+                    ('кросівки', 'тип взуття'), ('кросівкі', 'тип взуття'),
+                    ('черевики', 'тип взуття'), ('туфлі', 'тип взуття'),
+                    ('босоніжки', 'тип взуття'), ('кеди', 'тип взуття'),
+                    ('чоботи', 'тип взуття'), ('сандалі', 'тип взуття'),
+                    ('шльопанці', 'тип взуття'), ('крос боді', 'тип взуття'),
+                    ('кросівки жіночі', 'тип взуття'), ('кросівки чоловічі', 'тип взуття')
+                ON CONFLICT DO NOTHING
+            """))
+            # Очистити products від заблокованих брендів
+            conn.execute(text("""
+                UPDATE products SET brandid = NULL
+                WHERE brandid IN (
+                    SELECT b.id FROM brands b
+                    JOIN brand_blocklist bl ON lower(b.brandname) = bl.normalized_name
+                )
+            """))
+            conn.execute(text("""
+                DELETE FROM brands
+                WHERE lower(brandname) IN (SELECT normalized_name FROM brand_blocklist)
+            """))
 
-        
         # Populate initial reference data (only adds basic reference data, no test data)
         from .seed_data import populate_initial_data
         db = next(get_db())
