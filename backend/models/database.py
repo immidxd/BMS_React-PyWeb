@@ -86,6 +86,14 @@ def init_db():
                 description TEXT
             )"""))
             conn.execute(text("ALTER TABLE IF EXISTS brands ADD COLUMN IF NOT EXISTS concern_id INTEGER REFERENCES brand_concerns(id) ON DELETE SET NULL"))
+            # supplier_groups — групування постачальників за компанією-власником
+            conn.execute(text("""CREATE TABLE IF NOT EXISTS supplier_groups (
+                id SERIAL PRIMARY KEY,
+                name VARCHAR(200) UNIQUE NOT NULL,
+                country VARCHAR(100),
+                description TEXT
+            )"""))
+            conn.execute(text("ALTER TABLE IF EXISTS suppliers ADD COLUMN IF NOT EXISTS group_id INTEGER REFERENCES supplier_groups(id) ON DELETE SET NULL"))
             # nickname — для клієнтів з нікнеймами замість реальних імен
             conn.execute(text("alter table if exists clients add column if not exists nickname varchar(255)"))
             # orders.client_id — дозволити NULL (анонімні покупки, продаж в магазині)

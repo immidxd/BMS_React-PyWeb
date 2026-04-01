@@ -215,6 +215,16 @@ class Order(Base):
     broadcast = relationship("Broadcast", back_populates="orders")
     items = relationship("OrderItem", back_populates="order", cascade="all, delete-orphan")
 
+class SupplierGroup(Base):
+    __tablename__ = "supplier_groups"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(200), unique=True, nullable=False)
+    country = Column(String(100), nullable=True)
+    description = Column(Text, nullable=True)
+
+    suppliers = relationship("Supplier", back_populates="group")
+
 class Supplier(Base):
     __tablename__ = "suppliers"
 
@@ -232,9 +242,11 @@ class Supplier(Base):
     description = Column(Text, nullable=True)
     status = Column(String(50), default='Активний')
     priority = Column(Integer, default=0)
+    group_id = Column(Integer, ForeignKey("supplier_groups.id"), nullable=True)
 
     # Relationships
     deliveries = relationship("Delivery", back_populates="supplier")
+    group = relationship("SupplierGroup", back_populates="suppliers")
 
 
 class Delivery(Base):

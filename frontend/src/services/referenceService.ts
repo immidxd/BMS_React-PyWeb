@@ -61,8 +61,18 @@ export interface Supplier {
   top_brands: string | null;
   aliases?: { id: number; alias_name: string }[];
   revenue?: number;
+  group_id: number | null;
+  group_name: string | null;
   created_at: string | null;
   updated_at: string | null;
+}
+
+export interface SupplierGroup {
+  id: number;
+  name: string;
+  country: string | null;
+  description: string | null;
+  supplier_count: number;
 }
 
 export interface SupplierList {
@@ -211,7 +221,7 @@ export const mergeSuppliers = async (targetId: number, sourceIds: number[], newN
   return response.data;
 };
 
-export const updateSupplier = async (id: number, data: { name?: string; notes?: string }): Promise<Supplier> => {
+export const updateSupplier = async (id: number, data: { name?: string; notes?: string; group_id?: number | null }): Promise<Supplier> => {
   const response = await axios.put(`/api/suppliers/${id}`, data);
   return response.data;
 };
@@ -233,6 +243,28 @@ export const addSupplierAlias = async (supplierId: number, aliasName: string): P
 
 export const deleteSupplierAlias = async (aliasId: number): Promise<any> => {
   const response = await axios.delete(`/api/suppliers/aliases/${aliasId}`);
+  return response.data;
+};
+
+// ── Supplier Groups ─────────────────────────────────────────────────────────
+
+export const fetchSupplierGroups = async (): Promise<SupplierGroup[]> => {
+  const response = await axios.get('/api/supplier-groups');
+  return response.data;
+};
+
+export const createSupplierGroup = async (data: { name: string; country?: string; description?: string }): Promise<{ ok: boolean; id: number }> => {
+  const response = await axios.post('/api/supplier-groups', data);
+  return response.data;
+};
+
+export const updateSupplierGroup = async (id: number, data: { name?: string; country?: string; description?: string }): Promise<any> => {
+  const response = await axios.put(`/api/supplier-groups/${id}`, data);
+  return response.data;
+};
+
+export const deleteSupplierGroup = async (id: number): Promise<any> => {
+  const response = await axios.delete(`/api/supplier-groups/${id}`);
   return response.data;
 };
 

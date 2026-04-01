@@ -52,6 +52,7 @@ async def get_suppliers(
                s.company_name AS name,
                s.description AS notes,
                s.contact_person, s.status, s.priority,
+               s.group_id, sg.name AS group_name,
                COALESCE(ds.deliveries_count, 0) AS shipments_count,
                COALESCE(ds.product_count, 0) AS product_count,
                COALESCE(ds.total_spent, 0)::float AS total_spent,
@@ -61,6 +62,7 @@ async def get_suppliers(
                ds.top_brands,
                COALESCE(rev.revenue, 0)::float AS revenue
         FROM suppliers s
+        LEFT JOIN supplier_groups sg ON sg.id = s.group_id
         LEFT JOIN LATERAL (
             SELECT COUNT(DISTINCT d.id) AS deliveries_count,
                    COUNT(DISTINCT p.id) AS product_count,
@@ -146,8 +148,12 @@ async def update_supplier(
     exists = db.execute(text("SELECT 1 FROM suppliers WHERE id = :id"), {"id": supplier_id}).scalar()
     if not exists:
         raise HTTPException(status_code=404, detail="Supplier not found")
-    allowed = {"company_name", "description", "contact_person", "status", "priority"}
-    fields = {k: v for k, v in payload.items() if k in allowed and v is not None}
+    allowed = {"company_name", "description", "contact_person", "status", "priority", "group_id"}
+    fields = {k: v for k, v in payload.items() if k in allowed}
+    # group_id=0 means "remove group" → NULL
+    if "group_id" in fields and (fields["group_id"] == 0 or fields["group_id"] is None):
+        fields["group_id"] = None
+    fields = {k: v for k, v in fields.items() if v is not None or k == "group_id"}
     if "name" in payload and "company_name" not in fields:
         fields["company_name"] = payload["name"]
     if "notes" in payload and "description" not in fields:
@@ -199,3 +205,59 @@ async def merge_suppliers(payload: Dict[str, Any] = Body(...), db: Session = Dep
     db.commit()
     deleted = len([s for s in source_ids if s != target_id])
     return {"ok": True, "target_id": target_id, "moved_deliveries": moved_deliveries, "deleted_suppliers": deleted}
+
+
+# ── Supplier Groups (concerns/parent companies) ────────────────────
+
+@router.get("/api/supplier-groups")
+async def get_supplier_groups(db: Session = Depends(get_db)):
+    rows = db.execute(text("""
+        SELECT sg.id, sg.name, sg.country, sg.description,
+               COUNT(s.id)::int AS supplier_count
+        FROM supplier_groups sg
+        LEFT JOIN suppliers s ON s.group_id = sg.id
+        GROUP BY sg.id, sg.name, sg.country, sg.description
+        ORDER BY sg.name
+    """)).mappings().all()
+    return [dict(r) for r in rows]
+
+
+@router.post("/api/supplier-groups")
+async def create_supplier_group(payload: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
+    name = (payload.get("name") or "").strip()
+    if not name:
+        raise HTTPException(400, "name is required")
+    result = db.execute(
+        text("INSERT INTO supplier_groups (name, country, description) VALUES (:name, :country, :desc) RETURNING id"),
+        {"name": name, "country": payload.get("country"), "desc": payload.get("description")},
+    )
+    new_id = result.scalar()
+    db.commit()
+    return {"ok": True, "id": new_id}
+
+
+@router.put("/api/supplier-groups/{group_id}")
+async def update_supplier_group(group_id: int, payload: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
+    updates, params = [], {"id": group_id}
+    if "name" in payload:
+        updates.append("name = :name")
+        params["name"] = payload["name"].strip()
+    if "country" in payload:
+        updates.append("country = :country")
+        params["country"] = (payload["country"] or "").strip() or None
+    if "description" in payload:
+        updates.append("description = :desc")
+        params["desc"] = (payload["description"] or "").strip() or None
+    if not updates:
+        raise HTTPException(400, "Nothing to update")
+    db.execute(text(f"UPDATE supplier_groups SET {', '.join(updates)} WHERE id = :id"), params)
+    db.commit()
+    return {"ok": True}
+
+
+@router.delete("/api/supplier-groups/{group_id}")
+async def delete_supplier_group(group_id: int, db: Session = Depends(get_db)):
+    db.execute(text("UPDATE suppliers SET group_id = NULL WHERE group_id = :id"), {"id": group_id})
+    db.execute(text("DELETE FROM supplier_groups WHERE id = :id"), {"id": group_id})
+    db.commit()
+    return {"ok": True}

@@ -2,7 +2,8 @@ import React, { useEffect, useState, useCallback } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import {
   fetchSuppliers, mergeSuppliers, updateSupplier, deleteSupplier,
-  type Supplier, type SupplierList,
+  fetchSupplierGroups, createSupplierGroup,
+  type Supplier, type SupplierList, type SupplierGroup,
 } from '../../services/referenceService';
 import Pagination from '../common/Pagination';
 
@@ -25,6 +26,10 @@ const SuppliersTable: React.FC = () => {
   const [mergeName, setMergeName] = useState('');
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editName, setEditName] = useState('');
+  const [groups, setGroups] = useState<SupplierGroup[]>([]);
+  const [editingGroupId, setEditingGroupId] = useState<number | null>(null);
+  const [newGroupName, setNewGroupName] = useState('');
+  const [showNewGroupInput, setShowNewGroupInput] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();
 
@@ -44,6 +49,17 @@ const SuppliersTable: React.FC = () => {
   }, [page, perPage, sortBy, sortDir]);
 
   useEffect(() => { loadData(); }, [loadData]);
+
+  const loadGroups = useCallback(async () => {
+    try {
+      const data = await fetchSupplierGroups();
+      setGroups(data);
+    } catch (e) {
+      console.error('Failed to load supplier groups', e);
+    }
+  }, []);
+
+  useEffect(() => { loadGroups(); }, [loadGroups]);
 
   useEffect(() => {
     const params = new URLSearchParams();
@@ -91,6 +107,29 @@ const SuppliersTable: React.FC = () => {
       await loadData();
     } catch (e: any) {
       alert(e?.response?.data?.detail || 'Помилка збереження');
+    }
+  };
+
+  const handleGroupChange = async (supplierId: number, groupId: number | null) => {
+    try {
+      await updateSupplier(supplierId, { group_id: groupId });
+      setEditingGroupId(null);
+      await loadData();
+    } catch (e: any) {
+      alert(e?.response?.data?.detail || 'Помилка збереження групи');
+    }
+  };
+
+  const handleCreateGroup = async (supplierId: number) => {
+    if (!newGroupName.trim()) return;
+    try {
+      const { id } = await createSupplierGroup({ name: newGroupName.trim() });
+      await loadGroups();
+      await handleGroupChange(supplierId, id);
+      setNewGroupName('');
+      setShowNewGroupInput(false);
+    } catch (e: any) {
+      alert(e?.response?.data?.detail || 'Помилка створення групи');
     }
   };
 
@@ -166,6 +205,7 @@ const SuppliersTable: React.FC = () => {
               </th>
               <th className="px-3 py-3 text-left font-semibold cursor-pointer w-14" onClick={() => toggleSort('id')}>ID{sortIcon('id')}</th>
               <th className="px-3 py-3 text-left font-semibold cursor-pointer" onClick={() => toggleSort('name')}>Назва{sortIcon('name')}</th>
+              <th className="px-3 py-3 text-left font-semibold w-36">Група</th>
               <th className="px-3 py-3 text-center font-semibold cursor-pointer w-20" onClick={() => toggleSort('product_count')}>Товарів{sortIcon('product_count')}</th>
               <th className="px-3 py-3 text-center font-semibold cursor-pointer w-24" onClick={() => toggleSort('shipments_count')}>Поставок{sortIcon('shipments_count')}</th>
               <th className="px-3 py-3 text-right font-semibold cursor-pointer w-28" onClick={() => toggleSort('total_spent')}>Витрачено{sortIcon('total_spent')}</th>
@@ -176,11 +216,11 @@ const SuppliersTable: React.FC = () => {
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={9} className="text-center py-8 text-gray-400">Завантаження...</td></tr>
+              <tr><td colSpan={10} className="text-center py-8 text-gray-400">Завантаження...</td></tr>
             ) : error ? (
-              <tr><td colSpan={9} className="text-center py-8 text-red-500">{error}</td></tr>
+              <tr><td colSpan={10} className="text-center py-8 text-red-500">{error}</td></tr>
             ) : items.length === 0 ? (
-              <tr><td colSpan={9} className="text-center py-8 text-gray-400">Постачальників не знайдено</td></tr>
+              <tr><td colSpan={10} className="text-center py-8 text-gray-400">Постачальників не знайдено</td></tr>
             ) : (
               items.map(s => (
                 <tr key={s.id} className={`border-b last:border-b-0 hover:bg-gray-50 ${selected.has(s.id) ? 'bg-blue-50' : ''}`}>
@@ -209,6 +249,58 @@ const SuppliersTable: React.FC = () => {
                       </div>
                     ) : (
                       <span className="font-medium">{s.name}</span>
+                    )}
+                  </td>
+                  <td className="px-3 py-2 text-xs">
+                    {editingGroupId === s.id ? (
+                      <div className="flex flex-col gap-1 min-w-[130px]">
+                        <select
+                          autoFocus
+                          className="border rounded px-1 py-0.5 text-xs w-full"
+                          value={s.group_id ?? ''}
+                          onChange={e => {
+                            const val = e.target.value;
+                            if (val === '__new__') {
+                              setShowNewGroupInput(true);
+                            } else {
+                              handleGroupChange(s.id, val ? Number(val) : null);
+                            }
+                          }}
+                          onBlur={() => { if (!showNewGroupInput) setEditingGroupId(null); }}
+                        >
+                          <option value="">— Без групи —</option>
+                          {groups.map(g => (
+                            <option key={g.id} value={g.id}>{g.name}</option>
+                          ))}
+                          <option value="__new__">+ Створити нову...</option>
+                        </select>
+                        {showNewGroupInput && (
+                          <div className="flex gap-1">
+                            <input
+                              type="text"
+                              value={newGroupName}
+                              onChange={e => setNewGroupName(e.target.value)}
+                              onKeyDown={e => {
+                                if (e.key === 'Enter') handleCreateGroup(s.id);
+                                if (e.key === 'Escape') { setShowNewGroupInput(false); setNewGroupName(''); setEditingGroupId(null); }
+                              }}
+                              placeholder="Назва групи"
+                              className="border rounded px-1 py-0.5 text-xs flex-1"
+                              autoFocus
+                            />
+                            <button onClick={() => handleCreateGroup(s.id)} className="text-green-600 text-xs font-bold">OK</button>
+                            <button onClick={() => { setShowNewGroupInput(false); setNewGroupName(''); }} className="text-gray-400 text-xs">✕</button>
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <span
+                        onClick={() => { setEditingGroupId(s.id); setShowNewGroupInput(false); setNewGroupName(''); }}
+                        className="cursor-pointer hover:underline text-gray-600"
+                        title="Клікніть для зміни групи"
+                      >
+                        {s.group_name || <span className="text-gray-300">—</span>}
+                      </span>
                     )}
                   </td>
                   <td className="px-3 py-2 text-center">
