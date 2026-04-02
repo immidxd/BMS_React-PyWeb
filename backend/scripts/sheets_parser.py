@@ -432,9 +432,11 @@ def _parse_products_sheet(
        → "Ростовка": create new record with productnumber = X  (same base number,
          different size is treated as a separate product entry).
 
-    4. If there IS a record with X but brand/type/condition/color differ:
-       → "Accidental duplicate number": create new record with productnumber = X-2
-         (or X-3 … next free suffix).
+    4. If there IS a record with X but identity fields differ:
+       a) BRAND matches (or either is NULL) → same product with edited attributes
+          → UPDATE the closest existing record (no suffix created).
+       b) BRAND genuinely differs → different product, same number
+          → create new record with productnumber = X-2 (or X-3 … next free suffix).
 
     5. No existing record at all → plain INSERT, quantity=1.
 
@@ -753,58 +755,127 @@ def _parse_products_sheet(
                     else:
                         skipped += 1
             else:
-                # Case 4: genuine duplicate number — both records have non-empty
-                # identity fields that differ (e.g. brand=Nike vs brand=Adidas).
-                # _fields_match treats NULL as 'no data' (match), so this only
-                # triggers for real conflicts → create new record with -2 suffix.
-                target_pnum = _next_suffix_pnum(session, base_pnum)
-                logger.info(
-                    f"[dup-number] Genuine duplicate: {base_pnum} → {target_pnum} "
-                    f"(brand={brand_id}, type={type_id}, color={color_id})"
-                )
-                product = Product(
-                    productnumber         = target_pnum,
-                    clonednumbers         = clones or None,
-                    model                 = model_val or None,
-                    marking               = marking or None,
-                    year                  = year_int,
-                    description           = desc_val or None,
-                    price                 = price_float,
-                    sizeeu                = size_val or None,
-                    measurementscm        = cm_val or None,
-                    dateadded             = sheet_date or date.today(),
-                    quantity              = 1,
-                    brandid               = brand_id,
-                    typeid                = type_id,
-                    subtypeid             = sub_id,
-                    genderid              = gender_id,
-                    colorid               = color_id,
-                    conditionid           = cond_id,
-                    statusid              = status_id,
-                    manufacturercountryid = mfr_id,
-                    ownercountryid        = own_id,
-                    deliveryid            = shipment_id,
-                )
-                session.add(product)
-                try:
-                    session.flush()
-                    seen_in_run[product.id] = 1
-                    added += 1
-                except IntegrityError:
-                    session.rollback()
-                    existing_now = session.query(Product).filter(
-                        Product.productnumber == target_pnum,
-                        Product.sizeeu == (size_val or None),
-                    ).first()
-                    if existing_now:
-                        cnt = seen_in_run.get(existing_now.id, 0) + 1
-                        seen_in_run[existing_now.id] = cnt
-                        existing_now.quantity = cnt
-                        existing_now.updated_at = datetime.utcnow()
+                # Case 4: identity fields differ from all existing records.
+                # ──────────────────────────────────────────────────────────
+                # OLD behaviour: always create -2 suffix.  This caused
+                # phantom duplicates when user edits color/condition/type
+                # in the journal (same product, slightly different description).
+                #
+                # NEW behaviour: check if BRAND matches any existing record.
+                #   • Brand MATCHES → same product, updated attributes → UPDATE.
+                #   • Brand DIFFERS → genuinely different product    → suffix -2.
+                #
+                # Rationale: in shoe business, same brand + same article number
+                # always = same physical product.  Color/condition/type names
+                # change due to edits, multi-sheet descriptions, or refinement
+                # (e.g. "Ботинки" → "Ботинки-уггі", "ліловий" → "бузковий").
+
+                # Find records with compatible brand (both non-empty & equal,
+                # or either is NULL).
+                brand_compat = [
+                    p for p in existing_base
+                    if _fields_match(p.brandid, brand_id)
+                ]
+
+                if brand_compat:
+                    # ── Same brand → UPDATE the closest existing record ──
+                    # Pick record with fewest genuine field conflicts.
+                    def _conflict_score(p):
+                        score = 0
+                        if not _fields_match(p.typeid,      type_id):  score += 1
+                        if not _fields_match(p.conditionid, cond_id):  score += 1
+                        if not _fields_match(p.colorid,     color_id): score += 1
+                        if not _fields_match(p.sizeeu,      size_val): score += 2  # size is heavier
+                        return score
+
+                    target = min(brand_compat, key=_conflict_score)
+                    cnt = seen_in_run.get(target.id, 0) + 1
+                    seen_in_run[target.id] = cnt
+                    target.quantity = cnt
+                    # Update identity fields to latest non-empty values
+                    if brand_id:  target.brandid     = brand_id
+                    if type_id:   target.typeid      = type_id
+                    if cond_id:   target.conditionid = cond_id
+                    if color_id:  target.colorid     = color_id
+                    if size_val:  target.sizeeu      = size_val
+                    if sub_id:    target.subtypeid   = sub_id
+                    if gender_id: target.genderid    = gender_id
+                    # Update data fields
+                    if marking:   target.marking     = marking
+                    if model_val: target.model       = model_val
+                    if desc_val:  target.description = desc_val
+                    if cm_val:    target.measurementscm = cm_val
+                    if year_int is not None: target.year = year_int
+                    if price_float and target.price and price_float != target.price:
+                        target.oldprice = target.price
+                        target.price    = price_float
+                    elif price_float and not target.price:
+                        target.price = price_float
+                    if cnt == 1:
+                        target.statusid = status_id
+                    elif status_id == sold_status_id:
+                        target.statusid = status_id
+                    target.updated_at = datetime.utcnow()
+                    if shipment_id and not target.deliveryid:
+                        target.deliveryid = shipment_id
+                    if pnum != target.productnumber:
+                        pending_renames[target.id] = pnum
+                    logger.info(
+                        f"[dup-update] Same brand, updated instead of suffix: "
+                        f"{base_pnum} (id={target.id}, conflicts={_conflict_score(target)})"
+                    )
+                    updated += 1
+                else:
+                    # ── Brand genuinely differs → create -2 suffix ───────
+                    target_pnum = _next_suffix_pnum(session, base_pnum)
+                    logger.info(
+                        f"[dup-number] Genuine duplicate (brand differs): "
+                        f"{base_pnum} → {target_pnum} "
+                        f"(brand={brand_id}, type={type_id}, color={color_id})"
+                    )
+                    product = Product(
+                        productnumber         = target_pnum,
+                        clonednumbers         = clones or None,
+                        model                 = model_val or None,
+                        marking               = marking or None,
+                        year                  = year_int,
+                        description           = desc_val or None,
+                        price                 = price_float,
+                        sizeeu                = size_val or None,
+                        measurementscm        = cm_val or None,
+                        dateadded             = sheet_date or date.today(),
+                        quantity              = 1,
+                        brandid               = brand_id,
+                        typeid                = type_id,
+                        subtypeid             = sub_id,
+                        genderid              = gender_id,
+                        colorid               = color_id,
+                        conditionid           = cond_id,
+                        statusid              = status_id,
+                        manufacturercountryid = mfr_id,
+                        ownercountryid        = own_id,
+                        deliveryid            = shipment_id,
+                    )
+                    session.add(product)
+                    try:
                         session.flush()
-                        updated += 1
-                    else:
-                        skipped += 1
+                        seen_in_run[product.id] = 1
+                        added += 1
+                    except IntegrityError:
+                        session.rollback()
+                        existing_now = session.query(Product).filter(
+                            Product.productnumber == target_pnum,
+                            Product.sizeeu == (size_val or None),
+                        ).first()
+                        if existing_now:
+                            cnt = seen_in_run.get(existing_now.id, 0) + 1
+                            seen_in_run[existing_now.id] = cnt
+                            existing_now.quantity = cnt
+                            existing_now.updated_at = datetime.utcnow()
+                            session.flush()
+                            updated += 1
+                        else:
+                            skipped += 1
 
     # ── Apply deferred productnumber renames (two-phase for swap safety) ──
     if pending_renames:
