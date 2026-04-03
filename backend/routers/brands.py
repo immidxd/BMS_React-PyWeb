@@ -262,8 +262,34 @@ async def merge_brands(body: BrandMergeRequest, db: Session = Depends(get_db)):
     )
     moved = result.rowcount
 
+    # Save source brand names as aliases → parser will respect merges
+    source_brands = db.execute(
+        text("SELECT id, brandname FROM brands WHERE id = ANY(:ids)"),
+        {"ids": body.source_ids},
+    ).fetchall()
+    for sb in source_brands:
+        # Don't create alias if name already exists as alias or as a brand
+        existing_alias = db.execute(
+            text("SELECT 1 FROM brand_aliases WHERE alias_name = :name"),
+            {"name": sb.brandname},
+        ).fetchone()
+        if not existing_alias:
+            db.execute(
+                text("INSERT INTO brand_aliases (alias_name, brand_id) VALUES (:name, :bid) ON CONFLICT (alias_name) DO NOTHING"),
+                {"name": sb.brandname, "bid": body.target_id},
+            )
+
     # Optionally rename target
     if body.new_name:
+        # Also save old target name as alias before renaming
+        old_target = db.execute(
+            text("SELECT brandname FROM brands WHERE id = :id"), {"id": body.target_id}
+        ).fetchone()
+        if old_target and old_target.brandname != body.new_name.strip():
+            db.execute(
+                text("INSERT INTO brand_aliases (alias_name, brand_id) VALUES (:name, :bid) ON CONFLICT (alias_name) DO NOTHING"),
+                {"name": old_target.brandname, "bid": body.target_id},
+            )
         db.execute(
             text("UPDATE brands SET brandname = :name WHERE id = :id"),
             {"name": body.new_name.strip(), "id": body.target_id},

@@ -305,12 +305,37 @@ def _get_or_create(session: Session, model, unique_field: str, value: str):
     if model is Type:
         value = _normalize_ref_name(value)
 
-    # ── Brand: spaceless normalized comparison ──
-    # "Go Soft" == "GoSoft" == "GO SOFT" → same brand
+    # ── Brand: check aliases (merged brands) + normalized comparison ──
+    # Step 1: Check brand_aliases — if "Adidas TERREX" was merged into "Adidas",
+    #         the alias table remembers this and returns "Adidas" directly.
+    # Step 2: Normalized spaceless comparison for typos (GoSoft = Go Soft).
     if model is Brand:
+        from sqlalchemy import text as sa_text
+        # Check aliases first (merged brands)
+        alias_row = session.execute(
+            sa_text("SELECT brand_id FROM brand_aliases WHERE alias_name = :name"),
+            {"name": value}
+        ).fetchone()
+        if alias_row:
+            target_brand = session.query(Brand).get(alias_row[0])
+            if target_brand:
+                return target_brand
+
         val_key = _normalize_brand_key(value)
         if not val_key:
             return None
+
+        # Also check aliases by normalized key
+        all_aliases = session.execute(
+            sa_text("SELECT alias_name, brand_id FROM brand_aliases")
+        ).fetchall()
+        for alias_name, alias_brand_id in all_aliases:
+            if _normalize_brand_key(alias_name) == val_key:
+                target_brand = session.query(Brand).get(alias_brand_id)
+                if target_brand:
+                    return target_brand
+
+        # Normal lookup by normalized key
         all_rows = session.query(model).all()
         for row in all_rows:
             db_val = getattr(row, unique_field, None)

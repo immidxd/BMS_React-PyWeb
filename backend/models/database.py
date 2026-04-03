@@ -86,6 +86,12 @@ def init_db():
                 description TEXT
             )"""))
             conn.execute(text("ALTER TABLE IF EXISTS brands ADD COLUMN IF NOT EXISTS concern_id INTEGER REFERENCES brand_concerns(id) ON DELETE SET NULL"))
+            # brand_aliases — зберігає назви зливених брендів для парсера
+            conn.execute(text("""CREATE TABLE IF NOT EXISTS brand_aliases (
+                id SERIAL PRIMARY KEY,
+                alias_name VARCHAR(200) UNIQUE NOT NULL,
+                brand_id INTEGER NOT NULL REFERENCES brands(id) ON DELETE CASCADE
+            )"""))
             # supplier_groups — групування постачальників за компанією-власником
             conn.execute(text("""CREATE TABLE IF NOT EXISTS supplier_groups (
                 id SERIAL PRIMARY KEY,

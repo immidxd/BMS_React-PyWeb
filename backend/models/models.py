@@ -33,6 +33,19 @@ class Brand(Base):
     concern_id = Column(Integer, ForeignKey("brand_concerns.id"), nullable=True)
 
     concern = relationship("BrandConcern", back_populates="brands")
+    aliases = relationship("BrandAlias", back_populates="brand")
+
+
+class BrandAlias(Base):
+    """When brand A is merged into brand B, A's name becomes an alias for B.
+    Parser checks aliases so merged brands never get re-created."""
+    __tablename__ = "brand_aliases"
+
+    id = Column(Integer, primary_key=True, index=True)
+    alias_name = Column(String(200), unique=True, nullable=False)
+    brand_id = Column(Integer, ForeignKey("brands.id", ondelete="CASCADE"), nullable=False)
+
+    brand = relationship("Brand", back_populates="aliases")
 
 class Type(Base):
     __tablename__ = "types"
