@@ -261,6 +261,18 @@ def _normalize_ref_name(value: str) -> str:
     return value
 
 
+def _normalize_brand_key(name: str) -> str:
+    """Canonical brand key for dedup: lowercase, no diacritics, no spaces/punct.
+    'Go Soft' and 'GoSoft' and 'GO SOFT' all → 'gosoft'.
+    """
+    try:
+        from backend.scripts.brand_utils import normalize_brand
+        n = normalize_brand(name)
+        return n.replace(" ", "") if n else ""
+    except ImportError:
+        return re.sub(r"\s+", "", name.strip().lower())
+
+
 def _get_or_create(session: Session, model, unique_field: str, value: str):
     """Get or create a reference-table row by unique string field.
 
@@ -268,7 +280,7 @@ def _get_or_create(session: Session, model, unique_field: str, value: str):
     We load all rows and compare via Python lower() instead.
     Reference tables are tiny (< 100 rows) so this is safe.
     """
-    from backend.models.models import Color, Type, Subtype
+    from backend.models.models import Color, Type, Subtype, Brand
     value = value.strip()
     if not value:
         return None
@@ -292,6 +304,22 @@ def _get_or_create(session: Session, model, unique_field: str, value: str):
     # Capitalize first letter for types
     if model is Type:
         value = _normalize_ref_name(value)
+
+    # ── Brand: spaceless normalized comparison ──
+    # "Go Soft" == "GoSoft" == "GO SOFT" → same brand
+    if model is Brand:
+        val_key = _normalize_brand_key(value)
+        if not val_key:
+            return None
+        all_rows = session.query(model).all()
+        for row in all_rows:
+            db_val = getattr(row, unique_field, None)
+            if db_val and _normalize_brand_key(db_val) == val_key:
+                return row
+        obj = Brand(brandname=value, normalized_name=val_key)
+        session.add(obj)
+        session.flush()
+        return obj
 
     val_lower = value.lower()
     all_rows = session.query(model).all()
@@ -770,11 +798,27 @@ def _parse_products_sheet(
                 # change due to edits, multi-sheet descriptions, or refinement
                 # (e.g. "Ботинки" → "Ботинки-уггі", "ліловий" → "бузковий").
 
-                # Find records with compatible brand (both non-empty & equal,
-                # or either is NULL).
+                # Find records with compatible brand.
+                # Compare by NORMALIZED brand name (not just ID) so that
+                # "GoSoft" matches "Go Soft", "ECCO" matches "Ecco", etc.
+                def _brand_compatible(p) -> bool:
+                    if _fields_match(p.brandid, brand_id):
+                        return True  # same ID or either is NULL
+                    # Both have brand IDs but they differ — check normalized names
+                    if p.brandid and brand_id:
+                        from backend.models.models import Brand
+                        pb = session.get(Brand, p.brandid)
+                        nb = session.get(Brand, brand_id)
+                        if pb and nb:
+                            k1 = _normalize_brand_key(pb.brandname)
+                            k2 = _normalize_brand_key(nb.brandname)
+                            if k1 and k2 and k1 == k2:
+                                return True
+                    return False
+
                 brand_compat = [
                     p for p in existing_base
-                    if _fields_match(p.brandid, brand_id)
+                    if _brand_compatible(p)
                 ]
 
                 if brand_compat:
