@@ -190,7 +190,7 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
             title: 'Номер', dataIndex: 'productnumber', key: 'productnumber', width: 80,
             render: (text: string, record: Product) => (
                 <div className="flex flex-col gap-0.5">
-                    <span className="text-xs text-left font-medium text-gray-800 dark:text-gray-200">{text}</span>
+                    <span className="text-xs text-left font-medium text-gray-800 dark:text-gray-200">{(text || '').replace(/^#/, '')}</span>
                     {record.is_rostovka && (
                         <Tooltip title={`Ростовка — набір розмірів (${record.quantity} од.)`}>
                             <span className="inline-flex items-center gap-0.5 px-1 py-0 rounded text-[9px] font-semibold bg-purple-100 text-purple-700 border border-purple-200 w-fit cursor-help">

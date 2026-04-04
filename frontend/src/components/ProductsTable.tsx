@@ -129,7 +129,7 @@ export const ProductsTable: React.FC<ProductsTableProps> = ({
                         {products.map((product) => (
                             <TableRow hover key={product.id}>
                                 <TableCell>{product.id}</TableCell>
-                                <TableCell>{product.productnumber}</TableCell>
+                                <TableCell>{(product.productnumber || '').replace(/^#/, '')}</TableCell>
                                 <TableCell>{product.model}</TableCell>
                                 <TableCell>{product.brand?.name}</TableCell>
                                 <TableCell>{product.type?.name}</TableCell>

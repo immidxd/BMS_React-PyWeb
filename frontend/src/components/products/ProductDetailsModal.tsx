@@ -88,10 +88,10 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose }) => {
             <div className="flex items-start justify-between px-6 pt-5 pb-3 border-b border-gray-100 dark:border-gray-700">
               <div className="min-w-0">
                 <h2 className="text-xl font-bold text-gray-900 dark:text-gray-100 truncate">
-                  {[(p as any).brand_name, p.model].filter(Boolean).join(' ') || p.productnumber}
+                  {[(p as any).brand_name, p.model].filter(Boolean).join(' ') || (p.productnumber || '').replace(/^#/, '')}
                 </h2>
                 <div className="flex items-center gap-2 mt-1">
-                  <span className="text-sm text-gray-400 dark:text-gray-500 font-mono">#{p.productnumber}</span>
+                  <span className="text-sm text-gray-400 dark:text-gray-500 font-mono">{(p.productnumber || '').replace(/^#/, '')}</span>
                   {p.is_rostovka && (
                     <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-purple-100 text-purple-700 border border-purple-200 dark:bg-purple-900/30 dark:text-purple-300 dark:border-purple-700">
                       ▤ Ростовка

@@ -894,7 +894,7 @@ const StatisticsPage: React.FC<StatisticsPageProps> = () => {
                       {productStats.top_products.map((p, i) => (
                         <tr key={p.productnumber} className={i % 2 === 0 ? 'bg-white dark:bg-gray-900' : 'bg-gray-50 dark:bg-gray-800'}>
                           <td className="px-2 py-1 text-gray-400">{i + 1}</td>
-                          <td className="px-2 py-1 font-mono text-blue-600">{p.productnumber}</td>
+                          <td className="px-2 py-1 font-mono text-blue-600">{(p.productnumber || '').replace(/^#/, '')}</td>
                           <td className="px-2 py-1 text-gray-700 dark:text-gray-300 max-w-[120px] truncate">{p.model || '—'}</td>
                           <td className="px-2 py-1 text-gray-600 dark:text-gray-400">{p.brand || '—'}</td>
                           <td className="px-2 py-1 text-gray-500">{p.type || '—'}</td>

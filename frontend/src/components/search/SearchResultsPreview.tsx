@@ -46,7 +46,7 @@ const SearchResultsPreview: React.FC<SearchResultsPreviewProps> = ({
     >
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2">
-          <span className="font-medium text-sm">{item.productnumber}</span>
+          <span className="font-medium text-sm">{(item.productnumber || '').replace(/^#/, '')}</span>
           {item.model && (
             <span className="text-sm text-gray-600 dark:text-gray-400">{item.model}</span>
           )}

@@ -728,7 +728,7 @@ const OrderForm: React.FC = () => {
                       <option value="">- Виберіть товар -</option>
                       {products.map(product => (
                         <option key={product.id} value={product.id}>
-                          {product.productnumber} - {product.model} {product.marking}
+                          {(product.productnumber || '').replace(/^#/, '')} - {product.model} {product.marking}
                         </option>
                       ))}
                     </Select>
