@@ -515,7 +515,10 @@ def get_product_filters(db: Session) -> Dict[str, Any]:
         types = fetch_pairs("SELECT id, typename FROM types ORDER BY typename")
         subtypes_rows = db.execute(text("SELECT id, subtypename, typeid FROM subtypes ORDER BY subtypename")).fetchall()
         brands = fetch_pairs("SELECT id, brandname FROM brands ORDER BY brandname")
-        genders = fetch_pairs("SELECT id, gendername FROM genders ORDER BY gendername")
+        genders = fetch_pairs(
+            "SELECT id, INITCAP(gendername) as gendername FROM genders "
+            "WHERE id != 0 ORDER BY gendername"
+        )
         colors = fetch_pairs("SELECT id, colorname FROM colors ORDER BY colorname")
         # Кольорові групи + відтінки (для нового UI фільтра)
         color_groups_rows = db.execute(text("""
