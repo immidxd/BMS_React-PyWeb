@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 @router.get("/api/orders", response_model=OrderList)
-async def get_orders(
+def get_orders(
     page: int = Query(1, ge=1),
     per_page: int = Query(20, ge=1, le=100),
     search: Optional[str] = Query(None),
@@ -43,142 +43,219 @@ async def get_orders(
     sales_channels: Optional[List[str]] = Query(None),
     db: Session = Depends(get_db)
 ):
-    """
-    Get a paginated list of orders with filtering options
-    """
-    # Create filter object
-    filters = OrderFilters(
-        search=search,
-        order_status_ids=order_status_ids,
-        payment_status_ids=payment_status_ids,
-        payment_method_ids=payment_method_ids,
-        delivery_method_ids=delivery_method_ids,
-        delivery_status_ids=delivery_status_ids,
-        client_id=client_id,
-        date_from=date_from,
-        date_to=date_to,
-        month_min=month_min,
-        month_max=month_max,
-        year_min=year_min,
-        year_max=year_max,
-        priority_min=priority_min,
-        priority_max=priority_max,
-        has_tracking=has_tracking,
-        is_deferred=is_deferred,
-        amount_min=amount_min,
-        amount_max=amount_max,
-        sales_channels=sales_channels,
-    )
-    
-    # Use the DAO to get filtered orders
-    order_dao = OrderDAO(db)
-    result = order_dao.get_orders_with_filters(filters, page, per_page, sort_by=sort_by, sort_dir=sort_dir)
-    
-    # Transform ORM objects to API response
-    items = []
-    for order in result["items"]:
-        # Get client name
-        client_name = f"{order.client.first_name or ''} {order.client.last_name or ''}".strip() if order.client else None
-        
-        # Get order status name
-        order_status_name = order.order_status.status_name if order.order_status else None
-        
-        # Безпечне витягування назв із відомих колонок
-        payment_status_name = order.payment_status or (
-            order.payment_status_rel.name if order.payment_status_rel else getattr(order.payment_status_rel, 'status_name', None)
-        )
-        payment_method_name = None
-        if order.payment_method_id and order.payment_method:
-            payment_method_name = getattr(order.payment_method, 'name', None) or getattr(order.payment_method, 'method_name', None)
-        delivery_method_name = None
-        if order.delivery_method_id and order.delivery_method:
-            delivery_method_name = getattr(order.delivery_method, 'name', None) or getattr(order.delivery_method, 'method_name', None)
-        delivery_status_name = None
-        if order.delivery_status_id and order.delivery_status:
-            delivery_status_name = getattr(order.delivery_status, 'name', None) or getattr(order.delivery_status, 'status_name', None)
-        
-        # Get broadcast name
-        broadcast_name = order.broadcast.name if order.broadcast else None
-        
-        # Prepare order items
-        order_items = []
-        for item in order.items:
-            product_number = item.product.productnumber if item.product else (item.notes or "—")
-            product_name = (f"{item.product.model or ''} {item.product.marking or ''}".strip() if item.product else "") or "—"
-            
-            order_items.append({
-                "id": item.id,
-                "order_id": item.order_id,
-                "product_id": item.product_id,
-                "product_number": product_number,
-                "product_name": product_name,
-                "quantity": item.quantity,
-                "price": item.price,
-                "discount_type": item.discount_type,
-                "discount_value": item.discount_value,
-                "additional_operation": item.additional_operation,
-                "additional_operation_value": item.additional_operation_value,
-                "notes": item.notes,
-                "created_at": item.created_at,
-                "updated_at": item.updated_at
-            })
-        
-        # Create delivery address details
-        address_details = None
-        if order.delivery_address:
-            address = order.delivery_address
-            address_details = {
-                "id": address.id,
-                "city": address.city,
-                "street": address.street,
-                "building": address.building,
-                "apartment": address.apartment,
-                "postal_code": address.postal_code,
-                "notes": address.notes
-            }
-        
-        # Create order details
-        order_dict = {
-            "id": order.id,
-            "client_id": order.client_id,
-            "client_name": client_name,
-            "order_date": order.order_date,
-            "order_status_id": order.order_status_id,
-            "order_status_name": order_status_name,
-            "payment_status_id": order.payment_status_id,
-            "payment_status_name": payment_status_name,
-            "payment_status": order.payment_status,
-            "payment_method_id": order.payment_method_id,
-            "payment_method_name": payment_method_name,
-            "delivery_method_id": order.delivery_method_id,
-            "delivery_method_name": delivery_method_name,
-            "delivery_status_id": order.delivery_status_id,
-            "delivery_status_name": delivery_status_name,
-            "delivery_address_id": order.delivery_address_id,
-            "delivery_address_details": address_details,
-            "tracking_number": order.tracking_number,
-            "total_amount": order.total_amount,
-            "notes": order.notes,
-            "deferred_until": order.deferred_until,
-            "priority": order.priority,
-            "broadcast_id": order.broadcast_id,
-            "broadcast_name": broadcast_name,
-            "sales_channel": getattr(order, 'sales_channel', None) or 'Ефір',
-            "created_at": order.created_at,
-            "updated_at": order.updated_at,
-            "order_items": order_items
-        }
+    """Get paginated orders list using raw SQL — no lazy loading."""
+    from sqlalchemy import text as sa_text
 
-        items.append(order_dict)
-    
-    # Create the response
-    return {
-        "items": items,
-        "total": result["total"],
-        "page": result["page"],
-        "per_page": result["per_page"],
-        "pages": result["pages"]
-    }
+    # ── Build WHERE clauses ──────────────────────────────────────────────
+    where = []
+    params: Dict[str, Any] = {}
+
+    if search:
+        where.append("""(
+            c.first_name ILIKE :search OR c.last_name ILIKE :search
+            OR c.phone_number ILIKE :search OR c.email ILIKE :search
+            OR o.tracking_number ILIKE :search OR o.notes ILIKE :search
+        )""")
+        params["search"] = f"%{search}%"
+
+    if client_id:
+        where.append("o.client_id = :client_id")
+        params["client_id"] = client_id
+
+    if order_status_ids:
+        where.append("o.order_status_id = ANY(:order_status_ids)")
+        params["order_status_ids"] = order_status_ids
+
+    if payment_status_ids:
+        where.append("o.payment_status_id = ANY(:payment_status_ids)")
+        params["payment_status_ids"] = payment_status_ids
+
+    if payment_method_ids:
+        where.append("o.payment_method_id = ANY(:payment_method_ids)")
+        params["payment_method_ids"] = payment_method_ids
+
+    if delivery_method_ids:
+        where.append("o.delivery_method_id = ANY(:delivery_method_ids)")
+        params["delivery_method_ids"] = delivery_method_ids
+
+    if delivery_status_ids:
+        where.append("o.delivery_status_id = ANY(:delivery_status_ids)")
+        params["delivery_status_ids"] = delivery_status_ids
+
+    if date_from:
+        where.append("o.order_date >= :date_from")
+        params["date_from"] = date_from
+
+    if date_to:
+        where.append("o.order_date <= :date_to")
+        params["date_to"] = date_to
+
+    if month_min is not None:
+        where.append("EXTRACT(MONTH FROM o.order_date) >= :month_min")
+        params["month_min"] = month_min
+
+    if month_max is not None:
+        where.append("EXTRACT(MONTH FROM o.order_date) <= :month_max")
+        params["month_max"] = month_max
+
+    if year_min is not None:
+        where.append("EXTRACT(YEAR FROM o.order_date) >= :year_min")
+        params["year_min"] = year_min
+
+    if year_max is not None:
+        where.append("EXTRACT(YEAR FROM o.order_date) <= :year_max")
+        params["year_max"] = year_max
+
+    if priority_min is not None:
+        where.append("o.priority >= :priority_min")
+        params["priority_min"] = priority_min
+
+    if priority_max is not None:
+        where.append("o.priority <= :priority_max")
+        params["priority_max"] = priority_max
+
+    if amount_min is not None:
+        where.append("o.total_amount >= :amount_min")
+        params["amount_min"] = amount_min
+
+    if amount_max is not None:
+        where.append("o.total_amount <= :amount_max")
+        params["amount_max"] = amount_max
+
+    if has_tracking is True:
+        where.append("o.tracking_number IS NOT NULL AND o.tracking_number != ''")
+    elif has_tracking is False:
+        where.append("(o.tracking_number IS NULL OR o.tracking_number = '')")
+
+    if is_deferred:
+        where.append("o.deferred_until IS NOT NULL")
+
+    if sales_channels:
+        where.append("o.sales_channel = ANY(:sales_channels)")
+        params["sales_channels"] = sales_channels
+
+    where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+
+    # ── Sort ─────────────────────────────────────────────────────────────
+    allowed_sort = {"id": "o.id", "order_date": "o.order_date",
+                    "total_amount": "o.total_amount", "priority": "o.priority",
+                    "client_name": "client_name"}
+    sort_col = allowed_sort.get(sort_by, "o.order_date")
+    sort_dir_sql = "ASC" if sort_dir.lower() == "asc" else "DESC"
+
+    # ── Count ────────────────────────────────────────────────────────────
+    count_sql = f"""
+        SELECT COUNT(*) FROM orders o
+        LEFT JOIN clients c ON o.client_id = c.id
+        {where_sql}
+    """
+    total = db.execute(sa_text(count_sql), params).scalar() or 0
+    pages = max(1, (total + per_page - 1) // per_page)
+    offset = (page - 1) * per_page
+
+    # ── Main query — single JOIN for all needed data ─────────────────────
+    main_sql = f"""
+        SELECT
+            o.id, o.client_id, o.order_date, o.order_status_id, o.total_amount,
+            o.payment_method_id, o.payment_status, o.payment_status_id,
+            o.delivery_method_id, o.delivery_address_id, o.tracking_number,
+            o.delivery_status_id, o.notes, o.deferred_until, o.priority,
+            o.broadcast_id, o.sales_channel, o.created_at, o.updated_at,
+            TRIM(COALESCE(c.first_name,'') || ' ' || COALESCE(c.last_name,'')) AS client_name,
+            os2.status_name  AS order_status_name,
+            COALESCE(o.payment_status, ps.status_name) AS payment_status_name,
+            pm.method_name   AS payment_method_name,
+            dm.method_name   AS delivery_method_name,
+            ds.status_name   AS delivery_status_name
+        FROM orders o
+        LEFT JOIN clients c          ON o.client_id          = c.id
+        LEFT JOIN order_statuses os2 ON o.order_status_id    = os2.id
+        LEFT JOIN payment_statuses ps ON o.payment_status_id = ps.id
+        LEFT JOIN payment_methods pm ON o.payment_method_id  = pm.id
+        LEFT JOIN delivery_methods dm ON o.delivery_method_id = dm.id
+        LEFT JOIN delivery_statuses ds ON o.delivery_status_id = ds.id
+        {where_sql}
+        ORDER BY {sort_col} {sort_dir_sql} NULLS LAST, o.id {sort_dir_sql}
+        LIMIT :limit OFFSET :offset
+    """
+    params["limit"] = per_page
+    params["offset"] = offset
+    rows = db.execute(sa_text(main_sql), params).mappings().all()
+
+    order_ids = [r["id"] for r in rows]
+
+    # ── Fetch order items for this page in one query ─────────────────────
+    items_by_order: Dict[int, list] = {oid: [] for oid in order_ids}
+    if order_ids:
+        items_sql = """
+            SELECT oi.id, oi.order_id, oi.product_id, oi.quantity, oi.price,
+                   oi.discount_type, oi.discount_value,
+                   oi.additional_operation, oi.additional_operation_value,
+                   oi.notes, oi.created_at, oi.updated_at,
+                   p.productnumber, p.model, p.marking
+            FROM order_items oi
+            LEFT JOIN products p ON oi.product_id = p.id
+            WHERE oi.order_id = ANY(:oids)
+            ORDER BY oi.id
+        """
+        item_rows = db.execute(sa_text(items_sql), {"oids": order_ids}).mappings().all()
+        for ir in item_rows:
+            pnum = ir["productnumber"] or ""
+            pnum_display = pnum.lstrip("#") if pnum else (ir["notes"] or "—")
+            pname = " ".join(filter(None, [ir["model"], ir["marking"]])) or "—"
+            items_by_order[ir["order_id"]].append({
+                "id": ir["id"],
+                "order_id": ir["order_id"],
+                "product_id": ir["product_id"],
+                "product_number": pnum_display,
+                "product_name": pname,
+                "quantity": ir["quantity"],
+                "price": float(ir["price"] or 0),
+                "discount_type": ir["discount_type"],
+                "discount_value": ir["discount_value"],
+                "additional_operation": ir["additional_operation"],
+                "additional_operation_value": ir["additional_operation_value"],
+                "notes": ir["notes"],
+                "created_at": ir["created_at"],
+                "updated_at": ir["updated_at"],
+            })
+
+    # ── Build response ────────────────────────────────────────────────────
+    items = []
+    for r in rows:
+        cn = (r["client_name"] or "").strip() or None
+        items.append({
+            "id": r["id"],
+            "client_id": r["client_id"],
+            "client_name": cn,
+            "order_date": r["order_date"],
+            "order_status_id": r["order_status_id"],
+            "order_status_name": r["order_status_name"],
+            "payment_status_id": r["payment_status_id"],
+            "payment_status": r["payment_status"],
+            "payment_status_name": r["payment_status_name"],
+            "payment_method_id": r["payment_method_id"],
+            "payment_method_name": r["payment_method_name"],
+            "delivery_method_id": r["delivery_method_id"],
+            "delivery_method_name": r["delivery_method_name"],
+            "delivery_status_id": r["delivery_status_id"],
+            "delivery_status_name": r["delivery_status_name"],
+            "delivery_address_id": r["delivery_address_id"],
+            "delivery_address_details": None,
+            "tracking_number": r["tracking_number"],
+            "total_amount": float(r["total_amount"] or 0),
+            "notes": r["notes"],
+            "deferred_until": r["deferred_until"],
+            "priority": r["priority"] or 0,
+            "broadcast_id": r["broadcast_id"],
+            "broadcast_name": None,
+            "sales_channel": r["sales_channel"] or "Ефір",
+            "created_at": r["created_at"],
+            "updated_at": r["updated_at"],
+            "order_items": items_by_order.get(r["id"], []),
+        })
+
+    return {"items": items, "total": total, "page": page, "per_page": per_page, "pages": pages}
 
 @router.post("/api/orders/bulk-update")
 async def bulk_update_orders(
