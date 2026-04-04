@@ -99,6 +99,28 @@ const PAYMENT_COLORS: Record<string, string> = {
   'Частково оплачено': '#f59e0b',
   'Очікує оплати': '#6366f1',
   'Не оплачено': '#ef4444',
+  'Відкладено': '#60a5fa',
+};
+
+const DELIVERY_COLORS: Record<string, string> = {
+  'Нова пошта':  'bg-red-100 text-red-700 border-red-200',
+  'НП':          'bg-red-100 text-red-700 border-red-200',
+  'Укрпошта':    'bg-yellow-100 text-yellow-700 border-yellow-200',
+  'УП':          'bg-yellow-100 text-yellow-700 border-yellow-200',
+  'самовивіз':   'bg-blue-100 text-blue-700 border-blue-200',
+  'Самовивіз':   'bg-blue-100 text-blue-700 border-blue-200',
+  'Локально':    'bg-violet-100 text-violet-700 border-violet-200',
+  'Магазин':     'bg-pink-100 text-pink-700 border-pink-200',
+  'Відкладено':  'bg-sky-100 text-sky-700 border-sky-200',
+};
+
+/** Normalize short delivery method names to full canonical form */
+const normalizeDelivery = (dm: string): string => {
+  const up = dm.trim().toUpperCase();
+  if (up === 'НП' || up === 'НОВА ПОШТА') return 'Нова пошта';
+  if (up === 'УП' || up === 'УКРПОШТА') return 'Укрпошта';
+  if (up === 'САМОВИВІЗ' || up === 'САМОВИВОЗ') return 'Самовивіз';
+  return dm.charAt(0).toUpperCase() + dm.slice(1);
 };
 
 const SORT_OPTIONS: { value: SortField; label: string; dir: 'asc' | 'desc' }[] = [
@@ -574,8 +596,14 @@ const OrdersPage: React.FC<OrdersPageProps> = ({ currentSearchTerm }) => {
                           </span>
                         ) : <span className="text-gray-400 text-xs">—</span>}
                       </td>
-                      <td className="px-3 py-2 text-gray-600 dark:text-gray-300 text-xs max-w-[120px] truncate">
-                        {order.delivery_method_name || '—'}
+                      <td className="px-3 py-2">
+                        {(() => {
+                          const dm = order.delivery_method_name;
+                          if (!dm) return <span className="text-gray-400 text-xs">—</span>;
+                          const dmNorm = normalizeDelivery(dm);
+                          const cls = DELIVERY_COLORS[dmNorm] || 'bg-gray-100 text-gray-600 border-gray-200';
+                          return <span className={`inline-flex px-1.5 py-0 rounded text-[10px] font-semibold border ${cls}`}>{dmNorm}</span>;
+                        })()}
                       </td>
                       <td className="px-3 py-2 font-mono text-xs text-gray-500 dark:text-gray-400">
                         {order.tracking_number || '—'}
@@ -584,12 +612,14 @@ const OrdersPage: React.FC<OrdersPageProps> = ({ currentSearchTerm }) => {
                         {(() => {
                           const ch = (order.sales_channel || 'Ефір') as SalesChannel;
                           const cls = CHANNEL_COLORS[ch] || 'bg-gray-100 text-gray-600 border-gray-200';
+                          const isDeferred = (order.delivery_method_name || '').toLowerCase().includes('відкладен')
+                            || (order.payment_status || order.payment_status_name || '').toLowerCase().includes('відкладен');
                           return (
                             <div className="flex flex-col gap-0.5">
                               <span className={`inline-flex px-1.5 py-0 rounded text-[10px] font-semibold border ${cls}`}>{ch}</span>
-                              {order.deferred_until && (
+                              {isDeferred && (
                                 <span className="inline-flex items-center gap-0.5 px-1 py-0 rounded text-[9px] font-medium bg-orange-100 text-orange-700 border border-orange-200">
-                                  ⏰ до {fmtDate(order.deferred_until)}
+                                  {order.deferred_until ? `до ${fmtDate(order.deferred_until)}` : 'Без терміну'}
                                 </span>
                               )}
                             </div>
