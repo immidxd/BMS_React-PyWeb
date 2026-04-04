@@ -315,10 +315,11 @@ def get_products(
                 where_conditions.append("p.quantity > 0")
 
             if filters.only_unsold:
-                # "Подаровано" прирівнюється до "Продано" — товару немає в наявності
+                # Показати товари де є хоча б одна непродана пара
+                # (quantity - sold_count > 0), виключаючи повністю продані/подаровані
                 where_conditions.append("""(
-                    (s.statusname IS NULL OR s.statusname = 'Непродано')
-                    AND COALESCE(sold.sold_count, 0) = 0
+                    GREATEST(COALESCE(p.quantity, 0) - COALESCE(sold.sold_count, 0), 0) > 0
+                    AND (s.statusname IS NULL OR s.statusname NOT IN ('Подаровано', 'Повернуто'))
                 )""")
 
             if filters.only_problematic:
@@ -349,7 +350,9 @@ def get_products(
                     )
                 )""")
 
-            # shipment_id and is_visible columns don't exist in real DB — removed
+            if filters.shipment_id:
+                where_conditions.append("p.deliveryid = :shipment_id")
+                params["shipment_id"] = filters.shipment_id
         
         # Build WHERE clause
         if where_conditions:

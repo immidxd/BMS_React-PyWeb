@@ -222,7 +222,7 @@ const AppContent: React.FC = () => {
       />
 
       {/* Статус парсингу */}
-      <ParsingStatus jobId={currentJobId} />
+      <ParsingStatus jobId={currentJobId} onComplete={() => setCurrentJobId(null)} />
     </div>
   );
 };

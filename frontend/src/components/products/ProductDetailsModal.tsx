@@ -45,7 +45,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose }) => {
     const staticStatus = (p as any).status_name || '';
     if (staticStatus === 'Подаровано') return { text: 'Подаровано', color: 'purple' };
     if (sold > 0 && sold >= qty && qty > 0) return { text: 'Продано', color: 'red' };
-    if (sold > 0 && sold < qty) return { text: `Продано ${sold}/${qty}`, color: 'orange' };
+    if (sold > 0 && sold < qty) return { text: 'Непродано', color: 'green' };
     if (staticStatus === 'Непродано') return { text: 'Непродано', color: 'green' };
     return { text: staticStatus || 'Не вказано', color: staticStatus ? 'geekblue' : 'default' };
   };

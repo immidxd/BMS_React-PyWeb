@@ -305,13 +305,24 @@ def _get_or_create(session: Session, model, unique_field: str, value: str):
     if model is Type:
         value = _normalize_ref_name(value)
 
-    # ── Brand: check aliases (merged brands) + normalized comparison ──
-    # Step 1: Check brand_aliases — if "Adidas TERREX" was merged into "Adidas",
-    #         the alias table remembers this and returns "Adidas" directly.
-    # Step 2: Normalized spaceless comparison for typos (GoSoft = Go Soft).
+    # ── Brand: check blocklist → aliases → normalized comparison ──
     if model is Brand:
         from sqlalchemy import text as sa_text
-        # Check aliases first (merged brands)
+
+        val_key = _normalize_brand_key(value)
+        if not val_key:
+            return None
+
+        # Step 0: Check blocklist — deleted/blocked brands must NOT be recreated
+        blocked = session.execute(
+            sa_text("SELECT 1 FROM brand_blocklist WHERE normalized_name = :nn"),
+            {"nn": val_key}
+        ).fetchone()
+        if blocked:
+            return None
+
+        # Step 1: Check brand_aliases — if "Adidas TERREX" was merged into "Adidas",
+        #         the alias table remembers this and returns "Adidas" directly.
         alias_row = session.execute(
             sa_text("SELECT brand_id FROM brand_aliases WHERE alias_name = :name"),
             {"name": value}
@@ -321,11 +332,7 @@ def _get_or_create(session: Session, model, unique_field: str, value: str):
             if target_brand:
                 return target_brand
 
-        val_key = _normalize_brand_key(value)
-        if not val_key:
-            return None
-
-        # Also check aliases by normalized key
+        # Step 2: Also check aliases by normalized key (GoSoft = Go Soft)
         all_aliases = session.execute(
             sa_text("SELECT alias_name, brand_id FROM brand_aliases")
         ).fetchall()
@@ -335,7 +342,7 @@ def _get_or_create(session: Session, model, unique_field: str, value: str):
                 if target_brand:
                     return target_brand
 
-        # Normal lookup by normalized key
+        # Step 3: Normal lookup by normalized key
         all_rows = session.query(model).all()
         for row in all_rows:
             db_val = getattr(row, unique_field, None)
@@ -639,6 +646,28 @@ def _parse_products_sheet(
                 full_match.statusid = status_id
             elif status_id == sold_status_id:
                 full_match.statusid = status_id
+            # ── Fill NULL identity fields from re-parse data ──────────
+            # If a product was created with NULL brand/type/color/sizeEU
+            # (e.g. sheet was partially filled at parse time), subsequent
+            # parses should populate these fields.
+            if brand_id and not full_match.brandid:
+                full_match.brandid = brand_id
+            if type_id and not full_match.typeid:
+                full_match.typeid = type_id
+            if color_id and not full_match.colorid:
+                full_match.colorid = color_id
+            if gender_id and not full_match.genderid:
+                full_match.genderid = gender_id
+            if size_val and not full_match.sizeeu:
+                full_match.sizeeu = size_val
+            if sub_id and not full_match.subtypeid:
+                full_match.subtypeid = sub_id
+            if cond_id and not full_match.conditionid:
+                full_match.conditionid = cond_id
+            if mfr_id and not full_match.manufacturercountryid:
+                full_match.manufacturercountryid = mfr_id
+            if own_id and not full_match.ownercountryid:
+                full_match.ownercountryid = own_id
             # Оновлюємо поля якщо нові дані непорожні
             if marking:
                 full_match.marking = marking
@@ -1169,13 +1198,25 @@ _DELIVERY_MAP = {
     "КУР'ЄР": "Кур'єр",
 }
 
+# Maps Google Sheets "Статус відповіді" → DB order_statuses.status_name.
+# Uses PREFIX matching (key can be a prefix of the raw value).
 _ORDER_STATUS_MAP = {
-    "ПІДТВЕРДЖЕННО": "Доставлено",
-    "ПІДТВЕРДЖЕНО":  "Доставлено",
-    "ВІДПРАВЛЕНО":   "Доставляється",
-    "ПОДАРУНОК":     "Доставлено",
-    "ВІДМОВА":       "Скасовано",
-    "СКАСОВАНО":     "Скасовано",
+    "ПІДТВЕРДЖ":  "Підтверджено",
+    "ОЧІКУЄТЬСЯ":  "Очікується",
+    "УТОЧНИТИ":    "Уточнити",
+    "ФОТО":        "Фото",
+    "ВІДМІНА":     "Відміна",
+    "ВІДМОВА":     "Відміна",
+    "СКАСОВАНО":   "Відміна",
+    "ІГНОРУВАН":   "Ігнорування",
+    "ІГНОРОВАН":   "Ігнорування",
+    "ПОДАРУНОК":   "Подарунок",
+    "В ЧЕРЗІ":     "В черзі",
+    "ПОВЕРН":      "Повернення",
+    "ОБМІН":       "Обмін",
+    "ПЕРЕДАТИ":    "Передати",
+    "ВІДПРАВЛЕНО": "Підтверджено",
+    "ВІДКЛАД":     "Очікується",
 }
 
 
@@ -1227,15 +1268,20 @@ def _resolve_order_status(session: Session, raw: str) -> Optional[int]:
     if not raw:
         return None
     raw_up = raw.strip().upper()
-    mapped = _ORDER_STATUS_MAP.get(raw_up)
+    # Prefix matching: "ПІДТВЕРДЖ" matches key "ПІДТВЕРДЖ" even if sheet truncates
+    mapped = None
+    for key, val in _ORDER_STATUS_MAP.items():
+        if raw_up.startswith(key) or key.startswith(raw_up):
+            mapped = val
+            break
     if mapped:
         all_os = session.query(OrderStatus).all()
         os = next((o for o in all_os if o.status_name and o.status_name.strip().lower() == mapped.lower()), None)
         if os:
             return os.id
-    # Fallback: "Нове"
+    # Fallback: direct match against DB status names
     all_os = session.query(OrderStatus).all()
-    os = next((o for o in all_os if o.status_name and o.status_name.strip().lower() == 'нове'), None)
+    os = next((o for o in all_os if o.status_name and o.status_name.strip().upper() == raw_up), None)
     return os.id if os else None
 
 

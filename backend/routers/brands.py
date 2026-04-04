@@ -208,8 +208,18 @@ async def update_brand(brand_id: int, body: BrandUpdate, db: Session = Depends(g
     params: dict = {"id": brand_id}
 
     if body.brandname is not None:
+        new_name = body.brandname.strip()
+        # Save old name as alias so parser won't recreate old brand
+        old_brand = db.execute(
+            text("SELECT brandname FROM brands WHERE id = :id"), {"id": brand_id}
+        ).fetchone()
+        if old_brand and old_brand.brandname != new_name:
+            db.execute(
+                text("INSERT INTO brand_aliases (alias_name, brand_id) VALUES (:name, :bid) ON CONFLICT (alias_name) DO NOTHING"),
+                {"name": old_brand.brandname, "bid": brand_id},
+            )
         updates.append("brandname = :brandname")
-        params["brandname"] = body.brandname.strip()
+        params["brandname"] = new_name
     if body.concern_id is not None:
         if body.concern_id == 0:
             updates.append("concern_id = NULL")
@@ -235,6 +245,18 @@ async def delete_brand(brand_id: int, db: Session = Depends(get_db)):
     ).scalar() or 0
     if count > 0:
         raise HTTPException(400, f"Бренд має {count} товарів. Спочатку перемістіть товари.")
+
+    # Save brand name to blocklist so parser won't recreate it
+    brand = db.execute(
+        text("SELECT brandname, normalized_name FROM brands WHERE id = :id"), {"id": brand_id}
+    ).fetchone()
+    if brand:
+        normalized = brand.normalized_name or brand.brandname.strip().lower()
+        db.execute(
+            text("""INSERT INTO brand_blocklist (normalized_name, reason)
+                    VALUES (:nn, :reason) ON CONFLICT DO NOTHING"""),
+            {"nn": normalized, "reason": f"Видалено вручну (was: {brand.brandname})"},
+        )
 
     db.execute(text("DELETE FROM brands WHERE id = :id"), {"id": brand_id})
     db.commit()

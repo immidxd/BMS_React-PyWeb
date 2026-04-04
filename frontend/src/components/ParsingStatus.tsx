@@ -3,7 +3,7 @@ import { Box, Paper, Typography, LinearProgress, IconButton, Collapse, Chip, But
 import { ExpandLess, ExpandMore, Cancel } from '@mui/icons-material';
 import axios from 'axios';
 
-interface ParsingStatusProps { jobId?: number | null; }
+interface ParsingStatusProps { jobId?: number | null; onComplete?: () => void; }
 
 interface LegacyStatus {
   is_running: boolean;
@@ -14,7 +14,7 @@ interface LegacyStatus {
   errors: string[];
 }
 
-export const ParsingStatus: React.FC<ParsingStatusProps> = ({ jobId = null }) => {
+export const ParsingStatus: React.FC<ParsingStatusProps> = ({ jobId = null, onComplete }) => {
   console.log('[ParsingStatus] Received jobId:', jobId);
   const [expanded, setExpanded] = useState(Boolean(jobId));
   const [lastPayloadTs, setLastPayloadTs] = useState<number | null>(null);
@@ -22,6 +22,19 @@ export const ParsingStatus: React.FC<ParsingStatusProps> = ({ jobId = null }) =>
   const [legacy, setLegacy] = useState<LegacyStatus | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const pollRef = useRef<any>(null);
+  const autoHideRef = useRef<any>(null);
+
+  // Auto-hide widget 5 seconds after parsing completes
+  const terminal = job?.status && ['succeeded','failed','canceled','stalled'].includes(job.status);
+  useEffect(() => {
+    if (terminal && onComplete) {
+      autoHideRef.current = setTimeout(() => {
+        onComplete();
+        window.dispatchEvent(new Event('parsing-complete'));
+      }, 5000);
+    }
+    return () => { if (autoHideRef.current) clearTimeout(autoHideRef.current); };
+  }, [terminal, onComplete]);
 
   // Job-based live stream
   useEffect(() => {
@@ -117,9 +130,9 @@ export const ParsingStatus: React.FC<ParsingStatusProps> = ({ jobId = null }) =>
     : (legacy && legacy.total > 0 ? Math.round((legacy.current / legacy.total) * 100) : 0);
 
   const title = showJob ? `Парсинг (${job.mode || '...'})` : 'Парсинг даних';
-  const terminal = showJob && job?.status && ['succeeded','failed','canceled','stalled'].includes(job.status);
+  const terminalVisible = showJob && terminal;
   const subtitle = showJob
-    ? (terminal ? 'Парсинг завершено' : `Статус: ${job.status}`)
+    ? (terminalVisible ? 'Парсинг завершено' : `Статус: ${job.status}`)
     : (legacy?.is_running ? 'Виконується...' : '');
   const statusLine = showJob ? `Статус: ${job.status}` : (showPendingJob ? 'З’єднання...' : (legacy?.task || ''));
 
@@ -148,7 +161,7 @@ export const ParsingStatus: React.FC<ParsingStatusProps> = ({ jobId = null }) =>
                 <Typography variant="caption" color="text.secondary">{legacy.current} / {legacy.total}</Typography>
               )}
             </Box>
-            {terminal && (
+            {terminalVisible && (
               <Box display="flex" alignItems="center" gap={1}>
                 <Chip label={`Завершено`} size="small" color="success" />
                 <Typography variant="caption" color="text.secondary">

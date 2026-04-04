@@ -133,6 +133,13 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
     
     useEffect(() => { fetchProducts(); }, [page, perPage, currentSearchTerm, selectedFilters, onlyUnsold, onlyProblematic, onlyRostovka, selectedShipmentId, visibleOnly, sortBy, sortDir]);
 
+    // Auto-refresh products when parsing completes
+    useEffect(() => {
+      const handler = () => { fetchProducts(); };
+      window.addEventListener('parsing-complete', handler);
+      return () => window.removeEventListener('parsing-complete', handler);
+    }, []);
+
     useEffect(() => {
       // Load filter options once
       productService.getFilters().then(setFiltersMeta).catch(() => setFiltersMeta(null));

@@ -257,7 +257,7 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
                 } else if (sold > 0 && sold >= qty && qty > 0) {
                     displayStatus = 'Продано';
                 } else if (sold > 0 && sold < qty) {
-                    displayStatus = `Продано ${sold}/${qty}`;
+                    displayStatus = 'Непродано';
                 }
                 const colorMap: Record<string, string> = {
                     'Непродано':  'green',
