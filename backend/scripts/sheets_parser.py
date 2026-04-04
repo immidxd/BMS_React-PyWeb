@@ -131,6 +131,43 @@ def _normalize_gender(val: str) -> str:
     return ""
 
 
+def _auto_detect_gender(size_val: str, desc_val: str, extra_val: str) -> str:
+    """Auto-detect gender from text keywords and shoe size when not set in sheet.
+
+    Priority order:
+    1. Keywords in description/extranote: дитяч/підлітк → Унісекс,
+       жіноч → Жіноча, чоловіч → Чоловіча
+    2. Size > 43 → Чоловіча
+    3. Size 40–43 → Унісекс
+    4. Size < 40 → Жіноча
+    Returns '' if nothing can be determined.
+    """
+    text_combined = ((desc_val or "") + " " + (extra_val or "")).lower()
+
+    # Text keywords take priority over size-based detection
+    if re.search(r'дитяч|підлітк', text_combined):
+        return "Унісекс"
+    if re.search(r'жіноч', text_combined):
+        return "Жіноча"
+    if re.search(r'чоловіч', text_combined):
+        return "Чоловіча"
+
+    # Size-based detection
+    if size_val:
+        try:
+            size_num = float(size_val.replace(",", "."))
+            if size_num > 43:
+                return "Чоловіча"
+            if 40 <= size_num <= 43:
+                return "Унісекс"
+            if size_num < 40:
+                return "Жіноча"
+        except ValueError:
+            pass
+
+    return ""
+
+
 def parse_date_from_sheet_title(title: str) -> Optional[date]:
     """Extract date from sheet title like '24.02.2026' or '24.02.2026(Андрій)'."""
     m = re.match(r"(\d{2})\.(\d{2})\.(\d{4})", title.strip())
@@ -542,7 +579,7 @@ def _parse_products_sheet(
         if progress_cb and i % 20 == 0:
             progress_cb(i, total)
 
-        pnum = col(row, "Номер").strip()
+        pnum = col(row, "Номер").strip().rstrip(";").strip()
         if not pnum or pnum == "#":
             skipped += 1
             continue
@@ -582,6 +619,14 @@ def _parse_products_sheet(
         type_id   = type_obj.id  if type_obj  else None
         color_id  = color_obj.id if color_obj else None
         gender_id = gender_obj.id if gender_obj else None
+
+        # Auto-detect gender if not specified in sheet
+        if not gender_id:
+            extra_val = col(row, "Екстра примітка") if "Екстра примітка" in header else ""
+            auto_gender = _auto_detect_gender(size_val, desc_val, extra_val)
+            if auto_gender:
+                auto_gender_obj = _get_or_create(session, Gender, "gendername", auto_gender)
+                gender_id = auto_gender_obj.id if auto_gender_obj else None
 
         year_int = None
         if year_val:
@@ -1683,7 +1728,7 @@ def _parse_workspace_sheet(
             skipped += 1
             continue
 
-        pnum       = col(row, "Номер").strip()
+        pnum       = col(row, "Номер").strip().rstrip(";").strip()
         clones_raw = col(row, "Номера-клони")
         type_val   = col(row, "Вид")
         sub_val    = col(row, "Підвид")
@@ -1717,6 +1762,13 @@ def _parse_workspace_sheet(
         type_id   = type_obj.id  if type_obj  else None
         color_id  = color_obj.id if color_obj else None
         gender_id = gender_obj.id if gender_obj else None
+
+        # Auto-detect gender if not specified in sheet
+        if not gender_id:
+            auto_gender = _auto_detect_gender(size_val, desc_val, "")
+            if auto_gender:
+                auto_gender_obj = _get_or_create(session, Gender, "gendername", auto_gender)
+                gender_id = auto_gender_obj.id if auto_gender_obj else None
 
         year_int = None
         if year_val:
