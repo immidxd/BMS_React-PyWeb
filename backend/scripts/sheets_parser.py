@@ -1645,6 +1645,9 @@ def _parse_orders_sheet(
             session.flush()
             orders_added += 1
 
+        total_recalc = 0.0
+        any_price_substituted = False
+
         for pnum, price in zip(product_nums, prices):
             # Strip emoji / special chars from product number
             pnum_clean = re.sub(r"[^\w#А-ЯҐЄІЇа-яґєії]", "", pnum).strip()
@@ -1657,6 +1660,12 @@ def _parse_orders_sheet(
                 logger.debug("Product not found for pnum=%s, skipping order_item", pnum_clean)
                 continue
 
+            # Fallback: якщо ціна в замовленні = 0, підтягуємо з журналу
+            item_price = price
+            if (not price or price <= 0) and product.price and product.price > 0:
+                item_price = product.price
+                any_price_substituted = True
+
             # Oldprice logic: якщо ціна продажу відрізняється від журнальної
             if price and price > 0 and product.price:
                 if price != product.price:
@@ -1668,10 +1677,15 @@ def _parse_orders_sheet(
                 order_id   = order.id,
                 product_id = product.id,
                 quantity   = 1,
-                price      = price,
+                price      = item_price,
             )
             session.add(item)
             items_added += 1
+            total_recalc += item_price
+
+        # Перераховуємо total_amount, якщо використано fallback-ціни з журналу
+        if any_price_substituted and (not total_amount or total_amount <= 0):
+            order.total_amount = total_recalc
 
             # ── Автооновлення статусу на "Продано" ────────────────────────
             # Якщо продукт залінкований і замовлення оплачене —

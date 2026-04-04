@@ -188,7 +188,9 @@ def get_orders(
     items_by_order: Dict[int, list] = {oid: [] for oid in order_ids}
     if order_ids:
         items_sql = """
-            SELECT oi.id, oi.order_id, oi.product_id, oi.quantity, oi.price,
+            SELECT oi.id, oi.order_id, oi.product_id, oi.quantity,
+                   CASE WHEN COALESCE(oi.price, 0) > 0 THEN oi.price
+                        ELSE COALESCE(p.price, 0) END AS price,
                    oi.discount_type, oi.discount_value,
                    oi.additional_operation, oi.additional_operation_value,
                    oi.notes, oi.created_at, oi.updated_at,
@@ -243,7 +245,9 @@ def get_orders(
             "delivery_address_id": r["delivery_address_id"],
             "delivery_address_details": None,
             "tracking_number": r["tracking_number"],
-            "total_amount": float(r["total_amount"] or 0),
+            "total_amount": float(r["total_amount"] or 0) or sum(
+                it["price"] * it["quantity"] for it in items_by_order.get(r["id"], [])
+            ),
             "notes": r["notes"],
             "deferred_until": r["deferred_until"],
             "priority": r["priority"] or 0,
