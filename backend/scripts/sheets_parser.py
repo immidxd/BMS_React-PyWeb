@@ -168,6 +168,34 @@ def _auto_detect_gender(size_val: str, desc_val: str, extra_val: str) -> str:
     return ""
 
 
+# ── Sales channel detection from order notes/comments ────────────────────────
+_SALES_CHANNEL_PATTERNS = [
+    # (compiled regex, channel name)
+    # Order matters: more specific patterns first
+    (re.compile(r'\b(?:viber|вайбер|вайб|vb|вб)\b', re.IGNORECASE), 'Viber'),
+    (re.compile(r'\b(?:telegram|телеграм|тг|tg)\b', re.IGNORECASE), 'Telegram'),
+    (re.compile(r'\b(?:instagram|інстаграм|інста|inst|ig|інст)\b', re.IGNORECASE), 'Instagram'),
+    (re.compile(r'\b(?:tik[\s\-]?tok|тік[\s\-]?ток|тт|tt)\b', re.IGNORECASE), 'TikTok'),
+    (re.compile(r'\b(?:olx|олх)\b', re.IGNORECASE), 'OLX'),
+    (re.compile(r'\b(?:grail+ed|грейл+ед)\b', re.IGNORECASE), 'Grailed'),
+    (re.compile(r'\b(?:shafa|шафа)\b', re.IGNORECASE), 'Shafa'),
+]
+
+
+def _detect_sales_channel(text_combined: str) -> Optional[str]:
+    """Detect sales channel from order notes/comments/clarification.
+
+    Scans combined text for messenger/platform keywords.
+    Returns channel name or None if not detected (defaults to Ефір).
+    """
+    if not text_combined:
+        return None
+    for pattern, channel in _SALES_CHANNEL_PATTERNS:
+        if pattern.search(text_combined):
+            return channel
+    return None
+
+
 def parse_date_from_sheet_title(title: str) -> Optional[date]:
     """Extract date from sheet title like '24.02.2026' or '24.02.2026(Андрій)'."""
     m = re.match(r"(\d{2})\.(\d{2})\.(\d{4})", title.strip())
@@ -1442,6 +1470,18 @@ def _parse_orders_sheet(
                 _sales_channel = "Магазин"
             # client_id залишиться None — не створюємо фейкових клієнтів
 
+        # Auto-detect sales_channel з контактних полів та нотаток
+        if not _sales_channel or _sales_channel == "Ефір":
+            _channel_sources = " ".join(filter(None, [
+                col(row, "Коментарі"), col(row, "Уточнення"),
+                col(row, "Отримувач"), col(row, "Доставка"),
+                col(row, "Viber"), col(row, "Telegram"),
+                col(row, "Instagram"), col(row, "Olx"),
+            ]))
+            detected = _detect_sales_channel(_channel_sources)
+            if detected:
+                _sales_channel = detected
+
         # Parse product numbers (semicolon-separated)
         product_nums = [p.strip().rstrip(";").strip() for p in product_nums_raw.split(";") if p.strip().rstrip(";").strip()]
         if not product_nums:
@@ -1577,6 +1617,8 @@ def _parse_orders_sheet(
             existing_order.deferred_until    = deferred
             existing_order.priority          = priority
             existing_order.notes             = combined_notes if combined_notes else None
+            if _sales_channel:
+                existing_order.sales_channel = _sales_channel
             existing_order.updated_at        = datetime.utcnow()
             # Видаляємо старі items і перестворюємо нижче
             session.query(OrderItem).filter(OrderItem.order_id == existing_order.id).delete()

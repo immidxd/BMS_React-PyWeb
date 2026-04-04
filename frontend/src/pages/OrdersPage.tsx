@@ -51,17 +51,20 @@ interface FilterOptions {
   clients: { id: number; name: string }[];
 }
 
-const SALES_CHANNELS = ['Ефір', 'Telegram', 'OLX', 'Viber', 'Instagram', 'GRAILED', 'Магазин'] as const;
+const SALES_CHANNELS = ['Ефір', 'Viber', 'Telegram', 'Instagram', 'TikTok', 'OLX', 'Grailed', 'Shafa', 'Магазин'] as const;
 type SalesChannel = typeof SALES_CHANNELS[number];
 
-const CHANNEL_COLORS: Record<SalesChannel, string> = {
-  'Ефір': 'bg-sky-100 text-sky-700 border-sky-200',
-  'Telegram': 'bg-blue-100 text-blue-700 border-blue-200',
-  'OLX': 'bg-orange-100 text-orange-700 border-orange-200',
-  'Viber': 'bg-violet-100 text-violet-700 border-violet-200',
-  'Instagram': 'bg-pink-100 text-pink-700 border-pink-200',
-  'GRAILED': 'bg-gray-100 text-gray-700 border-gray-200',
-  'Магазин': 'bg-green-100 text-green-700 border-green-200',
+const CHANNEL_COLORS: Record<string, string> = {
+  'Ефір':      'bg-sky-100 text-sky-700 border-sky-200',
+  'Viber':     'bg-violet-100 text-violet-700 border-violet-200',
+  'Telegram':  'bg-blue-100 text-blue-700 border-blue-200',
+  'Instagram': 'bg-fuchsia-100 text-fuchsia-700 border-fuchsia-200',
+  'TikTok':    'bg-gray-900 text-white border-gray-700',
+  'OLX':       'bg-teal-100 text-teal-700 border-teal-200',
+  'Grailed':   'bg-gray-200 text-gray-800 border-gray-400',
+  'Shafa':     'bg-gray-900 text-gray-100 border-gray-600',
+  'Магазин':   'bg-green-100 text-green-700 border-green-200',
+  'GRAILED':   'bg-gray-200 text-gray-800 border-gray-400',
 };
 
 interface ActiveFilters {
