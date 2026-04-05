@@ -41,6 +41,7 @@ def get_orders(
     amount_min: Optional[float] = Query(None),
     amount_max: Optional[float] = Query(None),
     sales_channels: Optional[List[str]] = Query(None),
+    only_problematic: Optional[bool] = Query(None),
     db: Session = Depends(get_db)
 ):
     """Get paginated orders list using raw SQL — no lazy loading."""
@@ -53,6 +54,7 @@ def get_orders(
     if search:
         where.append("""(
             c.first_name ILIKE :search OR c.last_name ILIKE :search
+            OR c.nickname ILIKE :search
             OR c.phone_number ILIKE :search OR c.email ILIKE :search
             OR o.tracking_number ILIKE :search OR o.notes ILIKE :search
         )""")
@@ -67,8 +69,25 @@ def get_orders(
         params["order_status_ids"] = order_status_ids
 
     if payment_status_ids:
-        where.append("o.payment_status_id = ANY(:payment_status_ids)")
-        params["payment_status_ids"] = payment_status_ids
+        # Special handling: "Не оплачено" (id=4) includes NULL payment_status_id
+        # for non-terminal orders. "Відкладено" (id=3) also matches delivery_method.
+        ps_clauses = []
+        non_null_ids = [i for i in payment_status_ids if i not in (3, 4)]
+        if non_null_ids:
+            ps_clauses.append("o.payment_status_id = ANY(:ps_ids)")
+            params["ps_ids"] = non_null_ids
+        if 4 in payment_status_ids:
+            ps_clauses.append(
+                "(o.payment_status_id = 4 OR (o.payment_status_id IS NULL "
+                "AND o.order_status_id NOT IN (5,6,7,8)))"
+            )
+        if 3 in payment_status_ids:
+            ps_clauses.append(
+                "(o.payment_status_id = 3 OR o.delivery_method_id = "
+                "(SELECT id FROM delivery_methods WHERE method_name = 'Відкладено' LIMIT 1))"
+            )
+        if ps_clauses:
+            where.append("(" + " OR ".join(ps_clauses) + ")")
 
     if payment_method_ids:
         where.append("o.payment_method_id = ANY(:payment_method_ids)")
@@ -134,6 +153,42 @@ def get_orders(
         where.append("o.sales_channel = ANY(:sales_channels)")
         params["sales_channels"] = sales_channels
 
+    if only_problematic:
+        # Match exactly what the frontend highlights (orange rows):
+        # 1. No order status (and order has items — empty shell orders excluded)
+        # 2. Order item with no product linked
+        # 3. Non-terminal order with effective total = 0 (all 3 price fallbacks fail:
+        #    oi.price=0, p.price=0, peer_price=0)
+        # Terminal = Відміна(5), Ігнорування(6), Повернення(9)
+        where.append("""(
+            (o.order_status_id IS NULL AND EXISTS (
+                SELECT 1 FROM order_items oi_s WHERE oi_s.order_id = o.id
+            ))
+            OR EXISTS (
+                SELECT 1 FROM order_items oi2
+                WHERE oi2.order_id = o.id AND oi2.product_id IS NULL
+            )
+            OR (
+                o.total_amount = 0
+                AND COALESCE(o.order_status_id, 0) NOT IN (5, 6, 9)
+                AND EXISTS (SELECT 1 FROM order_items oi_e WHERE oi_e.order_id = o.id)
+                AND NOT EXISTS (
+                    SELECT 1 FROM order_items oi3
+                    LEFT JOIN products p3 ON oi3.product_id = p3.id
+                    LEFT JOIN LATERAL (
+                        SELECT MAX(oi4.price) AS peer_price
+                        FROM order_items oi4
+                        WHERE oi4.product_id = oi3.product_id
+                          AND oi4.price > 0 AND oi4.id != oi3.id
+                    ) peer ON true
+                    WHERE oi3.order_id = o.id
+                      AND (COALESCE(oi3.price, 0) > 0
+                           OR COALESCE(p3.price, 0) > 0
+                           OR COALESCE(peer.peer_price, 0) > 0)
+                )
+            )
+        )""")
+
     where_sql = ("WHERE " + " AND ".join(where)) if where else ""
 
     # ── Sort ─────────────────────────────────────────────────────────────
@@ -161,9 +216,22 @@ def get_orders(
             o.delivery_method_id, o.delivery_address_id, o.tracking_number,
             o.delivery_status_id, o.notes, o.deferred_until, o.priority,
             o.broadcast_id, o.sales_channel, o.created_at, o.updated_at,
-            TRIM(COALESCE(c.first_name,'') || ' ' || COALESCE(c.last_name,'')) AS client_name,
+            COALESCE(
+                NULLIF(TRIM(COALESCE(c.first_name,'') || ' ' || COALESCE(c.last_name,'')), ''),
+                c.nickname
+            ) AS client_name,
             os2.status_name  AS order_status_name,
-            COALESCE(o.payment_status, ps.status_name) AS payment_status_name,
+            COALESCE(
+                o.payment_status,
+                ps.status_name,
+                CASE
+                    WHEN o.delivery_method_id = (SELECT id FROM delivery_methods WHERE method_name = 'Відкладено' LIMIT 1)
+                        THEN 'Відкладено'
+                    WHEN o.order_status_id NOT IN (5,6,7,8)
+                        THEN 'Не оплачено'
+                    ELSE NULL
+                END
+            ) AS payment_status_name,
             pm.method_name   AS payment_method_name,
             dm.method_name   AS delivery_method_name,
             ds.status_name   AS delivery_status_name
@@ -189,14 +257,24 @@ def get_orders(
     if order_ids:
         items_sql = """
             SELECT oi.id, oi.order_id, oi.product_id, oi.quantity,
-                   CASE WHEN COALESCE(oi.price, 0) > 0 THEN oi.price
-                        ELSE COALESCE(p.price, 0) END AS price,
+                   CASE
+                       WHEN COALESCE(oi.price, 0) > 0 THEN oi.price
+                       WHEN COALESCE(p.price, 0) > 0  THEN p.price
+                       ELSE COALESCE(peer.peer_price, 0)
+                   END AS price,
                    oi.discount_type, oi.discount_value,
                    oi.additional_operation, oi.additional_operation_value,
                    oi.notes, oi.created_at, oi.updated_at,
                    p.productnumber, p.model, p.marking
             FROM order_items oi
             LEFT JOIN products p ON oi.product_id = p.id
+            LEFT JOIN LATERAL (
+                SELECT MAX(oi2.price) AS peer_price
+                FROM order_items oi2
+                WHERE oi2.product_id = oi.product_id
+                  AND oi2.price > 0
+                  AND oi2.id != oi.id
+            ) peer ON true
             WHERE oi.order_id = ANY(:oids)
             ORDER BY oi.id
         """
