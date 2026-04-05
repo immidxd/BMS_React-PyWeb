@@ -73,6 +73,8 @@ def init_db():
                 )
             """))
             conn.execute(text("CREATE INDEX IF NOT EXISTS ix_supplier_aliases_supplier_id ON supplier_aliases(supplier_id)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS idx_oi_order_id ON order_items(order_id)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS idx_oi_product_id_price ON order_items(product_id, price) WHERE price > 0"))
             conn.execute(text("alter table if exists parsing_jobs add column if not exists cancel_requested boolean default false"))
             conn.execute(text("alter table if exists deliveries add column if not exists delivery_cost numeric(12,2) default 0"))
             conn.execute(text("alter table if exists deliveries add column if not exists purchase_cost numeric(12,2) default 0"))
