@@ -568,6 +568,7 @@ const StatisticsPage: React.FC<StatisticsPageProps> = () => {
                       <th className="px-3 py-2 text-left font-semibold">Постачальник</th>
                       <th className="px-3 py-2 text-right font-semibold">Пар</th>
                       <th className="px-3 py-2 text-right font-semibold">Продано%</th>
+                      <th className="px-3 py-2 text-right font-semibold" title="Закупівельна вартість + доставка (з Журналу)">Собівартість</th>
                       <th className="px-3 py-2 text-right font-semibold">Виторг</th>
                       <th className="px-3 py-2 text-right font-semibold">Прибуток</th>
                     </tr>
@@ -587,6 +588,11 @@ const StatisticsPage: React.FC<StatisticsPageProps> = () => {
                           <span className={`font-medium ${d.sell_rate >= 70 ? 'text-green-600' : d.sell_rate >= 40 ? 'text-yellow-600' : 'text-red-500'}`}>
                             {d.sell_rate}%
                           </span>
+                        </td>
+                        <td className="px-3 py-2 text-right whitespace-nowrap text-amber-600" title={`Закупівля: ${fmtPrice(d.purchase_cost)} + Доставка: ${fmtPrice(d.delivery_cost)}`}>
+                          {d.purchase_cost > 0
+                            ? fmtPrice(d.purchase_cost + d.delivery_cost)
+                            : <span className="text-gray-300 text-xs">—</span>}
                         </td>
                         <td className="px-3 py-2 text-right whitespace-nowrap">{fmtPrice(d.revenue)}</td>
                         <td className={`px-3 py-2 text-right whitespace-nowrap font-medium ${d.profit >= 0 ? 'text-green-600' : 'text-red-500'}`}>{fmtPrice(d.profit)}</td>

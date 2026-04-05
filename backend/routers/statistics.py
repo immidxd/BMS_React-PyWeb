@@ -439,21 +439,28 @@ async def get_deliveries_stats(
     params["offset_val"] = (page - 1) * per_page
 
     rows = db.execute(text(f"""
-        SELECT d.id, d.deliveryname, d.deliverydate, d.delivery_cost,
+        SELECT d.id, d.deliveryname, d.deliverydate,
+               COALESCE(d.delivery_cost, 0)::float AS delivery_cost,
+               COALESCE(d.purchase_cost, 0)::float AS purchase_cost,
                s.company_name AS supplier_name,
                COALESCE(ps.total_pairs, 0) AS total_pairs,
-               COALESCE(ps.purchase_cost, 0)::float AS purchase_cost,
                COALESCE(ps.sold_count, 0) AS sold_count,
                CASE WHEN COALESCE(ps.total_pairs, 0) > 0
                     THEN ROUND(ps.sold_count::numeric / ps.total_pairs * 100, 1)::float
                     ELSE 0 END AS sell_rate,
                COALESCE(rev.revenue, 0)::float AS revenue,
-               COALESCE(rev.revenue, 0)::float - COALESCE(ps.purchase_cost, 0)::float - COALESCE(d.delivery_cost, 0)::float AS profit
+               -- Прибуток: виторг - закупівельна ціна завозу (з Sheet) - вартість доставки
+               -- Якщо purchase_cost у delivery ще не заповнено (0) — fallback на SUM(p.price)
+               COALESCE(rev.revenue, 0)::float
+                   - CASE WHEN COALESCE(d.purchase_cost, 0) > 0
+                           THEN COALESCE(d.purchase_cost, 0)::float
+                           ELSE COALESCE(ps.price_sum, 0)::float END
+                   - COALESCE(d.delivery_cost, 0)::float AS profit
         FROM deliveries d
         LEFT JOIN suppliers s ON s.id = d.supplier_id
         LEFT JOIN LATERAL (
             SELECT COUNT(*) AS total_pairs,
-                   COALESCE(SUM(p.price), 0) AS purchase_cost,
+                   COALESCE(SUM(p.price), 0) AS price_sum,
                    COUNT(*) FILTER (WHERE EXISTS (
                        SELECT 1 FROM order_items oi JOIN orders o ON o.id = oi.order_id AND o.order_status_id NOT IN (5,6)
                        WHERE oi.product_id = p.id

@@ -64,8 +64,18 @@ def init_db():
         from sqlalchemy import text
         with engine.begin() as conn:
             conn.execute(text("alter table if exists parsing_jobs add column if not exists logs_head text"))
+            # supplier_aliases — аналог brand_aliases: зберігає злиті/видалені назви постачальників
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS supplier_aliases (
+                    id SERIAL PRIMARY KEY,
+                    alias_name VARCHAR(200) UNIQUE NOT NULL,
+                    supplier_id INTEGER NOT NULL REFERENCES suppliers(id) ON DELETE CASCADE
+                )
+            """))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_supplier_aliases_supplier_id ON supplier_aliases(supplier_id)"))
             conn.execute(text("alter table if exists parsing_jobs add column if not exists cancel_requested boolean default false"))
             conn.execute(text("alter table if exists deliveries add column if not exists delivery_cost numeric(12,2) default 0"))
+            conn.execute(text("alter table if exists deliveries add column if not exists purchase_cost numeric(12,2) default 0"))
             conn.execute(text("alter table if exists orders add column if not exists sales_channel varchar(50) default 'Ефір'"))
             conn.execute(text("alter table if exists orders add column if not exists source_fingerprint varchar(64)"))
             conn.execute(text("create index if not exists ix_orders_source_fingerprint on orders (source_fingerprint)"))

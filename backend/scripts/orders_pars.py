@@ -561,9 +561,26 @@ def get_or_create_client(cursor, connection, full_name):
    connection.commit()
    return new_cid
 
-## get_or_create_default_client — ВИДАЛЕНО
-## Раніше створювала фейкових клієнтів "Невідомий".
-## Тепер замовлення без клієнта мають client_id = NULL (анонімні).
+def get_or_create_default_client(cursor, connection):
+    """Отримати або створити клієнта за замовчуванням для замовлень без вказаного клієнта"""
+    cursor.execute("""
+        SELECT id FROM clients
+        WHERE first_name = 'Невідомий' AND last_name IS NULL AND middle_name IS NULL
+        LIMIT 1
+    """)
+    row = cursor.fetchone()
+    if row:
+        return row[0]
+    
+    # Створити клієнта за замовчуванням
+    cursor.execute("""
+        INSERT INTO clients (first_name, last_name, middle_name, gender_id, created_at, updated_at)
+        VALUES ('Невідомий', NULL, NULL, %s, now(), now())
+        RETURNING id
+    """, (GENDER_ID_UNISEX,))
+    new_id = cursor.fetchone()[0]
+    connection.commit()
+    return new_id
 
 # -------------------------------------------------------
 #   Робота з продуктами
@@ -795,7 +812,7 @@ def find_exact_order(
    cursor.execute("""
        SELECT id
          FROM orders
-        WHERE (client_id = %s OR (client_id IS NULL AND %s IS NULL))
+        WHERE client_id=%s
           AND coalesce(order_date,'1970-01-01'::date) = coalesce(%s::date,'1970-01-01'::date)
           AND coalesce(order_status_id,0) = coalesce(%s,0)
           AND coalesce(payment_status_id,0) = coalesce(%s,0)
@@ -807,7 +824,6 @@ def find_exact_order(
           AND coalesce(notes,'') = coalesce(%s,'')
         LIMIT 1
    """, (
-       client_id,
        client_id,
        order_date,
        order_status_id,
@@ -1172,7 +1188,8 @@ def upsert_order(
    priority_val,
    notes
 ):
-   # client_id = None дозволено — анонімне замовлення
+   if not client_id:
+       client_id = get_or_create_default_client(cursor, connection)
    if not order_date:
        order_date = datetime.now().date()
 
@@ -1542,12 +1559,15 @@ def process_orders_sheet_data(rows, sheet_name, force_process=False):
                 rows_invalid += 1
                 continue
                 
-            # Обробка клієнта (порожнє поле → client_id = None, анонімне замовлення)
-            client_id = None
-            if client_name:
+            # Обробка клієнта (порожнє поле - це нормально, створюємо "Невідомий")
+            if not client_name:
+                logger.info(f"[{sheet_name}] Рядок {actual_row_index}: відсутнє ім'я клієнта, використовуємо клієнта за замовчуванням")
+                client_id = get_or_create_default_client(transaction_cur, transaction_conn)
+            else:
                 client_id = get_or_create_client(transaction_cur, transaction_conn, client_name)
                 if not client_id:
-                    logger.warning(f"[{sheet_name}] Рядок {actual_row_index}: не вдалося створити клієнта '{client_name}', замовлення буде анонімним")
+                    logger.warning(f"[{sheet_name}] Рядок {actual_row_index}: не вдалося створити клієнта '{client_name}', використовуємо клієнта за замовчуванням")
+                    client_id = get_or_create_default_client(transaction_cur, transaction_conn)
 
             # Обробка дати відкладення
             deferred_until = parse_date_dd_mm_yyyy(raw_deferred_until)

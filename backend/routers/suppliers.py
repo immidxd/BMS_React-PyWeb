@@ -194,13 +194,33 @@ async def merge_suppliers(payload: Dict[str, Any] = Body(...), db: Session = Dep
     for sid in source_ids:
         if sid == target_id:
             continue
-        if not db.execute(text("SELECT 1 FROM suppliers WHERE id = :id"), {"id": sid}).scalar():
+        src = db.execute(text("SELECT id, company_name FROM suppliers WHERE id = :id"), {"id": sid}).mappings().first()
+        if not src:
             continue
+        # Save old name as alias pointing to target — so parser never re-creates it
+        db.execute(text("""
+            INSERT INTO supplier_aliases (alias_name, supplier_id)
+            VALUES (:alias, :target)
+            ON CONFLICT (alias_name) DO UPDATE SET supplier_id = :target
+        """), {"alias": src["company_name"], "target": target_id})
+        # Also save any existing aliases of the source → re-point to target
+        db.execute(text("""
+            UPDATE supplier_aliases SET supplier_id = :target
+            WHERE supplier_id = :source
+        """), {"target": target_id, "source": sid})
         cnt = db.execute(text("UPDATE deliveries SET supplier_id = :target WHERE supplier_id = :source"),
                          {"target": target_id, "source": sid}).rowcount
         moved_deliveries += cnt
         db.execute(text("DELETE FROM suppliers WHERE id = :id"), {"id": sid})
     if new_name:
+        # Also alias the old canonical name if it changed
+        old_name = target["company_name"]
+        if old_name and old_name != new_name:
+            db.execute(text("""
+                INSERT INTO supplier_aliases (alias_name, supplier_id)
+                VALUES (:alias, :target)
+                ON CONFLICT (alias_name) DO UPDATE SET supplier_id = :target
+            """), {"alias": old_name, "target": target_id})
         db.execute(text("UPDATE suppliers SET company_name = :name WHERE id = :id"), {"name": new_name, "id": target_id})
     db.commit()
     deleted = len([s for s in source_ids if s != target_id])

@@ -77,6 +77,7 @@ interface ActiveFilters {
   date_from?: string;
   date_to?: string;
   sales_channels?: string[];
+  only_problematic?: boolean;   // тільки підсвічені (проблемні) замовлення
 }
 
 interface OrdersPageProps {
@@ -263,6 +264,17 @@ const OrdersFilterPanel: React.FC<{
               }`}
             >{q.label}</button>
           ))}
+          {/* Проблемні — окрема кнопка з оранжевим акцентом */}
+          <button
+            type="button"
+            onClick={() => onChange({ ...filters, only_problematic: filters.only_problematic ? undefined : true })}
+            className={`px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${
+              filters.only_problematic
+                ? 'bg-orange-500 border-orange-500 text-white'
+                : 'border-orange-300 text-orange-600 dark:border-orange-600 dark:text-orange-400 hover:border-orange-500 hover:bg-orange-50 dark:hover:bg-orange-900/20'
+            }`}
+            title="Замовлення з сумою 0, без статусу або з неприв'язаними товарами"
+          >⚠ Тільки проблемні</button>
         </div>
       </FilterSection>
 
@@ -414,6 +426,7 @@ const OrdersPage: React.FC<OrdersPageProps> = ({ currentSearchTerm }) => {
     if (filters.date_from) p.set('date_from', filters.date_from);
     if (filters.date_to) p.set('date_to', filters.date_to);
     if (filters.sales_channels?.length) filters.sales_channels.forEach(ch => p.append('sales_channels', ch));
+    if (filters.only_problematic) p.set('only_problematic', 'true');
     return p;
   }, [page, perPage, sortBy, sortDir, currentSearchTerm, filters]);
 

@@ -216,27 +216,109 @@ def parse_supplier_from_sheet_title(title: str) -> Optional[str]:
     return None
 
 
+def _parse_delivery_financials(rows: list) -> dict:
+    """Extract purchase_cost and delivery_cost from the 'Інформація про завоз' block.
+
+    The block is located in the right portion of the sheet (not in the main product columns).
+    Labels are searched across all cells; value is taken from the cell immediately to the right.
+
+    Returns: {"purchase_cost": float, "delivery_cost": float}
+    """
+    import re as _re
+    result = {"purchase_cost": 0.0, "delivery_cost": 0.0}
+
+    def _to_float(val: str) -> float:
+        try:
+            cleaned = _re.sub(r"[^\d.,]", "", str(val)).replace(",", ".")
+            return float(cleaned) if cleaned else 0.0
+        except (ValueError, TypeError):
+            return 0.0
+
+    for row in rows:
+        for c_idx, cell in enumerate(row):
+            cell_s = str(cell).strip().lower()
+            # "Сума" — закупівельна вартість (без доставки)
+            # Must not match "Сума доставки" (which contains "сума")
+            if cell_s == "сума" and c_idx + 1 < len(row):
+                val = _to_float(row[c_idx + 1])
+                if val > 0:
+                    result["purchase_cost"] = val
+            # "Сума доставки" — окрема вартість доставки
+            elif "сума доставки" in cell_s and c_idx + 1 < len(row):
+                val = _to_float(row[c_idx + 1])
+                if val > 0:
+                    result["delivery_cost"] = val
+
+    return result
+
+
+def _normalize_supplier_key(name: str) -> str:
+    """Normalize supplier name for fuzzy matching.
+    Converts to lowercase and removes spaces, underscores, hyphens, dots.
+    e.g. 'Go-Stock', 'Go_Stock', 'GoStock', 'GO STOCK' → 'gostock'
+    """
+    import re as _re
+    return _re.sub(r"[\s_\-\.\,]+", "", name.strip().lower())
+
+
 def _get_or_create_supplier(session: Session, name: str) -> Optional[int]:
     """Get or create a supplier row by company_name.
 
     Lookup order:
-      1. Check suppliers.company_name directly.
-      2. Check synonyms_json for alias match.
-      3. Create new supplier.
+      1. Check supplier_aliases — covers previously merged/deleted names.
+      2. Check suppliers.company_name directly (exact, then normalized).
+      3. Check synonyms_json for alias match (legacy).
+      4. Create new supplier (only if truly new).
     """
     if not name or not name.strip():
         return None
     from sqlalchemy import text
     n = name.strip()
+    n_key = _normalize_supplier_key(n)
 
-    # 1. Direct company_name lookup
+    # 1. Check supplier_aliases (most important — handles merged/deleted suppliers)
+    row = session.execute(
+        text("SELECT supplier_id FROM supplier_aliases WHERE alias_name = :n"), {"n": n}
+    ).fetchone()
+    if row:
+        return row[0]
+
+    # 1b. Check aliases by normalized key (handles spacing/casing variants)
+    alias_rows = session.execute(
+        text("SELECT alias_name, supplier_id FROM supplier_aliases")
+    ).fetchall()
+    for alias_name, supplier_id in alias_rows:
+        if _normalize_supplier_key(alias_name) == n_key:
+            # Save exact variant as alias so next lookup is instant
+            session.execute(
+                text("INSERT INTO supplier_aliases (alias_name, supplier_id) VALUES (:alias, :sid) ON CONFLICT DO NOTHING"),
+                {"alias": n, "sid": supplier_id}
+            )
+            session.flush()
+            return supplier_id
+
+    # 2. Direct company_name lookup (exact)
     row = session.execute(
         text("SELECT id FROM suppliers WHERE company_name = :n"), {"n": n}
     ).fetchone()
     if row:
         return row[0]
 
-    # 2. Synonyms lookup (jsonb array of alias strings)
+    # 2b. Normalized company_name lookup (catches GoStock == Go Stock == GO_STOCK)
+    all_suppliers = session.execute(
+        text("SELECT id, company_name FROM suppliers")
+    ).fetchall()
+    for sid, company_name in all_suppliers:
+        if company_name and _normalize_supplier_key(company_name) == n_key:
+            # Save as alias for future instant lookup
+            session.execute(
+                text("INSERT INTO supplier_aliases (alias_name, supplier_id) VALUES (:alias, :sid) ON CONFLICT DO NOTHING"),
+                {"alias": n, "sid": sid}
+            )
+            session.flush()
+            return sid
+
+    # 3. Legacy: synonyms_json lookup
     row = session.execute(
         text("SELECT id FROM suppliers WHERE synonyms_json IS NOT NULL AND synonyms_json @> CAST(:syn AS jsonb)"),
         {"syn": f'["{n}"]'}
@@ -244,7 +326,7 @@ def _get_or_create_supplier(session: Session, name: str) -> Optional[int]:
     if row:
         return row[0]
 
-    # 3. Create new supplier
+    # 4. Truly new supplier — create it
     row = session.execute(
         text("INSERT INTO suppliers (company_name) VALUES (:n) RETURNING id"), {"n": n}
     ).fetchone()
@@ -254,10 +336,13 @@ def _get_or_create_supplier(session: Session, name: str) -> Optional[int]:
 
 def _get_or_create_shipment(session: Session, sheet_name: str,
                              shipment_date: Optional[date],
-                             supplier_id: Optional[int]) -> Optional[int]:
+                             supplier_id: Optional[int],
+                             purchase_cost: float = 0.0,
+                             delivery_cost: float = 0.0) -> Optional[int]:
     """Get or create a delivery record for a sheet. Returns delivery ID.
 
     Dedup by deliveryname — re-parsing the same sheet reuses the delivery.
+    purchase_cost and delivery_cost are parsed from the sheet's info block.
     """
     if not sheet_name:
         return None
@@ -267,17 +352,22 @@ def _get_or_create_shipment(session: Session, sheet_name: str,
         {"sn": sheet_name}
     ).fetchone()
     if row:
-        # Update supplier_id if it changed (e.g. supplier was merged)
+        # Update supplier_id and costs on every re-parse (values may have changed in Sheet)
         session.execute(
-            text("UPDATE deliveries SET supplier_id = :sid WHERE id = :id"),
-            {"sid": supplier_id, "id": row[0]}
+            text("""UPDATE deliveries
+                    SET supplier_id = :sid,
+                        purchase_cost = CASE WHEN :pc > 0 THEN :pc ELSE purchase_cost END,
+                        delivery_cost = CASE WHEN :dc > 0 THEN :dc ELSE delivery_cost END
+                    WHERE id = :id"""),
+            {"sid": supplier_id, "pc": purchase_cost, "dc": delivery_cost, "id": row[0]}
         )
         session.flush()
         return row[0]
     row = session.execute(
-        text("""INSERT INTO deliveries (deliveryname, deliverydate, supplier_id)
-                VALUES (:sn, :sd, :sid) RETURNING id"""),
-        {"sn": sheet_name, "sd": shipment_date, "sid": supplier_id}
+        text("""INSERT INTO deliveries (deliveryname, deliverydate, supplier_id, purchase_cost, delivery_cost)
+                VALUES (:sn, :sd, :sid, :pc, :dc) RETURNING id"""),
+        {"sn": sheet_name, "sd": shipment_date, "sid": supplier_id,
+         "pc": purchase_cost, "dc": delivery_cost}
     ).fetchone()
     session.flush()
     return row[0] if row else None
@@ -537,6 +627,7 @@ def _parse_products_sheet(
     seen_in_run: Optional[dict] = None,
     supplier_id: Optional[int] = None,
     shipment_id: Optional[int] = None,
+    prefetched_rows: Optional[list] = None,
 ) -> dict:
     """
     Parse one batch sheet from Журнал into products table.
@@ -574,7 +665,7 @@ def _parse_products_sheet(
         Product, Brand, Type, Color, Gender,
     )
 
-    rows = ws.get_all_values()
+    rows = prefetched_rows if prefetched_rows is not None else ws.get_all_values()
     if not rows:
         return {"added": 0, "updated": 0, "skipped": 0}
 
@@ -1261,14 +1352,22 @@ _PAYMENT_STATUS_MAP = {
 }
 
 _DELIVERY_MAP = {
-    "НП": "Нова пошта",
-    "НОВА ПОШТА": "Нова пошта",
-    "УП": "Укрпошта",
-    "УКРПОШТА": "Укрпошта",
-    "МІСЦЕВИЙ": "Самовивіз",
-    "САМОВИВІЗ": "Самовивіз",
-    "КУР'ЄР": "Кур'єр",
-    "КУР'ЄР": "Кур'єр",
+    # Нова пошта
+    "НП": "Нова пошта", "НОВА ПОШТА": "Нова пошта", "НОВАПОШТА": "Нова пошта",
+    "НОВА": "Нова пошта",
+    # Укрпошта
+    "УП": "Укрпошта", "УКРПОШТА": "Укрпошта", "УКР ПОШТА": "Укрпошта",
+    # Самовивіз
+    "САМОВИВІЗ": "Самовивіз", "САМОВИВОЗ": "Самовивіз",
+    "МІСЦЕВИЙ": "Самовивіз", "МІСЦЕВ": "Самовивіз", "МІСТ": "Самовивіз",
+    # Магазин
+    "МАГАЗИН": "Магазин", "МАГ": "Магазин",
+    # Відкладено
+    "ВІДКЛАДЕНО": "Відкладено", "ВІДКЛАД": "Відкладено",
+    # Разом
+    "РАЗОМ": "Разом",
+    # Кур'єр
+    "КУР'ЄР": "Кур'єр", "КУРЄР": "Кур'єр",
 }
 
 # Maps Google Sheets "Статус відповіді" → DB order_statuses.status_name.
@@ -1324,7 +1423,8 @@ def _resolve_delivery_method(session: Session, raw: str) -> Optional[int]:
             if key in raw_up:
                 mapped = val
                 break
-    target_name = mapped or raw_clean
+    # Capitalize if no mapping found (e.g. "магазин" → "Магазин")
+    target_name = mapped or (raw_clean[0].upper() + raw_clean[1:] if raw_clean else raw_clean)
     all_dm = session.query(DeliveryMethod).all()
     dm = next((d for d in all_dm if d.method_name and d.method_name.strip().lower() == target_name.lower()), None)
     if dm:
@@ -1591,7 +1691,29 @@ def _parse_orders_sheet(
             Order.source_fingerprint == source_fp
         ).first()
 
-        # Fallback для старих замовлень без fingerprint
+        # Level 2: Client + date + total_amount + same item count
+        # Catches cases where product numbers were corrected in Sheet but
+        # client/date/total stayed the same → same order, not a new one.
+        # Extra guard: item count must match to avoid merging genuinely
+        # different orders from the same client on the same day with same total.
+        if not existing_order and client_id and total_amount > 0:
+            candidates = session.query(Order).filter(
+                Order.client_id == client_id,
+                Order.order_date == order_date,
+                Order.total_amount == total_amount,
+                Order.source_fingerprint.isnot(None),
+            ).all()
+            num_items_current = len(product_nums)
+            for candidate in candidates:
+                existing_items_count = session.query(OrderItem).filter(
+                    OrderItem.order_id == candidate.id
+                ).count()
+                if existing_items_count == num_items_current:
+                    existing_order = candidate
+                    existing_order.source_fingerprint = source_fp
+                    break
+
+        # Level 3: Fallback для старих замовлень без fingerprint
         if not existing_order:
             notes_val = combined_notes if combined_notes else None
             fb_q = session.query(Order).filter(
@@ -1975,7 +2097,23 @@ def run_products_parsing(
         sheet_date = parse_date_from_sheet_title(ws.title)
         supplier_name = parse_supplier_from_sheet_title(ws.title)
         supplier_id = _get_or_create_supplier(session, supplier_name) if supplier_name else None
-        shipment_id = _get_or_create_shipment(session, ws.title, sheet_date, supplier_id)
+
+        # Rate-limit: wait before each sheet read
+        if idx > 0:
+            time.sleep(SHEET_READ_DELAY_SEC)
+
+        # Read all rows once — used for both financial parsing and product parsing
+        all_rows = ws.get_all_values()
+
+        # Parse purchase/delivery costs from the info block on the right side of the sheet
+        financials = _parse_delivery_financials(all_rows)
+        logger.info(f"[products] Sheet '{ws.title}': purchase_cost={financials['purchase_cost']}, delivery_cost={financials['delivery_cost']}")
+
+        shipment_id = _get_or_create_shipment(
+            session, ws.title, sheet_date, supplier_id,
+            purchase_cost=financials["purchase_cost"],
+            delivery_cost=financials["delivery_cost"],
+        )
         if shipment_id:
             shipment_ids.append(shipment_id)
         logger.info(f"[products] Parsing sheet {idx+1}/{total_sheets}: {ws.title} (supplier={supplier_name}, shipment={shipment_id})")
@@ -1985,11 +2123,7 @@ def run_products_parsing(
                 overall = int((_idx / total_sheets + done / total / total_sheets) * 100)
                 progress_cb(overall, f"{_ws.title}: {done}/{total}")
 
-        # Rate-limit: wait before each sheet read
-        if idx > 0:
-            time.sleep(SHEET_READ_DELAY_SEC)
-
-        result = _parse_products_sheet(ws, session, sheet_date, _cb, seen_in_run, supplier_id, shipment_id)
+        result = _parse_products_sheet(ws, session, sheet_date, _cb, seen_in_run, supplier_id, shipment_id, prefetched_rows=all_rows)
         total_added   += result["added"]
         total_updated += result["updated"]
         total_skipped += result["skipped"]
