@@ -159,7 +159,7 @@ def get_orders(
         # 2. Order item with no product linked
         # 3. Non-terminal order with effective total = 0 (all 3 price fallbacks fail:
         #    oi.price=0, p.price=0, peer_price=0)
-        # Terminal = Відміна(5), Ігнорування(6), Повернення(9)
+        # Excluded: Відміна(5), Ігнорування(6), Подарунок(7), Повернення(9)
         where.append("""(
             (o.order_status_id IS NULL AND EXISTS (
                 SELECT 1 FROM order_items oi_s WHERE oi_s.order_id = o.id
@@ -170,7 +170,7 @@ def get_orders(
             )
             OR (
                 o.total_amount = 0
-                AND COALESCE(o.order_status_id, 0) NOT IN (5, 6, 9)
+                AND COALESCE(o.order_status_id, 0) NOT IN (5, 6, 7, 9)
                 AND EXISTS (SELECT 1 FROM order_items oi_e WHERE oi_e.order_id = o.id)
                 AND NOT EXISTS (
                     SELECT 1 FROM order_items oi3

@@ -151,7 +151,7 @@ function getOrderConflicts(order: Order): string[] {
     issues.push(`${unresolved.length} товар(ів) не знайдено в базі: ${nums}`);
   }
   if (!order.order_status_name) issues.push('Не вказано статус замовлення');
-  if (order.total_amount === 0) issues.push('Сума замовлення = 0');
+  if (order.total_amount === 0 && order.order_status_name !== 'Подарунок') issues.push('Сума замовлення = 0');
   return issues;
 }
 function optName(o: FilterOption): string { return o.name || o.status_name || ''; }
