@@ -1635,17 +1635,34 @@ def _parse_orders_sheet(
         clarification  = col(row, "Уточнення")
 
         # ── Extract size hints from 'Уточнення' ───────────────────────────
-        # Format examples: "Ф2982 (39);"  "Ф3320 (37-38);"  "TG" (ignored)
+        # Format 1: "П321 (37);"  "Ф3320 (37-38);"       → pnum (size)
+        # Format 2: "Розмір: 38 (П321);"                  → keyword size (pnum)
         # Build map: normalized_pnum → size_hint
-        size_hints: dict = {}  # pnum_clean → size string
+        size_hints: dict = {}  # pnum_upper → size string
         for hint_part in clarification.split(";"):
             hint_part = hint_part.strip()
-            # Match: optional # + alphanum + space + (size)
+            if not hint_part:
+                continue
+            # Format 1: pnum (size) — e.g. "П321 (37)", "Ф2982 (39-40)"
             m = re.match(r"#?([\wА-ЯҐЄІЇа-яґєії]+)\s*\(([^)]+)\)", hint_part)
             if m:
                 hint_pnum = "#" + m.group(1).strip().lstrip("#")
-                hint_size = m.group(2).strip()
-                size_hints[hint_pnum.upper()] = hint_size
+                hint_size = _normalize_size(m.group(2).strip())
+                if hint_size:
+                    size_hints[hint_pnum.upper()] = hint_size
+                continue
+            # Format 2: "Розмір: 38 (П321)" or "Розмір 38 (П321)" (keyword first)
+            m2 = re.search(
+                r"(?:розмір|розм\.?|size)[:\s]+([0-9][0-9.,]*(?:\s*[-–]\s*[0-9][0-9.,]*)?)"
+                r"\s*\(#?([\wА-ЯҐЄІЇа-яґєії]+)\)",
+                hint_part,
+                re.IGNORECASE,
+            )
+            if m2:
+                hint_size = _normalize_size(m2.group(1).strip())
+                hint_pnum = "#" + m2.group(2).strip().lstrip("#")
+                if hint_size:
+                    size_hints[hint_pnum.upper()] = hint_size
 
         order_date_col = col(row, "Дата замовлення")
         order_date = sheet_date
