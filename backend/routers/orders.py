@@ -174,17 +174,12 @@ def get_orders(
                 AND EXISTS (SELECT 1 FROM order_items oi_e WHERE oi_e.order_id = o.id)
                 AND NOT EXISTS (
                     SELECT 1 FROM order_items oi3
-                    LEFT JOIN products p3 ON oi3.product_id = p3.id
-                    LEFT JOIN LATERAL (
-                        SELECT MAX(oi4.price) AS peer_price
-                        FROM order_items oi4
-                        WHERE oi4.product_id = oi3.product_id
-                          AND oi4.price > 0 AND oi4.id != oi3.id
-                    ) peer ON true
                     WHERE oi3.order_id = o.id
-                      AND (COALESCE(oi3.price, 0) > 0
-                           OR COALESCE(p3.price, 0) > 0
-                           OR COALESCE(peer.peer_price, 0) > 0)
+                    AND (
+                        COALESCE(oi3.price, 0) > 0
+                        OR EXISTS (SELECT 1 FROM products p3 WHERE p3.id = oi3.product_id AND COALESCE(p3.price, 0) > 0)
+                        OR EXISTS (SELECT 1 FROM order_items oi4 WHERE oi4.product_id = oi3.product_id AND oi4.price > 0 AND oi4.id != oi3.id)
+                    )
                 )
             )
         )""")
