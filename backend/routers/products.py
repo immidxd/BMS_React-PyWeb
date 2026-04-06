@@ -48,6 +48,8 @@ async def get_products(
     min_price: Optional[float] = Query(None, ge=0),
     max_price: Optional[float] = Query(None, ge=0),
     sizeeu: Optional[List[str]] = Query(None),
+    min_sizeeu: Optional[float] = Query(None),
+    max_sizeeu: Optional[float] = Query(None),
     # Visibility / stock
     is_visible: Optional[bool] = Query(None),
     with_stock_only: Optional[bool] = Query(None),
@@ -94,6 +96,8 @@ async def get_products(
             min_price=min_price,
             max_price=max_price,
             sizeeu=sizeeu,
+            min_sizeeu=min_sizeeu,
+            max_sizeeu=max_sizeeu,
             is_visible=is_visible,
             with_stock_only=with_stock_only,
             only_unsold=only_unsold,

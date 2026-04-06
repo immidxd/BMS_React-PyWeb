@@ -98,6 +98,16 @@ def _normalize_size(val: str) -> str:
     # Trailing dot (42. → 42)
     if s.endswith('.'):
         s = s[:-1]
+    # Fraction notation: "36 1/3" → "36.3", "36 2/3" → "36.6"
+    # Convention: 1/3 → .3 (first third), 2/3 → .6 (second third)
+    m_frac = re.match(r'^(\d+(?:\.\d+)?)\s+([12])/3$', s)
+    if m_frac:
+        base = m_frac.group(1)
+        num = m_frac.group(2)
+        s = f"{base}.3" if num == '1' else f"{base}.6"
+    # Reject garbage: contains spaces between numbers with dot (e.g. "35. 36")
+    if re.match(r'^\d+\.\s+\d+', s):
+        return ""
     return s
 
 

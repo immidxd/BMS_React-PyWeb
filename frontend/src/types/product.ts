@@ -134,8 +134,10 @@ export interface ProductFilter {
     // Price range
     min_price?: number;
     max_price?: number;
-    // Size (multi-select)
+    // Size (multi-select or range)
     sizeeu?: string[];
+    min_sizeeu?: number;
+    max_sizeeu?: number;
     // Stock / visibility
     with_stock_only?: boolean;
     is_visible?: boolean;

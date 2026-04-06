@@ -222,7 +222,8 @@ const ProductFiltersPanel: React.FC<ProductFiltersPanelProps> = ({ filters, sele
   ].reduce((acc, f) => acc + countActive(f), 0)
     + typeFilterBadge
     + (selectedFilters.min_price !== undefined || selectedFilters.max_price !== undefined ? 1 : 0)
-    + (selectedFilters.sizeeu?.length || 0);
+    + (selectedFilters.sizeeu?.length || 0)
+    + (selectedFilters.min_sizeeu !== undefined || selectedFilters.max_sizeeu !== undefined ? 1 : 0);
 
   const euSizes = useMemo(() => {
     const raw = filters.size_ranges?.eu || [];
@@ -377,42 +378,86 @@ const ProductFiltersPanel: React.FC<ProductFiltersPanelProps> = ({ filters, sele
 
       {/* Розмір EU */}
       {euSizes.length > 0 && (
-        <FilterSection title="Розмір (EU)" badge={selectedFilters.sizeeu?.length || 0}>
-          <div className="space-y-1.5">
-            <Select
-              mode="multiple"
-              allowClear
-              showSearch
-              placeholder="Оберіть розміри..."
-              value={selectedFilters.sizeeu || []}
-              onChange={(values: string[]) => {
-                onFilterChange({ ...selectedFilters, sizeeu: values.length > 0 ? values : undefined });
-              }}
-              options={euSizes.map(size => ({ label: size, value: size }))}
-              style={{ width: '100%' }}
-              maxTagCount={4}
-              maxTagPlaceholder={(omitted) => `+${omitted.length}...`}
-              size="small"
-              filterOption={(input, option) =>
-                (option?.label as string)?.toLowerCase().includes(input.toLowerCase()) ?? false
-              }
-            />
-            <div className="flex gap-1.5">
-              <button
-                type="button"
-                onClick={() => onFilterChange({ ...selectedFilters, sizeeu: [...euSizes] })}
-                className="flex-1 py-0.5 text-[10px] text-blue-500 hover:text-blue-700 hover:underline transition-colors"
-              >
-                Вибрати все
-              </button>
-              <button
-                type="button"
-                onClick={() => onFilterChange({ ...selectedFilters, sizeeu: undefined })}
-                className="flex-1 py-0.5 text-[10px] text-gray-400 hover:text-red-500 hover:underline transition-colors"
-              >
-                Очистити
-              </button>
+        <FilterSection
+          title="Розмір (EU)"
+          badge={(selectedFilters.sizeeu?.length || 0) + (selectedFilters.min_sizeeu !== undefined || selectedFilters.max_sizeeu !== undefined ? 1 : 0)}
+        >
+          <div className="space-y-2">
+            {/* Діапазон розмірів */}
+            <div>
+              <div className="text-[10px] text-gray-400 mb-1 uppercase tracking-wider">Діапазон:</div>
+              <div className="flex items-center gap-1.5">
+                <input
+                  type="number"
+                  step="0.5"
+                  min="10"
+                  max="60"
+                  placeholder="Від"
+                  value={selectedFilters.min_sizeeu ?? ''}
+                  onChange={e => {
+                    const v = e.target.value ? parseFloat(e.target.value) : undefined;
+                    onFilterChange({ ...selectedFilters, min_sizeeu: v, sizeeu: undefined });
+                  }}
+                  className="w-full border border-gray-200 dark:border-gray-600 rounded px-2 py-1 text-xs bg-white dark:bg-gray-700 text-gray-800 dark:text-gray-200 focus:outline-none focus:border-blue-400"
+                />
+                <span className="text-gray-400 text-xs flex-shrink-0">—</span>
+                <input
+                  type="number"
+                  step="0.5"
+                  min="10"
+                  max="60"
+                  placeholder="До"
+                  value={selectedFilters.max_sizeeu ?? ''}
+                  onChange={e => {
+                    const v = e.target.value ? parseFloat(e.target.value) : undefined;
+                    onFilterChange({ ...selectedFilters, max_sizeeu: v, sizeeu: undefined });
+                  }}
+                  className="w-full border border-gray-200 dark:border-gray-600 rounded px-2 py-1 text-xs bg-white dark:bg-gray-700 text-gray-800 dark:text-gray-200 focus:outline-none focus:border-blue-400"
+                />
+                {(selectedFilters.min_sizeeu !== undefined || selectedFilters.max_sizeeu !== undefined) && (
+                  <button
+                    type="button"
+                    onClick={() => onFilterChange({ ...selectedFilters, min_sizeeu: undefined, max_sizeeu: undefined })}
+                    className="flex-shrink-0 text-gray-400 hover:text-red-500 transition-colors text-sm leading-none"
+                    title="Скинути діапазон"
+                  >×</button>
+                )}
+              </div>
             </div>
+
+            {/* Або конкретні розміри */}
+            {(selectedFilters.min_sizeeu === undefined && selectedFilters.max_sizeeu === undefined) && (
+              <div>
+                <div className="text-[10px] text-gray-400 mb-1 uppercase tracking-wider">Або конкретні розміри:</div>
+                <Select
+                  mode="multiple"
+                  allowClear
+                  showSearch
+                  placeholder="Оберіть розміри..."
+                  value={selectedFilters.sizeeu || []}
+                  onChange={(values: string[]) => {
+                    onFilterChange({ ...selectedFilters, sizeeu: values.length > 0 ? values : undefined });
+                  }}
+                  options={euSizes.map(size => ({ label: size, value: size }))}
+                  style={{ width: '100%' }}
+                  maxTagCount={4}
+                  maxTagPlaceholder={(omitted) => `+${omitted.length}...`}
+                  size="small"
+                  filterOption={(input, option) =>
+                    (option?.label as string)?.toLowerCase().includes(input.toLowerCase()) ?? false
+                  }
+                />
+                {selectedFilters.sizeeu && selectedFilters.sizeeu.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => onFilterChange({ ...selectedFilters, sizeeu: undefined })}
+                    className="mt-1 w-full py-0.5 text-[10px] text-gray-400 hover:text-red-500 hover:underline transition-colors"
+                  >
+                    Очистити
+                  </button>
+                )}
+              </div>
+            )}
           </div>
         </FilterSection>
       )}

@@ -279,6 +279,23 @@ def get_products(
                 where_conditions.append("p.price <= :max_price")
                 params['max_price'] = filters.max_price
 
+            # Size EU range filter (min/max) — takes priority over multi-select if both are provided
+            if filters.min_sizeeu is not None or filters.max_sizeeu is not None:
+                lo = filters.min_sizeeu if filters.min_sizeeu is not None else 0
+                hi = filters.max_sizeeu if filters.max_sizeeu is not None else 999
+                params['sz_lo'] = lo
+                params['sz_hi'] = hi
+                where_conditions.append("""(
+                    -- Exact numeric size within [lo, hi]
+                    (p.sizeeu ~ '^[0-9]+([.,][0-9]+)?$'
+                     AND CAST(replace(p.sizeeu, ',', '.') AS numeric) BETWEEN :sz_lo AND :sz_hi)
+                    OR
+                    -- Range size like '36-37', '38-39': overlaps with [lo, hi]
+                    (p.sizeeu ~ '^[0-9]+[.,]?[0-9]*-[0-9]+[.,]?[0-9]*$'
+                     AND CAST(split_part(p.sizeeu, '-', 1) AS numeric) <= :sz_hi
+                     AND CAST(split_part(p.sizeeu, '-', 2) AS numeric) >= :sz_lo)
+                )""")
+
             # Size EU filter (multi-select) — also matches range sizes
             if filters.sizeeu:
                 # Exact match for selected sizes
@@ -550,8 +567,17 @@ def get_product_filters(db: Session) -> Dict[str, Any]:
         )).fetchall()
 
         # Size ranges per system — expand range values into individual sizes
-        def fetch_sizes(col: str):
-            rows = db.execute(text(f"SELECT DISTINCT {col} FROM products WHERE {col} IS NOT NULL AND {col} != '' ORDER BY {col}")).fetchall()
+        def fetch_sizes(col: str, numeric_only: bool = False):
+            if numeric_only:
+                # EU sizes: exclude letter sizes (S/M/L/XL…) and garbage; keep numeric + dash-ranges
+                rows = db.execute(text(f"""
+                    SELECT DISTINCT {col} FROM products
+                    WHERE {col} IS NOT NULL AND {col} != ''
+                      AND {col} ~ '^[0-9]'
+                    ORDER BY {col}
+                """)).fetchall()
+            else:
+                rows = db.execute(text(f"SELECT DISTINCT {col} FROM products WHERE {col} IS NOT NULL AND {col} != '' ORDER BY {col}")).fetchall()
             raw = [r[0] for r in rows]
             return _expand_sizes_for_filters(raw)
 
@@ -571,7 +597,7 @@ def get_product_filters(db: Session) -> Dict[str, Any]:
             "shipments": [{"id": s[0], "name": s[1], "date": str(s[2]) if s[2] else None, "count": s[3]} for s in shipments_rows],
             "price_range": {"min_price": min_price, "max_price": max_price},
             "size_ranges": {
-                "eu": fetch_sizes("sizeeu"),
+                "eu": fetch_sizes("sizeeu", numeric_only=True),
                 "ua": fetch_sizes("sizeua"),
                 "usa": fetch_sizes("sizeusa"),
                 "uk": fetch_sizes("sizeuk"),
