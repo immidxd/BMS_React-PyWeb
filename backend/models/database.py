@@ -81,7 +81,8 @@ def init_db():
             conn.execute(text("alter table if exists orders add column if not exists sales_channel varchar(50) default 'Ефір'"))
             conn.execute(text("alter table if exists orders add column if not exists source_fingerprint varchar(64)"))
             conn.execute(text("create index if not exists ix_orders_source_fingerprint on orders (source_fingerprint)"))
-            conn.execute(text("create unique index if not exists uix_products_num_size on products (productnumber, COALESCE(sizeeu, ''))"))
+            conn.execute(text("DROP INDEX IF EXISTS uix_products_num_size"))
+            conn.execute(text("create unique index if not exists uix_products_num_size_color on products (productnumber, COALESCE(sizeeu, ''), COALESCE(colorid, 0))"))
             # Розширюємо поля довідників — в Google Sheets значення можуть бути довшими за 50 символів
             conn.execute(text("alter table if exists colors alter column colorname type varchar(100)"))
             conn.execute(text("alter table if exists brands alter column brandname type varchar(150)"))

@@ -933,12 +933,13 @@ def _parse_products_sheet(
                     added += 1
                 except IntegrityError:
                     session.rollback()
-                    # Conflict on uix_products_num_size: record was inserted by a
+                    # Conflict on uix_products_num_size_color: record was inserted by a
                     # previous row in this batch (flush not yet visible to query).
                     # Find it now and set quantity via seen_in_run.
                     existing_now = session.query(Product).filter(
                         Product.productnumber == pnum,
                         Product.sizeeu == (size_val or None),
+                        Product.colorid == color_id,
                     ).first()
                     if existing_now:
                         cnt = seen_in_run.get(existing_now.id, 0) + 1
@@ -990,6 +991,7 @@ def _parse_products_sheet(
                     existing_now = session.query(Product).filter(
                         Product.productnumber == base_pnum,
                         Product.sizeeu == (size_val or None),
+                        Product.colorid == color_id,
                     ).first()
                     if existing_now:
                         cnt = seen_in_run.get(existing_now.id, 0) + 1
@@ -1041,6 +1043,77 @@ def _parse_products_sheet(
 
                 if brand_compat:
                     # ── Same brand → UPDATE the closest existing record ──
+                    # Exception: if a record has the SAME size but an explicitly
+                    # DIFFERENT color (both non-NULL), it's a color variant —
+                    # a genuinely separate product, not an attribute edit.
+                    def _is_color_variant(p) -> bool:
+                        size_same = _fields_match(p.sizeeu, size_val)
+                        color_genuinely_differs = (
+                            p.colorid is not None
+                            and color_id is not None
+                            and p.colorid != color_id
+                        )
+                        return size_same and color_genuinely_differs
+
+                    # Exclude color variants from update candidates
+                    brand_compat_updatable = [p for p in brand_compat if not _is_color_variant(p)]
+
+                    # If all brand_compat records are color variants → create new record
+                    if not brand_compat_updatable:
+                        target_pnum = _next_suffix_pnum(session, base_pnum)
+                        logger.info(
+                            f"[color-variant] Same brand+size, different color → new record: "
+                            f"{base_pnum} → {target_pnum} (color={color_id})"
+                        )
+                        product = Product(
+                            productnumber         = target_pnum,
+                            clonednumbers         = clones or None,
+                            model                 = model_val or None,
+                            marking               = marking or None,
+                            year                  = year_int,
+                            description           = desc_val or None,
+                            price                 = price_float,
+                            sizeeu                = size_val or None,
+                            measurementscm        = cm_val or None,
+                            dateadded             = sheet_date or date.today(),
+                            quantity              = 1,
+                            brandid               = brand_id,
+                            typeid                = type_id,
+                            subtypeid             = sub_id,
+                            genderid              = gender_id,
+                            colorid               = color_id,
+                            conditionid           = cond_id,
+                            statusid              = status_id,
+                            manufacturercountryid = mfr_id,
+                            ownercountryid        = own_id,
+                            deliveryid            = shipment_id,
+                        )
+                        session.add(product)
+                        try:
+                            session.flush()
+                            seen_in_run[product.id] = 1
+                            added += 1
+                        except IntegrityError:
+                            session.rollback()
+                            existing_now = session.query(Product).filter(
+                                Product.productnumber == target_pnum,
+                                Product.sizeeu == (size_val or None),
+                                Product.colorid == color_id,
+                            ).first()
+                            if existing_now:
+                                cnt = seen_in_run.get(existing_now.id, 0) + 1
+                                seen_in_run[existing_now.id] = cnt
+                                existing_now.quantity = cnt
+                                existing_now.updated_at = datetime.utcnow()
+                                session.flush()
+                                updated += 1
+                            else:
+                                skipped += 1
+                        # Skip the update block below
+                        brand_compat = []  # signal that we're done for this row
+
+                if brand_compat and brand_compat_updatable:
+                    # ── Same brand → UPDATE the closest existing record ──
                     # Pick record with fewest genuine field conflicts.
                     def _conflict_score(p):
                         score = 0
@@ -1050,7 +1123,7 @@ def _parse_products_sheet(
                         if not _fields_match(p.sizeeu,      size_val): score += 2  # size is heavier
                         return score
 
-                    target = min(brand_compat, key=_conflict_score)
+                    target = min(brand_compat_updatable, key=_conflict_score)
                     cnt = seen_in_run.get(target.id, 0) + 1
                     seen_in_run[target.id] = cnt
                     target.quantity = cnt
@@ -1128,6 +1201,7 @@ def _parse_products_sheet(
                         existing_now = session.query(Product).filter(
                             Product.productnumber == target_pnum,
                             Product.sizeeu == (size_val or None),
+                            Product.colorid == color_id,
                         ).first()
                         if existing_now:
                             cnt = seen_in_run.get(existing_now.id, 0) + 1
