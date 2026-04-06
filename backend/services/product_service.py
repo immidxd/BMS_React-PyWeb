@@ -512,9 +512,10 @@ def get_product_filters(db: Session) -> Dict[str, Any]:
         def fetch_pairs(sql: str):
             return db.execute(text(sql)).fetchall()
 
-        types = fetch_pairs("SELECT id, typename FROM types ORDER BY typename")
-        subtypes_rows = db.execute(text("SELECT id, subtypename, typeid FROM subtypes ORDER BY subtypename")).fetchall()
-        brands = fetch_pairs("SELECT id, brandname FROM brands ORDER BY brandname")
+        # Exclude '?'-only placeholder entries (user marks unknown with ?, ??, ???)
+        types = fetch_pairs("SELECT id, typename FROM types WHERE typename IS NOT NULL AND btrim(typename) !~ '^[?]+$' ORDER BY typename")
+        subtypes_rows = db.execute(text("SELECT id, subtypename, typeid FROM subtypes WHERE subtypename IS NOT NULL AND btrim(subtypename) !~ '^[?]+$' ORDER BY subtypename")).fetchall()
+        brands = fetch_pairs("SELECT id, brandname FROM brands WHERE brandname IS NOT NULL AND btrim(brandname) !~ '^[?]+$' ORDER BY brandname")
         genders = fetch_pairs(
             "SELECT id, INITCAP(gendername) as gendername FROM genders "
             "WHERE id != 0 ORDER BY gendername"

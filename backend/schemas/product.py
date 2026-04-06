@@ -263,6 +263,7 @@ class FilterOptions(BaseModel):
     brands: List[Dict[str, Any]]
     genders: List[Dict[str, Any]]
     colors: List[Dict[str, Any]]
+    color_groups: List[Dict[str, Any]] = []
     statuses: List[Dict[str, Any]]
     conditions: List[Dict[str, Any]]
     countries: List[Dict[str, Any]] = []

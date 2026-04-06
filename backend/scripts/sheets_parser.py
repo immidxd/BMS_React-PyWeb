@@ -403,9 +403,42 @@ def _auto_classify_color(session: Session, color_id: int, color_name: str):
 def _is_garbage_ref_value(value: str) -> bool:
     """Reject values that are clearly prices, sizes, or other numeric garbage.
     Used for Type, Subtype, Condition, Status reference fields.
+    Also rejects '?' / '??' / '???' marker values (user uses these for unknown).
     """
     import re
-    return bool(re.match(r'^[\d\s,.\-₴]+$', value))
+    v = (value or "").strip()
+    if not v:
+        return True
+    # Numeric garbage (price / size / date fragments)
+    if re.match(r'^[\d\s,.\-₴]+$', v):
+        return True
+    # Question-mark markers used by user for 'unknown' (? / ?? / ??? / ????)
+    if re.match(r'^[?]+$', v):
+        return True
+    return False
+
+
+def _looks_like_brand_name(session, value: str) -> bool:
+    """Return True if value matches an existing brand (case-insensitive, normalized).
+    Used to prevent brand names from being mistakenly stored as subtypes/types
+    when columns in the Google Sheet are shifted.
+    """
+    if not value:
+        return False
+    try:
+        from sqlalchemy import text as sa_text
+        from backend.models.models import Brand
+    except ImportError:
+        from sqlalchemy import text as sa_text
+        from models.models import Brand
+    val_key = _normalize_brand_key(value)
+    if not val_key:
+        return False
+    rows = session.execute(sa_text("SELECT brandname FROM brands")).fetchall()
+    for r in rows:
+        if r[0] and _normalize_brand_key(r[0]) == val_key:
+            return True
+    return False
 
 
 def _normalize_ref_name(value: str) -> str:
@@ -442,8 +475,13 @@ def _get_or_create(session: Session, model, unique_field: str, value: str):
     # Safety truncation to 100 chars — prevents VARCHAR overflow for any reference field
     value = value[:100]
 
-    # Reject numeric garbage for Type (prices/sizes leaked from wrong column)
-    if model is Type and _is_garbage_ref_value(value):
+    # Reject numeric garbage for Type/Subtype (prices/sizes leaked from wrong column)
+    if model in (Type, Subtype) and _is_garbage_ref_value(value):
+        return None
+
+    # Reject brand-matching values from being stored as Type/Subtype (column shift in sheet)
+    if model in (Type, Subtype) and _looks_like_brand_name(session, value):
+        logger.warning(f"[parser-guard] Rejected {model.__name__} '{value}' — matches existing brand")
         return None
 
     # Normalize color names before lookup (synonyms, typos, plurals, Latin→Cyrillic)
@@ -1303,8 +1341,12 @@ def _get_or_create_subtype(session: Session, name: str, type_id: Optional[int]) 
         return None
     from sqlalchemy import text
     name = name.strip()
-    # Reject numeric garbage (prices/sizes)
+    # Reject numeric garbage, empty, and '?' markers
     if _is_garbage_ref_value(name):
+        return None
+    # Reject values that match a known brand name (column shift in sheet)
+    if _looks_like_brand_name(session, name):
+        logger.warning(f"[parser-guard] Rejected subtype '{name}' — matches existing brand")
         return None
     # Capitalize first letter
     name = _normalize_ref_name(name)

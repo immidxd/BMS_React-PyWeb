@@ -278,6 +278,7 @@ const ProductFiltersPanel: React.FC<ProductFiltersPanelProps> = ({ filters, sele
       <FilterSection
         title={SECTION_LABELS.colors}
         badge={(selectedFilters.color_group_ids?.length || 0) + (selectedFilters.colorids?.length || 0)}
+        defaultOpen
       >
         {/* Базові кольори — чіпи */}
         {filters.color_groups && filters.color_groups.length > 0 && (
@@ -326,7 +327,17 @@ const ProductFiltersPanel: React.FC<ProductFiltersPanelProps> = ({ filters, sele
                   color_group_ids: undefined,
                 });
               }}
-              options={filters.colors.map(c => ({ label: c.name, value: c.id }))}
+              options={(() => {
+                const baseNames = new Set((filters.color_groups || []).map(cg => cg.name.toLowerCase()));
+                const base: Array<{ label: string; value: number }> = [];
+                const rest: Array<{ label: string; value: number }> = [];
+                (filters.colors || []).forEach(c => {
+                  const item = { label: c.name, value: c.id };
+                  if (baseNames.has((c.name || '').toLowerCase())) base.push(item);
+                  else rest.push(item);
+                });
+                return [...base, ...rest];
+              })()}
               filterOption={(input, option) =>
                 (option?.label as string)?.toLowerCase().includes(input.toLowerCase()) ?? false
               }
