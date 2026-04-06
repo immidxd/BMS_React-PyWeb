@@ -107,6 +107,8 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
       appendIds('statusids', selectedFilters.statusids);
       appendIds('conditionids', selectedFilters.conditionids);
       if (selectedFilters.sizeeu && selectedFilters.sizeeu.length > 0) params['sizeeu'] = selectedFilters.sizeeu;
+      if (selectedFilters.min_sizeeu !== undefined) params['min_sizeeu'] = selectedFilters.min_sizeeu;
+      if (selectedFilters.max_sizeeu !== undefined) params['max_sizeeu'] = selectedFilters.max_sizeeu;
       const res = await productService.getProducts(params, controller.signal);
       // Only apply result if this is still the latest request
       if (myFetchId === fetchIdRef.current) {
