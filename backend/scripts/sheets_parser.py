@@ -747,6 +747,23 @@ def _parse_products_sheet(
                 auto_gender_obj = _get_or_create(session, Gender, "gendername", auto_gender)
                 gender_id = auto_gender_obj.id if auto_gender_obj else None
 
+        # Type-based gender fallback: specific item types have known default gender
+        # Applied only if gender is still not determined after text/size detection
+        if not gender_id and type_val:
+            type_lower = type_val.strip().lower()
+            type_gender_defaults = {
+                # Унісекс types
+                "валіза": "Унісекс",
+                "рюкзак": "Унісекс",
+                # Жіноча types
+                "сумка": "Жіноча",
+            }
+            for type_keyword, default_gender in type_gender_defaults.items():
+                if type_keyword in type_lower:
+                    type_gender_obj = _get_or_create(session, Gender, "gendername", default_gender)
+                    gender_id = type_gender_obj.id if type_gender_obj else None
+                    break
+
         year_int = None
         if year_val:
             try:
