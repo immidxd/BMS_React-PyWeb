@@ -418,6 +418,37 @@ def _is_garbage_ref_value(value: str) -> bool:
     return False
 
 
+def _is_garbage_color_value(value: str) -> bool:
+    """Return True if value looks like an article number / product code rather than a color name.
+
+    Real color names are words (often Cyrillic). Article numbers look like:
+      - starts with digit:           '01468914-3922', '1-1-23761-39'
+      - letter prefix + 4+ digits:   'j036492', 'f820223', 's23827'
+      - alphanumeric with dashes, no Cyrillic: 'x8x114 xk270', 'u9060lbb'
+      - question-mark placeholders:  '?', '??', '???'
+    """
+    import re
+    v = (value or "").strip()
+    if not v:
+        return True
+    # Question-mark placeholders
+    if re.match(r'^[?]+$', v):
+        return True
+    # Contains Cyrillic → likely a real color name, keep it
+    if re.search(r'[а-яА-ЯіІїЇєЄёЁ]', v):
+        return False
+    # Starts with a digit
+    if re.match(r'^[0-9]', v):
+        return True
+    # Letter prefix immediately followed by 4+ digits (article code)
+    if re.match(r'^[a-zA-Z]{1,5}[0-9]{4}', v):
+        return True
+    # Alphanumeric with dash+digit (article with variant suffix), no spaces of real words
+    if re.match(r'^[0-9a-zA-Z].*-[0-9]', v) and not re.search(r'\s[a-z]{3,}', v):
+        return True
+    return False
+
+
 def _looks_like_brand_name(session, value: str) -> bool:
     """Return True if value matches an existing brand (case-insensitive, normalized).
     Used to prevent brand names from being mistakenly stored as subtypes/types
@@ -482,6 +513,11 @@ def _get_or_create(session: Session, model, unique_field: str, value: str):
     # Reject brand-matching values from being stored as Type/Subtype (column shift in sheet)
     if model in (Type, Subtype) and _looks_like_brand_name(session, value):
         logger.warning(f"[parser-guard] Rejected {model.__name__} '{value}' — matches existing brand")
+        return None
+
+    # Reject article numbers / product codes masquerading as colors (column-shift guard)
+    if model is Color and _is_garbage_color_value(value):
+        logger.warning(f"[parser-guard] Rejected Color '{value}' — looks like article/code, not a color name")
         return None
 
     # Normalize color names before lookup (synonyms, typos, plurals, Latin→Cyrillic)
