@@ -484,6 +484,37 @@ def _normalize_ref_name(value: str) -> str:
     return value
 
 
+def _split_combined_type(raw: str) -> tuple:
+    """Split combined type like 'Кросівки/Кеди' or 'Ботинки-челсі' into (type, subtype).
+
+    Never allows '/' or '-' in types table. Returns (type_part, subtype_part_or_None).
+    If raw has no separator, returns (raw, None).
+    Examples:
+      'Туфлі/кросівки'           → ('Туфлі', 'Кросівки')
+      'Шльопанці-босоніжки'      → ('Шльопанці', 'Босоніжки')
+      'Напівсапоги/ботинки-челсі'→ ('Напівсапоги', 'Ботинки')
+      'Кросівки'                 → ('Кросівки', None)
+    """
+    if not raw:
+        return (raw, None)
+    s = raw.strip()
+    if '/' not in s and '-' not in s:
+        return (s, None)
+    parts = re.split(r'[/\-]', s)
+    parts = [p.strip() for p in parts if p.strip()]
+    if len(parts) < 2:
+        return (s, None)
+
+    def _cap(x: str) -> str:
+        return x[0].upper() + x[1:].lower() if x else ''
+
+    t = _cap(parts[0])
+    st = _cap(parts[1])
+    if st.lower() == t.lower():
+        st = None
+    return (t, st)
+
+
 def _normalize_brand_key(name: str) -> str:
     """Canonical brand key for dedup: lowercase, no diacritics, no spaces/punct.
     'Go Soft' and 'GoSoft' and 'GO SOFT' all → 'gosoft'.
@@ -802,6 +833,12 @@ def _parse_products_sheet(
         desc_val   = col(row, "Опис") if "Опис" in header else ""
 
         # ── Resolve FK refs ────────────────────────────────────────────────
+        # Guard: split combined types ("Туфлі/кросівки", "Ботинки-челсі") → Type + Subtype
+        if type_val:
+            t_part, st_part = _split_combined_type(type_val)
+            type_val = t_part
+            if st_part and not sub_val:
+                sub_val = st_part
         brand_obj  = _get_or_create(session, Brand,  "brandname",  brand_val)  if brand_val  else None
         type_obj   = _get_or_create(session, Type,   "typename",   type_val)   if type_val   else None
         color_obj  = _get_or_create(session, Color,  "colorname",  color_val)  if color_val  else None
@@ -1384,6 +1421,11 @@ def _get_or_create_subtype(session: Session, name: str, type_id: Optional[int]) 
     # Reject numeric garbage, empty, and '?' markers
     if _is_garbage_ref_value(name):
         return None
+    # Guard: if value itself is a combined "A/B" or "A-B" form, take the second part
+    if '/' in name or '-' in name:
+        _, st_part = _split_combined_type(name)
+        if st_part:
+            name = st_part
     # Reject values that match a known brand name (column shift in sheet)
     if _looks_like_brand_name(session, name):
         logger.warning(f"[parser-guard] Rejected subtype '{name}' — matches existing brand")
@@ -2117,6 +2159,12 @@ def _parse_workspace_sheet(
         desc_val   = col(row, "Опис") or col(row, "Екстра примітка")
 
         # Resolve FK refs
+        # Guard: split combined types ("Туфлі/кросівки", "Ботинки-челсі") → Type + Subtype
+        if type_val:
+            t_part, st_part = _split_combined_type(type_val)
+            type_val = t_part
+            if st_part and not sub_val:
+                sub_val = st_part
         brand_obj  = _get_or_create(session, Brand,  "brandname",  brand_val)  if brand_val  else None
         type_obj   = _get_or_create(session, Type,   "typename",   type_val)   if type_val   else None
         color_obj  = _get_or_create(session, Color,  "colorname",  color_val)  if color_val  else None
