@@ -419,13 +419,12 @@ def _is_garbage_ref_value(value: str) -> bool:
 
 
 def _is_garbage_color_value(value: str) -> bool:
-    """Return True if value looks like an article number / product code rather than a color name.
+    """Return True if value looks like an article number / product code / model name
+    rather than a color name.
 
-    Real color names are words (often Cyrillic). Article numbers look like:
-      - starts with digit:           '01468914-3922', '1-1-23761-39'
-      - letter prefix + 4+ digits:   'j036492', 'f820223', 's23827'
-      - alphanumeric with dashes, no Cyrillic: 'x8x114 xk270', 'u9060lbb'
-      - question-mark placeholders:  '?', '??', '???'
+    All legitimate colors in this database are Ukrainian words (Cyrillic).
+    Anything without Cyrillic is treated as garbage (article code, model name, etc.).
+    Additional checks for mixed Cyrillic+digit codes like '3109270-9зк'.
     """
     import re
     v = (value or "").strip()
@@ -434,17 +433,12 @@ def _is_garbage_color_value(value: str) -> bool:
     # Question-mark placeholders
     if re.match(r'^[?]+$', v):
         return True
-    # Contains Cyrillic → likely a real color name, keep it
-    if re.search(r'[а-яА-ЯіІїЇєЄёЁ]', v):
-        return False
-    # Starts with a digit
+    # PRIMARY RULE: no Cyrillic → not a color (catches 'air jordan', 'adilette',
+    # article codes like '01468914-3922', 'j036492', '#wearealpenblitz', etc.)
+    if not re.search(r'[а-яА-ЯіІїЇєЄёЁ]', v):
+        return True
+    # Starts with digit even if it has some Cyrillic suffix (e.g. '3109270-9зк')
     if re.match(r'^[0-9]', v):
-        return True
-    # Letter prefix immediately followed by 4+ digits (article code)
-    if re.match(r'^[a-zA-Z]{1,5}[0-9]{4}', v):
-        return True
-    # Alphanumeric with dash+digit (article with variant suffix), no spaces of real words
-    if re.match(r'^[0-9a-zA-Z].*-[0-9]', v) and not re.search(r'\s[a-z]{3,}', v):
         return True
     return False
 
