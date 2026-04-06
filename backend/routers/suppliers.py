@@ -166,6 +166,110 @@ async def update_supplier(
     return await get_supplier(supplier_id, db)
 
 
+# ── Supplier Aliases (for merge history / split) ─────────────────────
+
+@router.get("/api/suppliers/{supplier_id}/aliases")
+async def get_supplier_aliases(supplier_id: int = Path(..., ge=1), db: Session = Depends(get_db)):
+    """Return all aliases (old names from merges) pointing to this supplier."""
+    rows = db.execute(text("""
+        SELECT sa.id, sa.alias_name,
+               COUNT(DISTINCT d.id)::int AS delivery_count
+        FROM supplier_aliases sa
+        LEFT JOIN deliveries d ON d.deliveryname LIKE '%%(' || sa.alias_name || ')%%'
+                               AND d.supplier_id = :sid
+        WHERE sa.supplier_id = :sid
+        GROUP BY sa.id, sa.alias_name
+        ORDER BY sa.alias_name
+    """), {"sid": supplier_id}).mappings().all()
+    return [dict(r) for r in rows]
+
+
+@router.post("/api/suppliers/{supplier_id}/aliases")
+async def add_supplier_alias(
+    supplier_id: int = Path(..., ge=1),
+    payload: Dict[str, Any] = Body(...),
+    db: Session = Depends(get_db),
+):
+    alias_name = (payload.get("alias_name") or "").strip()
+    if not alias_name:
+        raise HTTPException(400, "alias_name is required")
+    exists = db.execute(text("SELECT 1 FROM suppliers WHERE id = :id"), {"id": supplier_id}).scalar()
+    if not exists:
+        raise HTTPException(404, "Supplier not found")
+    db.execute(text("""
+        INSERT INTO supplier_aliases (alias_name, supplier_id)
+        VALUES (:alias, :sid)
+        ON CONFLICT (alias_name) DO UPDATE SET supplier_id = :sid
+    """), {"alias": alias_name, "sid": supplier_id})
+    db.commit()
+    return {"ok": True}
+
+
+@router.delete("/api/suppliers/aliases/{alias_id}")
+async def delete_supplier_alias(alias_id: int = Path(..., ge=1), db: Session = Depends(get_db)):
+    db.execute(text("DELETE FROM supplier_aliases WHERE id = :id"), {"id": alias_id})
+    db.commit()
+    return {"ok": True}
+
+
+@router.post("/api/suppliers/split")
+async def split_supplier(payload: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
+    """
+    Split an alias back into a separate supplier.
+    - Creates a new supplier with the alias name
+    - Reassigns matching deliveries (where deliveryname contains '(alias_name)')
+    - Deletes the alias record
+    """
+    alias_id = payload.get("alias_id")
+    if not alias_id:
+        raise HTTPException(400, "alias_id is required")
+
+    alias = db.execute(text(
+        "SELECT id, alias_name, supplier_id FROM supplier_aliases WHERE id = :id"
+    ), {"id": alias_id}).mappings().first()
+    if not alias:
+        raise HTTPException(404, "Alias not found")
+
+    alias_name = alias["alias_name"]
+    source_supplier_id = alias["supplier_id"]
+
+    # Check if a supplier with this name already exists
+    existing = db.execute(text(
+        "SELECT id FROM suppliers WHERE company_name = :name"
+    ), {"name": alias_name}).scalar()
+    if existing:
+        raise HTTPException(400, f"Постачальник '{alias_name}' вже існує (ID {existing})")
+
+    # Create new supplier
+    new_id = db.execute(text(
+        "INSERT INTO suppliers (company_name) VALUES (:name) RETURNING id"
+    ), {"name": alias_name}).scalar()
+
+    # Reassign deliveries whose name contains '(alias_name)'
+    # Delivery name format: "07.03.2026(GoStock)" — match pattern %(alias_name)%
+    moved = db.execute(text("""
+        UPDATE deliveries SET supplier_id = :new_id
+        WHERE supplier_id = :source_id
+          AND deliveryname LIKE :pattern
+    """), {
+        "new_id": new_id,
+        "source_id": source_supplier_id,
+        "pattern": f"%({alias_name})%",
+    }).rowcount
+
+    # Delete the alias
+    db.execute(text("DELETE FROM supplier_aliases WHERE id = :id"), {"id": alias_id})
+
+    db.commit()
+    logger.info(f"Split supplier alias '{alias_name}' → new supplier ID {new_id}, moved {moved} deliveries")
+    return {
+        "ok": True,
+        "new_supplier_id": new_id,
+        "alias_name": alias_name,
+        "moved_deliveries": moved,
+    }
+
+
 @router.delete("/api/suppliers/{supplier_id}")
 async def delete_supplier(supplier_id: int = Path(..., ge=1), db: Session = Depends(get_db)):
     cnt = db.execute(text("""

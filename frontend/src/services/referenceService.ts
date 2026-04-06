@@ -231,7 +231,7 @@ export const deleteSupplier = async (id: number): Promise<any> => {
   return response.data;
 };
 
-export const fetchSupplierAliases = async (supplierId: number): Promise<{ id: number; alias_name: string }[]> => {
+export const fetchSupplierAliases = async (supplierId: number): Promise<{ id: number; alias_name: string; delivery_count: number }[]> => {
   const response = await axios.get(`/api/suppliers/${supplierId}/aliases`);
   return response.data;
 };
@@ -243,6 +243,16 @@ export const addSupplierAlias = async (supplierId: number, aliasName: string): P
 
 export const deleteSupplierAlias = async (aliasId: number): Promise<any> => {
   const response = await axios.delete(`/api/suppliers/aliases/${aliasId}`);
+  return response.data;
+};
+
+export const splitSupplier = async (aliasId: number): Promise<{
+  ok: boolean;
+  new_supplier_id: number;
+  alias_name: string;
+  moved_deliveries: number;
+}> => {
+  const response = await axios.post('/api/suppliers/split', { alias_id: aliasId });
   return response.data;
 };
 

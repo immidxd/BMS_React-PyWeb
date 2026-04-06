@@ -3,6 +3,7 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import {
   fetchSuppliers, mergeSuppliers, updateSupplier, deleteSupplier,
   fetchSupplierGroups, createSupplierGroup,
+  fetchSupplierAliases, splitSupplier,
   type Supplier, type SupplierList, type SupplierGroup,
 } from '../../services/referenceService';
 import Pagination from '../common/Pagination';
@@ -30,6 +31,10 @@ const SuppliersTable: React.FC = () => {
   const [editingGroupId, setEditingGroupId] = useState<number | null>(null);
   const [newGroupName, setNewGroupName] = useState('');
   const [showNewGroupInput, setShowNewGroupInput] = useState(false);
+  const [expandedAliases, setExpandedAliases] = useState<number | null>(null);
+  const [aliasesMap, setAliasesMap] = useState<Record<number, { id: number; alias_name: string; delivery_count: number }[]>>({});
+  const [aliasesLoading, setAliasesLoading] = useState(false);
+  const [splittingAlias, setSplittingAlias] = useState<number | null>(null);
   const navigate = useNavigate();
   const location = useLocation();
 
@@ -143,6 +148,44 @@ const SuppliersTable: React.FC = () => {
     }
   };
 
+  const toggleAliases = async (supplierId: number) => {
+    if (expandedAliases === supplierId) {
+      setExpandedAliases(null);
+      return;
+    }
+    setExpandedAliases(supplierId);
+    if (!aliasesMap[supplierId]) {
+      setAliasesLoading(true);
+      try {
+        const aliases = await fetchSupplierAliases(supplierId);
+        setAliasesMap(prev => ({ ...prev, [supplierId]: aliases }));
+      } catch (e) {
+        console.error('Failed to load aliases', e);
+      } finally {
+        setAliasesLoading(false);
+      }
+    }
+  };
+
+  const handleSplit = async (aliasId: number, aliasName: string, supplierId: number) => {
+    if (!window.confirm(`Розділити "${aliasName}" назад у окремого постачальника?\nВідповідні поставки будуть переприсвоєні.`)) return;
+    setSplittingAlias(aliasId);
+    try {
+      const result = await splitSupplier(aliasId);
+      alert(`Створено постачальника "${result.alias_name}" (ID ${result.new_supplier_id}), переміщено ${result.moved_deliveries} поставок.`);
+      // Remove alias from local state
+      setAliasesMap(prev => ({
+        ...prev,
+        [supplierId]: (prev[supplierId] || []).filter(a => a.id !== aliasId),
+      }));
+      await loadData();
+    } catch (e: any) {
+      alert(e?.response?.data?.detail || 'Помилка розділення');
+    } finally {
+      setSplittingAlias(null);
+    }
+  };
+
   const sortIcon = (col: SortCol) => {
     if (sortBy !== col) return '';
     return sortDir === 'asc' ? ' \u2191' : ' \u2193';
@@ -223,7 +266,8 @@ const SuppliersTable: React.FC = () => {
               <tr><td colSpan={10} className="text-center py-8 text-gray-400">Постачальників не знайдено</td></tr>
             ) : (
               items.map(s => (
-                <tr key={s.id} className={`border-b last:border-b-0 hover:bg-gray-50 ${selected.has(s.id) ? 'bg-blue-50' : ''}`}>
+                <React.Fragment key={s.id}>
+                <tr className={`border-b last:border-b-0 hover:bg-gray-50 ${selected.has(s.id) ? 'bg-blue-50' : ''}`}>
                   <td className="px-3 py-2">
                     <input
                       type="checkbox"
@@ -325,6 +369,11 @@ const SuppliersTable: React.FC = () => {
                   <td className="px-3 py-2 text-center">
                     <div className="flex gap-1 justify-center">
                       <button
+                        onClick={() => toggleAliases(s.id)}
+                        className={`text-xs ${expandedAliases === s.id ? 'text-orange-600' : 'text-gray-400 hover:text-orange-500'}`}
+                        title="Показати злиті назви (аліаси)"
+                      >{expandedAliases === s.id ? '▼' : '▶'}</button>
+                      <button
                         onClick={() => { setEditingId(s.id); setEditName(s.name); }}
                         className="text-blue-600 hover:text-blue-800 text-xs"
                         title="Редагувати"
@@ -339,6 +388,38 @@ const SuppliersTable: React.FC = () => {
                     </div>
                   </td>
                 </tr>
+                {expandedAliases === s.id && (
+                  <tr className="bg-orange-50/50">
+                    <td colSpan={10} className="px-6 py-2">
+                      {aliasesLoading ? (
+                        <span className="text-xs text-gray-400">Завантаження...</span>
+                      ) : !aliasesMap[s.id] || aliasesMap[s.id].length === 0 ? (
+                        <span className="text-xs text-gray-400">Немає злитих назв (аліасів)</span>
+                      ) : (
+                        <div className="flex flex-wrap gap-2">
+                          <span className="text-xs text-gray-500 mr-1 self-center">Злиті назви:</span>
+                          {aliasesMap[s.id].map(a => (
+                            <div key={a.id} className="inline-flex items-center gap-1.5 bg-white border border-orange-200 rounded-full px-3 py-1 text-xs">
+                              <span className="font-medium text-orange-800">{a.alias_name}</span>
+                              {a.delivery_count > 0 && (
+                                <span className="text-gray-400">({a.delivery_count} пост.)</span>
+                              )}
+                              <button
+                                onClick={() => handleSplit(a.id, a.alias_name, s.id)}
+                                disabled={splittingAlias === a.id}
+                                className="ml-1 text-orange-600 hover:text-orange-800 font-medium disabled:opacity-40"
+                                title={`Розділити "${a.alias_name}" назад в окремого постачальника`}
+                              >
+                                {splittingAlias === a.id ? '...' : '↗ Розділити'}
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </td>
+                  </tr>
+                )}
+                </React.Fragment>
               ))
             )}
           </tbody>
