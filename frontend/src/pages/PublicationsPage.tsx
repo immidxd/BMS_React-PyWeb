@@ -5,7 +5,7 @@ import Pagination from '../components/common/Pagination';
 /* ── Types ─────────────────────────────────────────────────────────── */
 
 interface PublicationItem {
-  product_id: number;
+  product_id: number | null;
   productnumber: string;
   model: string | null;
   price: number | null;
@@ -13,6 +13,7 @@ interface PublicationItem {
   publication_count: number;
   channels: string;
   threads: string;
+  is_unlinked?: boolean;
 }
 
 interface PublicationDetail {
@@ -39,6 +40,7 @@ interface PublicationStats {
   forum_posts: number;
   archive_posts: number;
   sold_but_live_count: number;
+  unlinked_count: number;
   channels: Array<{
     chat_title: string;
     chat_type: string;
@@ -51,7 +53,7 @@ interface PublicationsPageProps {
   currentSearchTerm: string;
 }
 
-type FilterMode = 'all' | 'published' | 'problematic' | 'unpublished';
+type FilterMode = 'all' | 'published' | 'problematic' | 'unpublished' | 'unlinked';
 
 /* ── Filter Panel ──────────────────────────────────────────────────── */
 
@@ -67,6 +69,7 @@ const PublicationsFilterPanel: React.FC<{
         { key: 'published', label: '📢 Опубліковані' },
         { key: 'problematic', label: '⚠️ Продані, але висять' },
         { key: 'unpublished', label: '○ Не опубліковані' },
+        { key: 'unlinked', label: `🔴 Незв'язані пости${stats?.unlinked_count ? ` (${stats.unlinked_count})` : ''}` },
         { key: 'all', label: 'Всі товари' },
       ] as { key: FilterMode; label: string }[]).map(opt => (
         <label key={opt.key} className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-300 cursor-pointer">
@@ -97,6 +100,11 @@ const PublicationsFilterPanel: React.FC<{
           {stats.sold_but_live_count > 0 && (
             <div className="flex justify-between text-red-600 dark:text-red-400 font-semibold">
               <span>⚠️ Сирітських:</span><span>{stats.sold_but_live_count}</span>
+            </div>
+          )}
+          {stats.unlinked_count > 0 && (
+            <div className="flex justify-between text-orange-600 dark:text-orange-400 font-semibold">
+              <span>🔴 Незв'язані:</span><span>{stats.unlinked_count}</span>
             </div>
           )}
         </div>
@@ -469,13 +477,15 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
-                {items.map(item => {
+                {items.map((item, idx) => {
                   // Exact match: 'Продано' only (NOT 'Непродано' which also contains 'продано')
                   const isProblematic = item.status?.toLowerCase() === 'продано' && item.publication_count > 0;
+                  const isUnlinked = item.is_unlinked === true;
                   return (
                     <tr
-                      key={item.product_id}
+                      key={isUnlinked ? `unlinked-${idx}` : item.product_id}
                       className={`hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors ${
+                        isUnlinked ? 'bg-orange-50 dark:bg-orange-900/20' :
                         isProblematic ? 'bg-red-50 dark:bg-red-900/20' : ''
                       }`}
                     >
@@ -487,11 +497,13 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
                       </td>
                       <td className="px-3 py-2">
                         <span className={`text-xs px-2 py-0.5 rounded ${
-                          isProblematic
+                          isUnlinked
+                            ? 'bg-orange-100 dark:bg-orange-900/30 text-orange-700 dark:text-orange-300 font-semibold'
+                            : isProblematic
                             ? 'bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300 font-semibold'
                             : 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300'
                         }`}>
-                          {isProblematic && '⚠️ '}{item.status || '—'}
+                          {isUnlinked ? '🔴 Незв\'язаний' : isProblematic ? '⚠️ Продано' : (item.status || '—')}
                         </span>
                       </td>
                       <td className="px-3 py-2 text-center">
@@ -506,13 +518,18 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
                         )}
                       </td>
                       <td className="px-3 py-2 text-center">
-                        {item.publication_count > 0 && (
+                        {item.publication_count > 0 && !isUnlinked && item.product_id !== null && (
                           <button
-                            onClick={() => setDetailProductId(item.product_id)}
+                            onClick={() => setDetailProductId(item.product_id as number)}
                             className="text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300 text-xs"
                           >
                             Деталі
                           </button>
+                        )}
+                        {isUnlinked && (
+                          <span className="text-xs text-orange-500 dark:text-orange-400" title="Немає відповідника в базі товарів">
+                            ?
+                          </span>
                         )}
                       </td>
                     </tr>

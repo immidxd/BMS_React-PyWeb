@@ -109,6 +109,38 @@ class TelegramScanner:
         if self.client:
             await self.client.disconnect()
 
+    async def _fetch_forum_topics(self, entity) -> Dict[int, str]:
+        """Fetch forum topic titles. Returns {topic_id: title}."""
+        topic_titles = {}
+        try:
+            from telethon.tl.functions.channels import GetForumTopicsRequest
+            offset_date = 0
+            offset_id = 0
+            offset_topic = 0
+            while True:
+                result = await self.client(GetForumTopicsRequest(
+                    channel=entity,
+                    offset_date=offset_date,
+                    offset_id=offset_id,
+                    offset_topic=offset_topic,
+                    limit=100,
+                    q="",
+                ))
+                if not result.topics:
+                    break
+                for topic in result.topics:
+                    topic_titles[topic.id] = topic.title
+                if len(result.topics) < 100:
+                    break
+                last = result.topics[-1]
+                offset_id = last.top_message
+                offset_topic = last.id
+                offset_date = getattr(last, 'date', 0)
+            logger.info(f"📋 Fetched {len(topic_titles)} forum topics")
+        except Exception as e:
+            logger.warning(f"⚠️ Could not fetch forum topics: {e}")
+        return topic_titles
+
     async def scan_channel(self, db: Session, chat_username: str, chat_type: str = "forum") -> Dict:
         """Scan a channel/forum for product posts. READ-ONLY."""
         if not self.client:
@@ -121,6 +153,11 @@ class TelegramScanner:
             chat_id = entity.id
 
             logger.info(f"📱 Scanning: {chat_title} (ID: {chat_id})")
+
+            # Pre-fetch forum topic titles
+            topic_titles = {}
+            if chat_type == "forum":
+                topic_titles = await self._fetch_forum_topics(entity)
 
             result = {
                 "chat_id": chat_id,
@@ -152,6 +189,8 @@ class TelegramScanner:
                 if hasattr(message, 'reply_to') and message.reply_to:
                     thread_id = getattr(message.reply_to, 'reply_to_top_id', None) or \
                                 getattr(message.reply_to, 'reply_to_msg_id', None)
+                if thread_id and thread_id in topic_titles:
+                    thread_title = topic_titles[thread_id]
 
                 for product_num in product_nums:
                     try:
@@ -302,11 +341,18 @@ def _save_telegram_post(
     if existing:
         return
 
-    # Resolve product_id
+    # Resolve product_id — try all known prefix combinations (#Ф, Ф, #, bare)
     product_id = None
     prod = db.execute(
-        text("SELECT id FROM products WHERE productnumber = :pnum LIMIT 1"),
-        {"pnum": product_number_raw}
+        text("""SELECT id FROM products
+                WHERE productnumber IN (:raw, :f, :hf, :h)
+                LIMIT 1"""),
+        {
+            "raw": product_number_raw,
+            "f": f"\u0424{product_number_raw}",
+            "hf": f"#\u0424{product_number_raw}",
+            "h": f"#{product_number_raw}",
+        }
     ).fetchone()
     if prod:
         product_id = prod[0]
@@ -344,11 +390,15 @@ def _save_telegram_post(
             matched = db.execute(
                 text("""
                     SELECT id FROM products
-                    WHERE productnumber = :pnum
+                    WHERE productnumber IN (:raw, :f, :hf, :h)
                       AND (sizeeu = :sz OR sizeeu = :sz_int)
                     LIMIT 1
                 """),
-                {"pnum": product_number_raw, "sz": size,
+                {"raw": product_number_raw,
+                 "f": f"\u0424{product_number_raw}",
+                 "hf": f"#\u0424{product_number_raw}",
+                 "h": f"#{product_number_raw}",
+                 "sz": size,
                  "sz_int": size.split('.')[0] if '.' in size else size}
             ).fetchone()
             db.execute(

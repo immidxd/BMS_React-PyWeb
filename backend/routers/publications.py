@@ -34,7 +34,7 @@ router = APIRouter()
 async def get_publications_overview(
     page: int = Query(1, ge=1),
     per_page: int = Query(50, ge=1, le=200),
-    filter_mode: Optional[str] = Query(None, description="all|problematic|unpublished|sold_live"),
+    filter_mode: Optional[str] = Query(None, description="all|published|problematic|unpublished|unlinked"),
     search: Optional[str] = Query(None),
     db: Session = Depends(get_db),
 ):
@@ -42,14 +42,74 @@ async def get_publications_overview(
 
     Filter modes:
       - all: all products
+      - published: products with at least 1 TG post
       - problematic: SOLD products that still have live posts
       - unpublished: products NOT in any channel
-      - sold_live: same as problematic (SOLD but live)
+      - unlinked: telegram_posts with no matching product (separate query)
     """
     try:
         offset = (page - 1) * per_page
 
-        # Build base query joining products with telegram_posts
+        # Special mode: unlinked posts (no product_id)
+        if filter_mode == "unlinked":
+            search_clause = ""
+            params: Dict[str, Any] = {"limit": per_page, "offset": offset}
+            if search:
+                search_clause = "AND tp.product_number_raw ILIKE :search"
+                params["search"] = f"%{search}%"
+
+            total_row = db.execute(
+                text(f"SELECT COUNT(*) FROM telegram_posts tp WHERE tp.product_id IS NULL {search_clause}"),
+                {k: v for k, v in params.items() if k not in ('limit', 'offset')}
+            ).fetchone()
+            total = total_row[0] if total_row else 0
+
+            rows = db.execute(
+                text(f"""
+                    SELECT
+                        tp.id,
+                        tp.product_number_raw,
+                        tp.chat_title,
+                        COALESCE(tp.thread_title, '') AS thread_title,
+                        tp.message_date,
+                        COUNT(*) OVER (PARTITION BY tp.product_number_raw) AS post_count
+                    FROM telegram_posts tp
+                    WHERE tp.product_id IS NULL {search_clause}
+                    GROUP BY tp.id, tp.product_number_raw, tp.chat_title, tp.thread_title, tp.message_date
+                    ORDER BY tp.product_number_raw, tp.message_date DESC
+                    LIMIT :limit OFFSET :offset
+                """),
+                params
+            ).fetchall()
+
+            items = []
+            seen_raw = set()
+            for row in rows:
+                raw_num = row[1]
+                if raw_num in seen_raw:
+                    continue
+                seen_raw.add(raw_num)
+                items.append({
+                    "product_id": None,
+                    "productnumber": raw_num,
+                    "model": None,
+                    "price": None,
+                    "status": "Проблемний",
+                    "publication_count": int(row[5]),
+                    "channels": row[2] or "",
+                    "threads": row[3] or "",
+                    "is_unlinked": True,
+                })
+
+            return {
+                "items": items,
+                "total": total,
+                "page": page,
+                "per_page": per_page,
+                "pages": (total + per_page - 1) // per_page,
+            }
+
+        # Normal product-centric mode
         where_parts = []
         params = {"limit": per_page, "offset": offset}
 
@@ -58,10 +118,8 @@ async def get_publications_overview(
             params["search"] = f"%{search}%"
 
         if filter_mode == "published":
-            # Only products that have at least 1 active TG post
             where_parts.append("EXISTS (SELECT 1 FROM telegram_posts tp WHERE tp.product_id = p.id)")
-        elif filter_mode == "problematic" or filter_mode == "sold_live":
-            # SOLD products that still have active posts (exact match on 'Продано')
+        elif filter_mode in ("problematic", "sold_live"):
             where_parts.append("""
                 p.statusid IN (SELECT id FROM statuses WHERE lower(statusname) = 'продано')
                 AND EXISTS (SELECT 1 FROM telegram_posts tp WHERE tp.product_id = p.id)
@@ -74,14 +132,12 @@ async def get_publications_overview(
 
         where_clause = " AND ".join(where_parts) if where_parts else "1=1"
 
-        # Count total
         total_row = db.execute(
             text(f"SELECT COUNT(*) FROM products p WHERE {where_clause}"),
             {k: v for k, v in params.items() if k not in ('limit', 'offset')}
         ).fetchone()
         total = total_row[0] if total_row else 0
 
-        # Main query — products with their publication summary
         rows = db.execute(
             text(f"""
                 SELECT
@@ -96,7 +152,7 @@ async def get_publications_overview(
                     SELECT
                         COUNT(*) AS pub_count,
                         STRING_AGG(DISTINCT chat_title, ', ') AS channels,
-                        STRING_AGG(DISTINCT COALESCE(thread_title, '—'), ', ') AS threads
+                        STRING_AGG(DISTINCT COALESCE(thread_title, ''), ', ') AS threads
                     FROM telegram_posts
                     WHERE product_id = p.id
                 ) pubs ON true
@@ -118,6 +174,7 @@ async def get_publications_overview(
                 "publication_count": row[5],
                 "channels": row[6],
                 "threads": row[7],
+                "is_unlinked": False,
             })
 
         return {
@@ -201,6 +258,13 @@ async def get_publications_stats(db: Session = Depends(get_db)):
             WHERE p.statusid IN (SELECT id FROM statuses WHERE statusname ILIKE 'продано')
         """)).fetchone()
 
+        # Unlinked posts count (no matching product)
+        unlinked = db.execute(text("""
+            SELECT COUNT(DISTINCT product_number_raw)
+            FROM telegram_posts
+            WHERE product_id IS NULL
+        """)).fetchone()
+
         # Channels breakdown
         channels = db.execute(text("""
             SELECT chat_title, chat_type, COUNT(*) AS post_count,
@@ -218,6 +282,7 @@ async def get_publications_stats(db: Session = Depends(get_db)):
             "forum_posts": stats[4] if stats else 0,
             "archive_posts": stats[5] if stats else 0,
             "sold_but_live_count": sold_live[0] if sold_live else 0,
+            "unlinked_count": unlinked[0] if unlinked else 0,
             "channels": [
                 {
                     "chat_title": c[0],
@@ -372,7 +437,9 @@ async def relink_publications(db: Session = Depends(get_db)):
               AND (
                 tp.product_number_raw = p.productnumber
                 OR ('Ф' || tp.product_number_raw) = p.productnumber
-                OR tp.product_number_raw = REPLACE(p.productnumber, 'Ф', '')
+                OR ('#Ф' || tp.product_number_raw) = p.productnumber
+                OR ('#' || tp.product_number_raw) = p.productnumber
+                OR tp.product_number_raw = REPLACE(REPLACE(p.productnumber, '#', ''), 'Ф', '')
               )
         """))
         db.commit()
