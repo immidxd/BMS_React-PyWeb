@@ -121,13 +121,13 @@ async def get_publications_overview(
             where_parts.append("EXISTS (SELECT 1 FROM telegram_posts tp WHERE tp.product_id = p.id)")
         elif filter_mode in ("problematic", "sold_live"):
             where_parts.append("""
-                p.statusid IN (SELECT id FROM statuses WHERE lower(statusname) = 'продано')
+                p.statusid IN (SELECT id FROM statuses WHERE statusname = 'Продано')
                 AND EXISTS (SELECT 1 FROM telegram_posts tp WHERE tp.product_id = p.id)
             """)
         elif filter_mode == "unpublished":
             where_parts.append("""
                 NOT EXISTS (SELECT 1 FROM telegram_posts tp WHERE tp.product_id = p.id)
-                AND p.statusid NOT IN (SELECT id FROM statuses WHERE lower(statusname) = 'продано')
+                AND p.statusid NOT IN (SELECT id FROM statuses WHERE statusname = 'Продано')
             """)
 
         where_clause = " AND ".join(where_parts) if where_parts else "1=1"
@@ -255,7 +255,7 @@ async def get_publications_stats(db: Session = Depends(get_db)):
             SELECT COUNT(DISTINCT p.id)
             FROM products p
             JOIN telegram_posts tp ON tp.product_id = p.id
-            WHERE p.statusid IN (SELECT id FROM statuses WHERE statusname ILIKE 'продано')
+            WHERE p.statusid IN (SELECT id FROM statuses WHERE statusname = 'Продано')
         """)).fetchone()
 
         # Unlinked posts count (no matching product)
