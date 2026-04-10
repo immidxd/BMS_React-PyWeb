@@ -39,6 +39,12 @@ lxml>=4.9.2
 selenium>=4.8.3
 webdriver-manager>=3.8.6
 
+# Telegram integration
+telethon==1.36.0
+
+# Background tasks / scheduling
+APScheduler==3.10.4
+
 # Testing
 pytest>=7.3.1
 pytest-asyncio>=0.21.0

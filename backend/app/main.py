@@ -46,6 +46,10 @@ try:
     from routers import brands  # optional
 except Exception:
     brands = None
+try:
+    from routers import publications  # optional — Telegram/social media publications
+except Exception:
+    publications = None
 
 # НАЛАШТУВАННЯ ЛОГУВАННЯ
 # Використовуємо абсолютний шлях і гарантуємо наявність директорії,
@@ -139,6 +143,8 @@ if statistics:
     app.include_router(statistics.router, tags=["statistics"])  # routes already prefixed with /api
 if brands:
     app.include_router(brands.router, tags=["brands"])  # routes already prefixed with /api
+if publications:
+    app.include_router(publications.router, tags=["publications"])  # routes already prefixed with /api
 
 # Mount static files from frontend build if available
 frontend_build_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../frontend/build"))

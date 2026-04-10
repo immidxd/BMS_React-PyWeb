@@ -158,6 +158,63 @@ def init_db():
                 DELETE FROM brands
                 WHERE lower(brandname) IN (SELECT normalized_name FROM brand_blocklist)
             """))
+            # Таблиця telegram_posts — для синхронізації постів з Telegram
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS telegram_posts (
+                    id SERIAL PRIMARY KEY,
+                    product_id INTEGER REFERENCES products(id) ON DELETE SET NULL,
+                    product_number_raw VARCHAR(50),
+                    chat_id BIGINT NOT NULL,
+                    chat_title VARCHAR(200),
+                    chat_type VARCHAR(20),                -- 'channel' | 'forum' | 'archive'
+                    thread_id INTEGER,                    -- topic_id для форумів
+                    thread_title VARCHAR(200),
+                    message_id BIGINT NOT NULL,
+                    message_text TEXT,
+                    message_date TIMESTAMP,
+                    is_master BOOLEAN DEFAULT false,      -- чи це головна гілка
+                    tg_status VARCHAR(50) DEFAULT 'published',  -- 'published' | 'archived' | 'deleted'
+                    sizes_in_post TEXT,                   -- JSON array розмірів у пості
+                    is_multi_size BOOLEAN DEFAULT false,  -- multi-size пост
+                    detected_at TIMESTAMP DEFAULT NOW(),
+                    UNIQUE(chat_id, message_id)
+                )
+            """))
+            # Migrate existing tables (add new columns if missing)
+            conn.execute(text("ALTER TABLE IF EXISTS telegram_posts ADD COLUMN IF NOT EXISTS sizes_in_post TEXT"))
+            conn.execute(text("ALTER TABLE IF EXISTS telegram_posts ADD COLUMN IF NOT EXISTS is_multi_size BOOLEAN DEFAULT false"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS idx_tg_posts_product ON telegram_posts(product_id)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS idx_tg_posts_number ON telegram_posts(product_number_raw)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS idx_tg_posts_chat ON telegram_posts(chat_id, thread_id)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS idx_tg_posts_multi ON telegram_posts(is_multi_size) WHERE is_multi_size = true"))
+            # Per-size mapping для multi-size постів — кожен розмір -> свій product_id
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS telegram_post_sizes (
+                    id SERIAL PRIMARY KEY,
+                    telegram_post_id INTEGER NOT NULL REFERENCES telegram_posts(id) ON DELETE CASCADE,
+                    size_eu VARCHAR(20) NOT NULL,
+                    product_id INTEGER REFERENCES products(id) ON DELETE SET NULL,
+                    is_sold BOOLEAN DEFAULT false,
+                    UNIQUE(telegram_post_id, size_eu)
+                )
+            """))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS idx_tg_post_sizes_post ON telegram_post_sizes(telegram_post_id)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS idx_tg_post_sizes_product ON telegram_post_sizes(product_id)"))
+            # Таблиця thread_mapping — для визначення гілок форуму за типом товара
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS telegram_thread_mapping (
+                    id SERIAL PRIMARY KEY,
+                    chat_id BIGINT,
+                    thread_id INTEGER,
+                    thread_title VARCHAR(200),
+                    type_id INTEGER REFERENCES types(id) ON DELETE SET NULL,
+                    subtype_id INTEGER REFERENCES subtypes(id) ON DELETE SET NULL,
+                    gender_id INTEGER REFERENCES genders(id) ON DELETE SET NULL,
+                    is_master BOOLEAN DEFAULT false,
+                    UNIQUE(chat_id, thread_id)
+                )
+            """))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS idx_tg_mapping_type ON telegram_thread_mapping(type_id)"))
 
         # Populate initial reference data (only adds basic reference data, no test data)
         from .seed_data import populate_initial_data
