@@ -59,7 +59,7 @@ async def get_publications_overview(
                 params["search"] = f"%{search}%"
 
             total_row = db.execute(
-                text(f"SELECT COUNT(*) FROM telegram_posts tp WHERE tp.product_id IS NULL {search_clause}"),
+                text(f"SELECT COUNT(*) FROM telegram_posts tp WHERE tp.product_id IS NULL AND tp.tg_status = 'published' {search_clause}"),
                 {k: v for k, v in params.items() if k not in ('limit', 'offset')}
             ).fetchone()
             total = total_row[0] if total_row else 0
@@ -74,7 +74,7 @@ async def get_publications_overview(
                         tp.message_date,
                         COUNT(*) OVER (PARTITION BY tp.product_number_raw) AS post_count
                     FROM telegram_posts tp
-                    WHERE tp.product_id IS NULL {search_clause}
+                    WHERE tp.product_id IS NULL AND tp.tg_status = 'published' {search_clause}
                     GROUP BY tp.id, tp.product_number_raw, tp.chat_title, tp.thread_title, tp.message_date
                     ORDER BY tp.product_number_raw, tp.message_date DESC
                     LIMIT :limit OFFSET :offset
@@ -91,7 +91,7 @@ async def get_publications_overview(
                 seen_raw.add(raw_num)
                 items.append({
                     "product_id": None,
-                    "productnumber": raw_num,
+                    "productnumber": (raw_num or "").lstrip('#'),
                     "model": None,
                     "price": None,
                     "status": "Проблемний",
@@ -118,15 +118,25 @@ async def get_publications_overview(
             params["search"] = f"%{search}%"
 
         if filter_mode == "published":
-            where_parts.append("EXISTS (SELECT 1 FROM telegram_posts tp WHERE tp.product_id = p.id)")
+            where_parts.append("EXISTS (SELECT 1 FROM telegram_posts tp WHERE tp.product_id = p.id AND tp.tg_status = 'published')")
         elif filter_mode in ("problematic", "sold_live"):
+            # Product is "Продано" AND has live posts AND no other unit of the same
+            # product+size is still available (important for ростовки/multi-size)
             where_parts.append("""
                 p.statusid IN (SELECT id FROM statuses WHERE statusname = 'Продано')
-                AND EXISTS (SELECT 1 FROM telegram_posts tp WHERE tp.product_id = p.id)
+                AND EXISTS (SELECT 1 FROM telegram_posts tp WHERE tp.product_id = p.id AND tp.tg_status = 'published')
+                AND NOT EXISTS (
+                    SELECT 1 FROM products p2
+                    LEFT JOIN statuses s2 ON s2.id = p2.statusid
+                    WHERE p2.id != p.id
+                      AND p2.productnumber = p.productnumber
+                      AND COALESCE(p2.sizeeu, '') = COALESCE(p.sizeeu, '')
+                      AND COALESCE(s2.statusname, '') != 'Продано'
+                )
             """)
         elif filter_mode == "unpublished":
             where_parts.append("""
-                NOT EXISTS (SELECT 1 FROM telegram_posts tp WHERE tp.product_id = p.id)
+                NOT EXISTS (SELECT 1 FROM telegram_posts tp WHERE tp.product_id = p.id AND tp.tg_status = 'published')
                 AND p.statusid NOT IN (SELECT id FROM statuses WHERE statusname = 'Продано')
             """)
 
@@ -154,7 +164,7 @@ async def get_publications_overview(
                         STRING_AGG(DISTINCT chat_title, ', ') AS channels,
                         STRING_AGG(DISTINCT COALESCE(thread_title, ''), ', ') AS threads
                     FROM telegram_posts
-                    WHERE product_id = p.id
+                    WHERE product_id = p.id AND tg_status = 'published'
                 ) pubs ON true
                 WHERE {where_clause}
                 ORDER BY pub_count DESC NULLS LAST, p.id DESC
@@ -165,9 +175,10 @@ async def get_publications_overview(
 
         items = []
         for row in rows:
+            pnum = (row[1] or "").lstrip('#')
             items.append({
                 "product_id": row[0],
-                "productnumber": row[1],
+                "productnumber": pnum,
                 "model": row[2],
                 "price": float(row[3]) if row[3] else None,
                 "status": row[4],
@@ -235,6 +246,104 @@ async def get_product_publications(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/api/publications/product-detail/{product_id}")
+async def get_product_detail_for_publication(
+    product_id: int,
+    db: Session = Depends(get_db),
+):
+    """Get detailed info for a product in publications context:
+    - All size variants (sold/available) for this product number
+    - Buyer info for sold sizes (from orders)
+    """
+    try:
+        # Get product number
+        prod = db.execute(
+            text("SELECT productnumber FROM products WHERE id = :pid"),
+            {"pid": product_id}
+        ).fetchone()
+        if not prod:
+            raise HTTPException(status_code=404, detail="Product not found")
+        prod_number = prod[0]
+
+        # Build number variants
+        bare = (prod_number or "").lstrip('#').lstrip('Ф').lstrip('ф').lstrip('Р').lstrip('р')
+        variants = list({v for v in [
+            prod_number, bare,
+            f"Ф{bare}", f"#{bare}", f"#Ф{bare}",
+            f"Р{bare}", f"#Р{bare}",
+        ] if v})
+
+        # All size variants for this product number
+        sizes_rows = db.execute(
+            text("""
+                SELECT p.id, p.sizeeu, s.statusname,
+                       p.productnumber, p.model, p.price
+                FROM products p
+                LEFT JOIN statuses s ON s.id = p.statusid
+                WHERE p.productnumber = ANY(:variants)
+                ORDER BY p.sizeeu
+            """),
+            {"variants": variants}
+        ).fetchall()
+
+        sizes = []
+        sold_product_ids = []
+        for row in sizes_rows:
+            is_sold = (row[2] == 'Продано')
+            sizes.append({
+                "product_id": row[0],
+                "size": row[1],
+                "status": row[2] or "—",
+                "productnumber": (row[3] or "").lstrip('#'),
+                "model": row[4],
+                "price": float(row[5]) if row[5] else None,
+            })
+            if is_sold:
+                sold_product_ids.append(row[0])
+
+        # Get buyer info for sold products
+        buyers = []
+        if sold_product_ids:
+            buyer_rows = db.execute(
+                text("""
+                    SELECT oi.product_id, p.sizeeu,
+                           c.name AS client_name, c.phone_number, c.nickname,
+                           o.id AS order_id, o.order_date,
+                           os.statusname AS order_status
+                    FROM order_items oi
+                    JOIN orders o ON o.id = oi.order_id
+                    JOIN products p ON p.id = oi.product_id
+                    LEFT JOIN clients c ON c.id = o.client_id
+                    LEFT JOIN order_statuses os ON os.id = o.order_status_id
+                    WHERE oi.product_id = ANY(:pids)
+                    ORDER BY o.order_date DESC
+                """),
+                {"pids": sold_product_ids}
+            ).fetchall()
+            for row in buyer_rows:
+                buyers.append({
+                    "product_id": row[0],
+                    "size": row[1],
+                    "client_name": row[2] or row[4] or "—",
+                    "phone": row[3] or "—",
+                    "order_id": row[5],
+                    "order_date": row[6].isoformat() if row[6] else None,
+                    "order_status": row[7] or "—",
+                })
+
+        return {
+            "product_id": product_id,
+            "productnumber": (prod_number or "").lstrip('#'),
+            "sizes": sizes,
+            "buyers": buyers,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching product detail: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/api/publications/stats")
 async def get_publications_stats(db: Session = Depends(get_db)):
     """Aggregated stats across all publications."""
@@ -248,28 +357,31 @@ async def get_publications_stats(db: Session = Depends(get_db)):
                 COUNT(*) FILTER (WHERE chat_type = 'forum') AS forum_posts,
                 COUNT(*) FILTER (WHERE chat_type = 'archive') AS archive_posts
             FROM telegram_posts
+            WHERE tg_status = 'published'
         """)).fetchone()
 
-        # Sold-but-live count
+        # Sold-but-live count (only published posts matter)
         sold_live = db.execute(text("""
             SELECT COUNT(DISTINCT p.id)
             FROM products p
             JOIN telegram_posts tp ON tp.product_id = p.id
             WHERE p.statusid IN (SELECT id FROM statuses WHERE statusname = 'Продано')
+              AND tp.tg_status = 'published'
         """)).fetchone()
 
-        # Unlinked posts count (no matching product)
+        # Unlinked posts count (no matching product, only published)
         unlinked = db.execute(text("""
             SELECT COUNT(DISTINCT product_number_raw)
             FROM telegram_posts
-            WHERE product_id IS NULL
+            WHERE product_id IS NULL AND tg_status = 'published'
         """)).fetchone()
 
-        # Channels breakdown
+        # Channels breakdown (only published)
         channels = db.execute(text("""
             SELECT chat_title, chat_type, COUNT(*) AS post_count,
                    COUNT(DISTINCT product_id) AS unique_products
             FROM telegram_posts
+            WHERE tg_status = 'published'
             GROUP BY chat_title, chat_type
             ORDER BY post_count DESC
         """)).fetchall()

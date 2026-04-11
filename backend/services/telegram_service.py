@@ -70,7 +70,10 @@ def extract_sizes(text: str) -> Tuple[List[str], bool]:
 
 
 class TelegramScanner:
-    """Read-only Telegram scanner using Telethon (user session)."""
+    """Telegram scanner using Telethon (user session).
+
+    Supports scanning, forwarding albums, deleting, and editing multi-size posts.
+    """
 
     def __init__(self, api_id: int, api_hash: str, phone: str, session_name: str = "bms"):
         self.api_id = api_id
@@ -207,6 +210,8 @@ class TelegramScanner:
                 if thread_id and thread_id in topic_titles:
                     thread_title = topic_titles[thread_id]
 
+                grouped_id = getattr(message, 'grouped_id', None)
+
                 for product_num in product_nums:
                     try:
                         _save_telegram_post(
@@ -222,6 +227,7 @@ class TelegramScanner:
                             product_number_raw=product_num,
                             sizes_in_post=sizes_list,
                             is_multi_size=is_multi,
+                            grouped_id=grouped_id,
                         )
                         result["new_posts_saved"] += 1
                         result["products_found"].add(product_num)
@@ -237,31 +243,113 @@ class TelegramScanner:
             logger.error(f"❌ Scan error: {e}")
             return {"error": str(e)}
 
+    async def _get_album_message_ids(self, entity, message_id: int, grouped_id: Optional[int] = None) -> List[int]:
+        """Find all message IDs in a media album (grouped_id).
+
+        Scans ±15 messages around the known message_id looking for messages
+        with the same grouped_id. Returns all IDs sorted ascending.
+        If no grouped_id or no album found, returns just [message_id].
+        """
+        if not grouped_id:
+            return [message_id]
+
+        album_ids = set()
+        # Scan nearby messages: 15 before + 15 after the known message
+        try:
+            async for msg in self.client.iter_messages(
+                entity, min_id=message_id - 16, max_id=message_id + 16,
+                limit=40
+            ):
+                if getattr(msg, 'grouped_id', None) == grouped_id:
+                    album_ids.add(msg.id)
+        except Exception as e:
+            logger.warning(f"⚠️ Album scan failed for msg {message_id}: {e}")
+
+        if not album_ids:
+            album_ids.add(message_id)
+
+        return sorted(album_ids)
+
     async def unpublish_product(self, db: Session, product_id: int, archive_chat: str) -> Dict:
         """Remove a sold product from ALL channels/threads.
 
-        Algorithm:
-          1. Find all telegram_posts for this product
-          2. Forward the FIRST post to WORKSHOP (archive) as a backup
-          3. Delete ALL posts from their respective channels/threads
-          4. Update tg_status = 'archived' in DB
+        LOGIC (per post):
+          1. Fetch LIVE text from Telegram (never trust stale DB data)
+          2. Re-extract sizes from live text → determine if multi-size (ростовка)
+          3. If multi-size AND other sizes remain unsold:
+             → EDIT post: remove only the sold size line. NO delete, NO forward.
+          4. If single-size OR all sizes sold:
+             → Forward full album to WORKSHOP, then delete all album messages.
 
-        Args:
-            archive_chat: username or ID of the WORKSHOP archive channel
+        Key: multi-size detection is ALWAYS from live post text, not DB flag.
         """
         if not self.client:
             return {"error": "Not connected to Telegram"}
 
-        # Get all posts for this product
+        # ── 1. Get product info ──
+        prod_row = db.execute(
+            text("""
+                SELECT p.id, p.productnumber, p.sizeeu, s.statusname
+                FROM products p LEFT JOIN statuses s ON s.id = p.statusid
+                WHERE p.id = :pid
+            """),
+            {"pid": product_id}
+        ).fetchone()
+        if not prod_row:
+            return {"product_id": product_id, "error": "Product not found"}
+        prod_number, size_sold = prod_row[1], prod_row[2]
+
+        # ── 2. Build all product number variants (used for both DB queries and TG post search) ──
+        bare_num = (prod_number or "").lstrip('#').lstrip('Ф').lstrip('ф').lstrip('Р').lstrip('р')
+        number_variants = list({v for v in [
+            prod_number, bare_num,
+            f"Ф{bare_num}", f"ф{bare_num}",
+            f"#{bare_num}", f"#Ф{bare_num}", f"#ф{bare_num}",
+            f"Р{bare_num}", f"#Р{bare_num}", f"р{bare_num}",
+        ] if v})
+
+        # ── 3. Find ALL sold sizes for this product number (by ALL variants) ──
+        sold_sizes_rows = db.execute(
+            text("""
+                SELECT DISTINCT p.sizeeu
+                FROM products p
+                JOIN statuses s ON s.id = p.statusid
+                WHERE s.statusname = 'Продано'
+                  AND p.productnumber = ANY(:variants)
+                  AND p.sizeeu IS NOT NULL
+            """),
+            {"variants": number_variants}
+        ).fetchall()
+        all_sold_sizes = {row[0] for row in sold_sizes_rows if row[0]}
+
+        # Which sizes still have available (not sold) stock?
+        available_sizes_rows = db.execute(
+            text("""
+                SELECT DISTINCT p.sizeeu
+                FROM products p
+                LEFT JOIN statuses s ON s.id = p.statusid
+                WHERE p.productnumber = ANY(:variants)
+                  AND p.sizeeu IS NOT NULL
+                  AND COALESCE(s.statusname, '') != 'Продано'
+            """),
+            {"variants": number_variants}
+        ).fetchall()
+        available_sizes = {row[0] for row in available_sizes_rows if row[0]}
+
+        logger.info(f"📊 Product {prod_number}: sold_sizes={all_sold_sizes}, available_sizes={available_sizes}")
+
+        # ── 4. Get all DB posts for this product ──
         posts = db.execute(
             text("""
                 SELECT tp.id, tp.chat_id, tp.message_id, tp.chat_title,
-                       tp.thread_id, tp.thread_title, tp.tg_status
+                       tp.thread_id, tp.thread_title, tp.tg_status,
+                       tp.grouped_id
                 FROM telegram_posts tp
-                WHERE tp.product_id = :pid AND tp.tg_status = 'published'
+                WHERE (tp.product_id = :pid OR tp.product_number_raw = ANY(:variants))
+                  AND tp.tg_status = 'published'
                 ORDER BY tp.message_date ASC
             """),
-            {"pid": product_id}
+            {"pid": product_id, "variants": number_variants}
         ).fetchall()
 
         if not posts:
@@ -277,48 +365,164 @@ class TelegramScanner:
             "product_id": product_id,
             "forwarded": 0,
             "deleted": 0,
+            "edited": 0,
+            "skipped": 0,
             "failed": [],
             "total_posts": len(posts),
         }
 
-        # Step 1: Forward FIRST post to WORKSHOP as backup
-        first_post = posts[0]
-        first_chat_id, first_msg_id = first_post[1], first_post[2]
-        try:
-            source_entity = await self._resolve_entity(str(first_chat_id))
-            await self.client.forward_messages(
-                entity=archive_entity,
-                messages=int(first_msg_id),
-                from_peer=source_entity,
-            )
-            result["forwarded"] = 1
-            logger.info(f"📦 Forwarded msg {first_msg_id} from {first_post[3]} → WORKSHOP")
-        except Exception as e:
-            logger.warning(f"⚠️ Forward failed (msg {first_msg_id}): {e}")
-            result["failed"].append({"chat": first_post[3], "msg_id": first_msg_id, "action": "forward", "error": str(e)})
+        already_forwarded_backup = False
+        already_deleted_msgs = set()
 
-        # Step 2: Delete ALL posts from their channels/threads
         for post in posts:
-            db_id, chat_id, msg_id, chat_title, thread_id, thread_title, _ = post
+            db_id, chat_id, msg_id, chat_title, thread_id, thread_title, _, grouped_id = post
+
             try:
                 chat_entity = await self._resolve_entity(str(chat_id))
-                await self.client.delete_messages(entity=chat_entity, message_ids=[int(msg_id)])
-                result["deleted"] += 1
-                logger.info(f"🗑 Deleted msg {msg_id} from {chat_title}" +
-                            (f" / {thread_title}" if thread_title else ""))
-            except Exception as e:
-                logger.warning(f"⚠️ Delete failed (msg {msg_id} in {chat_title}): {e}")
-                result["failed"].append({"chat": chat_title, "msg_id": msg_id, "action": "delete", "error": str(e)})
 
-            # Update DB status regardless (post is "processed")
-            db.execute(
-                text("UPDATE telegram_posts SET tg_status = 'archived' WHERE id = :id"),
-                {"id": db_id}
-            )
+                # ── ALWAYS fetch live message from Telegram ──
+                tg_msg = await self.client.get_messages(chat_entity, ids=int(msg_id))
+                if not tg_msg:
+                    logger.warning(f"⚠️ Message {msg_id} not found in {chat_title} — already deleted?")
+                    db.execute(text("UPDATE telegram_posts SET tg_status = 'archived' WHERE id = :id"), {"id": db_id})
+                    continue
+
+                live_text = tg_msg.text or ""
+
+                # ── Re-extract sizes from LIVE text (never trust DB flag) ──
+                live_sizes, is_multi = extract_sizes(live_text)
+
+                # Decide action based on live post content
+                if is_multi and live_sizes:
+                    # ── РОСТОВКА: multi-size post ──
+                    # Which sizes in this post are fully sold (no available stock)?
+                    sizes_to_remove = []
+                    for sz in live_sizes:
+                        sz_int = sz.split('.')[0]
+                        # Check if this size is sold AND no other unit available
+                        if (sz in all_sold_sizes or sz_int in all_sold_sizes) and \
+                           sz not in available_sizes and sz_int not in available_sizes:
+                            sizes_to_remove.append(sz)
+
+                    if not sizes_to_remove:
+                        # All sizes still have stock — skip this post entirely
+                        result["skipped"] += 1
+                        logger.info(f"⏭ Skipped msg {msg_id} in {chat_title} — all sizes still available")
+                        continue
+
+                    sizes_remaining = [s for s in live_sizes if s not in sizes_to_remove]
+
+                    if sizes_remaining:
+                        # ── EDIT: remove only sold size lines, keep the post ──
+                        new_text = live_text
+                        for sz in sizes_to_remove:
+                            new_text = self._remove_size_line(new_text, sz)
+
+                        if new_text != live_text:
+                            await self.client.edit_message(chat_entity, int(msg_id), new_text)
+                            # Update DB sizes
+                            db.execute(
+                                text("UPDATE telegram_posts SET sizes_in_post = :sizes, is_multi_size = true WHERE id = :id"),
+                                {"sizes": json.dumps(sizes_remaining), "id": db_id}
+                            )
+                            result["edited"] += 1
+                            logger.info(f"✏️ Edited msg {msg_id} in {chat_title}: removed sizes {sizes_to_remove}, kept {sizes_remaining}")
+                        else:
+                            logger.warning(f"⚠️ Could not match size lines {sizes_to_remove} in msg {msg_id}")
+                        continue  # DO NOT delete, DO NOT forward
+                    else:
+                        # All sizes sold — fall through to delete
+                        pass
+
+                # ── SINGLE-SIZE or ALL-SIZES-SOLD: forward album + delete ──
+                album_ids = await self._get_album_message_ids(chat_entity, int(msg_id), grouped_id)
+
+                # Forward full album to WORKSHOP (only once per product)
+                if not already_forwarded_backup:
+                    try:
+                        await self.client.forward_messages(
+                            entity=archive_entity,
+                            messages=album_ids,
+                            from_peer=chat_entity,
+                        )
+                        result["forwarded"] = len(album_ids)
+                        already_forwarded_backup = True
+                        logger.info(f"📦 Forwarded {len(album_ids)} msgs from {chat_title} → WORKSHOP")
+                    except Exception as e:
+                        logger.warning(f"⚠️ Forward failed (msg {msg_id}): {e}")
+                        result["failed"].append({"chat": chat_title, "msg_id": msg_id, "action": "forward", "error": str(e)})
+
+                # Delete ALL album messages
+                to_delete = [mid for mid in album_ids if (chat_id, mid) not in already_deleted_msgs]
+                if to_delete:
+                    try:
+                        await self.client.delete_messages(entity=chat_entity, message_ids=to_delete)
+                        for mid in to_delete:
+                            already_deleted_msgs.add((chat_id, mid))
+                        result["deleted"] += len(to_delete)
+                        logger.info(f"🗑 Deleted {len(to_delete)} msgs from {chat_title}" +
+                                    (f" / {thread_title}" if thread_title else ""))
+                    except Exception as e:
+                        logger.warning(f"⚠️ Delete failed (msgs {to_delete} in {chat_title}): {e}")
+                        result["failed"].append({"chat": chat_title, "msg_id": msg_id, "action": "delete", "error": str(e)})
+
+                # Update DB status
+                db.execute(
+                    text("UPDATE telegram_posts SET tg_status = 'archived' WHERE id = :id"),
+                    {"id": db_id}
+                )
+
+            except Exception as e:
+                logger.warning(f"⚠️ Error processing post {msg_id} in {chat_title}: {e}")
+                result["failed"].append({"chat": chat_title, "msg_id": msg_id, "action": "process", "error": str(e)})
 
         db.commit()
-        logger.info(f"✅ Unpublished product {product_id}: forwarded={result['forwarded']}, deleted={result['deleted']}")
+        logger.info(f"✅ Unpublished product {product_id}: forwarded={result['forwarded']}, deleted={result['deleted']}, edited={result['edited']}, skipped={result['skipped']}")
         return result
+
+    @staticmethod
+    def _remove_size_line(text_content: str, size: str) -> str:
+        """Remove a specific size line from multi-size post text.
+
+        Handles real Telegram formats like:
+          — 40 (на ніжку 26 см)
+          — 42.5 (на ніжку 27 см)
+          - 38
+          • 39 ✅
+          — 37 (в наявності)
+
+        Also cleans up orphaned "Розміри:" header if no size lines remain after removal.
+        """
+        lines = text_content.split('\n')
+        new_lines = []
+        # Normalize size for comparison: "37.5" → also match "37", "37,5"
+        size_norm = size.replace(',', '.')
+        size_int = size_norm.split('.')[0]
+        for line in lines:
+            # Match size entry lines: bullet/dash + number + optional decimal + any trailing text
+            m = re.match(r'^[\s]*[—\-•·]\s*(\d{2}(?:[.,]\d{1,2})?)\b', line)
+            if m:
+                line_size = m.group(1).replace(',', '.')
+                line_size_int = line_size.split('.')[0]
+                # Match exact ("42.5" == "42.5") or integer ("42" == "42")
+                if line_size == size_norm or (line_size_int == size_int and '.' not in size_norm):
+                    continue  # Remove this line
+            new_lines.append(line)
+
+        # Clean up orphaned "Розміри:" header if no size lines remain
+        result_text = '\n'.join(new_lines)
+        if MULTI_SIZE_HEADER.search(result_text) and not MULTI_SIZE_PATTERN.search(result_text):
+            # No size lines left — remove the header line too
+            cleaned = []
+            for line in new_lines:
+                if MULTI_SIZE_HEADER.search(line):
+                    continue
+                cleaned.append(line)
+            result_text = '\n'.join(cleaned)
+
+        # Collapse multiple consecutive blank lines into one
+        result_text = re.sub(r'\n{3,}', '\n\n', result_text)
+        return result_text
 
     async def unpublish_bulk(self, db: Session, product_ids: List[int], archive_chat: str) -> Dict:
         """Unpublish multiple products at once."""
@@ -445,6 +649,7 @@ def _save_telegram_post(
     thread_title: Optional[str] = None,
     sizes_in_post: Optional[List[str]] = None,
     is_multi_size: bool = False,
+    grouped_id: Optional[int] = None,
 ):
     """Save Telegram post metadata to DB (idempotent)."""
     existing = db.execute(
@@ -477,11 +682,11 @@ def _save_telegram_post(
             INSERT INTO telegram_posts (
                 product_id, product_number_raw, chat_id, chat_title, chat_type,
                 thread_id, thread_title, message_id, message_text, message_date,
-                sizes_in_post, is_multi_size
+                sizes_in_post, is_multi_size, grouped_id
             ) VALUES (
                 :prod_id, :pnum, :chat_id, :chat_title, :chat_type,
                 :thread_id, :thread_title, :msg_id, :text, :date,
-                :sizes, :multi
+                :sizes, :multi, :grouped_id
             )
             ON CONFLICT (chat_id, message_id) DO NOTHING
             RETURNING id
@@ -492,6 +697,7 @@ def _save_telegram_post(
             "thread_id": thread_id, "thread_title": thread_title,
             "msg_id": message_id, "text": message_text, "date": message_date,
             "sizes": sizes_json, "multi": is_multi_size,
+            "grouped_id": grouped_id,
         }
     )
     post_row = result.fetchone()

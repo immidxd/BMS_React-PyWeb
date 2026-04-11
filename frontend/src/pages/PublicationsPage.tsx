@@ -358,6 +358,9 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [unpublishing, setUnpublishing] = useState<number | null>(null);
   const [bulkUnpublishing, setBulkUnpublishing] = useState(false);
+  const [expandedId, setExpandedId] = useState<number | null>(null);
+  const [expandedDetail, setExpandedDetail] = useState<any>(null);
+  const [expandedLoading, setExpandedLoading] = useState(false);
 
   const fetchStats = useCallback(async () => {
     try {
@@ -428,8 +431,13 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
         alert(`Помилка: ${data.detail || res.status}`);
       } else {
         const failCount = data.failed?.length || 0;
-        alert(`Видалено: ${data.deleted} постів, переслано в WORKSHOP: ${data.forwarded}` +
-              (failCount > 0 ? `\n⚠️ Помилок: ${failCount}` : ''));
+        const parts = [];
+        if (data.deleted > 0) parts.push(`Видалено: ${data.deleted} постів`);
+        if (data.forwarded > 0) parts.push(`Переслано в WORKSHOP: ${data.forwarded}`);
+        if (data.edited > 0) parts.push(`Відредаговано (ростовки): ${data.edited}`);
+        if (data.skipped > 0) parts.push(`Пропущено (є ще в наявності): ${data.skipped}`);
+        if (failCount > 0) parts.push(`⚠️ Помилок: ${failCount}`);
+        alert(parts.join('\n') || 'Готово');
         fetchItems();
         fetchStats();
       }
@@ -466,6 +474,22 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
     } finally {
       setBulkUnpublishing(false);
     }
+  };
+
+  const handleRowClick = async (productId: number | null) => {
+    if (!productId) return;
+    if (expandedId === productId) {
+      setExpandedId(null);
+      setExpandedDetail(null);
+      return;
+    }
+    setExpandedId(productId);
+    setExpandedLoading(true);
+    try {
+      const res = await fetch(`/api/publications/product-detail/${productId}`);
+      if (res.ok) setExpandedDetail(await res.json());
+    } catch { /* ignore */ }
+    finally { setExpandedLoading(false); }
   };
 
   const toggleSelect = (id: number) => {
@@ -568,18 +592,20 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
               </thead>
               <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
                 {items.map((item, idx) => {
-                  // Exact match: 'Продано' only (NOT 'Непродано' which also contains 'продано')
                   const isProblematic = item.status?.toLowerCase() === 'продано' && item.publication_count > 0;
                   const isUnlinked = item.is_unlinked === true;
+                  const isExpanded = expandedId === item.product_id && item.product_id !== null;
                   return (
+                    <React.Fragment key={isUnlinked ? `unlinked-${idx}` : item.product_id}>
                     <tr
-                      key={isUnlinked ? `unlinked-${idx}` : item.product_id}
-                      className={`hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors ${
+                      className={`hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors cursor-pointer ${
+                        isExpanded ? 'bg-blue-50 dark:bg-blue-900/20' :
                         isUnlinked ? 'bg-orange-50 dark:bg-orange-900/20' :
                         isProblematic ? 'bg-red-50 dark:bg-red-900/20' : ''
                       }`}
+                      onClick={() => handleRowClick(item.product_id)}
                     >
-                      <td className="px-2 py-2 text-center w-8">
+                      <td className="px-2 py-2 text-center w-8" onClick={e => e.stopPropagation()}>
                         {!isUnlinked && item.product_id !== null ? (
                           <input type="checkbox" checked={selectedIds.has(item.product_id as number)} onChange={() => toggleSelect(item.product_id as number)} className="rounded" />
                         ) : <span className="text-gray-300">—</span>}
@@ -612,7 +638,7 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
                           <span className="text-gray-400 ml-1">/ {item.threads}</span>
                         )}
                       </td>
-                      <td className="px-3 py-2 text-center whitespace-nowrap">
+                      <td className="px-3 py-2 text-center whitespace-nowrap" onClick={e => e.stopPropagation()}>
                         {item.publication_count > 0 && !isUnlinked && item.product_id !== null && (
                           <div className="flex items-center justify-center gap-1">
                             <button
@@ -638,6 +664,83 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
                         )}
                       </td>
                     </tr>
+                    {/* ── Expanded detail row ── */}
+                    {isExpanded && (
+                      <tr className="bg-blue-50/60 dark:bg-blue-900/10">
+                        <td colSpan={7} className="px-6 py-3">
+                          {expandedLoading ? (
+                            <div className="text-xs text-gray-400 py-2">Завантаження...</div>
+                          ) : expandedDetail ? (
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                              {/* Sizes table */}
+                              <div>
+                                <div className="text-xs font-semibold text-gray-500 dark:text-gray-400 mb-2">
+                                  Розміри ({expandedDetail.productnumber}):
+                                </div>
+                                <table className="w-full text-xs">
+                                  <thead>
+                                    <tr className="text-gray-500 dark:text-gray-400">
+                                      <th className="text-left pr-3 pb-1">Розмір</th>
+                                      <th className="text-left pr-3 pb-1">Статус</th>
+                                      <th className="text-left pb-1">Ціна</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {expandedDetail.sizes?.map((sz: any, i: number) => (
+                                      <tr key={i} className={sz.status === 'Продано' ? 'text-red-600 dark:text-red-400' : 'text-gray-700 dark:text-gray-300'}>
+                                        <td className="pr-3 py-0.5 font-mono">{sz.size || '—'}</td>
+                                        <td className="pr-3 py-0.5">
+                                          <span className={`px-1.5 py-0.5 rounded ${
+                                            sz.status === 'Продано' ? 'bg-red-100 dark:bg-red-900/30 font-semibold' : 'bg-green-100 dark:bg-green-900/30'
+                                          }`}>{sz.status}</span>
+                                        </td>
+                                        <td className="py-0.5">{sz.price ? `${sz.price} грн` : '—'}</td>
+                                      </tr>
+                                    ))}
+                                    {(!expandedDetail.sizes || expandedDetail.sizes.length === 0) && (
+                                      <tr><td colSpan={3} className="text-gray-400 py-1">Немає даних</td></tr>
+                                    )}
+                                  </tbody>
+                                </table>
+                              </div>
+                              {/* Buyers */}
+                              <div>
+                                <div className="text-xs font-semibold text-gray-500 dark:text-gray-400 mb-2">
+                                  Покупці:
+                                </div>
+                                {expandedDetail.buyers?.length > 0 ? (
+                                  <table className="w-full text-xs">
+                                    <thead>
+                                      <tr className="text-gray-500 dark:text-gray-400">
+                                        <th className="text-left pr-3 pb-1">Розмір</th>
+                                        <th className="text-left pr-3 pb-1">Клієнт</th>
+                                        <th className="text-left pr-3 pb-1">Замовлення</th>
+                                        <th className="text-left pb-1">Дата</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody>
+                                      {expandedDetail.buyers.map((b: any, i: number) => (
+                                        <tr key={i} className="text-gray-700 dark:text-gray-300">
+                                          <td className="pr-3 py-0.5 font-mono">{b.size || '—'}</td>
+                                          <td className="pr-3 py-0.5">{b.client_name}</td>
+                                          <td className="pr-3 py-0.5">#{b.order_id} ({b.order_status})</td>
+                                          <td className="py-0.5">{b.order_date ? new Date(b.order_date).toLocaleDateString('uk-UA') : '—'}</td>
+                                        </tr>
+                                      ))}
+                                    </tbody>
+                                  </table>
+                                ) : (
+                                  <div className="text-xs text-gray-400">Немає замовлень</div>
+                                )}
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="text-xs text-gray-400 py-2">Помилка завантаження</div>
+                          )}
+                        </td>
+                      </tr>
+                    )}
+                    </React.Fragment>
                   );
                 })}
               </tbody>
