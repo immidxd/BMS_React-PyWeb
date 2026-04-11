@@ -105,6 +105,22 @@ class TelegramScanner:
             logger.error(f"❌ Failed to connect to Telegram: {e}")
             return False
 
+    async def _resolve_entity(self, chat_ref: str):
+        """Resolve a chat reference (username, invite link, or numeric ID) to an entity."""
+        # Numeric ID (e.g. -1002182178232)
+        try:
+            chat_id = int(chat_ref)
+            # For supergroups/channels: strip -100 prefix to get raw channel ID
+            if chat_id < -1000000000000:
+                raw_id = int(str(chat_id).replace('-100', '', 1))
+                from telethon.tl.types import PeerChannel
+                return await self.client.get_entity(PeerChannel(raw_id))
+            return await self.client.get_entity(chat_id)
+        except (ValueError, TypeError):
+            pass
+        # Username or invite link
+        return await self.client.get_entity(chat_ref)
+
     async def disconnect(self):
         if self.client:
             await self.client.disconnect()
@@ -147,8 +163,7 @@ class TelegramScanner:
             return {"error": "Not connected"}
 
         try:
-            from telethon.tl.types import Channel
-            entity = await self.client.get_entity(chat_username)
+            entity = await self._resolve_entity(chat_username)
             chat_title = getattr(entity, 'title', chat_username)
             chat_id = entity.id
 
@@ -254,7 +269,7 @@ class TelegramScanner:
 
         # Resolve archive channel entity
         try:
-            archive_entity = await self.client.get_entity(archive_chat)
+            archive_entity = await self._resolve_entity(archive_chat)
         except Exception as e:
             return {"product_id": product_id, "error": f"Cannot find WORKSHOP channel '{archive_chat}': {e}"}
 
@@ -270,7 +285,7 @@ class TelegramScanner:
         first_post = posts[0]
         first_chat_id, first_msg_id = first_post[1], first_post[2]
         try:
-            source_entity = await self.client.get_entity(int(first_chat_id))
+            source_entity = await self._resolve_entity(str(first_chat_id))
             await self.client.forward_messages(
                 entity=archive_entity,
                 messages=int(first_msg_id),
@@ -286,7 +301,7 @@ class TelegramScanner:
         for post in posts:
             db_id, chat_id, msg_id, chat_title, thread_id, thread_title, _ = post
             try:
-                chat_entity = await self.client.get_entity(int(chat_id))
+                chat_entity = await self._resolve_entity(str(chat_id))
                 await self.client.delete_messages(entity=chat_entity, message_ids=[int(msg_id)])
                 result["deleted"] += 1
                 logger.info(f"🗑 Deleted msg {msg_id} from {chat_title}" +
