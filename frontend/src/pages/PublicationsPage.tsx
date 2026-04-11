@@ -355,6 +355,9 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
   const [stats, setStats] = useState<PublicationStats | null>(null);
   const [syncOpen, setSyncOpen] = useState(false);
   const [detailProductId, setDetailProductId] = useState<number | null>(null);
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  const [unpublishing, setUnpublishing] = useState<number | null>(null);
+  const [bulkUnpublishing, setBulkUnpublishing] = useState(false);
 
   const fetchStats = useCallback(async () => {
     try {
@@ -415,6 +418,73 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
     }
   };
 
+  const handleUnpublish = async (productId: number) => {
+    if (!window.confirm('Зняти з публікації? Пост буде переслано у WORKSHOP (архів) і видалено з усіх каналів/гілок.')) return;
+    setUnpublishing(productId);
+    try {
+      const res = await fetch(`/api/publications/unpublish/${productId}`, { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok) {
+        alert(`Помилка: ${data.detail || res.status}`);
+      } else {
+        const failCount = data.failed?.length || 0;
+        alert(`Видалено: ${data.deleted} постів, переслано в WORKSHOP: ${data.forwarded}` +
+              (failCount > 0 ? `\n⚠️ Помилок: ${failCount}` : ''));
+        fetchItems();
+        fetchStats();
+      }
+    } catch (e: any) {
+      alert(e.message);
+    } finally {
+      setUnpublishing(null);
+    }
+  };
+
+  const handleBulkUnpublish = async () => {
+    const ids = Array.from(selectedIds);
+    if (ids.length === 0) return;
+    if (!window.confirm(`Зняти з публікації ${ids.length} товарів? Кожен буде переслано у WORKSHOP і видалено з усіх каналів.`)) return;
+    setBulkUnpublishing(true);
+    try {
+      const res = await fetch('/api/publications/unpublish-bulk', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ product_ids: ids }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        alert(`Помилка: ${data.detail || res.status}`);
+      } else {
+        alert(`Оброблено: ${data.products_processed} товарів\nВидалено: ${data.total_deleted} постів` +
+              (data.total_failed > 0 ? `\n⚠️ Помилок: ${data.total_failed}` : ''));
+        setSelectedIds(new Set());
+        fetchItems();
+        fetchStats();
+      }
+    } catch (e: any) {
+      alert(e.message);
+    } finally {
+      setBulkUnpublishing(false);
+    }
+  };
+
+  const toggleSelect = (id: number) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleSelectAll = () => {
+    const selectableIds = items.filter(i => i.product_id !== null && !i.is_unlinked).map(i => i.product_id as number);
+    if (selectedIds.size === selectableIds.length) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(selectableIds));
+    }
+  };
+
   return (
     <MainLayout
       filterPanelContent={
@@ -464,10 +534,30 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
             <div className="text-sm">Натисніть "Синхронізувати" щоб завантажити пости з Telegram</div>
           </div>
         ) : (
+          <>
+          {/* Bulk action bar */}
+          {selectedIds.size > 0 && (
+            <div className="mb-3 p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg flex items-center justify-between">
+              <span className="text-sm font-medium text-red-700 dark:text-red-300">
+                Обрано: {selectedIds.size} товарів
+              </span>
+              <button
+                onClick={handleBulkUnpublish}
+                disabled={bulkUnpublishing}
+                className="px-4 py-2 text-sm bg-red-600 hover:bg-red-700 text-white rounded transition-colors disabled:opacity-50"
+              >
+                {bulkUnpublishing ? 'Знімаю...' : `🗑 Зняти ${selectedIds.size} з публікації`}
+              </button>
+            </div>
+          )}
+
           <div className="overflow-x-auto rounded border border-gray-200 dark:border-gray-700">
             <table className="w-full text-sm">
               <thead className="bg-gray-50 dark:bg-gray-700 border-b border-gray-200 dark:border-gray-600">
                 <tr>
+                  <th className="px-2 py-3 text-center w-8">
+                    <input type="checkbox" checked={selectedIds.size > 0 && selectedIds.size === items.filter(i => i.product_id !== null && !i.is_unlinked).length} onChange={toggleSelectAll} className="rounded" />
+                  </th>
                   <th className="px-3 py-3 text-left font-semibold text-gray-600 dark:text-gray-300 whitespace-nowrap">№ товару</th>
                   <th className="px-3 py-3 text-left font-semibold text-gray-600 dark:text-gray-300">Модель</th>
                   <th className="px-3 py-3 text-left font-semibold text-gray-600 dark:text-gray-300 whitespace-nowrap">Статус</th>
@@ -489,6 +579,11 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
                         isProblematic ? 'bg-red-50 dark:bg-red-900/20' : ''
                       }`}
                     >
+                      <td className="px-2 py-2 text-center w-8">
+                        {!isUnlinked && item.product_id !== null ? (
+                          <input type="checkbox" checked={selectedIds.has(item.product_id as number)} onChange={() => toggleSelect(item.product_id as number)} className="rounded" />
+                        ) : <span className="text-gray-300">—</span>}
+                      </td>
                       <td className="px-3 py-2 font-mono text-xs text-gray-900 dark:text-gray-100 whitespace-nowrap">
                         {item.productnumber}
                       </td>
@@ -517,14 +612,24 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
                           <span className="text-gray-400 ml-1">/ {item.threads}</span>
                         )}
                       </td>
-                      <td className="px-3 py-2 text-center">
+                      <td className="px-3 py-2 text-center whitespace-nowrap">
                         {item.publication_count > 0 && !isUnlinked && item.product_id !== null && (
-                          <button
-                            onClick={() => setDetailProductId(item.product_id as number)}
-                            className="text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300 text-xs"
-                          >
-                            Деталі
-                          </button>
+                          <div className="flex items-center justify-center gap-1">
+                            <button
+                              onClick={() => setDetailProductId(item.product_id as number)}
+                              className="text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300 text-xs"
+                            >
+                              Деталі
+                            </button>
+                            <button
+                              onClick={() => handleUnpublish(item.product_id as number)}
+                              disabled={unpublishing === item.product_id}
+                              className="text-red-600 hover:text-red-800 dark:text-red-400 dark:hover:text-red-300 text-xs ml-2 disabled:opacity-50"
+                              title="Переслати в WORKSHOP і видалити з усіх каналів"
+                            >
+                              {unpublishing === item.product_id ? '...' : '🗑 Зняти'}
+                            </button>
+                          </div>
                         )}
                         {isUnlinked && (
                           <span className="text-xs text-orange-500 dark:text-orange-400" title="Немає відповідника в базі товарів">
@@ -538,6 +643,7 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
               </tbody>
             </table>
           </div>
+          </>
         )}
       </div>
 

@@ -222,6 +222,104 @@ class TelegramScanner:
             logger.error(f"❌ Scan error: {e}")
             return {"error": str(e)}
 
+    async def unpublish_product(self, db: Session, product_id: int, archive_chat: str) -> Dict:
+        """Remove a sold product from ALL channels/threads.
+
+        Algorithm:
+          1. Find all telegram_posts for this product
+          2. Forward the FIRST post to WORKSHOP (archive) as a backup
+          3. Delete ALL posts from their respective channels/threads
+          4. Update tg_status = 'archived' in DB
+
+        Args:
+            archive_chat: username or ID of the WORKSHOP archive channel
+        """
+        if not self.client:
+            return {"error": "Not connected to Telegram"}
+
+        # Get all posts for this product
+        posts = db.execute(
+            text("""
+                SELECT tp.id, tp.chat_id, tp.message_id, tp.chat_title,
+                       tp.thread_id, tp.thread_title, tp.tg_status
+                FROM telegram_posts tp
+                WHERE tp.product_id = :pid AND tp.tg_status = 'published'
+                ORDER BY tp.message_date ASC
+            """),
+            {"pid": product_id}
+        ).fetchall()
+
+        if not posts:
+            return {"product_id": product_id, "error": "No published posts found"}
+
+        # Resolve archive channel entity
+        try:
+            archive_entity = await self.client.get_entity(archive_chat)
+        except Exception as e:
+            return {"product_id": product_id, "error": f"Cannot find WORKSHOP channel '{archive_chat}': {e}"}
+
+        result = {
+            "product_id": product_id,
+            "forwarded": 0,
+            "deleted": 0,
+            "failed": [],
+            "total_posts": len(posts),
+        }
+
+        # Step 1: Forward FIRST post to WORKSHOP as backup
+        first_post = posts[0]
+        first_chat_id, first_msg_id = first_post[1], first_post[2]
+        try:
+            source_entity = await self.client.get_entity(int(first_chat_id))
+            await self.client.forward_messages(
+                entity=archive_entity,
+                messages=int(first_msg_id),
+                from_peer=source_entity,
+            )
+            result["forwarded"] = 1
+            logger.info(f"📦 Forwarded msg {first_msg_id} from {first_post[3]} → WORKSHOP")
+        except Exception as e:
+            logger.warning(f"⚠️ Forward failed (msg {first_msg_id}): {e}")
+            result["failed"].append({"chat": first_post[3], "msg_id": first_msg_id, "action": "forward", "error": str(e)})
+
+        # Step 2: Delete ALL posts from their channels/threads
+        for post in posts:
+            db_id, chat_id, msg_id, chat_title, thread_id, thread_title, _ = post
+            try:
+                chat_entity = await self.client.get_entity(int(chat_id))
+                await self.client.delete_messages(entity=chat_entity, message_ids=[int(msg_id)])
+                result["deleted"] += 1
+                logger.info(f"🗑 Deleted msg {msg_id} from {chat_title}" +
+                            (f" / {thread_title}" if thread_title else ""))
+            except Exception as e:
+                logger.warning(f"⚠️ Delete failed (msg {msg_id} in {chat_title}): {e}")
+                result["failed"].append({"chat": chat_title, "msg_id": msg_id, "action": "delete", "error": str(e)})
+
+            # Update DB status regardless (post is "processed")
+            db.execute(
+                text("UPDATE telegram_posts SET tg_status = 'archived' WHERE id = :id"),
+                {"id": db_id}
+            )
+
+        db.commit()
+        logger.info(f"✅ Unpublished product {product_id}: forwarded={result['forwarded']}, deleted={result['deleted']}")
+        return result
+
+    async def unpublish_bulk(self, db: Session, product_ids: List[int], archive_chat: str) -> Dict:
+        """Unpublish multiple products at once."""
+        results = []
+        for pid in product_ids:
+            r = await self.unpublish_product(db, pid, archive_chat)
+            results.append(r)
+        total_deleted = sum(r.get("deleted", 0) for r in results)
+        total_failed = sum(len(r.get("failed", [])) for r in results)
+        return {
+            "products_processed": len(product_ids),
+            "total_deleted": total_deleted,
+            "total_failed": total_failed,
+            "details": results,
+        }
+
     def analyze_sold_action(self, db: Session, product_id: int) -> Dict:
         """Analyze what TG action is needed for a SOLD product (read-only analysis)."""
         prod_row = db.execute(

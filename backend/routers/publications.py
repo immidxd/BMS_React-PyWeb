@@ -421,6 +421,93 @@ async def get_sold_action_plan(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/api/publications/unpublish/{product_id}")
+async def unpublish_product(
+    product_id: int,
+    db: Session = Depends(get_db),
+):
+    """Remove a sold product from ALL Telegram channels/threads.
+
+    1. Forwards one backup copy to WORKSHOP archive
+    2. Deletes ALL posts for this product across all channels/threads
+    3. Updates tg_status = 'archived' in DB
+    """
+    try:
+        api_id = os.getenv("TELEGRAM_API_ID")
+        api_hash = os.getenv("TELEGRAM_API_HASH")
+        phone = os.getenv("TELEGRAM_PHONE")
+        archive_chat = os.getenv("TELEGRAM_ARCHIVE_CHAT", "")
+
+        if not all([api_id, api_hash, phone]):
+            raise HTTPException(status_code=400, detail="Telegram credentials not configured")
+        if not archive_chat:
+            raise HTTPException(status_code=400, detail="TELEGRAM_ARCHIVE_CHAT not configured in .env (WORKSHOP username or ID)")
+
+        try:
+            from services.telegram_service import TelegramScanner
+        except ImportError:
+            from backend.services.telegram_service import TelegramScanner
+
+        scanner = TelegramScanner(api_id=int(api_id), api_hash=api_hash, phone=phone)
+        connected = await scanner.connect()
+        if not connected:
+            raise HTTPException(status_code=500, detail="Failed to connect to Telegram")
+
+        try:
+            result = await scanner.unpublish_product(db, product_id, archive_chat)
+        finally:
+            await scanner.disconnect()
+
+        if "error" in result:
+            raise HTTPException(status_code=400, detail=result["error"])
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Unpublish error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/api/publications/unpublish-bulk")
+async def unpublish_bulk(
+    product_ids: List[int] = Body(..., embed=True),
+    db: Session = Depends(get_db),
+):
+    """Bulk unpublish — remove multiple sold products from Telegram at once."""
+    try:
+        api_id = os.getenv("TELEGRAM_API_ID")
+        api_hash = os.getenv("TELEGRAM_API_HASH")
+        phone = os.getenv("TELEGRAM_PHONE")
+        archive_chat = os.getenv("TELEGRAM_ARCHIVE_CHAT", "")
+
+        if not all([api_id, api_hash, phone]):
+            raise HTTPException(status_code=400, detail="Telegram credentials not configured")
+        if not archive_chat:
+            raise HTTPException(status_code=400, detail="TELEGRAM_ARCHIVE_CHAT not configured in .env")
+
+        try:
+            from services.telegram_service import TelegramScanner
+        except ImportError:
+            from backend.services.telegram_service import TelegramScanner
+
+        scanner = TelegramScanner(api_id=int(api_id), api_hash=api_hash, phone=phone)
+        connected = await scanner.connect()
+        if not connected:
+            raise HTTPException(status_code=500, detail="Failed to connect to Telegram")
+
+        try:
+            result = await scanner.unpublish_bulk(db, product_ids, archive_chat)
+        finally:
+            await scanner.disconnect()
+
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Bulk unpublish error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/api/publications/relink")
 async def relink_publications(db: Session = Depends(get_db)):
     """Re-link telegram_posts to products by matching product_number_raw → products.productnumber.
