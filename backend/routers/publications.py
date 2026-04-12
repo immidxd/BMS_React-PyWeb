@@ -307,13 +307,11 @@ async def get_product_detail_for_publication(
             raise HTTPException(status_code=404, detail="Product not found")
         prod_number = prod[0]
 
-        # Build number variants
-        bare = (prod_number or "").lstrip('#').lstrip('Ф').lstrip('ф').lstrip('Р').lstrip('р')
-        variants = list({v for v in [
-            prod_number, bare,
-            f"Ф{bare}", f"#{bare}", f"#Ф{bare}",
-            f"Р{bare}", f"#Р{bare}",
-        ] if v})
+        # Build number variants — preserve letter prefix (Ф, Р, Н etc.)
+        # #Ф3631 → variants: [#Ф3631, Ф3631] (NOT #3631 or bare 3631)
+        # #3631 → variants: [#3631, 3631]
+        raw = (prod_number or "").lstrip('#')  # remove only #, keep letter prefix
+        variants = list({v for v in [prod_number, raw, f"#{raw}"] if v})
 
         # All size variants for this product number
         sizes_rows = db.execute(
@@ -328,14 +326,28 @@ async def get_product_detail_for_publication(
             {"variants": variants}
         ).fetchall()
 
+        # Check which products have confirmed orders
+        all_pids = [row[0] for row in sizes_rows]
+        order_sold_pids = set()
+        if all_pids:
+            order_rows = db.execute(
+                text("""
+                    SELECT DISTINCT oi.product_id
+                    FROM order_items oi JOIN orders o ON o.id = oi.order_id
+                    WHERE oi.product_id = ANY(:pids) AND o.order_status_id IN (1, 7)
+                """),
+                {"pids": all_pids}
+            ).fetchall()
+            order_sold_pids = {r[0] for r in order_rows}
+
         sizes = []
         sold_product_ids = []
         for row in sizes_rows:
-            is_sold = (row[2] == 'Продано')
+            is_sold = (row[2] == 'Продано') or (row[0] in order_sold_pids)
             sizes.append({
                 "product_id": row[0],
                 "size": row[1],
-                "status": row[2] or "—",
+                "status": "Продано" if is_sold else (row[2] or "—"),
                 "productnumber": (row[3] or "").lstrip('#'),
                 "model": row[4],
                 "price": float(row[5]) if row[5] else None,

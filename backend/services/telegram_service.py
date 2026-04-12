@@ -333,20 +333,28 @@ class TelegramScanner:
         ] if v})
 
         # ── 3. Find ALL sold sizes for this product number (by ALL variants) ──
+        # A size is "sold" if status = 'Продано' OR has a confirmed order
         sold_sizes_rows = db.execute(
             text("""
                 SELECT DISTINCT p.sizeeu
                 FROM products p
-                JOIN statuses s ON s.id = p.statusid
-                WHERE s.statusname = 'Продано'
-                  AND p.productnumber = ANY(:variants)
+                LEFT JOIN statuses s ON s.id = p.statusid
+                WHERE p.productnumber = ANY(:variants)
                   AND p.sizeeu IS NOT NULL
+                  AND (
+                      COALESCE(s.statusname, '') = 'Продано'
+                      OR EXISTS (
+                          SELECT 1 FROM order_items oi JOIN orders o ON o.id = oi.order_id
+                          WHERE oi.product_id = p.id AND o.order_status_id IN (1, 7)
+                      )
+                  )
             """),
             {"variants": number_variants}
         ).fetchall()
         all_sold_sizes = {row[0] for row in sold_sizes_rows if row[0]}
 
         # Which sizes still have available (not sold) stock?
+        # A size is "available" if status != 'Продано' AND no confirmed order
         available_sizes_rows = db.execute(
             text("""
                 SELECT DISTINCT p.sizeeu
@@ -355,6 +363,10 @@ class TelegramScanner:
                 WHERE p.productnumber = ANY(:variants)
                   AND p.sizeeu IS NOT NULL
                   AND COALESCE(s.statusname, '') != 'Продано'
+                  AND NOT EXISTS (
+                      SELECT 1 FROM order_items oi JOIN orders o ON o.id = oi.order_id
+                      WHERE oi.product_id = p.id AND o.order_status_id IN (1, 7)
+                  )
             """),
             {"variants": number_variants}
         ).fetchall()
