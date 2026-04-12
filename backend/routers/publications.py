@@ -330,7 +330,7 @@ async def get_product_detail_for_publication(
                            COALESCE(NULLIF(TRIM(COALESCE(c.last_name,'') || ' ' || COALESCE(c.first_name,'')), ''), c.nickname) AS client_name,
                            c.phone_number, c.nickname,
                            o.id AS order_id, o.order_date,
-                           os.statusname AS order_status
+                           os.status_name AS order_status
                     FROM order_items oi
                     JOIN orders o ON o.id = oi.order_id
                     JOIN products p ON p.id = oi.product_id
