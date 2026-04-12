@@ -120,10 +120,17 @@ async def get_publications_overview(
         if filter_mode == "published":
             where_parts.append("EXISTS (SELECT 1 FROM telegram_posts tp WHERE tp.product_id = p.id AND tp.tg_status = 'published')")
         elif filter_mode in ("problematic", "sold_live"):
-            # Product is "Продано" AND has live posts AND no other unit of the same
-            # product+size is still available (important for ростовки/multi-size)
+            # Product is sold (by status OR by confirmed order) AND has live posts
+            # AND no other unit of the same product+size is still available
             where_parts.append("""
-                p.statusid IN (SELECT id FROM statuses WHERE statusname = 'Продано')
+                (
+                    p.statusid IN (SELECT id FROM statuses WHERE statusname = 'Продано')
+                    OR EXISTS (
+                        SELECT 1 FROM order_items oi
+                        JOIN orders o ON o.id = oi.order_id
+                        WHERE oi.product_id = p.id AND o.order_status_id IN (1, 7)
+                    )
+                )
                 AND EXISTS (SELECT 1 FROM telegram_posts tp WHERE tp.product_id = p.id AND tp.tg_status = 'published')
                 AND NOT EXISTS (
                     SELECT 1 FROM products p2
@@ -132,6 +139,11 @@ async def get_publications_overview(
                       AND p2.productnumber = p.productnumber
                       AND COALESCE(p2.sizeeu, '') = COALESCE(p.sizeeu, '')
                       AND COALESCE(s2.statusname, '') != 'Продано'
+                      AND NOT EXISTS (
+                          SELECT 1 FROM order_items oi2
+                          JOIN orders o2 ON o2.id = oi2.order_id
+                          WHERE oi2.product_id = p2.id AND o2.order_status_id IN (1, 7)
+                      )
                 )
             """)
         elif filter_mode == "unpublished":
@@ -152,7 +164,15 @@ async def get_publications_overview(
             text(f"""
                 SELECT
                     p.id, p.productnumber, p.model, p.price,
-                    s.statusname AS status,
+                    CASE
+                        WHEN s.statusname = 'Продано' THEN 'Продано'
+                        WHEN EXISTS (
+                            SELECT 1 FROM order_items oi
+                            JOIN orders o ON o.id = oi.order_id
+                            WHERE oi.product_id = p.id AND o.order_status_id IN (1, 7)
+                        ) THEN 'Продано'
+                        ELSE COALESCE(s.statusname, 'Невідомо')
+                    END AS status,
                     COALESCE(pubs.pub_count, 0) AS pub_count,
                     COALESCE(pubs.channels, '') AS channels,
                     COALESCE(pubs.threads, '') AS threads
@@ -307,7 +327,8 @@ async def get_product_detail_for_publication(
             buyer_rows = db.execute(
                 text("""
                     SELECT oi.product_id, p.sizeeu,
-                           c.name AS client_name, c.phone_number, c.nickname,
+                           COALESCE(NULLIF(TRIM(COALESCE(c.last_name,'') || ' ' || COALESCE(c.first_name,'')), ''), c.nickname) AS client_name,
+                           c.phone_number, c.nickname,
                            o.id AS order_id, o.order_date,
                            os.statusname AS order_status
                     FROM order_items oi

@@ -9,7 +9,8 @@ import time
 import uvicorn
 import webview
 from dotenv import load_dotenv
-import requests
+import socket
+import http.client
 
 # Configure logging
 logging.basicConfig(
@@ -35,20 +36,24 @@ def start_backend():
         logger.error(f"Failed to start backend server: {e}")
         sys.exit(1)
 
-def wait_for_backend(max_retries=30, delay=1):
-    """Wait for backend server to become available"""
+def wait_for_backend(max_retries=30, delay=0.5):
+    """Wait for backend server to become available.
+
+    Uses 127.0.0.1 explicitly (not 'localhost') to avoid macOS IPv6 resolution
+    issues where localhost → ::1 but uvicorn listens on 127.0.0.1 only.
+    """
     for i in range(max_retries):
         try:
-            response = requests.get("http://localhost:8000/api/health")
-            if response.status_code == 200:
-                logger.info("Backend is available!")
-                return True
-        except requests.exceptions.ConnectionError:
-            pass
-        
+            conn = http.client.HTTPConnection("127.0.0.1", 8000, timeout=2)
+            conn.request("GET", "/api/health")
+            resp = conn.getresponse()
+            conn.close()
+            logger.info(f"Backend is available! (HTTP {resp.status})")
+            return True
+        except Exception as e:
+            logger.debug(f"Health check failed: {type(e).__name__}: {e}")
         logger.info(f"Waiting for backend to start (attempt {i+1}/{max_retries})...")
         time.sleep(delay)
-    
     logger.error("Backend failed to start within expected time")
     return False
 

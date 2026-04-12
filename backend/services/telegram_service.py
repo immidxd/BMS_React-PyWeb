@@ -248,8 +248,20 @@ class TelegramScanner:
 
         Scans ±15 messages around the known message_id looking for messages
         with the same grouped_id. Returns all IDs sorted ascending.
-        If no grouped_id or no album found, returns just [message_id].
+
+        If grouped_id is unknown (NULL in DB), fetches the live message first
+        to discover its grouped_id. If the message has no grouped_id at all
+        (not part of an album), returns just [message_id].
         """
+        # If grouped_id unknown, try to discover it from the live message
+        if not grouped_id:
+            try:
+                live_msg = await self.client.get_messages(entity, ids=message_id)
+                if live_msg:
+                    grouped_id = getattr(live_msg, 'grouped_id', None)
+            except Exception as e:
+                logger.warning(f"⚠️ Could not fetch msg {message_id} to discover grouped_id: {e}")
+
         if not grouped_id:
             return [message_id]
 
