@@ -324,13 +324,16 @@ class TelegramScanner:
         prod_number, size_sold = prod_row[1], prod_row[2]
 
         # ── 2. Build all product number variants (used for both DB queries and TG post search) ──
-        bare_num = (prod_number or "").lstrip('#').lstrip('Ф').lstrip('ф').lstrip('Р').lstrip('р')
-        number_variants = list({v for v in [
-            prod_number, bare_num,
-            f"Ф{bare_num}", f"ф{bare_num}",
-            f"#{bare_num}", f"#Ф{bare_num}", f"#ф{bare_num}",
-            f"Р{bare_num}", f"#Р{bare_num}", f"р{bare_num}",
-        ] if v})
+        # Preserve letter prefix (Ф, Р, Н etc.) and suffix (-2, -3 etc.)
+        raw = (prod_number or "").lstrip('#')  # remove only #, keep letter prefix + suffix
+        number_variants = list({v for v in [prod_number, raw, f"#{raw}"] if v})
+        # Also add bare number (without letter prefix) for telegram_posts.product_number_raw matching
+        import re as _re
+        bare_match = _re.match(r'^[ФфРрНнЛлЗз]', raw)
+        if bare_match:
+            bare_num = raw[len(bare_match.group(0)):]
+            number_variants.extend([bare_num, f"#{bare_num}"])
+        number_variants = list(set(number_variants))
 
         # ── 3. Find ALL sold sizes for this product number (by ALL variants) ──
         # A size is "sold" if status = 'Продано' OR has a confirmed order
