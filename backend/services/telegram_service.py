@@ -25,11 +25,11 @@ PRODUCT_NUM_CYRILLIC = re.compile(r'#?[Фф](\d{1,6}(?:-\d+)?)', re.UNICODE)
 # Fallback: #XXXX generic
 PRODUCT_NUM_PATTERN = re.compile(r'#[\w\-]{2,10}', re.UNICODE)
 
-# Single-size: "Розмір: 42"
-SINGLE_SIZE_PATTERN = re.compile(r'[Рр]озмір[:\s]+(\d{2}(?:[.,]\d)?)', re.UNICODE)
+# Single-size: "Розмір: 42", "**Розмір**: 42", "**Розміри**: 36"
+SINGLE_SIZE_PATTERN = re.compile(r'[Рр]озмір[иі]?\**[:\s*]+(\d{2}(?:[.,]\d)?)', re.UNICODE)
 
-# Multi-size header
-MULTI_SIZE_HEADER = re.compile(r'[Рр]озміри[:\s]', re.UNICODE)
+# Multi-size header: "Розміри:", "**Розміри:**"
+MULTI_SIZE_HEADER = re.compile(r'[Рр]озміри\**[:\s*]', re.UNICODE)
 
 # Multi-size lines: "— 37", "- 38", "• 39"
 MULTI_SIZE_PATTERN = re.compile(r'[—\-•·]\s*(\d{2}(?:[.,]\d)?)', re.UNICODE)
@@ -49,7 +49,13 @@ def extract_product_numbers(text: str) -> List[str]:
 
 
 def extract_sizes(text: str) -> Tuple[List[str], bool]:
-    """Extract sizes from post text. Returns (sizes, is_multi_size)."""
+    """Extract sizes from post text. Returns (sizes, is_multi_size).
+
+    Handles Markdown formatting: **Розмір**: 36, **Розміри:**
+    Fallback: if "Розміри" header found but no bullet-list sizes (— 36),
+    try single-size pattern as fallback (the post may say "Розміри: 36"
+    for a single size).
+    """
     if not text:
         return ([], False)
     is_multi = bool(MULTI_SIZE_HEADER.search(text))
@@ -61,7 +67,13 @@ def extract_sizes(text: str) -> Tuple[List[str], bool]:
             if s not in seen:
                 seen.add(s)
                 unique.append(s)
-        return (unique, True)
+        if unique:
+            return (unique, True)
+        # Fallback: "Розміри: 36" (header says plural but only one size, no bullets)
+        m = SINGLE_SIZE_PATTERN.search(text)
+        if m:
+            return ([m.group(1).replace(',', '.')], False)
+        return ([], False)
     else:
         m = SINGLE_SIZE_PATTERN.search(text)
         if m:
@@ -405,34 +417,31 @@ class TelegramScanner:
                 live_sizes, is_multi = extract_sizes(live_text)
 
                 # Decide action based on live post content
-                if is_multi and live_sizes:
-                    # ── РОСТОВКА: multi-size post ──
-                    # Which sizes in this post are fully sold (no available stock)?
+                if live_sizes:
+                    # Check which sizes in this post are fully sold (no available stock)
                     sizes_to_remove = []
                     for sz in live_sizes:
                         sz_int = sz.split('.')[0]
-                        # Check if this size is sold AND no other unit available
                         if (sz in all_sold_sizes or sz_int in all_sold_sizes) and \
                            sz not in available_sizes and sz_int not in available_sizes:
                             sizes_to_remove.append(sz)
 
                     if not sizes_to_remove:
-                        # All sizes still have stock — skip this post entirely
+                        # All sizes in this post still have stock — skip entirely
                         result["skipped"] += 1
-                        logger.info(f"⏭ Skipped msg {msg_id} in {chat_title} — all sizes still available")
+                        logger.info(f"⏭ Skipped msg {msg_id} in {chat_title} — all sizes still available: {live_sizes}")
                         continue
 
                     sizes_remaining = [s for s in live_sizes if s not in sizes_to_remove]
 
-                    if sizes_remaining:
-                        # ── EDIT: remove only sold size lines, keep the post ──
+                    if sizes_remaining and is_multi:
+                        # ── РОСТОВКА with remaining sizes: EDIT post ──
                         new_text = live_text
                         for sz in sizes_to_remove:
                             new_text = self._remove_size_line(new_text, sz)
 
                         if new_text != live_text:
                             await self.client.edit_message(chat_entity, int(msg_id), new_text)
-                            # Update DB sizes
                             db.execute(
                                 text("UPDATE telegram_posts SET sizes_in_post = :sizes, is_multi_size = true WHERE id = :id"),
                                 {"sizes": json.dumps(sizes_remaining), "id": db_id}
@@ -442,11 +451,16 @@ class TelegramScanner:
                         else:
                             logger.warning(f"⚠️ Could not match size lines {sizes_to_remove} in msg {msg_id}")
                         continue  # DO NOT delete, DO NOT forward
+                    elif sizes_remaining and not is_multi:
+                        # Single-size post but size is still available — SKIP
+                        result["skipped"] += 1
+                        logger.info(f"⏭ Skipped single-size msg {msg_id} in {chat_title} — size {sizes_remaining[0]} still available")
+                        continue
                     else:
                         # All sizes sold — fall through to delete
                         pass
 
-                # ── SINGLE-SIZE or ALL-SIZES-SOLD: forward album + delete ──
+                # ── ALL-SIZES-SOLD or no sizes detected: forward album + delete ──
                 album_ids = await self._get_album_message_ids(chat_entity, int(msg_id), grouped_id)
 
                 # Forward full album to WORKSHOP (only once per product)
