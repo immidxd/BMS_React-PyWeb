@@ -120,15 +120,32 @@ async def get_publications_overview(
         if filter_mode == "published":
             where_parts.append("EXISTS (SELECT 1 FROM telegram_posts tp WHERE tp.product_id = p.id AND tp.tg_status = 'published')")
         elif filter_mode in ("problematic", "sold_live"):
-            # Show product as problematic ONLY if:
-            # 1. Has published telegram posts
-            # 2. At least one SIZE of this productnumber is FULLY sold
-            # 3. At least one post advertises a sold size (or has no size info)
-            #
-            # This excludes products where ALL posts only advertise
-            # available sizes — nothing actionable for the user.
+            # Show product row as problematic ONLY if:
+            # 1. This specific product (p) is sold (by status or confirmed order)
+            # 2. ALL units of this product's size are sold (no available stock)
+            # 3. Has published telegram posts
+            # 4. At least one post advertises a sold size (or has no size info)
             where_parts.append("""
-                EXISTS (
+                (
+                    p.statusid IN (SELECT id FROM statuses WHERE statusname = 'Продано')
+                    OR EXISTS (
+                        SELECT 1 FROM order_items oi JOIN orders o ON o.id = oi.order_id
+                        WHERE oi.product_id = p.id AND o.order_status_id IN (1, 7)
+                    )
+                )
+                AND NOT EXISTS (
+                    SELECT 1 FROM products p2
+                    LEFT JOIN statuses s2 ON s2.id = p2.statusid
+                    WHERE p2.id != p.id
+                      AND TRIM(LEADING '#' FROM p2.productnumber) = TRIM(LEADING '#' FROM p.productnumber)
+                      AND COALESCE(p2.sizeeu, '') = COALESCE(p.sizeeu, '')
+                      AND COALESCE(s2.statusname, '') != 'Продано'
+                      AND NOT EXISTS (
+                          SELECT 1 FROM order_items oi2 JOIN orders o2 ON o2.id = oi2.order_id
+                          WHERE oi2.product_id = p2.id AND o2.order_status_id IN (1, 7)
+                      )
+                )
+                AND EXISTS (
                     SELECT 1 FROM telegram_posts tp
                     WHERE tp.product_id = p.id AND tp.tg_status = 'published'
                     AND (
@@ -149,29 +166,6 @@ async def get_publications_overview(
                             )
                         )
                     )
-                )
-                AND EXISTS (
-                    SELECT 1 FROM products sold_p
-                    WHERE TRIM(LEADING '#' FROM sold_p.productnumber) = TRIM(LEADING '#' FROM p.productnumber)
-                      AND (
-                          sold_p.statusid IN (SELECT id FROM statuses WHERE statusname = 'Продано')
-                          OR EXISTS (
-                              SELECT 1 FROM order_items oi_s JOIN orders o_s ON o_s.id = oi_s.order_id
-                              WHERE oi_s.product_id = sold_p.id AND o_s.order_status_id IN (1, 7)
-                          )
-                      )
-                      AND NOT EXISTS (
-                          SELECT 1 FROM products avail
-                          LEFT JOIN statuses sa ON sa.id = avail.statusid
-                          WHERE avail.id != sold_p.id
-                            AND TRIM(LEADING '#' FROM avail.productnumber) = TRIM(LEADING '#' FROM sold_p.productnumber)
-                            AND COALESCE(avail.sizeeu, '') = COALESCE(sold_p.sizeeu, '')
-                            AND COALESCE(sa.statusname, '') != 'Продано'
-                            AND NOT EXISTS (
-                                SELECT 1 FROM order_items oi_a JOIN orders o_a ON o_a.id = oi_a.order_id
-                                WHERE oi_a.product_id = avail.id AND o_a.order_status_id IN (1, 7)
-                            )
-                      )
                 )
             """)
         elif filter_mode == "unpublished":
