@@ -122,14 +122,21 @@ class TelegramScanner:
 
     async def _resolve_entity(self, chat_ref: str):
         """Resolve a chat reference (username, invite link, or numeric ID) to an entity."""
-        # Numeric ID (e.g. -1002182178232)
+        from telethon.tl.types import PeerChannel
+        # Numeric ID (e.g. -1002182178232 or raw 1201323714)
         try:
             chat_id = int(chat_ref)
             # For supergroups/channels: strip -100 prefix to get raw channel ID
             if chat_id < -1000000000000:
                 raw_id = int(str(chat_id).replace('-100', '', 1))
-                from telethon.tl.types import PeerChannel
                 return await self.client.get_entity(PeerChannel(raw_id))
+            # Large positive IDs (> 1 billion) are likely raw channel IDs from DB
+            # Try PeerChannel first, fall back to plain get_entity
+            if chat_id > 1_000_000_000:
+                try:
+                    return await self.client.get_entity(PeerChannel(chat_id))
+                except Exception:
+                    pass
             return await self.client.get_entity(chat_id)
         except (ValueError, TypeError):
             pass
@@ -294,6 +301,116 @@ class TelegramScanner:
 
         return sorted(album_ids)
 
+    # ── Known publishing channels (chat_id → chat_title, chat_type) ──
+    KNOWN_CHANNELS = {
+        2373506200: {"title": "КАТАЛОГ ТОВАРУ", "type": "forum"},
+        1201323714: {"title": "BrandStore 👟 │ Брендове взуття", "type": "channel"},
+    }
+
+    async def quick_scan_product(self, db: Session, number_variants: List[str]) -> int:
+        """Quick targeted scan: search known channels for a specific product number.
+
+        Searches all KNOWN_CHANNELS for posts containing any of the number_variants,
+        and saves any newly discovered posts to the DB.
+
+        Returns the count of newly discovered posts.
+        """
+        if not self.client:
+            logger.warning("quick_scan_product: not connected to Telegram")
+            return 0
+
+        new_posts = 0
+        # Build search queries — use the shortest/most common variant for Telegram search
+        # e.g. for ["#Ф1803", "Ф1803", "#1803", "1803"] → search "Ф1803" and "1803"
+        search_terms = set()
+        for v in number_variants:
+            clean = v.lstrip('#')
+            search_terms.add(clean)
+        # Remove subsets: if we have "Ф1803" and "1803", keep both — TG search is substring-based
+        search_terms = list(search_terms)
+
+        for chat_id, info in self.KNOWN_CHANNELS.items():
+            chat_title = info["title"]
+            chat_type = info["type"]
+            try:
+                # Resolve via PeerChannel (chat_id is the raw channel ID without -100 prefix)
+                from telethon.tl.types import PeerChannel
+                entity = await self.client.get_entity(PeerChannel(chat_id))
+            except Exception as e:
+                logger.warning(f"⚠️ quick_scan: cannot resolve channel {chat_title} ({chat_id}): {e}")
+                continue
+
+            for search_q in search_terms:
+                try:
+                    async for message in self.client.iter_messages(entity, search=search_q, limit=50):
+                        text_content = message.text or ""
+                        if not text_content:
+                            continue
+
+                        product_nums = extract_product_numbers(text_content)
+                        if not product_nums:
+                            continue
+
+                        # Verify this message actually contains our product (not a substring match)
+                        matched = False
+                        for pn in product_nums:
+                            if pn in search_terms or f"#{pn}" in number_variants or pn in number_variants:
+                                matched = True
+                                break
+                        if not matched:
+                            continue
+
+                        # Check if already in DB
+                        existing = db.execute(
+                            text("SELECT id FROM telegram_posts WHERE chat_id = :c AND message_id = :m"),
+                            {"c": chat_id, "m": message.id}
+                        ).fetchone()
+                        if existing:
+                            continue
+
+                        # Extract sizes and metadata
+                        sizes_list, is_multi = extract_sizes(text_content)
+                        thread_id = None
+                        thread_title = None
+                        if hasattr(message, 'reply_to') and message.reply_to:
+                            thread_id = getattr(message.reply_to, 'reply_to_top_id', None) or \
+                                        getattr(message.reply_to, 'reply_to_msg_id', None)
+                        grouped_id = getattr(message, 'grouped_id', None)
+
+                        for product_num in product_nums:
+                            # Only save our product, not others mentioned in the same post
+                            if product_num not in search_terms and f"#{product_num}" not in number_variants and product_num not in number_variants:
+                                continue
+                            try:
+                                _save_telegram_post(
+                                    db=db,
+                                    chat_id=chat_id,
+                                    chat_title=chat_title,
+                                    chat_type=chat_type,
+                                    thread_id=thread_id,
+                                    thread_title=thread_title,
+                                    message_id=message.id,
+                                    message_text=text_content[:2000],
+                                    message_date=message.date.replace(tzinfo=None) if message.date else None,
+                                    product_number_raw=product_num,
+                                    sizes_in_post=sizes_list,
+                                    is_multi_size=is_multi,
+                                    grouped_id=grouped_id,
+                                )
+                                new_posts += 1
+                                logger.info(f"🔍 quick_scan: found NEW post in {chat_title} — msg {message.id}, product {product_num}")
+                            except Exception as e:
+                                logger.warning(f"quick_scan: error saving post {message.id}: {e}")
+                except Exception as e:
+                    logger.warning(f"⚠️ quick_scan: search '{search_q}' in {chat_title} failed: {e}")
+
+        if new_posts:
+            logger.info(f"🔍 quick_scan_product: discovered {new_posts} new posts for variants {number_variants}")
+        else:
+            logger.info(f"🔍 quick_scan_product: no new posts found for variants {number_variants}")
+
+        return new_posts
+
     async def unpublish_product(self, db: Session, product_id: int, archive_chat: str) -> Dict:
         """Remove a sold product from ALL channels/threads.
 
@@ -335,15 +452,23 @@ class TelegramScanner:
             number_variants.extend([bare_num, f"#{bare_num}"])
         number_variants = list(set(number_variants))
 
+        # ── 2.5 Mini-sync: search Telegram channels for posts not yet in DB ──
+        try:
+            new_found = await self.quick_scan_product(db, number_variants)
+            if new_found:
+                logger.info(f"🔍 Pre-unpublish scan found {new_found} new post(s) for {prod_number}")
+        except Exception as e:
+            logger.warning(f"⚠️ Pre-unpublish scan failed (continuing anyway): {e}")
+
         # ── 3. Find ALL sold sizes for this product number (by ALL variants) ──
         # A size is "sold" if status = 'Продано' OR has a confirmed order
+        # Include NULL sizes — product without size info that is sold
         sold_sizes_rows = db.execute(
             text("""
-                SELECT DISTINCT p.sizeeu
+                SELECT DISTINCT COALESCE(p.sizeeu, '__NULL__')
                 FROM products p
                 LEFT JOIN statuses s ON s.id = p.statusid
                 WHERE p.productnumber = ANY(:variants)
-                  AND p.sizeeu IS NOT NULL
                   AND (
                       COALESCE(s.statusname, '') = 'Продано'
                       OR EXISTS (
@@ -354,17 +479,18 @@ class TelegramScanner:
             """),
             {"variants": number_variants}
         ).fetchall()
-        all_sold_sizes = {row[0] for row in sold_sizes_rows if row[0]}
+        _raw_sold = {row[0] for row in sold_sizes_rows}
+        sold_has_null = '__NULL__' in _raw_sold  # product with no size is sold
+        all_sold_sizes = {s for s in _raw_sold if s != '__NULL__'}
 
         # Which sizes still have available (not sold) stock?
         # A size is "available" if status != 'Продано' AND no confirmed order
         available_sizes_rows = db.execute(
             text("""
-                SELECT DISTINCT p.sizeeu
+                SELECT DISTINCT COALESCE(p.sizeeu, '__NULL__')
                 FROM products p
                 LEFT JOIN statuses s ON s.id = p.statusid
                 WHERE p.productnumber = ANY(:variants)
-                  AND p.sizeeu IS NOT NULL
                   AND COALESCE(s.statusname, '') != 'Продано'
                   AND NOT EXISTS (
                       SELECT 1 FROM order_items oi JOIN orders o ON o.id = oi.order_id
@@ -373,9 +499,11 @@ class TelegramScanner:
             """),
             {"variants": number_variants}
         ).fetchall()
-        available_sizes = {row[0] for row in available_sizes_rows if row[0]}
+        _raw_avail = {row[0] for row in available_sizes_rows}
+        avail_has_null = '__NULL__' in _raw_avail
+        available_sizes = {s for s in _raw_avail if s != '__NULL__'}
 
-        logger.info(f"📊 Product {prod_number}: sold_sizes={all_sold_sizes}, available_sizes={available_sizes}")
+        logger.info(f"📊 Product {prod_number}: sold_sizes={all_sold_sizes}, available_sizes={available_sizes}, sold_has_null={sold_has_null}")
 
         # ── 4. Get all DB posts for this product ──
         posts = db.execute(
@@ -437,8 +565,16 @@ class TelegramScanner:
                     sizes_to_remove = []
                     for sz in live_sizes:
                         sz_int = sz.split('.')[0]
-                        if (sz in all_sold_sizes or sz_int in all_sold_sizes) and \
-                           sz not in available_sizes and sz_int not in available_sizes:
+                        # Check if this size is sold — including fuzzy match for range sizes like '36-37'
+                        is_sold = (sz in all_sold_sizes or sz_int in all_sold_sizes or
+                                   sold_has_null or  # product without size but sold → treat all as sold
+                                   any(sz_int == s.split('-')[0] or sz_int == s.split('-')[-1]
+                                       for s in all_sold_sizes if '-' in s))
+                        # Check if still available — also fuzzy match ranges
+                        is_avail = (sz in available_sizes or sz_int in available_sizes or
+                                    any(sz_int == s.split('-')[0] or sz_int == s.split('-')[-1]
+                                        for s in available_sizes if '-' in s))
+                        if is_sold and not is_avail:
                             sizes_to_remove.append(sz)
 
                     if not sizes_to_remove:
@@ -456,16 +592,22 @@ class TelegramScanner:
                             new_text = self._remove_size_line(new_text, sz)
 
                         if new_text != live_text:
-                            await self.client.edit_message(chat_entity, int(msg_id), new_text)
-                            db.execute(
-                                text("UPDATE telegram_posts SET sizes_in_post = :sizes, is_multi_size = true WHERE id = :id"),
-                                {"sizes": json.dumps(sizes_remaining), "id": db_id}
-                            )
-                            result["edited"] += 1
-                            logger.info(f"✏️ Edited msg {msg_id} in {chat_title}: removed sizes {sizes_to_remove}, kept {sizes_remaining}")
+                            try:
+                                await self.client.edit_message(chat_entity, int(msg_id), new_text)
+                                db.execute(
+                                    text("UPDATE telegram_posts SET sizes_in_post = :sizes, is_multi_size = true WHERE id = :id"),
+                                    {"sizes": json.dumps(sizes_remaining), "id": db_id}
+                                )
+                                result["edited"] += 1
+                                logger.info(f"✏️ Edited msg {msg_id} in {chat_title}: removed sizes {sizes_to_remove}, kept {sizes_remaining}")
+                                continue  # Edit succeeded — DO NOT delete, DO NOT forward
+                            except Exception as edit_err:
+                                # Edit failed (e.g. forwarded message can't be edited)
+                                # Fall through to delete instead
+                                logger.warning(f"⚠️ Cannot edit msg {msg_id} in {chat_title} (falling back to delete): {edit_err}")
                         else:
                             logger.warning(f"⚠️ Could not match size lines {sizes_to_remove} in msg {msg_id}")
-                        continue  # DO NOT delete, DO NOT forward
+                        # If edit failed or text didn't change — fall through to delete
                     elif sizes_remaining and not is_multi:
                         # Single-size post but size is still available — SKIP
                         result["skipped"] += 1
