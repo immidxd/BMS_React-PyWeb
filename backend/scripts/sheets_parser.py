@@ -1882,10 +1882,16 @@ def _parse_orders_sheet(
         order_date_col = col(row, "Дата замовлення")
         order_date = sheet_date
         if order_date_col:
-            try:
-                order_date = datetime.strptime(order_date_col, "%d.%m.%Y").date()
-            except ValueError:
-                pass
+            # Google Sheets може віддавати дату в різних форматах:
+            # "05.04.2026" (DD.MM.YYYY) — ручний ввід
+            # "2026-04-05" (YYYY-MM-DD) — ISO / serial date format
+            # "04/05/2026" (MM/DD/YYYY) — рідко, але можливо
+            for fmt in ("%d.%m.%Y", "%Y-%m-%d", "%d/%m/%Y"):
+                try:
+                    order_date = datetime.strptime(order_date_col.strip(), fmt).date()
+                    break
+                except ValueError:
+                    continue
 
         # Пропускаємо carried-over замовлення: якщо order_date <= cutoff_date,
         # це замовлення з попередньої вкладки, воно вже парсилось звідти.
@@ -1896,10 +1902,12 @@ def _parse_orders_sheet(
         deferred_raw = col(row, "Відкладено до")
         deferred = None
         if deferred_raw:
-            try:
-                deferred = datetime.strptime(deferred_raw, "%d.%m.%Y").date()
-            except ValueError:
-                pass
+            for fmt in ("%d.%m.%Y", "%Y-%m-%d", "%d/%m/%Y"):
+                try:
+                    deferred = datetime.strptime(deferred_raw.strip(), fmt).date()
+                    break
+                except ValueError:
+                    continue
 
         priority_raw = col(row, "Пріорітетність")
         try:
@@ -1923,44 +1931,73 @@ def _parse_orders_sheet(
             Order.source_fingerprint == source_fp
         ).first()
 
+        # Level 1.5: Date-migration fallback
+        # Раніше парсер ігнорував колонку "Дата замовлення" і використовував sheet_date.
+        # Тепер order_date може бути реальною датою → fingerprint змінився.
+        # Перевіряємо також старий fingerprint (з sheet_date) для плавного переходу.
+        if not existing_order and order_date != sheet_date:
+            fp_old_raw = f"{(client_name or '').strip().lower()}|{sheet_date.isoformat()}|{'|'.join(norm_pnums)}"
+            source_fp_old = hashlib.md5(fp_old_raw.encode("utf-8")).hexdigest()
+            existing_order = session.query(Order).filter(
+                Order.source_fingerprint == source_fp_old
+            ).first()
+            if existing_order:
+                # Мігруємо: оновлюємо дату і fingerprint на правильні
+                existing_order.order_date = order_date
+                existing_order.source_fingerprint = source_fp
+                logger.info(
+                    "Order #%d: migrated date %s → %s (was sheet_date)",
+                    existing_order.id, sheet_date, order_date,
+                )
+
         # Level 2: Client + date + total_amount + same item count
         # Catches cases where product numbers were corrected in Sheet but
         # client/date/total stayed the same → same order, not a new one.
         # Extra guard: item count must match to avoid merging genuinely
         # different orders from the same client on the same day with same total.
         if not existing_order and client_id and total_amount > 0:
-            candidates = session.query(Order).filter(
-                Order.client_id == client_id,
-                Order.order_date == order_date,
-                Order.total_amount == total_amount,
-                Order.source_fingerprint.isnot(None),
-            ).all()
-            num_items_current = len(product_nums)
-            for candidate in candidates:
-                existing_items_count = session.query(OrderItem).filter(
-                    OrderItem.order_id == candidate.id
-                ).count()
-                if existing_items_count == num_items_current:
-                    existing_order = candidate
-                    existing_order.source_fingerprint = source_fp
+            # Спершу шукаємо з реальною датою, потім з sheet_date (для міграції)
+            for search_date in ([order_date, sheet_date] if order_date != sheet_date else [order_date]):
+                candidates = session.query(Order).filter(
+                    Order.client_id == client_id,
+                    Order.order_date == search_date,
+                    Order.total_amount == total_amount,
+                    Order.source_fingerprint.isnot(None),
+                ).all()
+                num_items_current = len(product_nums)
+                for candidate in candidates:
+                    existing_items_count = session.query(OrderItem).filter(
+                        OrderItem.order_id == candidate.id
+                    ).count()
+                    if existing_items_count == num_items_current:
+                        existing_order = candidate
+                        existing_order.source_fingerprint = source_fp
+                        if search_date != order_date:
+                            existing_order.order_date = order_date
+                        break
+                if existing_order:
                     break
 
         # Level 3: Fallback для старих замовлень без fingerprint
         if not existing_order:
             notes_val = combined_notes if combined_notes else None
-            fb_q = session.query(Order).filter(
-                Order.client_id == client_id,
-                Order.order_date == order_date,
-                Order.total_amount == total_amount,
-                Order.source_fingerprint.is_(None),
-            )
-            if notes_val:
-                fb_q = fb_q.filter(Order.notes == notes_val)
-            else:
-                fb_q = fb_q.filter(Order.notes.is_(None))
-            existing_order = fb_q.first()
-            if existing_order:
-                existing_order.source_fingerprint = source_fp
+            for search_date in ([order_date, sheet_date] if order_date != sheet_date else [order_date]):
+                fb_q = session.query(Order).filter(
+                    Order.client_id == client_id,
+                    Order.order_date == search_date,
+                    Order.total_amount == total_amount,
+                    Order.source_fingerprint.is_(None),
+                )
+                if notes_val:
+                    fb_q = fb_q.filter(Order.notes == notes_val)
+                else:
+                    fb_q = fb_q.filter(Order.notes.is_(None))
+                existing_order = fb_q.first()
+                if existing_order:
+                    existing_order.source_fingerprint = source_fp
+                    if search_date != order_date:
+                        existing_order.order_date = order_date
+                    break
 
         if existing_order:
             # Оновлюємо існуюче замовлення (статуси, трекінг, тощо)
@@ -2575,36 +2612,52 @@ def run_full_parsing(
         # When a Google Sheets row is edited (products added/removed),
         # the fingerprint changes → parser creates a NEW order.
         # Old orders with stale fingerprints remain → inflated sold_count.
-        # Fix: for each (client_id, order_date) group with 3+ orders,
+        # Also handles date-migration: old orders with sheet_date may now
+        # have a sibling with the real order_date from "Дата замовлення".
+        # Fix: for each (client_id) with nearby-date orders (±7 days window),
         # detect overlapping item sets (>50% Jaccard) → keep only the latest.
         fp_drift_deleted = 0
         try:
+            # Group by client_id where the client has 3+ orders within any 7-day window
             drift_groups = session.execute(text("""
-                SELECT client_id, order_date
-                FROM orders
-                WHERE source_fingerprint IS NOT NULL AND client_id IS NOT NULL
-                GROUP BY client_id, order_date
-                HAVING COUNT(*) >= 3
+                SELECT DISTINCT o1.client_id, o1.order_date
+                FROM orders o1
+                WHERE o1.source_fingerprint IS NOT NULL AND o1.client_id IS NOT NULL
+                AND (
+                    SELECT COUNT(*) FROM orders o2
+                    WHERE o2.client_id = o1.client_id
+                      AND o2.source_fingerprint IS NOT NULL
+                      AND ABS(o2.order_date - o1.order_date) <= 7
+                ) >= 3
             """)).fetchall()
 
-            for client_id_val, order_date_val in drift_groups:
+            # Deduplicate: process each client once with their full date range
+            processed_clients = set()
+            for client_id_val, anchor_date in drift_groups:
+                if client_id_val in processed_clients:
+                    continue
+                processed_clients.add(client_id_val)
+
+                # Fetch all orders for this client (with fingerprint)
                 group_orders = session.execute(text("""
-                    SELECT o.id,
+                    SELECT o.id, o.order_date,
                            ARRAY_AGG(oi.product_id ORDER BY oi.product_id) AS product_ids
                     FROM orders o
                     LEFT JOIN order_items oi ON oi.order_id = o.id
-                    WHERE o.client_id = :cid AND o.order_date = :odate
+                    WHERE o.client_id = :cid
                       AND o.source_fingerprint IS NOT NULL
-                    GROUP BY o.id
+                    GROUP BY o.id, o.order_date
                     ORDER BY o.id
-                """), {"cid": client_id_val, "odate": order_date_val}).fetchall()
+                """), {"cid": client_id_val}).fetchall()
 
                 # Build clusters of overlapping orders (same real order edited over time)
-                # Use simple union-find: if two orders share >50% products, they're the same
+                # Use union-find: if two orders share >50% products AND dates within 7 days
                 order_products = {}
+                order_dates = {}
                 for row in group_orders:
-                    pids = set(p for p in (row[1] or []) if p is not None)
+                    pids = set(p for p in (row[2] or []) if p is not None)
                     order_products[row[0]] = pids
+                    order_dates[row[0]] = row[1]
 
                 order_ids = list(order_products.keys())
                 parent = {oid: oid for oid in order_ids}
@@ -2623,6 +2676,10 @@ def run_full_parsing(
                 for i in range(len(order_ids)):
                     for j in range(i + 1, len(order_ids)):
                         a, b = order_ids[i], order_ids[j]
+                        # Only cluster orders with dates within 7 days of each other
+                        date_diff = abs((order_dates[a] - order_dates[b]).days)
+                        if date_diff > 7:
+                            continue
                         pids_a, pids_b = order_products[a], order_products[b]
                         if not pids_a or not pids_b:
                             continue
