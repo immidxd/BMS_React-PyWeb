@@ -2077,9 +2077,16 @@ def _parse_orders_sheet(
                 item_price = product.price
                 any_price_substituted = True
 
-            # Oldprice logic: якщо ціна продажу відрізняється від журнальної
-            if price and price > 0 and product.price:
-                if price != product.price:
+            # ── Sync product price from order ──────────────────────────────
+            # Пріоритет ціни: Замовлення > Журнал.
+            # Якщо ціна в товарі NULL — записуємо ціну з замовлення.
+            # Якщо ціна в товарі є і відрізняється — зберігаємо стару як oldprice.
+            if price and price > 0:
+                if not product.price:
+                    # Товар без ціни (напр. є в Замовленнях, але ще немає в Журналі)
+                    product.price = price
+                    product.updated_at = datetime.utcnow()
+                elif price != product.price:
                     product.oldprice = product.price
                     product.price = price
                     product.updated_at = datetime.utcnow()
