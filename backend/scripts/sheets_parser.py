@@ -2571,6 +2571,100 @@ def run_full_parsing(
                 orders_sweep_deleted, r_orders.rowcount, r2_orders.rowcount
             )
 
+        # ── Sweep Phase 3: fingerprint-drift deduplication ────────────────
+        # When a Google Sheets row is edited (products added/removed),
+        # the fingerprint changes → parser creates a NEW order.
+        # Old orders with stale fingerprints remain → inflated sold_count.
+        # Fix: for each (client_id, order_date) group with 3+ orders,
+        # detect overlapping item sets (>50% Jaccard) → keep only the latest.
+        fp_drift_deleted = 0
+        try:
+            drift_groups = session.execute(text("""
+                SELECT client_id, order_date
+                FROM orders
+                WHERE source_fingerprint IS NOT NULL AND client_id IS NOT NULL
+                GROUP BY client_id, order_date
+                HAVING COUNT(*) >= 3
+            """)).fetchall()
+
+            for client_id_val, order_date_val in drift_groups:
+                group_orders = session.execute(text("""
+                    SELECT o.id,
+                           ARRAY_AGG(oi.product_id ORDER BY oi.product_id) AS product_ids
+                    FROM orders o
+                    LEFT JOIN order_items oi ON oi.order_id = o.id
+                    WHERE o.client_id = :cid AND o.order_date = :odate
+                      AND o.source_fingerprint IS NOT NULL
+                    GROUP BY o.id
+                    ORDER BY o.id
+                """), {"cid": client_id_val, "odate": order_date_val}).fetchall()
+
+                # Build clusters of overlapping orders (same real order edited over time)
+                # Use simple union-find: if two orders share >50% products, they're the same
+                order_products = {}
+                for row in group_orders:
+                    pids = set(p for p in (row[1] or []) if p is not None)
+                    order_products[row[0]] = pids
+
+                order_ids = list(order_products.keys())
+                parent = {oid: oid for oid in order_ids}
+
+                def find(x):
+                    while parent[x] != x:
+                        parent[x] = parent[parent[x]]
+                        x = parent[x]
+                    return x
+
+                def union(a, b):
+                    ra, rb = find(a), find(b)
+                    if ra != rb:
+                        parent[ra] = rb
+
+                for i in range(len(order_ids)):
+                    for j in range(i + 1, len(order_ids)):
+                        a, b = order_ids[i], order_ids[j]
+                        pids_a, pids_b = order_products[a], order_products[b]
+                        if not pids_a or not pids_b:
+                            continue
+                        intersection = len(pids_a & pids_b)
+                        union_size = len(pids_a | pids_b)
+                        if union_size > 0 and intersection / union_size > 0.5:
+                            union(a, b)
+
+                # Group by cluster root
+                from collections import defaultdict
+                clusters = defaultdict(list)
+                for oid in order_ids:
+                    clusters[find(oid)].append(oid)
+
+                for cluster_root, cluster_ids in clusters.items():
+                    if len(cluster_ids) < 3:
+                        continue
+                    # Keep the latest order (max id), delete the rest
+                    cluster_ids_sorted = sorted(cluster_ids)
+                    to_delete = cluster_ids_sorted[:-1]  # all except the latest
+
+                    if to_delete:
+                        session.execute(text(
+                            "DELETE FROM order_items WHERE order_id = ANY(:ids)"
+                        ), {"ids": to_delete})
+                        session.execute(text(
+                            "DELETE FROM orders WHERE id = ANY(:ids)"
+                        ), {"ids": to_delete})
+                        fp_drift_deleted += len(to_delete)
+
+            if fp_drift_deleted > 0:
+                session.commit()
+                logger.info(
+                    "[sweep] Fingerprint-drift: deleted %d stale duplicate orders",
+                    fp_drift_deleted,
+                )
+        except Exception as e:
+            logger.warning("[sweep] Fingerprint-drift cleanup failed: %s", e)
+            session.rollback()
+
+        orders_sweep_deleted += fp_drift_deleted
+
     # Strip internal tracking sets before returning
     products_result.pop("seen_product_ids", None)
     workspace_result.pop("touched_product_ids", None)
