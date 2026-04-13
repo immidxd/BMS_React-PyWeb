@@ -1196,7 +1196,14 @@ def _parse_products_sheet(
                             and color_id is not None
                             and p.colorid != color_id
                         )
-                        return size_same and color_genuinely_differs
+                        if not (size_same and color_genuinely_differs):
+                            return False
+                        # Same marking (article number) = same physical product,
+                        # color was corrected in the sheet → NOT a variant.
+                        # Only treat as variant if markings differ or are absent.
+                        if marking and p.marking and marking.strip().upper() == p.marking.strip().upper():
+                            return False
+                        return True
 
                     # Exclude color variants from update candidates
                     brand_compat_updatable = [p for p in brand_compat if not _is_color_variant(p)]
