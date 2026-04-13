@@ -19,6 +19,7 @@ from typing import Optional, Callable
 
 import gspread
 from google.oauth2.service_account import Credentials
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
@@ -915,15 +916,25 @@ def _parse_products_sheet(
 
         # ── Fetch all existing records whose productnumber starts with pnum base
         base_pnum = re.sub(r"-\d+$", "", pnum)  # strip suffix if any
+        # Normalize: search both with and without '#' prefix to avoid duplicates
+        # (old records may have "Ф1067", new sheet data has "#Ф1067")
+        base_no_hash = base_pnum.lstrip("#")
+        base_with_hash = "#" + base_no_hash
         existing_all = session.query(Product).filter(
-            Product.productnumber.like(f"{base_pnum}%")
+            or_(
+                Product.productnumber.like(f"{base_with_hash}%"),
+                Product.productnumber.like(f"{base_no_hash}%"),
+            )
         ).all()
-        # Narrow to exact-base matches (X, X-2, X-3 …)
-        existing_base = [
-            p for p in existing_all
-            if p.productnumber == base_pnum
-            or re.fullmatch(re.escape(base_pnum) + r"-\d+", p.productnumber)
-        ]
+        # Narrow to exact-base matches (X, X-2, X-3, #X, #X-2 …)
+        def _is_base_match(p_num: str) -> bool:
+            """Check if productnumber matches base (with or without #)."""
+            p_stripped = p_num.lstrip("#")
+            return (
+                p_stripped == base_no_hash
+                or bool(re.fullmatch(re.escape(base_no_hash) + r"\s*-\s*\d+", p_stripped))
+            )
+        existing_base = [p for p in existing_all if _is_base_match(p.productnumber)]
 
         # ── Decision logic ─────────────────────────────────────────────────
         full_match = next((p for p in existing_base if id_match(p)), None)
@@ -1719,21 +1730,30 @@ def _resolve_order_product(session, pnum_clean: str, size_hints: dict):
             if product:
                 return product
 
-    # ── Step 2: fallback — all products with this number (with # prefix) ─────
+    # ── Step 2: fallback — all products with this number (with or without # prefix)
+    pnum_no_hash = pnum_with_hash.lstrip("#")
     candidates = session.query(Product).filter(
-        Product.productnumber == pnum_with_hash
+        or_(
+            Product.productnumber == pnum_with_hash,
+            Product.productnumber == pnum_no_hash,
+        )
     ).all()
 
     if len(candidates) == 1:
         return candidates[0]
     if len(candidates) > 1:
-        # Rostovka without a usable hint — return first (ambiguous but best effort)
-        logger.debug("Ambiguous rostovka match for %s (no size hint), using first", pnum_with_hash)
+        # Prefer the one with # prefix (newer convention)
+        with_hash = [c for c in candidates if c.productnumber.startswith("#")]
+        if with_hash:
+            return with_hash[0]
         return candidates[0]
 
     # ── Step 3: clonednumbers fallback ───────────────────────────────────────
     return session.query(Product).filter(
-        Product.clonednumbers.like(f"%{pnum_with_hash}%")
+        or_(
+            Product.clonednumbers.like(f"%{pnum_with_hash}%"),
+            Product.clonednumbers.like(f"%{pnum_no_hash}%"),
+        )
     ).first()
 
 
