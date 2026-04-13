@@ -14,6 +14,7 @@ interface PublicationItem {
   channels: string;
   threads: string;
   is_unlinked?: boolean;
+  needs_manual_edit?: boolean;
 }
 
 interface PublicationDetail {
@@ -594,12 +595,14 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
                 {items.map((item, idx) => {
                   const isProblematic = item.status?.toLowerCase() === 'продано' && item.publication_count > 0;
                   const isUnlinked = item.is_unlinked === true;
+                  const needsManualEdit = item.needs_manual_edit === true;
                   const isExpanded = expandedId === item.product_id && item.product_id !== null;
                   return (
                     <React.Fragment key={isUnlinked ? `unlinked-${idx}` : item.product_id}>
                     <tr
                       className={`hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors cursor-pointer ${
                         isExpanded ? 'bg-blue-50 dark:bg-blue-900/20' :
+                        needsManualEdit ? 'bg-yellow-50 dark:bg-yellow-900/20' :
                         isUnlinked ? 'bg-orange-50 dark:bg-orange-900/20' :
                         isProblematic ? 'bg-red-50 dark:bg-red-900/20' : ''
                       }`}
@@ -618,14 +621,31 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
                       </td>
                       <td className="px-3 py-2">
                         <span className={`text-xs px-2 py-0.5 rounded ${
-                          isUnlinked
+                          needsManualEdit
+                            ? 'bg-yellow-100 dark:bg-yellow-900/30 text-yellow-800 dark:text-yellow-300 font-semibold'
+                            : isUnlinked
                             ? 'bg-orange-100 dark:bg-orange-900/30 text-orange-700 dark:text-orange-300 font-semibold'
                             : isProblematic
                             ? 'bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300 font-semibold'
                             : 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300'
                         }`}>
-                          {isUnlinked ? '🔴 Незв\'язаний' : isProblematic ? '⚠️ Продано' : (item.status || '—')}
+                          {needsManualEdit ? '✏️ Потребує ручного редагування' : isUnlinked ? '🔴 Незв\'язаний' : isProblematic ? '⚠️ Продано' : (item.status || '—')}
                         </span>
+                        {needsManualEdit && item.product_id && (
+                          <button
+                            className="ml-2 text-xs px-2 py-0.5 rounded bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300 hover:bg-green-200 dark:hover:bg-green-800/40 transition-colors"
+                            title="Натисніть коли виправите пост вручну в Telegram"
+                            onClick={async (e) => {
+                              e.stopPropagation();
+                              try {
+                                await fetch(`/api/publications/clear-manual-edit/${item.product_id}`, { method: 'POST' });
+                                fetchItems();
+                              } catch {}
+                            }}
+                          >
+                            Виправлено
+                          </button>
+                        )}
                       </td>
                       <td className="px-3 py-2 text-center">
                         <span className={`font-medium ${item.publication_count > 0 ? 'text-blue-600 dark:text-blue-400' : 'text-gray-400'}`}>

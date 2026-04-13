@@ -184,6 +184,7 @@ def init_db():
             conn.execute(text("ALTER TABLE IF EXISTS telegram_posts ADD COLUMN IF NOT EXISTS sizes_in_post TEXT"))
             conn.execute(text("ALTER TABLE IF EXISTS telegram_posts ADD COLUMN IF NOT EXISTS is_multi_size BOOLEAN DEFAULT false"))
             conn.execute(text("ALTER TABLE IF EXISTS telegram_posts ADD COLUMN IF NOT EXISTS grouped_id BIGINT"))
+            conn.execute(text("ALTER TABLE IF EXISTS telegram_posts ADD COLUMN IF NOT EXISTS needs_manual_edit BOOLEAN DEFAULT false"))
             conn.execute(text("CREATE INDEX IF NOT EXISTS idx_tg_posts_product ON telegram_posts(product_id)"))
             conn.execute(text("CREATE INDEX IF NOT EXISTS idx_tg_posts_number ON telegram_posts(product_number_raw)"))
             conn.execute(text("CREATE INDEX IF NOT EXISTS idx_tg_posts_chat ON telegram_posts(chat_id, thread_id)"))

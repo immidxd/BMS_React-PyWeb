@@ -197,14 +197,16 @@ async def get_publications_overview(
                     END AS status,
                     COALESCE(pubs.pub_count, 0) AS pub_count,
                     COALESCE(pubs.channels, '') AS channels,
-                    COALESCE(pubs.threads, '') AS threads
+                    COALESCE(pubs.threads, '') AS threads,
+                    COALESCE(pubs.needs_manual_edit, false) AS needs_manual_edit
                 FROM products p
                 LEFT JOIN statuses s ON s.id = p.statusid
                 LEFT JOIN LATERAL (
                     SELECT
                         COUNT(*) AS pub_count,
                         STRING_AGG(DISTINCT chat_title, ', ') AS channels,
-                        STRING_AGG(DISTINCT COALESCE(thread_title, ''), ', ') AS threads
+                        STRING_AGG(DISTINCT COALESCE(thread_title, ''), ', ') AS threads,
+                        BOOL_OR(COALESCE(needs_manual_edit, false)) AS needs_manual_edit
                     FROM telegram_posts
                     WHERE product_id = p.id AND tg_status = 'published'
                 ) pubs ON true
@@ -228,6 +230,7 @@ async def get_publications_overview(
                 "channels": row[6],
                 "threads": row[7],
                 "is_unlinked": False,
+                "needs_manual_edit": bool(row[8]),
             })
 
         return {
@@ -585,6 +588,32 @@ async def get_sold_action_plan(
         return plan
     except Exception as e:
         logger.error(f"Error analyzing sold action plan: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/api/publications/clear-manual-edit/{product_id}")
+async def clear_manual_edit(
+    product_id: int,
+    db: Session = Depends(get_db),
+):
+    """Clear needs_manual_edit flag for a product's posts.
+
+    Called when user confirms they manually fixed the post in Telegram.
+    Also auto-checks: if the post was deleted from TG, mark as archived.
+    """
+    try:
+        db.execute(
+            text("""
+                UPDATE telegram_posts
+                SET needs_manual_edit = false
+                WHERE product_id = :pid AND needs_manual_edit = true
+            """),
+            {"pid": product_id}
+        )
+        db.commit()
+        return {"status": "ok", "product_id": product_id}
+    except Exception as e:
+        logger.error(f"Error clearing manual edit flag: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

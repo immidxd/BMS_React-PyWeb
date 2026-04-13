@@ -25,14 +25,36 @@ PRODUCT_NUM_CYRILLIC = re.compile(r'#?[Фф](\d{1,6}(?:-\d+)?)', re.UNICODE)
 # Fallback: #XXXX generic
 PRODUCT_NUM_PATTERN = re.compile(r'#[\w\-]{2,10}', re.UNICODE)
 
-# Single-size: "Розмір: 42", "**Розмір**: 42", "**Розміри**: 36"
-SINGLE_SIZE_PATTERN = re.compile(r'[Рр]озмір[иі]?\**[:\s*]+(\d{2}(?:[.,]\d)?)', re.UNICODE)
+# ── Size extraction patterns ──
 
-# Multi-size header: "Розміри:", "**Розміри:**"
-MULTI_SIZE_HEADER = re.compile(r'[Рр]озміри\**[:\s*]', re.UNICODE)
+# Size header: "Розмір:", "Розміри:", "Заміри:", with optional Markdown ** and emoji
+SIZE_HEADER = re.compile(
+    r'(?:[Рр]озмір[иі]?|[Зз]аміри)\**[:\s*]',
+    re.UNICODE
+)
 
-# Multi-size lines: "— 37", "- 38", "• 39"
-MULTI_SIZE_PATTERN = re.compile(r'[—\-•·]\s*(\d{2}(?:[.,]\d)?)', re.UNICODE)
+# Multi-size header: plural "Розміри" or "Заміри" (indicates multiple sizes expected)
+MULTI_SIZE_HEADER = re.compile(
+    r'(?:[Рр]озміри|[Зз]аміри)\**[:\s*]',
+    re.UNICODE
+)
+
+# Bullet-list sizes: "— 37", "- 38", "• 39" at START of line only (re.MULTILINE)
+# This prevents matching range dashes like "38-39" mid-line
+# Uses [ ]* (not \s*) in range part to avoid matching across lines
+BULLET_SIZE_PATTERN = re.compile(
+    r'^\s*[—\-•·]\s*(\d{2}(?:[.,]\d{1,2})?(?:[ ]*[-–—][ ]*\d{2}(?:[.,]\d{1,2})?)?)',
+    re.UNICODE | re.MULTILINE
+)
+
+# Inline number (for extracting from header line)
+INLINE_SIZE_PATTERN = re.compile(r'(\d{2}(?:[.,]\d{1,2})?)', re.UNICODE)
+
+# Range-pair size: "38-39", "40-41" — a size expressed as EU range
+RANGE_SIZE_PATTERN = re.compile(r'(\d{2}(?:[.,]\d{1,2})?)\s*[-–—]\s*(\d{2}(?:[.,]\d{1,2})?)', re.UNICODE)
+
+# Physical dimensions pattern: "44 × 30 × 14 см" — NOT clothing/shoe sizes
+DIMENSIONS_PATTERN = re.compile(r'\d+\s*[×xXхХ]\s*\d+', re.UNICODE)
 
 
 def extract_product_numbers(text: str) -> List[str]:
@@ -51,34 +73,84 @@ def extract_product_numbers(text: str) -> List[str]:
 def extract_sizes(text: str) -> Tuple[List[str], bool]:
     """Extract sizes from post text. Returns (sizes, is_multi_size).
 
-    Handles Markdown formatting: **Розмір**: 36, **Розміри:**
-    Fallback: if "Розміри" header found but no bullet-list sizes (— 36),
-    try single-size pattern as fallback (the post may say "Розміри: 36"
-    for a single size).
+    Supported formats:
+      1. Bullet-list:  "Розміри:\n— 40 (на ніжку 26 см)\n— 41 ..."
+      2. Inline list:  "Розміри: 40, 41, 42"
+      3. Range pairs:  "Розміри: 38-39; 40-41"
+      4. Single:       "Розмір: 42"
+      5. Заміри:       "Заміри:\n— 40\n— 41" (but NOT "Заміри: 44 × 30 × 14 см")
+      6. Mixed:        "Розмір: 39, 40-41"
+
+    Skips:
+      - Physical dimensions with × (e.g. "Заміри: 44 × 30 × 14 см")
+      - Numbers inside parentheses (e.g. "(на ніжку 26 см)" — 26 is NOT a size)
+
+    Headers recognized: Розмір/Розміри/Заміри (with optional ** markdown, emoji prefix)
+    is_multi_size = True if more than one size found (regardless of header form).
     """
     if not text:
         return ([], False)
-    is_multi = bool(MULTI_SIZE_HEADER.search(text))
-    if is_multi:
-        sizes = MULTI_SIZE_PATTERN.findall(text)
-        sizes = [s.replace(',', '.') for s in sizes]
-        seen, unique = set(), []
-        for s in sizes:
-            if s not in seen:
-                seen.add(s)
-                unique.append(s)
-        if unique:
-            return (unique, True)
-        # Fallback: "Розміри: 36" (header says plural but only one size, no bullets)
-        m = SINGLE_SIZE_PATTERN.search(text)
-        if m:
-            return ([m.group(1).replace(',', '.')], False)
+
+    # Check if any size header exists
+    header_match = SIZE_HEADER.search(text)
+    if not header_match:
         return ([], False)
-    else:
-        m = SINGLE_SIZE_PATTERN.search(text)
-        if m:
-            return ([m.group(1).replace(',', '.')], False)
+
+    # Find the header line
+    header_line = None
+    for line in text.split('\n'):
+        if SIZE_HEADER.search(line):
+            header_line = line
+            break
+
+    # Skip physical dimensions: "Заміри: 44 × 30 × 14 см"
+    if header_line and DIMENSIONS_PATTERN.search(header_line):
         return ([], False)
+
+    # Step 1: Try bullet-list sizes at start of lines (— 40, • 41, - 42)
+    bullet_sizes = BULLET_SIZE_PATTERN.findall(text)
+    bullet_sizes = [s.replace(',', '.') for s in bullet_sizes]
+
+    # Step 2: Try inline sizes on the header line itself (only if no bullets)
+    inline_sizes = []
+    if not bullet_sizes and header_line:
+        hm = SIZE_HEADER.search(header_line)
+        if hm:
+            after_header = header_line[hm.end():]
+            # Strip parenthesized content (measurements, not sizes)
+            clean_after = re.sub(r'\([^)]*\)', '', after_header)
+            # Skip if no digits remain (letter sizes like M, L, XL)
+            if not re.search(r'\d{2}', clean_after):
+                pass
+            else:
+                # Extract all size tokens: ranges ("38-39") and standalone ("40")
+                # First, find and extract ranges
+                ranges = RANGE_SIZE_PATTERN.findall(clean_after)
+                range_strings = set()
+                for r_start, r_end in ranges:
+                    rs = f"{r_start.replace(',','.')}-{r_end.replace(',','.')}"
+                    inline_sizes.append(rs)
+                    range_strings.add(r_start)
+                    range_strings.add(r_end)
+                # Then extract standalone numbers not part of ranges
+                nums = INLINE_SIZE_PATTERN.findall(clean_after)
+                for n in nums:
+                    n_clean = n.replace(',', '.')
+                    if n_clean not in range_strings:
+                        inline_sizes.append(n_clean)
+
+    # Combine: prefer bullet sizes, fallback to inline
+    all_sizes = []
+    seen = set()
+
+    source = bullet_sizes if bullet_sizes else inline_sizes
+    for s in source:
+        if s not in seen:
+            seen.add(s)
+            all_sizes.append(s)
+
+    is_multi = len(all_sizes) > 1
+    return (all_sizes, is_multi)
 
 
 class TelegramScanner:
@@ -551,7 +623,7 @@ class TelegramScanner:
                 tg_msg = await self.client.get_messages(chat_entity, ids=int(msg_id))
                 if not tg_msg:
                     logger.warning(f"⚠️ Message {msg_id} not found in {chat_title} — already deleted?")
-                    db.execute(text("UPDATE telegram_posts SET tg_status = 'archived' WHERE id = :id"), {"id": db_id})
+                    db.execute(text("UPDATE telegram_posts SET tg_status = 'archived', needs_manual_edit = false WHERE id = :id"), {"id": db_id})
                     continue
 
                 live_text = tg_msg.text or ""
@@ -585,8 +657,8 @@ class TelegramScanner:
 
                     sizes_remaining = [s for s in live_sizes if s not in sizes_to_remove]
 
-                    if sizes_remaining and is_multi:
-                        # ── РОСТОВКА with remaining sizes: EDIT post ──
+                    if sizes_remaining:
+                        # ── There are still unsold sizes — try to EDIT the post ──
                         new_text = live_text
                         for sz in sizes_to_remove:
                             new_text = self._remove_size_line(new_text, sz)
@@ -595,26 +667,43 @@ class TelegramScanner:
                             try:
                                 await self.client.edit_message(chat_entity, int(msg_id), new_text)
                                 db.execute(
-                                    text("UPDATE telegram_posts SET sizes_in_post = :sizes, is_multi_size = true WHERE id = :id"),
-                                    {"sizes": json.dumps(sizes_remaining), "id": db_id}
+                                    text("UPDATE telegram_posts SET sizes_in_post = :sizes, is_multi_size = :multi, needs_manual_edit = false WHERE id = :id"),
+                                    {"sizes": json.dumps(sizes_remaining), "multi": len(sizes_remaining) > 1, "id": db_id}
                                 )
                                 result["edited"] += 1
                                 logger.info(f"✏️ Edited msg {msg_id} in {chat_title}: removed sizes {sizes_to_remove}, kept {sizes_remaining}")
-                                continue  # Edit succeeded — DO NOT delete, DO NOT forward
+                                continue  # Edit succeeded — DO NOT delete
                             except Exception as edit_err:
                                 # Edit failed (e.g. forwarded message can't be edited)
-                                # Fall through to delete instead
-                                logger.warning(f"⚠️ Cannot edit msg {msg_id} in {chat_title} (falling back to delete): {edit_err}")
+                                # DO NOT delete — there are still unsold sizes!
+                                # Mark for manual editing in UI
+                                db.execute(
+                                    text("UPDATE telegram_posts SET needs_manual_edit = true WHERE id = :id"),
+                                    {"id": db_id}
+                                )
+                                logger.warning(f"⚠️ Cannot edit msg {msg_id} in {chat_title} (marked for manual edit): {edit_err}")
+                                result["skipped"] += 1
+                                result.setdefault("needs_manual_edit", []).append({
+                                    "chat": chat_title, "msg_id": msg_id,
+                                    "sizes_to_remove": sizes_to_remove, "sizes_remaining": sizes_remaining
+                                })
+                                continue
                         else:
-                            logger.warning(f"⚠️ Could not match size lines {sizes_to_remove} in msg {msg_id}")
-                        # If edit failed or text didn't change — fall through to delete
-                    elif sizes_remaining and not is_multi:
-                        # Single-size post but size is still available — SKIP
-                        result["skipped"] += 1
-                        logger.info(f"⏭ Skipped single-size msg {msg_id} in {chat_title} — size {sizes_remaining[0]} still available")
-                        continue
+                            # Text didn't change — size lines not found in text
+                            # Still DO NOT delete — unsold sizes exist
+                            db.execute(
+                                text("UPDATE telegram_posts SET needs_manual_edit = true WHERE id = :id"),
+                                {"id": db_id}
+                            )
+                            logger.warning(f"⚠️ Could not match size lines {sizes_to_remove} in msg {msg_id} — marked for manual edit (remaining: {sizes_remaining})")
+                            result["skipped"] += 1
+                            result.setdefault("needs_manual_edit", []).append({
+                                "chat": chat_title, "msg_id": msg_id,
+                                "sizes_to_remove": sizes_to_remove, "sizes_remaining": sizes_remaining
+                            })
+                            continue
                     else:
-                        # All sizes sold — fall through to delete
+                        # All sizes in this post are sold — fall through to delete
                         pass
 
                 # ── ALL-SIZES-SOLD or no sizes detected: forward album + delete ──
@@ -651,7 +740,7 @@ class TelegramScanner:
 
                 # Update DB status
                 db.execute(
-                    text("UPDATE telegram_posts SET tg_status = 'archived' WHERE id = :id"),
+                    text("UPDATE telegram_posts SET tg_status = 'archived', needs_manual_edit = false WHERE id = :id"),
                     {"id": db_id}
                 )
 
@@ -665,43 +754,127 @@ class TelegramScanner:
 
     @staticmethod
     def _remove_size_line(text_content: str, size: str) -> str:
-        """Remove a specific size line from multi-size post text.
+        """Remove a specific size from post text.
 
-        Handles real Telegram formats like:
-          — 40 (на ніжку 26 см)
-          — 42.5 (на ніжку 27 см)
-          - 38
-          • 39 ✅
-          — 37 (в наявності)
+        Handles all formats:
+          1. Bullet lines:   "— 40 (на ніжку 26 см)" → remove entire line
+          2. Inline list:    "Розміри: 39, 40, 41" → remove "40" from list
+          3. Range in list:  "Розміри: 38-39; 40-41" → remove matching range
 
-        Also cleans up orphaned "Розміри:" header if no size lines remain after removal.
+        Also cleans up orphaned headers if no sizes remain.
         """
+        # Normalize all dash variants to plain hyphen for comparison
+        def _normalize(s: str) -> str:
+            return s.replace('–', '-').replace('—', '-').replace(',', '.').strip()
+
+        size_norm = _normalize(size)
+        size_int = size_norm.split('.')[0].split('-')[0]
+
+        def _size_matches(candidate: str) -> bool:
+            """Check if a candidate size string matches the target size."""
+            c = _normalize(candidate)
+            c_int = c.split('.')[0].split('-')[0]  # first number for ranges
+            # Exact match
+            if c == size_norm:
+                return True
+            # Integer match (42 matches 42.0)
+            if c_int == size_int and '.' not in size_norm:
+                return True
+            # Range match: size "40" matches range "40-41"
+            if '-' in c:
+                parts = c.split('-')
+                if len(parts) == 2:
+                    if parts[0].strip() == size_int or parts[1].strip() == size_int:
+                        return True
+            return False
+
         lines = text_content.split('\n')
         new_lines = []
-        # Normalize size for comparison: "37.5" → also match "37", "37,5"
-        size_norm = size.replace(',', '.')
-        size_int = size_norm.split('.')[0]
+
         for line in lines:
-            # Match size entry lines: bullet/dash + number + optional decimal + any trailing text
-            m = re.match(r'^[\s]*[—\-•·]\s*(\d{2}(?:[.,]\d{1,2})?)\b', line)
-            if m:
-                line_size = m.group(1).replace(',', '.')
-                line_size_int = line_size.split('.')[0]
-                # Match exact ("42.5" == "42.5") or integer ("42" == "42")
-                if line_size == size_norm or (line_size_int == size_int and '.' not in size_norm):
-                    continue  # Remove this line
+            # Check bullet-line format: "— 40 ...", "- 41 ...", "• 42 ..."
+            bullet_match = re.match(r'^[\s]*[—\-•·]\s*(\d{2}(?:[.,]\d{1,2})?(?:\s*[-–—]\s*\d{2}(?:[.,]\d{1,2})?)?)\b', line)
+            if bullet_match:
+                if _size_matches(bullet_match.group(1)):
+                    continue  # Remove this bullet line
+
+            # Check inline format on header line: "Розміри: 39, 40, 41"
+            if SIZE_HEADER.search(line):
+                # Check if sizes are inline (on the same line as header)
+                header_end = SIZE_HEADER.search(line).end()
+                after_header = line[header_end:]
+                # Find all size tokens (numbers, possibly with ranges)
+                size_tokens = re.findall(r'(\d{2}(?:[.,]\d{1,2})?\s*[-–—]\s*\d{2}(?:[.,]\d{1,2})?|\d{2}(?:[.,]\d{1,2})?)', after_header)
+                if size_tokens and any(_size_matches(t) for t in size_tokens):
+                    # Remove matching sizes from inline list
+                    remaining_tokens = [t for t in size_tokens if not _size_matches(t)]
+                    if remaining_tokens:
+                        # Rebuild the line with remaining sizes
+                        # Detect separator: comma, semicolon, or space
+                        sep = ', '
+                        if ';' in after_header:
+                            sep = '; '
+                        new_after = sep.join(remaining_tokens)
+                        new_line = line[:header_end] + ' ' + new_after
+                        new_lines.append(new_line.rstrip())
+                    else:
+                        # No sizes remain — remove the entire header line
+                        pass
+                    continue
+
             new_lines.append(line)
 
-        # Clean up orphaned "Розміри:" header if no size lines remain
+        # ── Reformat: if only ONE size remains, convert to single-size format ──
+        # "Розміри:\n— 40 (на ніжку 26 см)" → "Розмір: 40 (на ніжку 26 см)"
+        remaining_bullets = BULLET_SIZE_PATTERN.findall('\n'.join(new_lines))
+        if len(remaining_bullets) == 1:
+            # Find header line and bullet line using flexible matching
+            header_re = re.compile(r'(?:[Рр]озмір[иі]?|[Зз]аміри)', re.UNICODE)
+            header_idx = None
+            bullet_idx = None
+            bullet_line_content = ""
+            for i, line in enumerate(new_lines):
+                if header_re.search(line) and header_idx is None:
+                    header_idx = i
+                bm = re.match(r'^[\s]*[—\-•·]\s*(.*)', line)
+                if bm and BULLET_SIZE_PATTERN.search(line) and bullet_idx is None:
+                    bullet_idx = i
+                    bullet_line_content = bm.group(1).strip()  # "40 (на ніжку 26 см)"
+            if header_idx is not None and bullet_idx is not None and bullet_line_content:
+                # Get the emoji/prefix from the header line (e.g. "👣 ")
+                header_line = new_lines[header_idx]
+                hm = header_re.search(header_line)
+                prefix = header_line[:hm.start()]  # everything before "Розмір..."
+                # Build new single line: "👣 Розмір: 40 (на ніжку 26 см)"
+                new_single_line = f"{prefix}Розмір: {bullet_line_content}"
+                # Replace header + bullet with the single line
+                rebuilt = []
+                for i, line in enumerate(new_lines):
+                    if i == header_idx:
+                        rebuilt.append(new_single_line)
+                    elif i == bullet_idx:
+                        continue  # skip old bullet line
+                    else:
+                        rebuilt.append(line)
+                new_lines = rebuilt
+
+        # Clean up orphaned size header if no size lines/tokens remain
         result_text = '\n'.join(new_lines)
-        if MULTI_SIZE_HEADER.search(result_text) and not MULTI_SIZE_PATTERN.search(result_text):
-            # No size lines left — remove the header line too
-            cleaned = []
+        has_header = SIZE_HEADER.search(result_text)
+        has_bullets = BULLET_SIZE_PATTERN.search(result_text)
+        if has_header and not has_bullets:
+            # Check if header line has inline sizes
+            has_inline = False
             for line in new_lines:
-                if MULTI_SIZE_HEADER.search(line):
-                    continue
-                cleaned.append(line)
-            result_text = '\n'.join(cleaned)
+                if SIZE_HEADER.search(line):
+                    after = line[SIZE_HEADER.search(line).end():]
+                    if INLINE_SIZE_PATTERN.search(after):
+                        has_inline = True
+                        break
+            if not has_inline:
+                # Remove orphaned header
+                cleaned = [l for l in new_lines if not SIZE_HEADER.search(l)]
+                result_text = '\n'.join(cleaned)
 
         # Collapse multiple consecutive blank lines into one
         result_text = re.sub(r'\n{3,}', '\n\n', result_text)
