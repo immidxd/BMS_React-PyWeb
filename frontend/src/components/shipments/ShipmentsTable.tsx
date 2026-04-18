@@ -6,6 +6,7 @@ import {
   type Shipment, type ShipmentList, type ShipmentGroup,
 } from '../../services/referenceService';
 import Pagination from '../common/Pagination';
+import BmsEmpty from '../common/BmsEmpty';
 
 type SortCol = 'id' | 'shipment_date' | 'supplier_name' | 'items_count' | 'total_cost' | 'created_at';
 
@@ -188,7 +189,7 @@ const ShipmentsTable: React.FC = () => {
             ) : error ? (
               <tr><td colSpan={9} className="text-center py-8 text-red-500">{error}</td></tr>
             ) : items.length === 0 ? (
-              <tr><td colSpan={9} className="text-center py-8 text-gray-400">Поставок не знайдено</td></tr>
+              <tr><td colSpan={9}><BmsEmpty label="Поставок не знайдено" /></td></tr>
             ) : (
               items.map(sh => (
                 <tr key={sh.id} className={`border-b last:border-b-0 hover:bg-gray-50 ${selected.has(sh.id) ? 'bg-indigo-50' : ''}`}>

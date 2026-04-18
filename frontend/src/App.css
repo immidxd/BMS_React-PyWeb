@@ -169,4 +169,434 @@ body {
   font-size: 14px;
   color: #bfbfbf;
   margin-bottom: 16px;
-} 
+}
+
+/* ==========================================================================
+   BMS Design System — App shell overrides (monochrome B&W, two themes)
+   ========================================================================== */
+.bms-root {
+  font-family: var(--bms-font-sans);
+  font-size: var(--bms-text-base);
+  line-height: var(--bms-leading-normal);
+  color: var(--bms-fg);
+  background: var(--bms-bg);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  transition: background-color var(--bms-dur-med) var(--bms-ease),
+              color var(--bms-dur-med) var(--bms-ease);
+}
+
+.bms-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 6px 12px 0 12px;
+  background: var(--bms-surface-alt);
+  border-bottom: 1px solid var(--bms-border);
+}
+.bms-tab {
+  padding: 6px 12px;
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-top-left-radius: 6px;
+  border-top-right-radius: 6px;
+  background: transparent;
+  color: var(--bms-fg-muted);
+  position: relative;
+  top: 1px;
+  font-family: inherit;
+  transition: background-color var(--bms-dur-fast) var(--bms-ease),
+              color var(--bms-dur-fast) var(--bms-ease);
+}
+.bms-tab:hover { color: var(--bms-fg); background: var(--bms-hover); }
+.bms-tab.is-active {
+  background: var(--bms-surface);
+  color: var(--bms-fg);
+  border-color: var(--bms-border);
+}
+
+.bms-header {
+  padding: 10px 12px;
+  background: var(--bms-surface);
+  border-bottom: 1px solid var(--bms-border);
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  box-shadow: var(--bms-shadow-sm);
+}
+
+.bms-icon-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
+  background: var(--bms-surface);
+  color: var(--bms-fg);
+  border: 1px solid var(--bms-border);
+  cursor: pointer;
+  font-size: 13px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-family: inherit;
+  transition: background-color var(--bms-dur-fast) var(--bms-ease);
+}
+.bms-icon-btn:hover { background: var(--bms-hover); }
+
+.bms-btn {
+  height: 32px;
+  padding: 0 12px;
+  border-radius: 6px;
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+  font-family: inherit;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  line-height: 1;
+  transition: background-color var(--bms-dur-fast) var(--bms-ease),
+              border-color var(--bms-dur-fast) var(--bms-ease);
+}
+.bms-btn-secondary {
+  background: var(--bms-surface);
+  color: var(--bms-fg);
+  border: 1px solid var(--bms-border);
+}
+.bms-btn-secondary:hover { background: var(--bms-hover); }
+.bms-btn-primary {
+  background: var(--bms-primary);
+  color: var(--bms-surface);
+  border: 1px solid var(--bms-primary);
+}
+.bms-btn-primary:hover { background: var(--bms-primary-hover); }
+.bms-btn-badge {
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  background: var(--bms-primary);
+  color: var(--bms-surface);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+/* ── Pagination (BMS) ── */
+.bms-page-btn {
+  min-width: 32px;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 9999px;
+  border: 1px solid var(--bms-border);
+  background: var(--bms-surface);
+  color: var(--bms-fg);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background-color var(--bms-dur-fast) var(--bms-ease),
+              border-color var(--bms-dur-fast) var(--bms-ease);
+}
+.bms-page-btn:hover { background: var(--bms-hover); }
+.bms-page-btn.is-active {
+  background: var(--bms-primary);
+  color: var(--bms-surface);
+  border-color: var(--bms-primary);
+  cursor: default;
+}
+.bms-page-nav {
+  min-width: 32px;
+  height: 30px;
+  padding: 0 8px;
+  border-radius: 6px;
+  border: 1px solid var(--bms-border);
+  background: var(--bms-surface);
+  color: var(--bms-fg-muted);
+  cursor: pointer;
+  font-family: inherit;
+  transition: background-color var(--bms-dur-fast) var(--bms-ease);
+}
+.bms-page-nav:hover { background: var(--bms-hover); color: var(--bms-fg); }
+.bms-page-nav:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* ── Empty state (BMS) ── */
+.bms-empty {
+  padding: 48px 24px;
+  text-align: center;
+  color: var(--bms-fg-subtle);
+}
+.bms-empty-icon {
+  font-size: 48px;
+  line-height: 1;
+  margin-bottom: 12px;
+  opacity: 0.4;
+  color: var(--bms-divider);
+}
+.bms-empty-title {
+  font-size: 18px;
+  font-weight: 500;
+  color: var(--bms-fg-subtle);
+  margin-bottom: 6px;
+}
+.bms-empty-hint {
+  font-size: 13px;
+  color: var(--bms-fg-faint);
+}
+
+/* ── Mono / delivery dot ── */
+.bms-mono {
+  font-family: var(--bms-font-mono);
+  font-size: 12px;
+  color: var(--bms-fg);
+}
+.bms-delivery-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+  flex-shrink: 0;
+}
+
+/* ── Conflict row (warning amber, design system) ── */
+.ant-table-tbody > tr.bms-conflict-row > td {
+  background: var(--bms-warning-bg) !important;
+  border-left: 0 solid transparent;
+}
+.ant-table-tbody > tr.bms-conflict-row > td:first-child {
+  box-shadow: inset 3px 0 0 0 var(--bms-warning-amber);
+}
+.ant-table-tbody > tr.bms-conflict-row:hover > td {
+  background: var(--bms-warning-bg-hi) !important;
+}
+.ant-table-tbody > tr.bms-row-hover:hover > td {
+  background: var(--bms-hover) !important;
+}
+
+/* ── MUI overrides → монохром (Dialog, Buttons, Progress) ── */
+.MuiButton-contained,
+.MuiButton-containedPrimary {
+  background-color: var(--bms-primary) !important;
+  color: var(--bms-surface) !important;
+  box-shadow: none !important;
+  border-radius: 6px !important;
+  text-transform: none !important;
+  font-family: var(--bms-font-sans) !important;
+  font-weight: 500 !important;
+}
+.MuiButton-contained:hover,
+.MuiButton-containedPrimary:hover {
+  background-color: var(--bms-primary-hover) !important;
+  box-shadow: none !important;
+}
+.MuiButton-outlined,
+.MuiButton-text {
+  text-transform: none !important;
+  font-family: var(--bms-font-sans) !important;
+  border-radius: 6px !important;
+  color: var(--bms-fg) !important;
+}
+.MuiButton-outlined { border-color: var(--bms-border) !important; }
+.MuiButton-outlined:hover { background-color: var(--bms-hover) !important; border-color: var(--bms-fg-muted) !important; }
+.MuiDialog-paper {
+  background-color: var(--bms-surface) !important;
+  color: var(--bms-fg) !important;
+  border-radius: 8px !important;
+  box-shadow: var(--bms-shadow-lg) !important;
+}
+.MuiDialogTitle-root {
+  font-family: var(--bms-font-sans) !important;
+  font-weight: 600 !important;
+  color: var(--bms-fg) !important;
+  border-bottom: 1px solid var(--bms-border);
+}
+.MuiDialogContent-root, .MuiDialogActions-root {
+  background-color: var(--bms-surface) !important;
+}
+.MuiLinearProgress-bar {
+  background-color: var(--bms-primary) !important;
+}
+.MuiLinearProgress-root {
+  background-color: var(--bms-hover) !important;
+  border-radius: 4px !important;
+}
+.MuiChip-root {
+  font-family: var(--bms-font-sans) !important;
+  border-radius: 4px !important;
+}
+.MuiListItem-root {
+  border-color: var(--bms-border) !important;
+}
+.MuiListItem-root:hover {
+  background-color: var(--bms-hover) !important;
+}
+
+/* ── AntD overrides → монохром (зачіпає всі сторінки, але узгоджено) ── */
+.ant-btn-primary {
+  background: var(--bms-primary) !important;
+  border-color: var(--bms-primary) !important;
+  color: var(--bms-surface) !important;
+  box-shadow: none !important;
+}
+.ant-btn-primary:hover, .ant-btn-primary:focus {
+  background: var(--bms-primary-hover) !important;
+  border-color: var(--bms-primary-hover) !important;
+}
+.ant-btn-primary[disabled],
+.ant-btn-primary[disabled]:hover {
+  background: var(--bms-hover-strong) !important;
+  border-color: var(--bms-border) !important;
+  color: var(--bms-fg-faint) !important;
+}
+
+/* Прибираємо синій акцент Tailwind на користь монохрому (легкий override-шар) */
+.bms-root .text-primary-700,
+.bms-root .text-primary-300,
+.bms-root .text-primary-500 { color: var(--bms-fg) !important; }
+.bms-root .bg-primary-500,
+.bms-root .bg-primary-600 { background-color: var(--bms-primary) !important; color: var(--bms-surface) !important; }
+.bms-root .ring-primary-500 { --tw-ring-color: var(--bms-fg) !important; }
+
+/* ── Tailwind blue focus → BMS monochrome (поширюється на всі форми) ── */
+.bms-root .focus\:ring-blue-400:focus,
+.bms-root .focus\:ring-blue-500:focus,
+.bms-root .focus\:ring-blue-600:focus,
+.bms-root .focus-visible\:ring-blue-500:focus-visible {
+  --tw-ring-color: var(--bms-fg) !important;
+}
+.bms-root .focus\:border-blue-400:focus,
+.bms-root .focus\:border-blue-500:focus { border-color: var(--bms-fg) !important; }
+.bms-root .text-blue-600,
+.bms-root .text-blue-700,
+.bms-root .text-blue-400 { color: var(--bms-fg) !important; }
+.bms-root .text-blue-500 { color: var(--bms-fg-muted) !important; }
+.bms-root a.text-blue-600:hover,
+.bms-root a.text-blue-700:hover { text-decoration: underline; }
+
+/* ── AntD Table tokens ── */
+.ant-table {
+  background: var(--bms-surface) !important;
+  color: var(--bms-fg) !important;
+  font-family: var(--bms-font-sans) !important;
+}
+.ant-table-thead > tr > th {
+  background: var(--bms-surface-3) !important;
+  color: var(--bms-fg) !important;
+  font-weight: 600 !important;
+  font-size: 12px !important;
+  border-bottom: 1px solid var(--bms-border) !important;
+  padding: 8px 10px !important;
+}
+.ant-table-tbody > tr > td {
+  border-bottom: 1px solid var(--bms-border) !important;
+  font-size: 12px !important;
+  padding: 6px 10px !important;
+  color: var(--bms-fg) !important;
+}
+.ant-table-tbody > tr:hover:not(.bms-conflict-row) > td {
+  background: var(--bms-hover) !important;
+}
+.ant-table-cell-fix-left, .ant-table-cell-fix-right {
+  background: var(--bms-surface) !important;
+}
+
+/* ── AntD Tag — наближаємо до Ant pastel (легкий «дотиск») ── */
+.ant-tag {
+  font-family: var(--bms-font-sans) !important;
+  border-radius: 4px !important;
+  font-size: 12px !important;
+  padding: 0 6px !important;
+  line-height: 20px !important;
+}
+
+/* ── AntD Input / Select / DatePicker → BMS borders ── */
+.ant-input,
+.ant-input-affix-wrapper,
+.ant-select-selector,
+.ant-picker,
+.ant-input-number-input-wrap,
+.ant-input-number {
+  background: var(--bms-surface) !important;
+  border-color: var(--bms-border) !important;
+  color: var(--bms-fg) !important;
+  border-radius: 6px !important;
+  font-family: var(--bms-font-sans) !important;
+}
+.ant-input:hover,
+.ant-input-affix-wrapper:hover,
+.ant-select:hover .ant-select-selector,
+.ant-picker:hover { border-color: var(--bms-fg-muted) !important; }
+.ant-input:focus,
+.ant-input-affix-wrapper-focused,
+.ant-select-focused .ant-select-selector,
+.ant-picker-focused {
+  border-color: var(--bms-fg) !important;
+  box-shadow: var(--bms-shadow-focus) !important;
+}
+
+/* ── AntD Switch → монохром ── */
+.ant-switch-checked {
+  background: var(--bms-primary) !important;
+}
+.ant-switch:not(.ant-switch-checked) {
+  background: var(--bms-fg-faint) !important;
+}
+
+/* ── AntD Modal / Drawer → BMS surfaces ── */
+.ant-modal-content,
+.ant-modal-header,
+.ant-drawer-content,
+.ant-drawer-header {
+  background: var(--bms-surface) !important;
+  color: var(--bms-fg) !important;
+}
+.ant-modal-title, .ant-drawer-title {
+  color: var(--bms-fg) !important;
+  font-family: var(--bms-font-sans) !important;
+  font-weight: 600 !important;
+}
+.ant-modal-header, .ant-drawer-header {
+  border-bottom: 1px solid var(--bms-border) !important;
+}
+
+/* ── Page title уніфікація (h1/h2 у заголовках сторінок) ── */
+.bms-root h1,
+.bms-root h2,
+.bms-root h3,
+.bms-root h4 {
+  font-family: var(--bms-font-sans);
+  color: var(--bms-fg);
+  line-height: var(--bms-leading-tight);
+}
+
+/* ── Глобальний фокус для нативних полів (нативні select/input у toolbar-ах) ── */
+.bms-root select:focus,
+.bms-root input:focus,
+.bms-root textarea:focus {
+  outline: none !important;
+}
+
+/* ── Spin / Loader → BMS primary ── */
+.ant-spin-dot-item { background-color: var(--bms-primary) !important; }
+
+/* ── AntD Pagination (там, де воно ще використовується) → BMS ── */
+.ant-pagination-item {
+  border-color: var(--bms-border) !important;
+  border-radius: 9999px !important;
+  font-family: var(--bms-font-sans) !important;
+}
+.ant-pagination-item a { color: var(--bms-fg) !important; }
+.ant-pagination-item-active {
+  background: var(--bms-primary) !important;
+  border-color: var(--bms-primary) !important;
+}
+.ant-pagination-item-active a { color: var(--bms-surface) !important; }
+
+/* ── Toast (react-toastify) → монохром ── */
+.Toastify__toast {
+  font-family: var(--bms-font-sans) !important;
+  border-radius: 6px !important;
+}

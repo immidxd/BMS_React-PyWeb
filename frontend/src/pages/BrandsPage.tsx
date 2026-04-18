@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import MainLayout from '../layouts/MainLayout';
 import Pagination from '../components/common/Pagination';
+import BmsEmpty from '../components/common/BmsEmpty';
 
 /* ── Types ─────────────────────────────────────────────────────────── */
 
@@ -419,7 +420,7 @@ const BrandsPage: React.FC<BrandsPageProps> = ({ currentSearchTerm }) => {
               </thead>
               <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
                 {brands.length === 0 ? (
-                  <tr><td colSpan={7} className="text-center py-12 text-gray-400">Брендів не знайдено</td></tr>
+                  <tr><td colSpan={7}><BmsEmpty label="Брендів не знайдено" /></td></tr>
                 ) : brands.map(b => (
                   <tr
                     key={b.id}

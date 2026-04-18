@@ -1,0 +1,178 @@
+/* ==========================================================================
+   BMS Design System — Colors & Typography tokens
+   Reverse-engineered from immidxd/BMS_React-PyWeb.
+   Use [data-theme="dark"] on <html> or <body> to flip to dark mode.
+   ========================================================================== */
+
+:root {
+  /* ---------- Brand ---------- */
+  --bms-primary:        #111111;   /* primary CTA — monochrome */
+  --bms-primary-hover:  #000000;
+  --bms-accent:         #111111;   /* focus, highlights — monochrome */
+  --bms-accent-hover:   #000000;
+
+  /* ---------- Surfaces ---------- */
+  --bms-bg:             #f5f5f5;   /* page background */
+  --bms-surface:        #ffffff;   /* cards, table, header */
+  --bms-surface-alt:    #f9f9f9;   /* sidebar, parser cards */
+  --bms-surface-3:      #fafafa;   /* table header row */
+  --bms-hover:          #eaeaea;   /* generic hover tint */
+  --bms-hover-strong:   #ececec;   /* stronger hover tint */
+
+  /* ---------- Text ---------- */
+  --bms-fg:             #333333;   /* body text */
+  --bms-fg-muted:       #555555;   /* secondary text */
+  --bms-fg-subtle:      #8c8c8c;   /* tertiary / empty-state */
+  --bms-fg-faint:       #bfbfbf;   /* helper / placeholder */
+  --bms-fg-disabled:    #999999;   /* strike-through old-price */
+
+  /* ---------- Borders ---------- */
+  --bms-border:         #e0e0e0;
+  --bms-border-strong:  #ced4da;   /* input borders */
+  --bms-divider:        #d9d9d9;   /* empty-state icon */
+
+  /* ---------- Status pastels (same across themes) ---------- */
+  --bms-status-green:        #b8ffb8;
+  --bms-status-green-dark:   #75a175;
+  --bms-status-red:          #ffb8b8;
+  --bms-status-orange:       #ffd280;
+  --bms-status-orange-light: #ffcc99;
+  --bms-status-blue:         #c6f5ff;
+  --bms-status-gray:         #e6e6e6;
+
+  /* ---------- Semantic status (Ant-aligned) ---------- */
+  --bms-success:        #52c41a;   /* price-tag, in-stock dot */
+  --bms-danger:         #f5222d;   /* sold dot */
+  --bms-warning:        #faad14;   /* reserved dot */
+  --bms-warning-amber:  #fa8c16;   /* conflict-row left border */
+  --bms-warning-bg:     #fff7e6;   /* conflict-row bg */
+  --bms-warning-bg-hi:  #ffe7ba;   /* conflict-row hover */
+  --bms-danger-strong:  #d32f2f;   /* destructive button */
+  --bms-danger-hover:   #b71c1c;
+
+  /* ---------- Delivery methods ---------- */
+  --bms-delivery-nova-poshta: #ff6666;
+  --bms-delivery-ukrposhta:   #f9de69;
+  --bms-delivery-meest:       #6666ff;
+  --bms-delivery-pickup:      #66cc66;
+  --bms-delivery-courier:     #cc66cc;
+
+  /* ---------- Shadows / elevation ---------- */
+  --bms-shadow-sm:   0 2px 4px rgba(0,0,0,0.10);
+  --bms-shadow-md:   0 4px 6px -1px rgb(0 0 0 / 0.10), 0 2px 4px -2px rgb(0 0 0 / 0.10);
+  --bms-shadow-lg:   0 4px 12px rgba(0,0,0,0.20);
+  --bms-shadow-focus: 0 0 0 2px rgba(17,17,17,0.15);
+
+  /* ---------- Radii ---------- */
+  --bms-radius-xs:   2px;
+  --bms-radius-sm:   4px;   /* inputs, buttons, tags */
+  --bms-radius-md:   8px;   /* cards, dialogs */
+  --bms-radius-full: 9999px;
+
+  /* ---------- Spacing (4-pt base) ---------- */
+  --bms-space-1:  4px;
+  --bms-space-2:  8px;
+  --bms-space-3:  12px;
+  --bms-space-4:  16px;
+  --bms-space-6:  24px;
+  --bms-space-8:  32px;
+  --bms-space-12: 48px;
+
+  /* ---------- Motion ---------- */
+  --bms-dur-fast:     150ms;
+  --bms-dur-med:      200ms;
+  --bms-dur-slow:     300ms;
+  --bms-ease:         ease-in-out;
+
+  /* ---------- Typography — system stack, no webfonts ---------- */
+  --bms-font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+                   'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+                   sans-serif;
+  --bms-font-mono: source-code-pro, Menlo, Monaco, Consolas, 'Courier New', monospace;
+
+  /* Base scale */
+  --bms-text-xs:  12px;   /* table cells */
+  --bms-text-sm:  13px;
+  --bms-text-base: 14px;  /* default body */
+  --bms-text-md:  16px;   /* form inputs */
+  --bms-text-lg:  18px;   /* sidebar trigger */
+  --bms-text-xl:  20px;
+  --bms-text-2xl: 24px;   /* section / empty-state title */
+  --bms-text-3xl: 28px;
+
+  --bms-leading-tight:  1.3;
+  --bms-leading-normal: 1.5;
+
+  --bms-weight-regular: 400;
+  --bms-weight-medium:  500;
+  --bms-weight-semi:    600;
+  --bms-weight-bold:    700;
+}
+
+/* ---------- Dark mode ---------- */
+[data-theme="dark"] {
+  --bms-primary:        #ffffff;   /* primary CTA inverts in dark */
+  --bms-primary-hover:  #e4e4e4;
+  --bms-accent:         #ffffff;
+  --bms-accent-hover:   #e4e4e4;
+
+  --bms-bg:             #2d2d2d;
+  --bms-surface:        #1e1e1e;
+  --bms-surface-alt:    #252525;
+  --bms-surface-3:      #333333;
+  --bms-hover:          #3a3a3a;
+  --bms-hover-blue:     #2a3a52;
+
+  --bms-fg:             #e4e4e4;
+  --bms-fg-muted:       #c7c7c7;
+  --bms-fg-subtle:      #9a9a9a;
+  --bms-fg-faint:       #707070;
+  --bms-fg-disabled:    #808080;
+
+  --bms-border:         #444444;
+  --bms-border-strong:  #555555;
+  --bms-divider:        #555555;
+
+  --bms-warning-bg:     #2b1d0e;
+  --bms-warning-bg-hi:  #3d2b10;
+
+  --bms-shadow-sm:   0 2px 4px rgba(0,0,0,0.40);
+  --bms-shadow-md:   0 4px 8px rgba(0,0,0,0.45);
+  --bms-shadow-lg:   0 4px 12px rgba(0,0,0,0.60);
+}
+
+/* ==========================================================================
+   Semantic base rules — opt-in by targeting your root element
+   ========================================================================== */
+.bms-root {
+  font-family: var(--bms-font-sans);
+  font-size: var(--bms-text-base);
+  line-height: var(--bms-leading-normal);
+  color: var(--bms-fg);
+  background: var(--bms-bg);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.bms-root h1, h1.bms-h1 { font-size: var(--bms-text-3xl); font-weight: var(--bms-weight-bold);    line-height: var(--bms-leading-tight); margin: 0; }
+.bms-root h2, h2.bms-h2 { font-size: var(--bms-text-2xl); font-weight: var(--bms-weight-semi);    line-height: var(--bms-leading-tight); margin: 0; }
+.bms-root h3, h3.bms-h3 { font-size: var(--bms-text-lg);  font-weight: var(--bms-weight-semi);    line-height: var(--bms-leading-tight); margin: 0; }
+.bms-root h4, h4.bms-h4 { font-size: var(--bms-text-md);  font-weight: var(--bms-weight-medium);  line-height: var(--bms-leading-tight); margin: 0; }
+
+.bms-root p, p.bms-p   { font-size: var(--bms-text-base); line-height: var(--bms-leading-normal); margin: 0 0 var(--bms-space-3) 0; }
+.bms-label             { font-size: var(--bms-text-base); font-weight: var(--bms-weight-medium); }
+.bms-caption           { font-size: var(--bms-text-xs);   color: var(--bms-fg-subtle); }
+.bms-code, code.bms-code {
+  font-family: var(--bms-font-mono);
+  font-size: 0.92em;
+  background: var(--bms-surface-alt);
+  padding: 1px 4px;
+  border-radius: var(--bms-radius-xs);
+}
+
+.bms-root a { color: var(--bms-primary); text-decoration: none; }
+.bms-root a:hover { text-decoration: underline; }
+
+/* Prices follow the App.css pattern */
+.bms-price      { font-weight: var(--bms-weight-bold); color: var(--bms-success); }
+.bms-price-old  { text-decoration: line-through; color: var(--bms-fg-disabled); margin-left: 8px; }

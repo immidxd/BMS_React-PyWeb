@@ -7,6 +7,7 @@ import {
   type Supplier, type SupplierList, type SupplierGroup,
 } from '../../services/referenceService';
 import Pagination from '../common/Pagination';
+import BmsEmpty from '../common/BmsEmpty';
 
 type SortCol = 'id' | 'name' | 'product_count' | 'shipments_count' | 'total_spent' | 'avg_price';
 
@@ -263,7 +264,7 @@ const SuppliersTable: React.FC = () => {
             ) : error ? (
               <tr><td colSpan={10} className="text-center py-8 text-red-500">{error}</td></tr>
             ) : items.length === 0 ? (
-              <tr><td colSpan={10} className="text-center py-8 text-gray-400">Постачальників не знайдено</td></tr>
+              <tr><td colSpan={10}><BmsEmpty label="Постачальників не знайдено" /></td></tr>
             ) : (
               items.map(s => (
                 <React.Fragment key={s.id}>

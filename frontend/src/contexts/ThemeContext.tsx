@@ -24,6 +24,7 @@ export const AppThemeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     } else {
       document.documentElement.classList.remove('dark');
     }
+    document.documentElement.setAttribute('data-theme', theme);
   }, [theme]);
 
   const toggleTheme = useCallback(() => {

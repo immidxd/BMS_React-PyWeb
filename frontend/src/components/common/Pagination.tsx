@@ -36,9 +36,7 @@ const Pagination: React.FC<PaginationProps> = ({
         key={i}
         aria-label={`Сторінка ${i}`}
         onClick={() => onPageChange(i)}
-        className={`mx-1 px-3 py-1 rounded-full border transition-colors duration-150 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-blue-400
-          ${i === currentPage ? 'bg-blue-500 text-white border-blue-500' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-100'}
-        `}
+        className={`bms-page-btn ${i === currentPage ? 'is-active' : ''}`}
         disabled={i === currentPage}
       >
         {i}
@@ -57,7 +55,7 @@ const Pagination: React.FC<PaginationProps> = ({
         <button
           aria-label="Перша сторінка"
           onClick={() => onPageChange(1)}
-          className="px-2 py-1 rounded-md text-gray-600 hover:bg-gray-100 disabled:opacity-40 disabled:cursor-not-allowed focus:outline-none"
+          className="bms-page-nav"
           disabled={currentPage === 1}
         >
           &#x21E4;
@@ -65,7 +63,7 @@ const Pagination: React.FC<PaginationProps> = ({
         <button
           aria-label="Попередня сторінка"
           onClick={() => onPageChange(currentPage - 1)}
-          className="px-2 py-1 rounded-md text-gray-600 hover:bg-gray-100 disabled:opacity-40 disabled:cursor-not-allowed focus:outline-none"
+          className="bms-page-nav"
           disabled={currentPage === 1}
         >
           &#8592;
@@ -79,7 +77,7 @@ const Pagination: React.FC<PaginationProps> = ({
               aria-label={`Сторінка ${p.children}`}
               onClick={p.onClick}
               disabled={p.disabled}
-              className={`px-3 py-1 rounded-md border transition-colors duration-150 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-blue-400 ${p.disabled ? 'bg-blue-500 text-white border-blue-500' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-100'}`}
+              className={`bms-page-btn ${p.disabled ? 'is-active' : ''}`}
             >
               {p.children}
             </button>
@@ -89,7 +87,7 @@ const Pagination: React.FC<PaginationProps> = ({
         <button
           aria-label="Наступна сторінка"
           onClick={() => onPageChange(currentPage + 1)}
-          className="px-2 py-1 rounded-md text-gray-600 hover:bg-gray-100 disabled:opacity-40 disabled:cursor-not-allowed focus:outline-none"
+          className="bms-page-nav"
           disabled={currentPage === totalPages || totalPages === 0}
         >
           &#8594;
@@ -97,7 +95,7 @@ const Pagination: React.FC<PaginationProps> = ({
         <button
           aria-label="Остання сторінка"
           onClick={() => onPageChange(totalPages)}
-          className="px-2 py-1 rounded-md text-gray-600 hover:bg-gray-100 disabled:opacity-40 disabled:cursor-not-allowed focus:outline-none"
+          className="bms-page-nav"
           disabled={currentPage === totalPages || totalPages === 0}
         >
           &#x21E5;

@@ -48,12 +48,13 @@ const TableActions = styled(Row)`
 `;
 
 const PriceText = styled.span`
-    font-weight: bold;
+    font-weight: 700;
+    color: var(--bms-success, #389e0d);
 `;
 
 const OldPriceText = styled.span`
     text-decoration: line-through;
-    color: #999;
+    color: var(--bms-fg-disabled, #999);
     margin-left: 8px;
     font-size: 0.85em;
 `;
@@ -399,9 +400,7 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
                         const conflictTitle = issues.join(' • ');
                         return {
                             title: hasIssue ? `⚠ ${conflictTitle}` : undefined,
-                            className: `cursor-pointer ${hasIssue
-                                ? 'bg-orange-50 dark:bg-orange-900/20 border-l-4 border-orange-400 hover:bg-orange-100 dark:hover:bg-orange-900/40'
-                                : 'hover:bg-gray-50 dark:hover:bg-gray-700/50'}`,
+                            className: `cursor-pointer ${hasIssue ? 'bms-conflict-row' : 'bms-row-hover'}`,
                             onDoubleClick: () => { setDetailsId(record.id); setDetailsOpen(true); },
                         };
                     }}

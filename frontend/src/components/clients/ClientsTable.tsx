@@ -3,6 +3,7 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { fetchClients, type Client, type ClientList } from '../../services/referenceService';
 import Pagination from '../common/Pagination';
 import ClientDetailsModal from './ClientDetailsModal';
+import BmsEmpty from '../common/BmsEmpty';
 
 const ClientsTable: React.FC = () => {
   const [clients, setClients] = useState<Client[]>([]);
@@ -100,7 +101,7 @@ const ClientsTable: React.FC = () => {
               </tr>
             ) : clients.length === 0 ? (
               <tr>
-                <td colSpan={10} className="text-center py-8 text-gray-400">Клієнтів не знайдено</td>
+                <td colSpan={10}><BmsEmpty label="Клієнтів не знайдено" /></td>
               </tr>
             ) : (
               clients.map((c) => {

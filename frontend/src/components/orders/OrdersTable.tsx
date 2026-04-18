@@ -15,6 +15,7 @@ import {
   bulkUpdateOrders
 } from '../../services/orderService';
 import Pagination from '../common/Pagination';
+import BmsEmpty from '../common/BmsEmpty';
 
 interface OrdersTableProps {
   onViewOrder?: (orderId: number) => void;
@@ -139,6 +140,15 @@ const OrdersTable: React.FC<OrdersTableProps> = ({
     const option = options.find(opt => opt.id === id);
     return option?.color || '#6c757d';
   };
+  const getDeliveryDotColor = (name: string | null | undefined): string => {
+    const n = (name || '').toLowerCase();
+    if (n.includes('нова') || n.includes('нп')) return 'var(--bms-delivery-nova-poshta)';
+    if (n.includes('укрпошт')) return 'var(--bms-delivery-ukrposhta)';
+    if (n.includes('meest') || n.includes('міст')) return 'var(--bms-delivery-meest)';
+    if (n.includes('самовив') || n.includes('pickup')) return 'var(--bms-delivery-pickup)';
+    if (n.includes("кур'єр") || n.includes('кур') || n.includes('courier')) return 'var(--bms-delivery-courier)';
+    return 'var(--bms-fg-faint)';
+  };
   const getOrderItemsCount = (order: OrderWithDetails): number => order.order_items?.length || 0;
   if (loading && orders.length === 0) return <div>Завантаження замовлень...</div>;
   if (error && orders.length === 0) return <div>Помилка: {error}</div>;
@@ -200,13 +210,13 @@ const OrdersTable: React.FC<OrdersTableProps> = ({
           <tbody>
             {orders.length === 0 ? (
               <tr>
-                <td colSpan={12} className="text-center py-8 text-gray-400">Замовлень не знайдено</td>
+                <td colSpan={12}><BmsEmpty label="Замовлень не знайдено" /></td>
               </tr>
             ) : (
               orders.map(order => (
                 <tr key={order.id} className="border-b last:border-b-0 hover:bg-gray-50">
                   <td className="px-2 py-2"><input type="checkbox" checked={selectedIds.includes(order.id)} onChange={(e) => setSelectedIds(e.target.checked ? [...selectedIds, order.id] : selectedIds.filter(id=>id!==order.id))} /></td>
-                  <td className="px-4 py-2">{order.id}</td>
+                  <td className="px-4 py-2 bms-mono">#{order.id}</td>
                   <td className="px-4 py-2">{order.client_name}</td>
                   <td className="px-4 py-2 whitespace-nowrap">{formatPrice(order.total_amount)}</td>
                   <td className="px-4 py-2 whitespace-nowrap">{formatDate(order.order_date)}</td>
@@ -228,7 +238,16 @@ const OrdersTable: React.FC<OrdersTableProps> = ({
                       {order.payment_status || order.payment_status_name || 'Не вказано'}
                     </span>
                   </td>
-                  <td className="px-4 py-2">{order.delivery_method_name || 'Не вказано'}</td>
+                  <td className="px-4 py-2">
+                    {order.delivery_method_name ? (
+                      <span className="inline-flex items-center gap-1.5 text-xs">
+                        <span className="bms-delivery-dot" style={{ background: getDeliveryDotColor(order.delivery_method_name) }} />
+                        {order.delivery_method_name}
+                      </span>
+                    ) : (
+                      <span className="text-gray-400">Не вказано</span>
+                    )}
+                  </td>
                   <td className="px-4 py-2">{order.tracking_number || '—'}</td>
                   <td className="px-4 py-2">
                     {(() => {

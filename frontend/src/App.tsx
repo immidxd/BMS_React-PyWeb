@@ -22,19 +22,20 @@ const BrandsPage = React.lazy(() => import('./pages/BrandsPage'));
 const PublicationsPage = React.lazy(() => import('./pages/PublicationsPage'));
 const WarehousePage = React.lazy(() => import('./pages/WarehousePage'));
 
-// Logo Component that switches based on theme
+// Logo — мінімалістичний BMS-знак (3 риски + текст), у дусі дизайн-системи
 const AppLogo: React.FC = () => {
     const { theme } = useTheme();
-    const logoSrc = theme === 'dark' 
-        ? '/assets/logo/logo_dark.png'
-        : '/assets/logo/logo.png';
-    
+    const dark = theme === 'dark';
+    const stroke = dark ? '#e4e4e4' : '#111';
     return (
-        <img 
-            src={logoSrc} 
-            alt="Логотип BMS"
-            className="h-12 w-auto" // Increased height from h-10 to h-12
-        />
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }} aria-label="Логотип BMS">
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                <div style={{ height: 3, width: 22, borderRadius: 1, background: stroke }} />
+                <div style={{ height: 3, width: 16, borderRadius: 1, background: stroke }} />
+                <div style={{ height: 3, width: 10, borderRadius: 1, background: stroke }} />
+            </div>
+            <div style={{ fontSize: 15, fontWeight: 600, letterSpacing: '0.3px', color: stroke }}>BMS</div>
+        </div>
     );
 };
 
@@ -44,9 +45,9 @@ const ThemeSwitcherButton: React.FC = () => {
     <button
       onClick={toggleTheme}
       aria-label={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
-      className="p-2 rounded-md bg-gray-100 hover:bg-gray-200 dark:bg-gray-700 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-200 transition-colors duration-150 focus:outline-none focus:ring-1 focus:ring-primary-500"
+      className="bms-icon-btn"
     >
-      {theme === 'dark' ? '☀️' : '🌙'}
+      {theme === 'dark' ? '☀' : '☾'}
     </button>
   );
 };
@@ -58,7 +59,7 @@ const FilterToggleButton: React.FC = () => {
       onClick={toggleFilterPanel}
       aria-label="Відкрити/закрити фільтри"
       aria-expanded={isFilterPanelOpen}
-      className="p-2 rounded-md bg-gray-100 hover:bg-gray-200 dark:bg-gray-700 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-200 transition-colors duration-150 focus:outline-none focus:ring-1 focus:ring-primary-500"
+      className="bms-icon-btn"
     >
       <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
         <path fillRule="evenodd" d="M3 3a1 1 0 011-1h12a1 1 0 011 1v3a1 1 0 01-.293.707L12 12.414V17a1 1 0 01-1.447.894l-2-1A1 1 0 018 16.002V12.414L3.293 6.707A1 1 0 013 6V3z" clipRule="evenodd" />
@@ -156,49 +157,44 @@ const AppContent: React.FC = () => {
   };
 
   return (
-    <div className="app-container min-h-screen flex flex-col bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100 transition-colors duration-300">
-      <nav className="flex space-x-1 px-3 pt-2 bg-gray-100 dark:bg-gray-800">
+    <div className="bms-root app-container min-h-screen flex flex-col">
+      <nav className="bms-tabs">
         {TABS.map(tab => (
           <button
             key={tab.key}
             onClick={() => setActiveTab(tab.key)}
             aria-current={activeTab === tab.key ? 'page' : undefined}
-            className={`px-3 py-1 text-sm font-medium border rounded-t-md transition-colors duration-150 focus:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-primary-500 
-              ${
-                activeTab === tab.key
-                  ? 'border-gray-300 border-b-white dark:border-gray-600 dark:border-b-gray-800 bg-white dark:bg-gray-800 text-primary-700 dark:text-primary-300'
-                  : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-100 hover:bg-gray-200 dark:hover:bg-gray-700'
-              }
-            `}
+            className={`bms-tab ${activeTab === tab.key ? 'is-active' : ''}`}
           >
             {tab.label}
           </button>
         ))}
       </nav>
 
-      <header className="p-2 px-3 bg-white dark:bg-gray-800 shadow-sm sticky top-0 z-40 border-b border-gray-200 dark:border-gray-700">
+      <header className="bms-header">
         <div className="flex items-center space-x-4 w-full">
           <div className="flex-shrink-0">
              <AppLogo />
           </div>
 
           <div className="flex-grow min-w-0">
-            <SearchBar 
-              onSearch={handleGlobalSearch} 
+            <SearchBar
+              onSearch={handleGlobalSearch}
               placeholder={`Пошук у розділі "${TABS.find(t=>t.key===activeTab)?.label}"...`}
               showGlobalResults={true}
               currentScope={activeTab}
             />
           </div>
-          
+
           <div className="flex items-center space-x-2 flex-shrink-0">
             <button
               onClick={() => setParsingDialogOpen(true)}
               aria-label="Запустити парсинг"
               title="Парсинг Google Sheets"
-              className="p-2 rounded-md bg-blue-100 hover:bg-blue-200 dark:bg-blue-900 dark:hover:bg-blue-800 text-blue-700 dark:text-blue-200 transition-colors duration-150 focus:outline-none focus:ring-1 focus:ring-blue-500 text-sm font-medium px-3"
+              className="bms-btn bms-btn-secondary"
             >
-              ⚡ Парсинг
+              <span className="bms-btn-badge">⚡</span>
+              Парсинг
             </button>
             <FilterToggleButton />
             <ThemeSwitcherButton />
