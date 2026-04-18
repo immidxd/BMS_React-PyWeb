@@ -144,7 +144,34 @@ async def get_product_filters(db: Session = Depends(get_db)):
         logger.error(f"Error getting product filters: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Помилка при отриманні фільтрів: {str(e)}")
 
-@router.get("/{product_id}", response_model=schemas.Product)
+@router.get("/api/products/{product_id}/images")
+async def get_product_images(
+    product_id: int = Path(..., ge=1, description="ID товару"),
+    db: Session = Depends(get_db)
+):
+    """Повертає список фото товару (за productnumber).
+    Сортовано: фото з меншим суфіксним номером — головне (першим).
+    Зараз: локальна папка. Майбутнє: cloud-провайдер з тією ж сигнатурою.
+    """
+    try:
+        from services.product_images import list_images
+    except ImportError:
+        from backend.services.product_images import list_images
+
+    product = db.query(models.Product).filter(models.Product.id == product_id).first()
+    if not product:
+        raise HTTPException(status_code=404, detail=f"Товар з ID {product_id} не знайдено")
+
+    productnumber = product.productnumber or ""
+    images = list_images(productnumber)
+    return {
+        "productnumber": productnumber,
+        "count": len(images),
+        "images": [{"filename": img.filename, "url": img.url, "index": img.index} for img in images],
+    }
+
+
+@router.get("/api/products/{product_id}")
 async def get_product(
     product_id: int = Path(..., ge=1, description="ID товару"),
     db: Session = Depends(get_db)
@@ -165,7 +192,7 @@ async def get_product(
         logger.error(f"Error getting product {product_id}: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Помилка при отриманні товару: {str(e)}")
 
-@router.post("/", response_model=schemas.Product, status_code=status.HTTP_201_CREATED)
+@router.post("/api/products", response_model=schemas.Product, status_code=status.HTTP_201_CREATED)
 async def create_product(
     product_data: schemas.ProductCreate,
     db: Session = Depends(get_db)
@@ -192,7 +219,7 @@ async def create_product(
         logger.error(f"Error creating product: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Помилка при створенні товару: {str(e)}")
 
-@router.put("/{product_id}", response_model=schemas.Product)
+@router.put("/api/products/{product_id}", response_model=schemas.Product)
 async def update_product(
     product_id: int = Path(..., ge=1, description="ID товару"),
     product_data: schemas.ProductUpdate = Body(...),
@@ -231,7 +258,7 @@ async def update_product(
         logger.error(f"Error updating product {product_id}: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Помилка при оновленні товару: {str(e)}")
 
-@router.delete("/{product_id}", response_model=Dict[str, Any])
+@router.delete("/api/products/{product_id}", response_model=Dict[str, Any])
 async def delete_product(
     product_id: int = Path(..., ge=1, description="ID товару"),
     db: Session = Depends(get_db)
@@ -259,7 +286,7 @@ async def delete_product(
         logger.error(f"Error deleting product {product_id}: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Помилка при видаленні товару: {str(e)}")
 
-@router.patch("/{product_id}/visibility", response_model=Dict[str, Any])
+@router.patch("/api/products/{product_id}/visibility", response_model=Dict[str, Any])
 async def update_product_visibility(
     product_id: int = Path(..., ge=1, description="ID товару"),
     is_visible: bool = Body(..., embed=True),
@@ -292,7 +319,7 @@ async def update_product_visibility(
         logger.error(f"Error updating product visibility {product_id}: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Помилка при оновленні видимості товару: {str(e)}")
 
-@router.post("/bulk-update", response_model=Dict[str, Any])
+@router.post("/api/products/bulk-update", response_model=Dict[str, Any])
 async def bulk_update_products(
     product_ids: List[int] = Body(..., min_items=1),
     update_data: Dict[str, Any] = Body(...),

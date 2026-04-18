@@ -129,6 +129,101 @@ _parser_lock = threading.Lock()
 # Зв'язка job_id -> UnifiedParser для адресного скасування
 job_parsers: Dict[int, "UnifiedParser"] = {}
 
+# Auto-startup parsing (sheets_full_quick) — запускається при старті backend.
+# Якщо користувач запускає manual парсинг — auto скасовується.
+_auto_lock = threading.Lock()
+_auto_job_id: Optional[int] = None
+
+
+def _cancel_auto_if_running() -> None:
+    """Кооперативне скасування auto-job: ставимо cancel_requested,
+    progress_cb у _run_sheets_job побачить і кине виняток на наступному tick.
+    Викликається на початку кожного manual-endpoint."""
+    global _auto_job_id
+    with _auto_lock:
+        jid = _auto_job_id
+    if not jid:
+        return
+    sess = SessionLocal()
+    try:
+        j = sess.query(ParsingJob).filter(ParsingJob.id == jid).first()
+        if j and j.status in ("queued", "running"):
+            j.cancel_requested = True
+            j.status = "canceled"
+            j.ended_at = datetime.datetime.utcnow()
+            j.updated_at = j.ended_at
+            j.current_step = "superseded by manual"
+            existing = j.logs_head or ""
+            j.logs_head = (existing + "\n[AUTO] superseded by manual parse")[-8000:]
+            sess.commit()
+            logger.info(f"Auto-parse job {jid} canceled — manual parse takes priority")
+    except Exception:
+        sess.rollback()
+    finally:
+        sess.close()
+    with _auto_lock:
+        if _auto_job_id == jid:
+            _auto_job_id = None
+
+
+def start_auto_full_quick() -> Optional[int]:
+    """Запускає sheets_full_quick у фоні при старті backend.
+    Скіпає, якщо вже є активний parsing job (queued/running).
+    Job невидимий у UI: _run_sheets_job не бродкастить на legacy WS,
+    а frontend не має jobId щоб показати ParsingStatus widget."""
+    global _auto_job_id
+    sess = SessionLocal()
+    try:
+        # Sweep orphaned jobs: status='running' but process is dead (older than 1h with no end).
+        cutoff = datetime.datetime.utcnow() - datetime.timedelta(hours=1)
+        orphans = (
+            sess.query(ParsingJob)
+            .filter(ParsingJob.status.in_(["queued", "running"]))
+            .filter(ParsingJob.started_at < cutoff)
+            .all()
+        )
+        for o in orphans:
+            o.status = "failed"
+            o.ended_at = datetime.datetime.utcnow()
+            o.updated_at = o.ended_at
+            o.current_step = "orphaned (sweep on boot)"
+        if orphans:
+            sess.commit()
+            logger.info(f"Auto-parse swept {len(orphans)} orphaned jobs")
+
+        active = (
+            sess.query(ParsingJob)
+            .filter(ParsingJob.status.in_(["queued", "running"]))
+            .order_by(ParsingJob.id.desc())
+            .first()
+        )
+        if active:
+            logger.info(f"Auto-parse skipped: job {active.id} already {active.status}")
+            return None
+        job = ParsingJob(
+            mode="sheets_full_quick",
+            status="queued",
+            current_step="auto-startup",
+            logs_head="[AUTO] Started on app boot",
+        )
+        sess.add(job)
+        sess.commit()
+        sess.refresh(job)
+        jid = job.id
+    except Exception as e:
+        sess.rollback()
+        logger.warning(f"Auto-parse failed to create job: {e}")
+        return None
+    finally:
+        sess.close()
+
+    with _auto_lock:
+        _auto_job_id = jid
+    t = threading.Thread(target=_run_sheets_job, args=(jid, "full", "quick"), daemon=True)
+    t.start()
+    logger.info(f"Auto-parse started: job {jid} (sheets_full_quick, background)")
+    return jid
+
 # Глобальні змінні для відстеження парсингу
 current_parser: Optional[UnifiedParser] = None
 parsing_status = {
@@ -269,6 +364,8 @@ async def test_parsing_job(mode: str = "quick_update", db: Session = Depends(get
 @router.post("/run", tags=["parsing"])
 async def run_parsing_job(mode: str = "quick_update", params: Optional[Dict] = None, db: Session = Depends(get_db)):
     """Запускає парсинг. Sheets-режими (sheets_*) делегуються окремим handlers."""
+    # Manual parse → скасовуємо auto-job (якщо є), щоб не дублювати навантаження
+    _cancel_auto_if_running()
     # ── Sheets режими: sheets_<target>_<speed> ──────────────────────────────
     # mode examples: sheets_products_quick, sheets_orders_full, sheets_full_quick
     if mode.startswith("sheets_"):
@@ -1065,6 +1162,17 @@ def _run_sheets_job(job_id: int, target: str, mode: str):
         _sheet_start = [_time.time()]
 
         def progress_cb(pct, msg):
+            # Кооперативне скасування: окрема сесія тільки на read,
+            # щоб виняток не перехопився внутрішнім except нижче
+            cancel_check = SessionLocal()
+            try:
+                j_chk = cancel_check.query(ParsingJob).filter(ParsingJob.id == job_id).first()
+                cancel_now = bool(j_chk and j_chk.cancel_requested)
+            finally:
+                cancel_check.close()
+            if cancel_now:
+                raise RuntimeError("canceled")
+
             s = SessionLocal()
             try:
                 j = s.query(ParsingJob).filter(ParsingJob.id == job_id).first()
@@ -1139,19 +1247,32 @@ def _run_sheets_job(job_id: int, target: str, mode: str):
             sess.commit()
 
     except Exception as e:
-        logger.exception(f"Sheets job {job_id} failed: {e}")
+        is_cancel = (str(e) == "canceled")
+        if is_cancel:
+            logger.info(f"Sheets job {job_id} canceled cooperatively")
+        else:
+            logger.exception(f"Sheets job {job_id} failed: {e}")
         s2 = SessionLocal()
         try:
             j = s2.query(ParsingJob).filter(ParsingJob.id == job_id).first()
             if j:
-                j.status = "failed"
-                j.error_summary = str(e)[:500]
+                if is_cancel or j.status == "canceled":
+                    j.status = "canceled"
+                    j.current_step = "canceled"
+                else:
+                    j.status = "failed"
+                    j.error_summary = str(e)[:500]
                 j.ended_at = datetime.datetime.utcnow()
                 j.updated_at = j.ended_at
                 s2.commit()
         finally:
             s2.close()
     finally:
+        # Очищаємо посилання на auto-job, якщо це був він
+        global _auto_job_id
+        with _auto_lock:
+            if _auto_job_id == job_id:
+                _auto_job_id = None
         sess.close()
 
 
@@ -1162,6 +1283,7 @@ async def sheets_parse_products(mode: str = "quick", db: Session = Depends(get_d
     mode: quick (останні 30 аркушів) | full (всі аркуші)
     """
     import threading
+    _cancel_auto_if_running()
     job = ParsingJob(mode=f"sheets_products_{mode}", status="queued")
     db.add(job)
     db.commit()
@@ -1178,6 +1300,7 @@ async def sheets_parse_orders(mode: str = "quick", db: Session = Depends(get_db)
     mode: quick (останні 30 аркушів) | full (всі аркуші)
     """
     import threading
+    _cancel_auto_if_running()
     job = ParsingJob(mode=f"sheets_orders_{mode}", status="queued")
     db.add(job)
     db.commit()
@@ -1194,6 +1317,7 @@ async def sheets_parse_full(mode: str = "quick", db: Session = Depends(get_db)):
     mode: quick | full
     """
     import threading
+    _cancel_auto_if_running()
     job = ParsingJob(mode=f"sheets_full_{mode}", status="queued")
     db.add(job)
     db.commit()
@@ -1211,6 +1335,7 @@ async def sheets_parse_workspace(db: Session = Depends(get_db)):
     Без співпадіння → новий запис (без номеру → productnumber='???').
     """
     import threading
+    _cancel_auto_if_running()
     job = ParsingJob(mode="sheets_workspace", status="queued")
     db.add(job)
     db.commit()

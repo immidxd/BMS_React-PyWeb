@@ -618,18 +618,18 @@ def get_product_with_relations(db: Session, product_id: int) -> Optional[Dict[st
     try:
         # SQL запит з JOIN для отримання пов'язаних даних
         query = text("""
-            SELECT p.*, 
-                   t.name as type_name,
-                   st.name as subtype_name,
-                   b.name as brand_name,
-                   g.name as gender_name,
-                   c.name as color_name,
-                   oc.name as owner_country_name,
-                   mc.name as manufacturer_country_name,
-                   s.name as status_name,
-                   cond.name as condition_name,
-                   i.name as import_name,
-                   d.name as delivery_name
+            SELECT p.*,
+                   t.typename as type_name,
+                   st.subtypename as subtype_name,
+                   b.brandname as brand_name,
+                   g.gendername as gender_name,
+                   c.colorname as color_name,
+                   oc.countryname as owner_country_name,
+                   mc.countryname as manufacturer_country_name,
+                   s.statusname as status_name,
+                   cond.conditionname as condition_name,
+                   i.importname as import_name,
+                   d.deliveryname as delivery_name
             FROM products p
             LEFT JOIN types t ON p.typeid = t.id
             LEFT JOIN subtypes st ON p.subtypeid = st.id

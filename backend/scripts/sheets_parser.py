@@ -454,6 +454,43 @@ def _is_garbage_color_value(value: str) -> bool:
     return False
 
 
+def _is_garbage_brand_value(value: str) -> bool:
+    """Return True if value looks like a description fragment, color, or material
+    rather than a brand name.
+
+    Real brands are Latin-prefixed (Nike, Tamaris) or properly-capitalized Cyrillic
+    proper nouns ("Сказка Kids"). Description leakage from column-shift looks like:
+    lowercase Cyrillic, contains commas, or matches material/feature keywords.
+    """
+    import re
+    v = (value or "").strip()
+    if not v:
+        return True
+    # Question-mark placeholders
+    if re.match(r'^[?]+$', v):
+        return True
+    # Comma → almost certainly a description ("замша з камінцями, шнурівка")
+    if ',' in v or ';' in v:
+        return True
+    # Starts with lowercase Cyrillic — real brands never do
+    if re.match(r'^[а-яіїєґ]', v):
+        return True
+    # Prepositional phrases ("на підборах", "з набору", "без застібки")
+    if re.match(r'^(на|з|із|зі|без|для|під|над|при)\s', v, re.IGNORECASE):
+        return True
+    # Material / feature keywords typical of description column leakage
+    desc_keywords = (
+        'замш', 'шкір', 'шкіра', 'текстил', 'тканин', 'шнурів', 'шнурок',
+        'підбор', 'каблук', 'камінц', 'стрази', 'пряжк', 'липуч', 'застібк',
+        'набір', 'набору', 'принт', 'квіт', 'смуг', 'смуж', 'лого', 'вставк',
+    )
+    v_low = v.lower()
+    for kw in desc_keywords:
+        if kw in v_low:
+            return True
+    return False
+
+
 def _looks_like_brand_name(session, value: str) -> bool:
     """Return True if value matches an existing brand (case-insensitive, normalized).
     Used to prevent brand names from being mistakenly stored as subtypes/types
@@ -573,6 +610,10 @@ def _get_or_create(session: Session, model, unique_field: str, value: str):
     # ── Brand: check blocklist → aliases → normalized comparison ──
     if model is Brand:
         from sqlalchemy import text as sa_text
+
+        if _is_garbage_brand_value(value):
+            logger.warning(f"[parser-guard] Rejected Brand '{value}' — looks like description/material, not a brand name")
+            return None
 
         val_key = _normalize_brand_key(value)
         if not val_key:
