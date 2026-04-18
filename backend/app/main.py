@@ -100,11 +100,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Prevent caching of API responses (PyWebView / browser may cache GET responses)
+# Prevent caching of API responses + index.html (PyWebView кешує index.html → 404 після нового білду)
 @app.middleware("http")
 async def no_cache_api(request: Request, call_next):
     response = await call_next(request)
-    if request.url.path.startswith("/api/"):
+    path = request.url.path
+    is_api = path.startswith("/api/")
+    is_index = path in ("/", "/index.html") or (not path.startswith("/static/") and "." not in path.split("/")[-1])
+    if is_api or is_index:
         response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
         response.headers["Pragma"] = "no-cache"
     return response
@@ -146,6 +149,18 @@ if brands:
 if publications:
     app.include_router(publications.router, tags=["publications"])  # routes already prefixed with /api
 
+# Mount product images directory (local for now, cloud-ready abstraction in services/product_images.py)
+try:
+    from services.product_images import get_images_dir, URL_PREFIX as IMG_URL_PREFIX
+except ImportError:
+    from backend.services.product_images import get_images_dir, URL_PREFIX as IMG_URL_PREFIX
+_images_dir = get_images_dir()
+if os.path.isdir(_images_dir):
+    logger.info(f"Mounting product images from {_images_dir} → {IMG_URL_PREFIX}")
+    app.mount(IMG_URL_PREFIX, StaticFiles(directory=_images_dir), name="product-images")
+else:
+    logger.warning(f"Product images dir not found: {_images_dir} — image gallery will be empty")
+
 # Mount static files from frontend build if available
 frontend_build_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../frontend/build"))
 if os.path.exists(frontend_build_dir):
@@ -154,6 +169,27 @@ if os.path.exists(frontend_build_dir):
 else:
     logger.warning("Frontend build directory not found, static files will not be served")
 
+# ── Auto-startup parse ────────────────────────────────────────────────────────
+# При кожному запуску backend автоматично запускаємо "Швидкий повний парсинг
+# (товар+замовлення)" у фоновому режимі. Користувач не бачить цього в UI
+# (немає jobId у frontend стейті). Якщо користувач вручну запустить парсинг —
+# auto-job скасується кооперативно (пріоритет manual).
+@app.on_event("startup")
+async def _auto_startup_parse():
+    import asyncio
+
+    async def _delayed_start():
+        # Невелика затримка щоб додаток повністю стартував і встиг ініціалізуватись
+        await asyncio.sleep(8)
+        try:
+            from routers.parsing import start_auto_full_quick
+            start_auto_full_quick()
+        except Exception as e:
+            logger.warning(f"Auto-parse startup failed: {e}")
+
+    asyncio.create_task(_delayed_start())
+
+
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000) 
+    uvicorn.run(app, host="0.0.0.0", port=8000)

@@ -193,13 +193,23 @@ def get_orders(
     sort_col = allowed_sort.get(sort_by, "o.order_date")
     sort_dir_sql = "ASC" if sort_dir.lower() == "asc" else "DESC"
 
-    # ── Count ────────────────────────────────────────────────────────────
+    # ── Count + filtered sum ─────────────────────────────────────────────
+    # Статуси що виключаються з суми: Відміна, Ігнорування, Подарунок, Обмін/Повернення, В Черзі
+    EXCLUDED_STATUS_IDS = (5, 6, 7, 8, 9)
     count_sql = f"""
-        SELECT COUNT(*) FROM orders o
+        SELECT
+            COUNT(*),
+            COALESCE(SUM(CASE
+                WHEN o.order_status_id IS NULL OR o.order_status_id NOT IN {EXCLUDED_STATUS_IDS}
+                THEN o.total_amount ELSE 0
+            END), 0) AS filtered_sum
+        FROM orders o
         LEFT JOIN clients c ON o.client_id = c.id
         {where_sql}
     """
-    total = db.execute(sa_text(count_sql), params).scalar() or 0
+    count_row = db.execute(sa_text(count_sql), params).fetchone()
+    total = count_row[0] or 0
+    filtered_sum = float(count_row[1] or 0)
     pages = max(1, (total + per_page - 1) // per_page)
     offset = (page - 1) * per_page
 
@@ -332,7 +342,7 @@ def get_orders(
             "order_items": items_by_order.get(r["id"], []),
         })
 
-    return {"items": items, "total": total, "page": page, "per_page": per_page, "pages": pages}
+    return {"items": items, "total": total, "page": page, "per_page": per_page, "pages": pages, "filtered_sum": filtered_sum}
 
 @router.post("/api/orders/bulk-update")
 async def bulk_update_orders(

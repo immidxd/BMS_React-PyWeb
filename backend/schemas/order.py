@@ -137,6 +137,7 @@ class OrderList(BaseModel):
     page: int
     per_page: int
     pages: int
+    filtered_sum: float = 0.0  # сума по всіх відфільтрованих (без Відміни/Ігнор/Подарунок/Обмін/В Черзі)
 
 # Order filters
 class OrderFilters(BaseModel):
