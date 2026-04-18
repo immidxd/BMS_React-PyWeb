@@ -77,18 +77,27 @@ def main():
     frontend_url = "http://localhost:8000"
     logger.info(f"Connecting to frontend at {frontend_url}")
     
+    # Очистити WebKit кеш щоб уникнути 404 після нового білду (змінені хеші JS-файлів)
+    def clear_webview_cache(window):
+        try:
+            window.evaluate_js(
+                "if(window.caches){caches.keys().then(ks=>ks.forEach(k=>caches.delete(k)));}"
+            )
+        except Exception:
+            pass
+
     # Create the window
     logger.info("Starting PyWebView window")
     window = webview.create_window(
-        "Product and Order Management System", 
+        "Product and Order Management System",
         frontend_url,
-        width=1200, 
+        width=1200,
         height=800,
         min_size=(800, 600)
     )
-    
+
     # Start the PyWebView application
-    webview.start(debug=True)
+    webview.start(clear_webview_cache, window, debug=True)
 
 if __name__ == "__main__":
     main()
