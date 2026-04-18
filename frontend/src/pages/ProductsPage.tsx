@@ -28,7 +28,7 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
   const [selectedFilters, setSelectedFilters] = useState<ProductFilterType>({});
   const navigate = useNavigate();
   const location = useLocation();
-  const [onlyUnsold, setOnlyUnsold] = useState<boolean>(false);
+  const [onlyUnsold, setOnlyUnsold] = useState<boolean>(true);
   const [onlyProblematic, setOnlyProblematic] = useState<boolean>(false);
   const [onlyRostovka, setOnlyRostovka] = useState<boolean>(false);
   const [selectedShipmentId, setSelectedShipmentId] = useState<number | undefined>(undefined);
@@ -154,7 +154,7 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
       const ps = Number(params.get('per_page')) || 20;
       const sb = params.get('sort_by') || 'created_at';
       const sd = (params.get('sort_dir') as 'asc' | 'desc') || 'desc';
-      const ou = params.get('only_unsold') === 'true';
+      const ou = params.has('only_unsold') ? params.get('only_unsold') === 'true' : true;
       const op = params.get('only_problematic') === 'true';
       const or_ = params.get('only_rostovka') === 'true';
       const sh = params.get('shipment_id') ? Number(params.get('shipment_id')) : undefined;

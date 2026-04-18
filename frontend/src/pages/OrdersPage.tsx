@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import MainLayout from '../layouts/MainLayout';
 import Pagination from '../components/common/Pagination';
+import ProductDetailsModal from '../components/products/ProductDetailsModal';
 import { DatePicker } from 'antd';
 import dayjs from 'dayjs';
 import 'dayjs/locale/uk';
@@ -403,6 +404,8 @@ const OrdersPage: React.FC<OrdersPageProps> = ({ currentSearchTerm }) => {
   const [error, setError] = useState<string | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [expandedId, setExpandedId] = useState<number | null>(null);
+  const [cardProductId, setCardProductId] = useState<number | null>(null);
+  const [filteredSum, setFilteredSum] = useState<number>(0);
   const [filterOpts, setFilterOpts] = useState<FilterOptions | null>(null);
   const [filters, setFilters] = useState<ActiveFilters>({});
 
@@ -439,6 +442,7 @@ const OrdersPage: React.FC<OrdersPageProps> = ({ currentSearchTerm }) => {
       setOrders(data.items || []);
       setTotal(data.total || 0);
       setPages(data.pages || 1);
+      setFilteredSum(data.filtered_sum || 0);
     } catch (e: any) { setError(e.message || 'Помилка завантаження'); }
     finally { setLoading(false); setIsRefreshing(false); }
   }, [buildParams]);
@@ -657,14 +661,37 @@ const OrdersPage: React.FC<OrdersPageProps> = ({ currentSearchTerm }) => {
                               </tr>
                             </thead>
                             <tbody>
-                              {order.order_items.map(item => (
+                              {order.order_items.map(item => {
+                                const googleQ = (item.product_name || '').trim();
+                                const googleUrl = googleQ ? `https://www.google.com/search?q=${encodeURIComponent(googleQ)}` : null;
+                                return (
                                 <tr key={item.id} className="border-t border-blue-100 dark:border-blue-800">
-                                  <td className="pr-4 py-1 font-mono text-blue-600 dark:text-blue-400">{item.product_number}</td>
-                                  <td className="pr-4 py-1 text-gray-700 dark:text-gray-300">{item.product_name}</td>
+                                  <td className="pr-4 py-1 font-mono">
+                                    {item.product_id ? (
+                                      <span
+                                        className="cursor-pointer text-blue-600 hover:text-blue-800 hover:underline dark:text-blue-400 dark:hover:text-blue-300"
+                                        title="Відкрити картку товару"
+                                        onClick={(e) => { e.stopPropagation(); setCardProductId(item.product_id); }}
+                                      >{item.product_number}</span>
+                                    ) : (
+                                      <span className="text-gray-500 dark:text-gray-400">{item.product_number}</span>
+                                    )}
+                                  </td>
+                                  <td className="pr-4 py-1">
+                                    {googleUrl ? (
+                                      <a href={googleUrl} target="_blank" rel="noopener noreferrer"
+                                        className="cursor-pointer text-blue-600 hover:text-blue-800 hover:underline dark:text-blue-400 dark:hover:text-blue-300"
+                                        title="Пошук в Google"
+                                        onClick={(e) => e.stopPropagation()}
+                                      >{item.product_name}</a>
+                                    ) : (
+                                      <span className="text-gray-700 dark:text-gray-300">{item.product_name}</span>
+                                    )}
+                                  </td>
                                   <td className="pr-4 py-1">{item.quantity}</td>
                                   <td className="py-1 font-semibold">{fmtMoney(item.price)}</td>
                                 </tr>
-                              ))}
+                              );})}
                             </tbody>
                           </table>
                         </td>
@@ -681,9 +708,17 @@ const OrdersPage: React.FC<OrdersPageProps> = ({ currentSearchTerm }) => {
         {/* Footer pagination */}
         <div className="fixed bottom-0 left-0 right-0 px-4 py-3 bg-white/95 dark:bg-gray-800/95 backdrop-blur border-t border-gray-100 dark:border-gray-700 z-20">
           <div className="max-w-screen-2xl mx-auto flex items-center justify-between gap-4">
-            <span className="text-sm text-gray-500 dark:text-gray-400">
-              Всього: <strong>{total}</strong> замовлень
-            </span>
+            <div className="flex items-center gap-4">
+              <span className="text-sm text-gray-500 dark:text-gray-400">
+                Всього: <strong>{total}</strong> замовлень
+              </span>
+              {filteredSum > 0 && (
+                <span className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 text-sm font-semibold text-green-700 dark:text-green-300">
+                  <span className="text-xs font-normal text-green-500 dark:text-green-400">сума</span>
+                  {new Intl.NumberFormat('uk-UA', { style: 'currency', currency: 'UAH', maximumFractionDigits: 0 }).format(filteredSum)}
+                </span>
+              )}
+            </div>
             <Pagination
               currentPage={page}
               totalPages={pages}
@@ -699,6 +734,11 @@ const OrdersPage: React.FC<OrdersPageProps> = ({ currentSearchTerm }) => {
         </div>
         <div className="h-20" />
       </div>
+      <ProductDetailsModal
+        productId={cardProductId}
+        open={cardProductId !== null}
+        onClose={() => setCardProductId(null)}
+      />
     </MainLayout>
   );
 };

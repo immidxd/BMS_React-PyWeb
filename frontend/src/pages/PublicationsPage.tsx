@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import MainLayout from '../layouts/MainLayout';
 import Pagination from '../components/common/Pagination';
+import ProductDetailsModal from '../components/products/ProductDetailsModal';
 
 /* ── Types ─────────────────────────────────────────────────────────── */
 
@@ -356,6 +357,7 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
   const [stats, setStats] = useState<PublicationStats | null>(null);
   const [syncOpen, setSyncOpen] = useState(false);
   const [detailProductId, setDetailProductId] = useState<number | null>(null);
+  const [cardProductId, setCardProductId] = useState<number | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [unpublishing, setUnpublishing] = useState<number | null>(null);
   const [bulkUnpublishing, setBulkUnpublishing] = useState(false);
@@ -614,10 +616,30 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
                         ) : <span className="text-gray-300">—</span>}
                       </td>
                       <td className="px-3 py-2 font-mono text-xs text-gray-900 dark:text-gray-100 whitespace-nowrap">
-                        {item.productnumber}
+                        {item.product_id ? (
+                          <span
+                            className="cursor-pointer text-blue-600 hover:text-blue-800 hover:underline dark:text-blue-400 dark:hover:text-blue-300"
+                            title="Відкрити картку товару"
+                            onClick={(e) => { e.stopPropagation(); setCardProductId(item.product_id as number); }}
+                          >
+                            {item.productnumber}
+                          </span>
+                        ) : item.productnumber}
                       </td>
-                      <td className="px-3 py-2 text-gray-700 dark:text-gray-300 truncate max-w-xs">
-                        {item.model || '—'}
+                      <td className="px-3 py-2 truncate max-w-xs">
+                        {item.model ? (() => {
+                          const q = (item.model || '').trim();
+                          return q ? (
+                            <a
+                              href={`https://www.google.com/search?q=${encodeURIComponent(q)}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="cursor-pointer text-blue-600 hover:text-blue-800 hover:underline dark:text-blue-400 dark:hover:text-blue-300"
+                              title="Пошук в Google"
+                              onClick={(e) => e.stopPropagation()}
+                            >{item.model}</a>
+                          ) : <span className="text-gray-700 dark:text-gray-300">{item.model}</span>;
+                        })() : <span className="text-gray-700 dark:text-gray-300">—</span>}
                       </td>
                       <td className="px-3 py-2">
                         <span className={`text-xs px-2 py-0.5 rounded ${
@@ -792,6 +814,11 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
       <DetailModal
         productId={detailProductId}
         onClose={() => setDetailProductId(null)}
+      />
+      <ProductDetailsModal
+        productId={cardProductId}
+        open={cardProductId !== null}
+        onClose={() => setCardProductId(null)}
       />
     </MainLayout>
   );

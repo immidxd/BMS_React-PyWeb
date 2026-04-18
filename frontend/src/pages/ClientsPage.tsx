@@ -185,7 +185,11 @@ const ClientsPage: React.FC<ClientsPageProps> = ({ currentSearchTerm }) => {
                     <td colSpan={8} className="text-center py-12 text-gray-400">Клієнтів не знайдено</td>
                   </tr>
                 ) : clients.map(c => (
-                  <tr key={c.id} className="hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors">
+                  <tr
+                    key={c.id}
+                    className="hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors cursor-pointer select-none"
+                    onDoubleClick={() => { setSelectedClientId(c.id); setModalOpen(true); }}
+                  >
                     <td className="px-3 py-2 text-gray-500 dark:text-gray-400 font-mono text-xs">{c.id}</td>
                     <td className="px-3 py-2 font-medium text-gray-900 dark:text-gray-100 max-w-[200px]">
                       <span className="block truncate">{c.full_name || '—'}</span>

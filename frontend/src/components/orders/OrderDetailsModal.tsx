@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { fetchOrder, type OrderWithDetails, updateOrder, type FilterOptions } from '../../services/orderService';
+import ProductDetailsModal from '../products/ProductDetailsModal';
 
 interface Props {
   orderId: number | null;
@@ -14,6 +15,7 @@ const OrderDetailsModal: React.FC<Props> = ({ orderId, open, onClose, filterOpti
   const [order, setOrder] = useState<OrderWithDetails | null>(null);
   const [saving, setSaving] = useState(false);
   const [edit, setEdit] = useState<Partial<OrderWithDetails>>({});
+  const [cardProductId, setCardProductId] = useState<number | null>(null);
 
   useEffect(() => {
     if (!open || !orderId) return;
@@ -136,7 +138,17 @@ const OrderDetailsModal: React.FC<Props> = ({ orderId, open, onClose, filterOpti
                 <tbody>
                   {order.order_items?.map((it) => (
                     <tr key={it.id} className="border-t">
-                      <td className="px-3 py-2">{it.product_number || it.product_id}</td>
+                      <td className="px-3 py-2">
+                        {it.product_id ? (
+                          <span
+                            className="cursor-pointer text-blue-600 hover:text-blue-800 hover:underline dark:text-blue-400 dark:hover:text-blue-300"
+                            title="Відкрити картку товару"
+                            onClick={(e) => { e.stopPropagation(); setCardProductId(it.product_id); }}
+                          >
+                            {it.product_number || it.product_id}
+                          </span>
+                        ) : (it.product_number || '—')}
+                      </td>
                       <td className="px-3 py-2">{it.product_name || '—'}</td>
                       <td className="px-3 py-2 text-right">{it.quantity}</td>
                       <td className="px-3 py-2 text-right">{new Intl.NumberFormat('uk-UA',{style:'currency',currency:'UAH'}).format(it.price)}</td>
@@ -148,6 +160,11 @@ const OrderDetailsModal: React.FC<Props> = ({ orderId, open, onClose, filterOpti
           </div>
         )}
       </div>
+      <ProductDetailsModal
+        productId={cardProductId}
+        open={cardProductId !== null}
+        onClose={() => setCardProductId(null)}
+      />
     </div>
   );
 };

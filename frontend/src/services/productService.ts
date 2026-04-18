@@ -99,6 +99,20 @@ export const productService = {
             throw error;
         }
     },
+
+    /**
+     * Отримати фото товару (з локальної папки/cloud — за productnumber).
+     * Повертає список з url для відображення в галереї картки.
+     */
+    async getProductImages(id: number): Promise<{ productnumber: string; count: number; images: { filename: string; url: string; index: number }[] }> {
+        try {
+            const response = await axios.get(`${API_URL}/${id}/images`);
+            return response.data;
+        } catch (error) {
+            console.error(`Error fetching product images ${id}:`, error);
+            return { productnumber: '', count: 0, images: [] };
+        }
+    },
     
     /**
      * Створити новий товар

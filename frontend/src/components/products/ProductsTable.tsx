@@ -181,6 +181,20 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
         }
     };
     
+    // Click-to-Google: бренд + модель + маркування (зовнішній артикул бренду).
+    // Внутрішній номер `Ф3713` — не справжній артикул, у Google такого нема, тому пропускаємо.
+    // Маркування — це фабричний код виробника (напр. "IF6449"), якраз те що шукається.
+    const buildGoogleUrl = (record: Product): string | null => {
+        const r = record as any;
+        const parts = [record.brand_name, r.model, r.marking].filter(Boolean) as string[];
+        if (!parts.length) return null;
+        const q = parts.join(' ').replace(/\s+/g, ' ').trim();
+        if (!q) return null;
+        return `https://www.google.com/search?q=${encodeURIComponent(q)}`;
+    };
+    const googleCellClass = "cursor-pointer text-blue-600 hover:text-blue-800 hover:underline dark:text-blue-400 dark:hover:text-blue-300";
+    const googleTitle = "Пошук в Google: бренд + модель + артикул";
+
     // Опис усіх можливих колонок уніфіковано, з рендерами
     const allColumns: Record<string, any> = {
         id: {
@@ -190,7 +204,22 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
             title: 'Номер', dataIndex: 'productnumber', key: 'productnumber', width: 80,
             render: (text: string, record: Product) => (
                 <div className="flex flex-col gap-0.5">
-                    <span className="text-xs text-left font-medium text-gray-800 dark:text-gray-200">{(text || '').replace(/^#/, '')}</span>
+                    {(() => {
+                        const url = buildGoogleUrl(record);
+                        const label = (text || '').replace(/^#/, '');
+                        return url ? (
+                            <a
+                                href={url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className={`text-xs text-left font-medium ${googleCellClass}`}
+                                title={googleTitle}
+                                onClick={(e) => e.stopPropagation()}
+                            >{label}</a>
+                        ) : (
+                            <span className="text-xs text-left font-medium text-gray-800 dark:text-gray-200">{label}</span>
+                        );
+                    })()}
                     {record.is_rostovka && (
                         <Tooltip title={`Ростовка — набір розмірів (${record.quantity} од.)`}>
                             <span className="inline-flex items-center gap-0.5 px-1 py-0 rounded text-[9px] font-semibold bg-purple-100 text-purple-700 border border-purple-200 w-fit cursor-help">
@@ -201,7 +230,17 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
                 </div>
             ),
         },
-        model: { title: 'Модель', dataIndex: 'model', key: 'model', width: 140 },
+        model: { title: 'Модель', dataIndex: 'model', key: 'model', width: 140,
+            render: (text: string, record: Product) => {
+                if (!text) return null;
+                const url = buildGoogleUrl(record);
+                return url ? (
+                    <a href={url} target="_blank" rel="noopener noreferrer"
+                        className={googleCellClass} title={googleTitle}
+                        onClick={(e) => e.stopPropagation()}
+                    >{text}</a>
+                ) : <span>{text}</span>;
+            } },
         brand_name: { title: 'Бренд', dataIndex: 'brand_name', key: 'brand_name', width: 110 },
         type_name: { title: 'Тип', dataIndex: 'type_name', key: 'type_name', width: 110 },
         subtype_name: { title: 'Підтип', dataIndex: 'subtype_name', key: 'subtype_name', width: 120 },
@@ -276,7 +315,17 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
             } },
         condition_name: { title: 'Стан', dataIndex: 'condition_name', key: 'condition_name', width: 75 },
         clonednumbers: { title: 'Номера-клони', dataIndex: 'clonednumbers', key: 'clonednumbers', width: 160 },
-        marking: { title: 'Маркування', dataIndex: 'marking', key: 'marking', width: 140 },
+        marking: { title: 'Маркування', dataIndex: 'marking', key: 'marking', width: 140,
+            render: (text: string, record: Product) => {
+                if (!text) return null;
+                const url = buildGoogleUrl(record);
+                return url ? (
+                    <a href={url} target="_blank" rel="noopener noreferrer"
+                        className={googleCellClass} title={googleTitle}
+                        onClick={(e) => e.stopPropagation()}
+                    >{text}</a>
+                ) : <span>{text}</span>;
+            } },
         year: { title: 'Рік', dataIndex: 'year', key: 'year', width: 50 },
         description: { title: 'Опис', dataIndex: 'description', key: 'description', width: 200, ellipsis: true },
         supplier_name: { title: 'Постачальник', dataIndex: 'supplier_name', key: 'supplier_name', width: 160 },

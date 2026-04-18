@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import MainLayout from '../layouts/MainLayout';
+import ProductDetailsModal from '../components/products/ProductDetailsModal';
+import ProductNumberLink from '../components/products/ProductNumberLink';
 import {
   statisticsService,
   type SalesStatsResponse,
@@ -136,6 +138,7 @@ interface StatisticsPageProps {
 const StatisticsPage: React.FC<StatisticsPageProps> = () => {
   const [years, setYears] = useState<number[]>([]);
   const [summary, setSummary] = useState<SummaryStats | null>(null);
+  const [cardProductId, setCardProductId] = useState<number | null>(null);
 
   // Sales state
   const [salesPeriod, setSalesPeriod] = useState<PeriodType>('month');
@@ -900,7 +903,11 @@ const StatisticsPage: React.FC<StatisticsPageProps> = () => {
                       {productStats.top_products.map((p, i) => (
                         <tr key={p.productnumber} className={i % 2 === 0 ? 'bg-white dark:bg-gray-900' : 'bg-gray-50 dark:bg-gray-800'}>
                           <td className="px-2 py-1 text-gray-400">{i + 1}</td>
-                          <td className="px-2 py-1 font-mono text-blue-600">{(p.productnumber || '').replace(/^#/, '')}</td>
+                          <td className="px-2 py-1 font-mono">
+                            {p.productnumber ? (
+                              <ProductNumberLink productNumber={p.productnumber} onOpen={setCardProductId} />
+                            ) : '—'}
+                          </td>
                           <td className="px-2 py-1 text-gray-700 dark:text-gray-300 max-w-[120px] truncate">{p.model || '—'}</td>
                           <td className="px-2 py-1 text-gray-600 dark:text-gray-400">{p.brand || '—'}</td>
                           <td className="px-2 py-1 text-gray-500">{p.type || '—'}</td>
@@ -918,6 +925,11 @@ const StatisticsPage: React.FC<StatisticsPageProps> = () => {
           )}
         </Section>
       </div>
+      <ProductDetailsModal
+        productId={cardProductId}
+        open={cardProductId !== null}
+        onClose={() => setCardProductId(null)}
+      />
     </MainLayout>
   );
 };

@@ -1,8 +1,8 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useMemo } from 'react';
 import { productService } from '../../services/productService';
 import type { Product } from '../../types/product';
-import { Tag, Spin } from 'antd';
-import { CloseOutlined, PictureOutlined } from '@ant-design/icons';
+import { Tag, Spin, Image } from 'antd';
+import { CloseOutlined, PictureOutlined, LeftOutlined, RightOutlined } from '@ant-design/icons';
 
 interface Props {
   productId: number | null;
@@ -10,35 +10,56 @@ interface Props {
   onClose: () => void;
 }
 
+interface GalleryImage {
+  filename: string;
+  url: string;
+  index: number;
+}
+
 const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose }) => {
   const [loading, setLoading] = useState(false);
   const [product, setProduct] = useState<Product | null>(null);
+  const [images, setImages] = useState<GalleryImage[]>([]);
+  const [activeIdx, setActiveIdx] = useState(0);
+  const [previewVisible, setPreviewVisible] = useState(false);
 
   useEffect(() => {
     if (!open || !productId) return;
     setLoading(true);
     setProduct(null);
-    productService.getProduct(productId)
-      .then(setProduct)
+    setImages([]);
+    setActiveIdx(0);
+    Promise.allSettled([
+      productService.getProduct(productId),
+      productService.getProductImages(productId),
+    ])
+      .then(([prodRes, imgRes]) => {
+        if (prodRes.status === 'fulfilled') setProduct(prodRes.value);
+        if (imgRes.status === 'fulfilled') setImages(imgRes.value.images || []);
+      })
       .finally(() => setLoading(false));
   }, [open, productId]);
 
-  // Close on Escape key
+  // Keyboard: Esc closes, ←/→ navigate gallery
   useEffect(() => {
     if (!open) return;
     const handleKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
+      if (e.key === 'Escape') {
+        if (previewVisible) return;
+        onClose();
+      }
+      if (images.length > 1 && !previewVisible) {
+        if (e.key === 'ArrowLeft') setActiveIdx((i) => (i - 1 + images.length) % images.length);
+        if (e.key === 'ArrowRight') setActiveIdx((i) => (i + 1) % images.length);
+      }
     };
     window.addEventListener('keydown', handleKey);
     return () => window.removeEventListener('keydown', handleKey);
-  }, [open, onClose]);
-
-  if (!open) return null;
+  }, [open, onClose, images.length, previewVisible]);
 
   const p = product;
 
-  // Status display logic (matches ProductsTable)
-  const getStatusDisplay = () => {
+  const status = useMemo(() => {
     if (!p) return { text: '', color: 'default' };
     const sold = p.sold_count ?? 0;
     const qty = p.quantity ?? 0;
@@ -48,145 +69,242 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose }) => {
     if (sold > 0 && sold < qty) return { text: 'Непродано', color: 'green' };
     if (staticStatus === 'Непродано') return { text: 'Непродано', color: 'green' };
     return { text: staticStatus || 'Не вказано', color: staticStatus ? 'geekblue' : 'default' };
+  }, [p]);
+
+  const sizesLine = useMemo(() => {
+    if (!p) return null;
+    const parts: { label: string; val: any }[] = [
+      { label: 'EU', val: p.sizeeu },
+      { label: 'UA', val: p.sizeua },
+      { label: 'USA', val: p.sizeusa },
+      { label: 'UK', val: p.sizeuk },
+    ];
+    return parts.filter((x) => x.val);
+  }, [p]);
+
+  if (!open) return null;
+
+  const InfoRow: React.FC<{ label: string; value?: React.ReactNode }> = ({ label, value }) => {
+    if (value === null || value === undefined || value === '') return null;
+    return (
+      <div className="flex items-baseline gap-3 py-1.5">
+        <span className="text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500 min-w-[90px] shrink-0 font-medium">{label}</span>
+        <span className="text-sm text-gray-800 dark:text-gray-200 break-words">{value}</span>
+      </div>
+    );
   };
 
-  const status = getStatusDisplay();
-
-  const InfoRow: React.FC<{ label: string; value?: React.ReactNode; className?: string }> = ({ label, value, className }) => (
-    <div className={`flex items-baseline gap-2 py-1 ${className || ''}`}>
-      <span className="text-xs text-gray-400 dark:text-gray-500 min-w-[100px] shrink-0">{label}</span>
-      <span className="text-sm text-gray-800 dark:text-gray-200 break-words">{value ?? <span className="text-gray-300">—</span>}</span>
-    </div>
-  );
+  const activeImage = images[activeIdx];
+  const productTitle = p ? ([(p as any).brand_name, p.model].filter(Boolean).join(' ') || (p.productnumber || '').replace(/^#/, '')) : '';
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
       {/* Backdrop */}
-      <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={onClose} />
+      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
 
       {/* Modal */}
-      <div className="relative bg-white dark:bg-gray-800 rounded-xl shadow-2xl w-full max-w-4xl mx-4 max-h-[90vh] overflow-hidden flex flex-col">
+      <div className="relative bg-white dark:bg-gray-900 rounded-2xl shadow-2xl w-full max-w-6xl mx-4 max-h-[92vh] overflow-hidden flex flex-col">
 
-        {/* Loading state */}
         {loading && (
-          <div className="flex items-center justify-center py-20">
+          <div className="flex items-center justify-center py-32">
             <Spin size="large" />
           </div>
         )}
 
-        {/* Not found */}
         {!loading && !p && (
-          <div className="flex items-center justify-center py-20 text-gray-400">
+          <div className="flex items-center justify-center py-32 text-gray-400">
             Товар не знайдено
           </div>
         )}
 
-        {/* Product content */}
         {!loading && p && (
           <>
             {/* Header */}
-            <div className="flex items-start justify-between px-6 pt-5 pb-3 border-b border-gray-100 dark:border-gray-700">
-              <div className="min-w-0">
-                <h2 className="text-xl font-bold text-gray-900 dark:text-gray-100 truncate">
-                  {[(p as any).brand_name, p.model].filter(Boolean).join(' ') || (p.productnumber || '').replace(/^#/, '')}
-                </h2>
-                <div className="flex items-center gap-2 mt-1">
-                  <span className="text-sm text-gray-400 dark:text-gray-500 font-mono">{(p.productnumber || '').replace(/^#/, '')}</span>
+            <div className="flex items-start justify-between px-6 pt-5 pb-4 border-b border-gray-100 dark:border-gray-800">
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-3 mb-1">
+                  <span className="text-xs font-mono text-gray-400 dark:text-gray-500 px-2 py-0.5 rounded bg-gray-100 dark:bg-gray-800">
+                    {(p.productnumber || '').replace(/^#/, '') || '—'}
+                  </span>
+                  {(p as any).type_name && (
+                    <span className="text-xs text-gray-500 dark:text-gray-400">{(p as any).type_name}{(p as any).subtype_name ? ` · ${(p as any).subtype_name}` : ''}</span>
+                  )}
                   {p.is_rostovka && (
-                    <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-purple-100 text-purple-700 border border-purple-200 dark:bg-purple-900/30 dark:text-purple-300 dark:border-purple-700">
+                    <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-purple-100 text-purple-700 border border-purple-200 dark:bg-purple-900/30 dark:text-purple-300 dark:border-purple-700">
                       ▤ Ростовка
                     </span>
                   )}
                 </div>
+                <h2 className="text-2xl font-semibold text-gray-900 dark:text-gray-50 truncate leading-tight">
+                  {productTitle}
+                </h2>
               </div>
+              {(() => {
+                const parts = [(p as any).brand_name, p.model, p.marking].filter(Boolean) as string[];
+                const q = parts.join(' ').replace(/\s+/g, ' ').trim();
+                if (!q) return null;
+                return (
+                  <a
+                    href={`https://www.google.com/search?q=${encodeURIComponent(q)}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="shrink-0 ml-2 px-3 py-2 rounded-lg text-sm font-medium border border-blue-200 dark:border-blue-700 text-blue-600 hover:text-blue-800 hover:bg-blue-50 dark:text-blue-400 dark:hover:text-blue-300 dark:hover:bg-blue-900/20 transition-colors flex items-center gap-1.5"
+                    title={`Пошук в Google: ${q}`}
+                  >
+                    <span className="font-bold text-xs">G</span>
+                    <span>Знайти в Google</span>
+                  </a>
+                );
+              })()}
               <button
                 onClick={onClose}
-                className="shrink-0 ml-4 p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
+                className="shrink-0 ml-2 p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition-colors"
+                aria-label="Закрити"
               >
-                <CloseOutlined className="text-lg" />
+                <CloseOutlined className="text-base" />
               </button>
             </div>
 
-            {/* Body */}
+            {/* Body — two columns */}
             <div className="overflow-y-auto flex-1">
-              {/* Two-column: Photo + Key Info */}
-              <div className="flex flex-col md:flex-row gap-6 p-6">
+              <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)] gap-8 p-6">
 
-                {/* Left: Photo area */}
-                <div className="shrink-0 w-full md:w-72">
-                  <div className="w-full aspect-square bg-gray-50 dark:bg-gray-700/50 rounded-lg border-2 border-dashed border-gray-200 dark:border-gray-600 flex flex-col items-center justify-center">
-                    {p.mainimage ? (
-                      <img src={p.mainimage} alt={p.productnumber} className="w-full h-full object-cover rounded-lg" />
-                    ) : (
+                {/* Left: Gallery */}
+                <div className="flex flex-col gap-3">
+                  {/* Main image */}
+                  <div className="relative w-full aspect-square bg-gray-50 dark:bg-gray-800/40 rounded-xl overflow-hidden border border-gray-100 dark:border-gray-800 flex items-center justify-center group">
+                    {activeImage ? (
                       <>
-                        <PictureOutlined className="text-4xl text-gray-300 dark:text-gray-500 mb-2" />
-                        <span className="text-xs text-gray-400 dark:text-gray-500">Фото відсутнє</span>
+                        <Image
+                          src={activeImage.url}
+                          alt={activeImage.filename}
+                          preview={{
+                            visible: previewVisible,
+                            onVisibleChange: setPreviewVisible,
+                            src: activeImage.url,
+                          }}
+                          className="!w-full !h-full"
+                          style={{ objectFit: 'contain', width: '100%', height: '100%', cursor: 'zoom-in' }}
+                          wrapperStyle={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                        />
+                        {images.length > 1 && (
+                          <>
+                            <button
+                              onClick={(e) => { e.stopPropagation(); setActiveIdx((i) => (i - 1 + images.length) % images.length); }}
+                              className="absolute left-2 top-1/2 -translate-y-1/2 p-2 rounded-full bg-white/80 dark:bg-gray-900/80 hover:bg-white dark:hover:bg-gray-900 shadow-md text-gray-700 dark:text-gray-200 opacity-0 group-hover:opacity-100 transition-opacity"
+                              aria-label="Попереднє фото"
+                            >
+                              <LeftOutlined />
+                            </button>
+                            <button
+                              onClick={(e) => { e.stopPropagation(); setActiveIdx((i) => (i + 1) % images.length); }}
+                              className="absolute right-2 top-1/2 -translate-y-1/2 p-2 rounded-full bg-white/80 dark:bg-gray-900/80 hover:bg-white dark:hover:bg-gray-900 shadow-md text-gray-700 dark:text-gray-200 opacity-0 group-hover:opacity-100 transition-opacity"
+                              aria-label="Наступне фото"
+                            >
+                              <RightOutlined />
+                            </button>
+                            <div className="absolute bottom-3 right-3 px-2 py-1 rounded-md text-xs bg-black/60 text-white font-mono">
+                              {activeIdx + 1} / {images.length}
+                            </div>
+                          </>
+                        )}
                       </>
+                    ) : (
+                      <div className="flex flex-col items-center justify-center text-gray-300 dark:text-gray-600">
+                        <PictureOutlined style={{ fontSize: 64 }} />
+                        <span className="text-sm mt-3">Фото відсутнє</span>
+                        <span className="text-[11px] text-gray-400 dark:text-gray-500 mt-1">додайте файли з префіксом {(p.productnumber || '').replace(/^#/, '') || 'номер'}_</span>
+                      </div>
                     )}
                   </div>
+
+                  {/* Thumbnails */}
+                  {images.length > 1 && (
+                    <div className="flex gap-2 overflow-x-auto pb-1 -mx-1 px-1">
+                      {images.map((img, i) => (
+                        <button
+                          key={img.filename}
+                          onClick={() => setActiveIdx(i)}
+                          className={`shrink-0 w-16 h-16 rounded-lg overflow-hidden border-2 transition-all ${
+                            i === activeIdx
+                              ? 'border-primary-500 ring-2 ring-primary-200 dark:ring-primary-800'
+                              : 'border-gray-200 dark:border-gray-700 hover:border-gray-400 dark:hover:border-gray-500 opacity-70 hover:opacity-100'
+                          }`}
+                          title={img.filename}
+                        >
+                          <img src={img.url} alt={img.filename} className="w-full h-full object-cover" loading="lazy" />
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 </div>
 
-                {/* Right: Key product info */}
-                <div className="flex-1 min-w-0">
-                  {/* Price block */}
-                  <div className="flex items-baseline gap-3 mb-4">
-                    {p.price != null && p.price > 0 && (
-                      <span className="text-2xl font-bold text-gray-900 dark:text-gray-100">{Number(p.price).toFixed(0)}₴</span>
+                {/* Right: Info */}
+                <div className="flex flex-col min-w-0">
+                  {/* Price */}
+                  <div className="flex items-baseline gap-3 mb-3">
+                    {p.price != null && p.price > 0 ? (
+                      <span className="text-3xl font-bold text-gray-900 dark:text-gray-50">{Number(p.price).toFixed(0)} ₴</span>
+                    ) : (
+                      <span className="text-xl text-gray-300 dark:text-gray-600">Ціна не вказана</span>
                     )}
                     {p.oldprice != null && p.oldprice > 0 && p.oldprice !== p.price && (
-                      <span className="text-base text-gray-400 line-through">{Number(p.oldprice).toFixed(0)}₴</span>
-                    )}
-                    {(!p.price || p.price === 0) && (
-                      <span className="text-lg text-gray-300 dark:text-gray-500">Ціна не вказана</span>
+                      <span className="text-base text-gray-400 line-through">{Number(p.oldprice).toFixed(0)} ₴</span>
                     )}
                   </div>
 
-                  {/* Status + Condition tags */}
-                  <div className="flex items-center gap-2 mb-4">
-                    <Tag color={status.color}>{status.text}</Tag>
-                    {(p as any).condition_name && (
-                      <Tag color="blue">{(p as any).condition_name}</Tag>
-                    )}
-                  </div>
-
-                  {/* Available qty */}
-                  <div className="flex items-center gap-2 mb-4">
-                    <span className="text-xs text-gray-400">В наявності:</span>
+                  {/* Status + condition + availability */}
+                  <div className="flex flex-wrap items-center gap-2 mb-5">
+                    <Tag color={status.color} style={{ margin: 0 }}>{status.text}</Tag>
+                    {(p as any).condition_name && <Tag color="blue" style={{ margin: 0 }}>{(p as any).condition_name}</Tag>}
                     {(() => {
                       const total = p.quantity ?? 0;
                       const avail = p.available_qty ?? total;
                       const sold = p.sold_count ?? 0;
-                      if (total === 0) return <Tag color="red">0</Tag>;
-                      if (sold === 0) return <Tag color="green">{total}</Tag>;
-                      if (avail <= 0) return <Tag color="red">0 / {total}</Tag>;
-                      return <Tag color="orange">{avail} / {total}</Tag>;
+                      let label = '', color = '';
+                      if (total === 0) { label = '0 в наявності'; color = 'red'; }
+                      else if (sold === 0) { label = `${total} в наявності`; color = 'green'; }
+                      else if (avail <= 0) { label = `0 / ${total}`; color = 'red'; }
+                      else { label = `${avail} / ${total} в наявності`; color = 'orange'; }
+                      return <Tag color={color} style={{ margin: 0 }}>{label}</Tag>;
                     })()}
                   </div>
 
-                  {/* Attributes grid */}
-                  <div className="border-t border-gray-100 dark:border-gray-700 pt-3 space-y-0">
-                    <InfoRow label="Тип" value={(p as any).type_name} />
-                    <InfoRow label="Підтип" value={(p as any).subtype_name} />
+                  {/* Sizes — visual block, like e-commerce */}
+                  {sizesLine && sizesLine.length > 0 && (
+                    <div className="mb-5">
+                      <div className="text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500 mb-2 font-medium">Розмір</div>
+                      <div className="flex flex-wrap gap-2">
+                        {sizesLine.map(({ label, val }) => (
+                          <div key={label} className="flex flex-col items-center px-3 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50 min-w-[58px]">
+                            <span className="text-[10px] text-gray-400 dark:text-gray-500 font-medium">{label}</span>
+                            <span className="text-sm font-semibold text-gray-800 dark:text-gray-100">{val}</span>
+                          </div>
+                        ))}
+                        {p.measurementscm && (
+                          <div className="flex flex-col items-center px-3 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50 min-w-[58px]">
+                            <span className="text-[10px] text-gray-400 dark:text-gray-500 font-medium">СМ</span>
+                            <span className="text-sm font-semibold text-gray-800 dark:text-gray-100">{p.measurementscm}</span>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Specifications */}
+                  <div className="border-t border-gray-100 dark:border-gray-800 pt-4">
+                    <div className="text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500 mb-2 font-medium">Характеристики</div>
                     <InfoRow label="Бренд" value={(p as any).brand_name} />
                     <InfoRow label="Модель" value={p.model} />
-                    {p.marking && <InfoRow label="Маркування" value={p.marking} />}
-                    {p.year && <InfoRow label="Рік" value={p.year} />}
+                    <InfoRow label="Тип" value={(p as any).type_name} />
+                    <InfoRow label="Підтип" value={(p as any).subtype_name} />
                     <InfoRow label="Стать" value={(p as any).gender_name} />
                     <InfoRow label="Колір" value={(p as any).color_name} />
-                    <div className="flex gap-6">
-                      <InfoRow label="Розмір EU" value={p.sizeeu} />
-                      {p.measurementscm && <InfoRow label="СМ" value={p.measurementscm} />}
-                    </div>
-                    {(p.sizeua || p.sizeusa || p.sizeuk) && (
-                      <div className="flex gap-6">
-                        {p.sizeua && <InfoRow label="UA" value={p.sizeua} />}
-                        {p.sizeusa && <InfoRow label="USA" value={p.sizeusa} />}
-                        {p.sizeuk && <InfoRow label="UK" value={p.sizeuk} />}
-                      </div>
-                    )}
-                    {p.clonednumbers && <InfoRow label="Клони" value={p.clonednumbers} />}
-                    {p.dateadded && <InfoRow label="Дата завозу" value={p.dateadded} />}
-                    {p.created_at && <InfoRow label="Додано в базу" value={new Date(p.created_at).toLocaleDateString('uk-UA')} />}
+                    <InfoRow label="Маркування" value={p.marking} />
+                    <InfoRow label="Рік" value={p.year} />
+                    <InfoRow label="Клони" value={p.clonednumbers} />
+                    <InfoRow label="Завіз" value={p.dateadded} />
+                    <InfoRow label="У базі з" value={p.created_at ? new Date(p.created_at).toLocaleDateString('uk-UA') : null} />
                   </div>
                 </div>
               </div>
@@ -194,18 +312,18 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose }) => {
               {/* Description */}
               {p.description && (
                 <div className="px-6 pb-4">
-                  <div className="text-xs text-gray-400 dark:text-gray-500 mb-1 font-medium uppercase tracking-wide">Опис</div>
-                  <p className="text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap bg-gray-50 dark:bg-gray-700/30 rounded-lg px-4 py-3">
+                  <div className="text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500 mb-2 font-medium">Опис</div>
+                  <p className="text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap leading-relaxed bg-gray-50 dark:bg-gray-800/40 rounded-lg px-4 py-3">
                     {p.description}
                   </p>
                 </div>
               )}
 
-              {/* Extra notes */}
+              {/* Notes */}
               {p.extranote && (
                 <div className="px-6 pb-6">
-                  <div className="text-xs text-gray-400 dark:text-gray-500 mb-1 font-medium uppercase tracking-wide">Примітки</div>
-                  <p className="text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap bg-amber-50 dark:bg-amber-900/20 rounded-lg px-4 py-3 border border-amber-100 dark:border-amber-800/30">
+                  <div className="text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500 mb-2 font-medium">Примітки</div>
+                  <p className="text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap leading-relaxed bg-amber-50 dark:bg-amber-900/15 rounded-lg px-4 py-3 border border-amber-100 dark:border-amber-800/30">
                     {p.extranote}
                   </p>
                 </div>

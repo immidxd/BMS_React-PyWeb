@@ -1,5 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { fetchClient } from '../../services/referenceService';
+import ProductDetailsModal from '../products/ProductDetailsModal';
+import ProductNumberLink from '../products/ProductNumberLink';
 
 /* ── Типи ─────────────────────────────────────────────────────────────────── */
 interface RecentOrder {
@@ -104,6 +106,7 @@ const ClientDetailsModal: React.FC<Props> = ({ clientId, open, onClose }) => {
   const [loading, setLoading] = useState(false);
   const [client, setClient] = useState<ClientFull | null>(null);
   const [activeTab, setActiveTab] = useState<'info' | 'orders'>('info');
+  const [cardProductId, setCardProductId] = useState<number | null>(null);
 
   useEffect(() => {
     if (!open || !clientId) return;
@@ -365,7 +368,17 @@ const ClientDetailsModal: React.FC<Props> = ({ clientId, open, onClose }) => {
                               </td>
                               <td className="px-3 py-2 text-gray-700 dark:text-gray-300 max-w-[200px]">
                                 <span className="block truncate text-xs font-mono" title={o.product_numbers}>
-                                  {o.product_numbers || '—'}
+                                  {o.product_numbers ? (
+                                    o.product_numbers.split(',').map((raw, i, arr) => {
+                                      const num = raw.trim();
+                                      return num ? (
+                                        <React.Fragment key={`${o.id}-${i}`}>
+                                          <ProductNumberLink productNumber={num} onOpen={setCardProductId} />
+                                          {i < arr.length - 1 && <span>, </span>}
+                                        </React.Fragment>
+                                      ) : null;
+                                    })
+                                  ) : '—'}
                                 </span>
                                 {o.item_count > 1 && (
                                   <span className="text-[10px] text-gray-400">({o.item_count} шт.)</span>
@@ -391,6 +404,11 @@ const ClientDetailsModal: React.FC<Props> = ({ clientId, open, onClose }) => {
           </>
         )}
       </div>
+      <ProductDetailsModal
+        productId={cardProductId}
+        open={cardProductId !== null}
+        onClose={() => setCardProductId(null)}
+      />
     </div>
   );
 };
