@@ -89,9 +89,27 @@ class ClientBase(BaseModel):
 class ClientCreate(ClientBase):
     pass
 
-class ClientUpdate(ClientBase):
+class ClientUpdate(BaseModel):
+    # Усі поля опціональні: модалка може редагувати будь-які окремо
     first_name: Optional[str] = None
     last_name: Optional[str] = None
+    middle_name: Optional[str] = None
+    nickname: Optional[str] = None
+    phone_number: Optional[str] = None
+    email: Optional[str] = None
+    gender_id: Optional[int] = None
+    address: Optional[str] = None
+    notes: Optional[str] = None
+    city_of_residence: Optional[str] = None
+    client_discount: Optional[float] = None
+    bonus_account: Optional[float] = None
+    facebook: Optional[str] = None
+    instagram: Optional[str] = None
+    telegram: Optional[str] = None
+    viber: Optional[str] = None
+    messenger: Optional[str] = None
+    tiktok: Optional[str] = None
+    olx: Optional[str] = None
 
 class Client(ClientBase):
     id: int

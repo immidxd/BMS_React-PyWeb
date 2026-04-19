@@ -216,6 +216,72 @@ async def get_client(client_id: int, db: Session = Depends(get_db)):
     orders_rows = db.execute(orders_sql, {"client_id": client_id}).mappings().all()
     result["recent_orders"] = [dict(r) for r in orders_rows]
 
+    # ── Уподобання: top-N агрегати з історії замовлень ────────────────────
+    # Виключаємо відмінені/ігнор замовлення (статуси 5, 6) — вони не показують
+    # реальні преференції клієнта. Підраховуємо за кількістю позицій (items),
+    # а не унікальних товарів, щоб повтор-замовлення давали більшу вагу.
+    prefs_sql = text("""
+        WITH client_items AS (
+            SELECT oi.id AS item_id, p.id AS product_id, p.brandid, p.typeid,
+                   p.colorid, p.sizeeu, p.subtypeid
+            FROM orders o
+            JOIN order_items oi ON oi.order_id = o.id
+            JOIN products p ON p.id = oi.product_id
+            WHERE o.client_id = :client_id
+              AND COALESCE(o.order_status_id, 0) NOT IN (5, 6)
+        )
+        SELECT
+            (SELECT json_agg(row_to_json(t)) FROM (
+                SELECT b.brandname AS name, COUNT(*) AS cnt
+                FROM client_items ci JOIN brands b ON b.id = ci.brandid
+                WHERE b.brandname IS NOT NULL
+                GROUP BY b.brandname ORDER BY cnt DESC LIMIT 8
+            ) t) AS top_brands,
+            (SELECT json_agg(row_to_json(t)) FROM (
+                SELECT tp.typename AS name, COUNT(*) AS cnt
+                FROM client_items ci JOIN types tp ON tp.id = ci.typeid
+                WHERE tp.typename IS NOT NULL
+                GROUP BY tp.typename ORDER BY cnt DESC LIMIT 8
+            ) t) AS top_types,
+            (SELECT json_agg(row_to_json(t)) FROM (
+                SELECT cl.colorname AS name, COUNT(*) AS cnt
+                FROM client_items ci JOIN colors cl ON cl.id = ci.colorid
+                WHERE cl.colorname IS NOT NULL
+                GROUP BY cl.colorname ORDER BY cnt DESC LIMIT 8
+            ) t) AS top_colors,
+            (SELECT json_agg(row_to_json(t)) FROM (
+                SELECT sizeeu AS name, COUNT(*) AS cnt
+                FROM client_items
+                WHERE sizeeu IS NOT NULL AND sizeeu <> ''
+                GROUP BY sizeeu ORDER BY cnt DESC LIMIT 8
+            ) t) AS top_sizes_eu
+    """)
+    prefs = db.execute(prefs_sql, {"client_id": client_id}).mappings().first() or {}
+    result["top_brands"]    = prefs.get("top_brands") or []
+    result["top_types"]     = prefs.get("top_types") or []
+    result["top_colors"]    = prefs.get("top_colors") or []
+    result["top_sizes_eu"]  = prefs.get("top_sizes_eu") or []
+
+    # Розподіл оплат за всю історію
+    pay_sql = text("""
+        SELECT
+            COUNT(*) FILTER (WHERE LOWER(COALESCE(ps.status_name,'')) LIKE 'оплачено%') AS paid,
+            COUNT(*) FILTER (WHERE LOWER(COALESCE(ps.status_name,'')) LIKE 'не оплачено%'
+                              OR ps.status_name IS NULL) AS unpaid,
+            COUNT(*) FILTER (WHERE LOWER(COALESCE(ps.status_name,'')) LIKE 'частково%') AS partial,
+            COUNT(*) AS total
+        FROM orders o LEFT JOIN payment_statuses ps ON ps.id = o.payment_status_id
+        WHERE o.client_id = :client_id
+          AND COALESCE(o.order_status_id, 0) NOT IN (5, 6)
+    """)
+    pay = db.execute(pay_sql, {"client_id": client_id}).mappings().first() or {}
+    result["payment_split"] = {
+        "paid": pay.get("paid", 0) or 0,
+        "unpaid": pay.get("unpaid", 0) or 0,
+        "partial": pay.get("partial", 0) or 0,
+        "total": pay.get("total", 0) or 0,
+    }
+
     return result
 
 @router.post("/api/clients", response_model=ClientSchema, tags=["clients"])

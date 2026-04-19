@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from 'react';
-import { fetchClient } from '../../services/referenceService';
+import { fetchClient, updateClient } from '../../services/referenceService';
 import ProductDetailsModal from '../products/ProductDetailsModal';
 import ProductNumberLink from '../products/ProductNumberLink';
+import { toast } from 'react-toastify';
 
 /* ── Типи ─────────────────────────────────────────────────────────────────── */
 interface RecentOrder {
@@ -55,6 +56,14 @@ interface ClientFull {
   rating: number | null;
   registration_date: string | null;
   created_at: string | null;
+  client_discount: number | null;
+  bonus_account: number | null;
+  // Уподобання (агреговано з історії)
+  top_brands: { name: string; cnt: number }[];
+  top_types: { name: string; cnt: number }[];
+  top_colors: { name: string; cnt: number }[];
+  top_sizes_eu: { name: string; cnt: number }[];
+  payment_split: { paid: number; unpaid: number; partial: number; total: number };
   // Замовлення
   recent_orders: RecentOrder[];
 }
@@ -107,16 +116,74 @@ const ClientDetailsModal: React.FC<Props> = ({ clientId, open, onClose }) => {
   const [client, setClient] = useState<ClientFull | null>(null);
   const [activeTab, setActiveTab] = useState<'info' | 'orders'>('info');
   const [cardProductId, setCardProductId] = useState<number | null>(null);
+  const [editMode, setEditMode] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [draft, setDraft] = useState<Partial<ClientFull>>({});
 
   useEffect(() => {
     if (!open || !clientId) return;
     setLoading(true);
     setClient(null);
     setActiveTab('info');
+    setEditMode(false);
+    setDraft({});
     fetchClient(clientId)
       .then((data: any) => setClient(data as ClientFull))
       .finally(() => setLoading(false));
   }, [open, clientId]);
+
+  const startEdit = () => {
+    if (!client) return;
+    setDraft({
+      first_name: client.first_name || '',
+      last_name: client.last_name || '',
+      middle_name: client.middle_name || '',
+      nickname: client.nickname || '',
+      phone_number: client.phone_number || '',
+      email: client.email || '',
+      city_of_residence: client.city_of_residence || '',
+      notes: client.notes || '',
+      client_discount: client.client_discount ?? null,
+      bonus_account: client.bonus_account ?? null,
+      facebook: client.facebook || '',
+      instagram: client.instagram || '',
+      telegram: client.telegram || '',
+      viber: client.viber || '',
+      messenger: client.messenger || '',
+      tiktok: client.tiktok || '',
+      olx: client.olx || '',
+    });
+    setEditMode(true);
+  };
+
+  const cancelEdit = () => { setDraft({}); setEditMode(false); };
+
+  const saveEdit = async () => {
+    if (!client || !clientId) return;
+    setSaving(true);
+    try {
+      // Чистимо порожні рядки в null, щоб не сетити "" замість справжнього null
+      const payload: any = {};
+      Object.entries(draft).forEach(([k, v]) => {
+        if (v === '' || v === undefined) payload[k] = null;
+        else payload[k] = v;
+      });
+      await updateClient(clientId, payload);
+      // Перезавантажуємо повну картку (з агрегатами)
+      const fresh = await fetchClient(clientId);
+      setClient(fresh as any);
+      setEditMode(false);
+      setDraft({});
+      toast.success('Дані клієнта збережено');
+    } catch (e: any) {
+      console.error(e);
+      toast.error(`Помилка збереження: ${e?.response?.data?.detail || e.message || 'unknown'}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const setDraftField = (k: keyof ClientFull, v: any) => setDraft(d => ({ ...d, [k]: v }));
 
   // Закриття по Escape
   useEffect(() => {
@@ -197,14 +264,41 @@ const ClientDetailsModal: React.FC<Props> = ({ clientId, open, onClose }) => {
                   </div>
                 </div>
               </div>
-              <button
-                onClick={onClose}
-                className="shrink-0 ml-4 p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors text-xl"
-                aria-label="Закрити"
-                tabIndex={0}
-              >
-                ✕
-              </button>
+              <div className="shrink-0 ml-4 flex items-center gap-2">
+                {!editMode ? (
+                  <button
+                    onClick={startEdit}
+                    className="px-3 py-1.5 text-sm rounded-lg border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+                  >
+                    ✎ Редагувати
+                  </button>
+                ) : (
+                  <>
+                    <button
+                      onClick={saveEdit}
+                      disabled={saving}
+                      className="px-3 py-1.5 text-sm rounded-lg bg-gray-900 text-white hover:bg-black disabled:opacity-50 transition-colors"
+                    >
+                      {saving ? 'Збереження…' : '✓ Зберегти'}
+                    </button>
+                    <button
+                      onClick={cancelEdit}
+                      disabled={saving}
+                      className="px-3 py-1.5 text-sm rounded-lg border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+                    >
+                      Скасувати
+                    </button>
+                  </>
+                )}
+                <button
+                  onClick={onClose}
+                  className="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors text-xl"
+                  aria-label="Закрити"
+                  tabIndex={0}
+                >
+                  ✕
+                </button>
+              </div>
             </div>
 
             {/* ── Tabs ── */}
@@ -266,16 +360,78 @@ const ClientDetailsModal: React.FC<Props> = ({ clientId, open, onClose }) => {
                     </div>
                   </div>
 
-                  {/* ── Двоколонковий layout: Контакти + Додатково ── */}
+                  {/* ── УПОДОБАННЯ (auto-derived з історії) ── */}
+                  {(c.top_brands?.length || c.top_types?.length || c.top_sizes_eu?.length || c.top_colors?.length) ? (
+                    <div>
+                      <h3 className="text-xs font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider mb-3">
+                        Уподобання <span className="normal-case font-normal text-gray-400">— з історії замовлень</span>
+                      </h3>
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        <PrefBlock title="Бренди"  items={c.top_brands} />
+                        <PrefBlock title="Типи"    items={c.top_types} />
+                        <PrefBlock title="Розміри (EU)" items={c.top_sizes_eu} />
+                        <PrefBlock title="Кольори" items={c.top_colors} />
+                      </div>
+                      {c.payment_split && c.payment_split.total > 0 && (
+                        <div className="mt-3 flex items-center gap-3 text-xs text-gray-500 dark:text-gray-400">
+                          <span>💳 Оплати:</span>
+                          <span className="text-green-600 dark:text-green-400">{c.payment_split.paid} оплачено</span>
+                          {c.payment_split.partial > 0 && (
+                            <span className="text-amber-600 dark:text-amber-400">{c.payment_split.partial} частково</span>
+                          )}
+                          <span className="text-red-500 dark:text-red-400">{c.payment_split.unpaid} не оплачено</span>
+                          <span className="text-gray-400">з {c.payment_split.total}</span>
+                        </div>
+                      )}
+                    </div>
+                  ) : null}
+
+                  {/* ── Двоколонковий layout: Контакти + Хронологія ── */}
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                     {/* Контакти */}
                     <div>
                       <h3 className="text-xs font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider mb-3">Контактна інформація</h3>
                       <div className="space-y-2 bg-gray-50 dark:bg-gray-700/30 rounded-lg p-4">
-                        <InfoRow label="📞 Телефон" value={c.phone_number} />
-                        <InfoRow label="✉️ Email" value={c.email} />
-                        <InfoRow label="🏙️ Місто" value={c.city_of_residence} />
+                        {editMode ? (
+                          <>
+                            <EditRow label="Імʼя" value={draft.first_name as string ?? ''} onChange={v => setDraftField('first_name', v)} />
+                            <EditRow label="Прізвище" value={draft.last_name as string ?? ''} onChange={v => setDraftField('last_name', v)} />
+                            <EditRow label="По батькові" value={draft.middle_name as string ?? ''} onChange={v => setDraftField('middle_name', v)} />
+                            <EditRow label="Нікнейм" value={draft.nickname as string ?? ''} onChange={v => setDraftField('nickname', v)} />
+                            <EditRow label="📞 Телефон" value={draft.phone_number as string ?? ''} onChange={v => setDraftField('phone_number', v)} />
+                            <EditRow label="✉️ Email"   value={draft.email as string ?? ''}        onChange={v => setDraftField('email', v)} />
+                            <EditRow label="🏙️ Місто"  value={draft.city_of_residence as string ?? ''} onChange={v => setDraftField('city_of_residence', v)} />
+                          </>
+                        ) : (
+                          <>
+                            <InfoRow label="📞 Телефон" value={c.phone_number} />
+                            <InfoRow label="✉️ Email" value={c.email} />
+                            <InfoRow label="🏙️ Місто" value={c.city_of_residence} />
+                            {(c.client_discount != null || c.bonus_account != null) && (
+                              <>
+                                {c.client_discount != null && <InfoRow label="🎯 Знижка" value={`${c.client_discount}%`} />}
+                                {c.bonus_account != null && <InfoRow label="💰 Бонуси" value={fmtMoney(c.bonus_account)} />}
+                              </>
+                            )}
+                          </>
+                        )}
                       </div>
+                      {editMode && (
+                        <div className="mt-3 grid grid-cols-2 gap-3">
+                          <div className="bg-gray-50 dark:bg-gray-700/30 rounded-lg p-3">
+                            <label className="text-xs text-gray-400 dark:text-gray-500 block mb-1">🎯 Знижка %</label>
+                            <input type="number" step="0.1" value={draft.client_discount ?? ''}
+                              onChange={e => setDraftField('client_discount', e.target.value === '' ? null : Number(e.target.value))}
+                              className="w-full px-2 py-1 text-sm border rounded bg-white dark:bg-gray-800 dark:border-gray-600" />
+                          </div>
+                          <div className="bg-gray-50 dark:bg-gray-700/30 rounded-lg p-3">
+                            <label className="text-xs text-gray-400 dark:text-gray-500 block mb-1">💰 Бонуси</label>
+                            <input type="number" step="1" value={draft.bonus_account ?? ''}
+                              onChange={e => setDraftField('bonus_account', e.target.value === '' ? null : Number(e.target.value))}
+                              className="w-full px-2 py-1 text-sm border rounded bg-white dark:bg-gray-800 dark:border-gray-600" />
+                          </div>
+                        </div>
+                      )}
                     </div>
 
                     {/* Дати */}
@@ -295,9 +451,19 @@ const ClientDetailsModal: React.FC<Props> = ({ clientId, open, onClose }) => {
                   </div>
 
                   {/* ── Соцмережі / Канали зв'язку ── */}
-                  {socialChannels.length > 0 && (
-                    <div>
-                      <h3 className="text-xs font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider mb-3">Канали зв'язку</h3>
+                  <div>
+                    <h3 className="text-xs font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider mb-3">Канали зв'язку</h3>
+                    {editMode ? (
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-2 bg-gray-50 dark:bg-gray-700/30 rounded-lg p-4">
+                        <EditRow label="📘 Facebook"  value={draft.facebook as string ?? ''}  onChange={v => setDraftField('facebook', v)} />
+                        <EditRow label="📷 Instagram" value={draft.instagram as string ?? ''} onChange={v => setDraftField('instagram', v)} />
+                        <EditRow label="✈️ Telegram"  value={draft.telegram as string ?? ''}  onChange={v => setDraftField('telegram', v)} />
+                        <EditRow label="💜 Viber"     value={draft.viber as string ?? ''}     onChange={v => setDraftField('viber', v)} />
+                        <EditRow label="💬 Messenger" value={draft.messenger as string ?? ''} onChange={v => setDraftField('messenger', v)} />
+                        <EditRow label="🎵 TikTok"    value={draft.tiktok as string ?? ''}    onChange={v => setDraftField('tiktok', v)} />
+                        <EditRow label="🛒 OLX"       value={draft.olx as string ?? ''}       onChange={v => setDraftField('olx', v)} />
+                      </div>
+                    ) : socialChannels.length > 0 ? (
                       <div className="flex flex-wrap gap-2">
                         {socialChannels.map((ch, idx) => (
                           <div key={idx} className="inline-flex items-center gap-1.5 px-3 py-2 bg-gray-50 dark:bg-gray-700/40 rounded-lg border border-gray-200 dark:border-gray-600 text-sm max-w-[320px]">
@@ -315,24 +481,30 @@ const ClientDetailsModal: React.FC<Props> = ({ clientId, open, onClose }) => {
                           </div>
                         ))}
                       </div>
-                    </div>
-                  )}
-                  {socialChannels.length === 0 && (
-                    <div>
-                      <h3 className="text-xs font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider mb-3">Канали зв'язку</h3>
+                    ) : (
                       <p className="text-sm text-gray-400 italic">Немає прив'язаних соцмереж чи месенджерів</p>
-                    </div>
-                  )}
+                    )}
+                  </div>
 
                   {/* ── Нотатки ── */}
-                  {c.notes && (
-                    <div>
-                      <h3 className="text-xs font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider mb-2">Нотатки</h3>
+                  <div>
+                    <h3 className="text-xs font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider mb-2">Нотатки</h3>
+                    {editMode ? (
+                      <textarea
+                        value={(draft.notes as string) ?? ''}
+                        onChange={e => setDraftField('notes', e.target.value)}
+                        rows={4}
+                        className="w-full text-sm px-3 py-2 rounded-lg bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 focus:outline-none"
+                        placeholder="Особливі побажання, історія взаємодії, нагадування…"
+                      />
+                    ) : c.notes ? (
                       <p className="text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap bg-amber-50 dark:bg-amber-900/20 rounded-lg px-4 py-3 border border-amber-100 dark:border-amber-800/30">
                         {c.notes}
                       </p>
-                    </div>
-                  )}
+                    ) : (
+                      <p className="text-sm text-gray-400 italic">Немає нотаток</p>
+                    )}
+                  </div>
                 </div>
               )}
 
@@ -420,6 +592,53 @@ const InfoRow: React.FC<{ label: string; value?: React.ReactNode }> = ({ label, 
     <span className="text-sm text-gray-800 dark:text-gray-200 break-words">{value || <span className="text-gray-300 dark:text-gray-600">—</span>}</span>
   </div>
 );
+
+const EditRow: React.FC<{ label: string; value: string; onChange: (v: string) => void; placeholder?: string }> = ({ label, value, onChange, placeholder }) => (
+  <div className="flex items-center gap-2 py-0.5">
+    <span className="text-xs text-gray-400 dark:text-gray-500 min-w-[130px] shrink-0">{label}</span>
+    <input
+      type="text"
+      value={value}
+      placeholder={placeholder}
+      onChange={e => onChange(e.target.value)}
+      className="flex-1 px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 focus:outline-none focus:border-gray-500 dark:focus:border-gray-400"
+    />
+  </div>
+);
+
+const PrefBlock: React.FC<{ title: string; items?: { name: string; cnt: number }[] }> = ({ title, items }) => {
+  if (!items || items.length === 0) {
+    return (
+      <div className="bg-gray-50 dark:bg-gray-700/30 rounded-lg p-3">
+        <div className="text-xs text-gray-400 dark:text-gray-500 mb-1.5">{title}</div>
+        <div className="text-xs italic text-gray-300 dark:text-gray-600">— немає даних</div>
+      </div>
+    );
+  }
+  const max = Math.max(...items.map(i => i.cnt));
+  return (
+    <div className="bg-gray-50 dark:bg-gray-700/30 rounded-lg p-3">
+      <div className="text-xs text-gray-400 dark:text-gray-500 mb-1.5">{title}</div>
+      <div className="flex flex-wrap gap-1.5">
+        {items.map((it, i) => {
+          // Чим більший cnt — тим темніший пілюль
+          const intensity = Math.round((it.cnt / max) * 100);
+          const cls = intensity >= 67
+            ? 'bg-gray-900 text-white dark:bg-gray-100 dark:text-gray-900'
+            : intensity >= 34
+              ? 'bg-gray-300 text-gray-800 dark:bg-gray-600 dark:text-gray-100'
+              : 'bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300';
+          return (
+            <span key={i} className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${cls}`}>
+              <span>{it.name}</span>
+              <span className="opacity-70 text-[10px]">×{it.cnt}</span>
+            </span>
+          );
+        })}
+      </div>
+    </div>
+  );
+};
 
 const colorMap: Record<string, string> = {
   green: 'bg-green-50 text-green-700 border-green-200 dark:bg-green-900/20 dark:text-green-300 dark:border-green-800',

@@ -179,11 +179,22 @@ export const updateClient = async (
   client: Partial<{
     first_name: string;
     last_name: string;
-    phone_number?: string;
-    email?: string;
-    gender_id?: number;
-    address?: string;
-    notes?: string;
+    middle_name: string;
+    nickname: string;
+    phone_number: string;
+    email: string;
+    gender_id: number;
+    notes: string;
+    city_of_residence: string;
+    client_discount: number;
+    bonus_account: number;
+    facebook: string;
+    instagram: string;
+    telegram: string;
+    viber: string;
+    messenger: string;
+    tiktok: string;
+    olx: string;
   }>
 ): Promise<Client> => {
   const response = await axios.put(`/api/clients/${id}`, client);
