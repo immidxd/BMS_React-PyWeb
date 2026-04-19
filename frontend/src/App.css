@@ -476,6 +476,60 @@ body {
 .bms-root a.text-blue-600:hover,
 .bms-root a.text-blue-700:hover { text-decoration: underline; }
 
+/* ── Native <select> — BMS modern look ── */
+select.bms-select,
+.bms-select select,
+select:not([multiple]):not([size]) {
+  -webkit-appearance: none !important;
+  -moz-appearance: none !important;
+  appearance: none !important;
+  background-color: var(--bms-surface) !important;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23666' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>") !important;
+  background-repeat: no-repeat !important;
+  background-position: right 10px center !important;
+  background-size: 12px 12px !important;
+  border: 1px solid var(--bms-border) !important;
+  border-radius: 8px !important;
+  color: var(--bms-fg) !important;
+  font-family: var(--bms-font-sans) !important;
+  font-size: 13px !important;
+  font-weight: 500 !important;
+  padding: 6px 30px 6px 12px !important;
+  line-height: 1.4 !important;
+  cursor: pointer !important;
+  transition: border-color .15s ease, box-shadow .15s ease, background-color .15s ease !important;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.03) !important;
+}
+select.bms-select:hover,
+.bms-select select:hover,
+select:not([multiple]):not([size]):hover {
+  border-color: var(--bms-fg-muted) !important;
+  background-color: var(--bms-hover) !important;
+}
+select.bms-select:focus,
+.bms-select select:focus,
+select:not([multiple]):not([size]):focus {
+  outline: none !important;
+  border-color: var(--bms-fg) !important;
+  box-shadow: 0 0 0 3px rgba(0,0,0,0.06) !important;
+}
+[data-theme="dark"] select.bms-select,
+[data-theme="dark"] .bms-select select,
+[data-theme="dark"] select:not([multiple]):not([size]) {
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23bbb' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>") !important;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.25) !important;
+}
+[data-theme="dark"] select.bms-select:focus,
+[data-theme="dark"] .bms-select select:focus,
+[data-theme="dark"] select:not([multiple]):not([size]):focus {
+  box-shadow: 0 0 0 3px rgba(255,255,255,0.08) !important;
+}
+select option {
+  background-color: var(--bms-surface) !important;
+  color: var(--bms-fg) !important;
+  font-family: var(--bms-font-sans) !important;
+}
+
 /* ── AntD Table tokens ── */
 .ant-table {
   background: var(--bms-surface) !important;
@@ -484,16 +538,17 @@ body {
 }
 .ant-table-thead > tr > th {
   background: var(--bms-surface-3) !important;
-  color: var(--bms-fg) !important;
+  color: var(--bms-fg-muted) !important;
   font-weight: 600 !important;
-  font-size: 12px !important;
+  font-size: 13px !important;
   border-bottom: 1px solid var(--bms-border) !important;
-  padding: 8px 10px !important;
+  padding: 12px 12px !important;
+  white-space: nowrap;
 }
 .ant-table-tbody > tr > td {
   border-bottom: 1px solid var(--bms-border) !important;
-  font-size: 12px !important;
-  padding: 6px 10px !important;
+  font-size: 13px !important;
+  padding: 8px 12px !important;
   color: var(--bms-fg) !important;
 }
 .ant-table-tbody > tr:hover:not(.bms-conflict-row) > td {

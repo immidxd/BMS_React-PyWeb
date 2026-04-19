@@ -679,10 +679,175 @@ class OrdersComprehensiveParser:
         """Парсить коди товарів з тексту (розділені крапкою з комою)."""
         if not products_text:
             return []
-        
+
         # Розділяємо по ; та очищуємо
         codes = [code.strip() for code in products_text.split(';') if code.strip()]
         return codes
+
+    def parse_item_prices(self, prices_text: str) -> List[float]:
+        """Парсить індивідуальні ціни товарів з колонки 'Ціна' (розділені ;).
+
+        Приклади:
+            '2300; 2800;' -> [2300.0, 2800.0]
+            '1500'        -> [1500.0]
+            ''            -> []
+        """
+        if not prices_text:
+            return []
+        out: List[float] = []
+        for part in prices_text.split(';'):
+            p = part.strip().replace(',', '.')
+            if not p:
+                continue
+            # Залишаємо тільки число (на випадок прихованих символів)
+            m = re.search(r'-?\d+(?:\.\d+)?', p)
+            if not m:
+                continue
+            try:
+                out.append(float(m.group(0)))
+            except ValueError:
+                continue
+        return out
+
+    def _backfill_discount_for_existing(self, order_data: Dict, sheet_date: datetime,
+                                        product_codes: List[str]) -> bool:
+        """Backfill discount_type/value та per-item цін для вже існуючого замовлення.
+
+        Шукає замовлення в БД за (дата + клієнт + список товарів) — БЕЗ огляду
+        на total_amount, бо стара сума в БД могла бути pre-discount.
+        Повертає True, якщо існуюче замовлення знайдено (і за потреби оновлено) —
+        щоб caller пропустив створення дубля.
+        """
+        discount = self.parse_discount(order_data.get('Знижка', ''))
+        per_item_prices = self.parse_item_prices(order_data.get('Ціна', ''))
+
+        # Знаходимо клієнта за телефоном АБО за іменем (якщо телефон не збережений)
+        phone = (order_data.get('Контактний номер') or '').strip()
+        client_name = (order_data.get('Клієнт') or '').strip()
+        client_ids: List[int] = []
+        if phone:
+            for cli in self.session.query(Client).filter(Client.phone_number == phone).all():
+                client_ids.append(cli.id)
+        if not client_ids and client_name:
+            # Шукаємо за first_name + last_name або просто за one of name parts
+            parts = client_name.split()
+            q = self.session.query(Client)
+            if len(parts) >= 2:
+                q = q.filter(
+                    ((Client.first_name == parts[0]) & (Client.last_name == parts[1])) |
+                    ((Client.first_name == parts[1]) & (Client.last_name == parts[0]))
+                )
+            else:
+                q = q.filter((Client.first_name == client_name) | (Client.last_name == client_name) | (Client.nickname == client_name))
+            for cli in q.all():
+                client_ids.append(cli.id)
+        if not client_ids:
+            return False
+
+        # Шукаємо кандидат-замовлення на цю дату для цих клієнтів
+        target_date = sheet_date.date() if hasattr(sheet_date, 'date') else sheet_date
+        q = self.session.query(Order).filter(
+            Order.order_date == target_date,
+            Order.client_id.in_(client_ids),
+        )
+        candidates = q.all()
+        if not candidates:
+            return False
+
+        # Серед кандидатів вибираємо той, у якого product_codes збігаються
+        target_order = None
+        for ord_obj in candidates:
+            items = self.session.query(OrderItem).filter(OrderItem.order_id == ord_obj.id).order_by(OrderItem.id.asc()).all()
+            db_codes = []
+            for it in items:
+                p = self.session.query(Product).filter(Product.id == it.product_id).first()
+                if p:
+                    db_codes.append(p.productnumber.lstrip('#'))
+            sheet_codes_norm = [c.lstrip('#') for c in product_codes]
+            if sorted(db_codes) == sorted(sheet_codes_norm) and len(items) == len(sheet_codes_norm):
+                target_order = (ord_obj, items)
+                break
+        if not target_order:
+            return False
+
+        ord_obj, items = target_order
+
+        # Якщо хоч одна позиція вже має discount_type — вважаємо, що backfill уже зроблено
+        if any(it.discount_type for it in items):
+            return True  # знайшли існуюче — пропустити створення дубля
+
+        # Перевпорядковуємо items відповідно до порядку product_codes (по позиції)
+        # Беремо першу непереставлену відповідність для кожного коду
+        ordered_items: List[OrderItem] = []
+        used_ids = set()
+        for code in product_codes:
+            code_norm = code.lstrip('#')
+            for it in items:
+                if it.id in used_ids:
+                    continue
+                p = self.session.query(Product).filter(Product.id == it.product_id).first()
+                if p and p.productnumber.lstrip('#') == code_norm:
+                    ordered_items.append(it)
+                    used_ids.add(it.id)
+                    break
+        if len(ordered_items) != len(items):
+            return True  # неоднозначно — не чіпаємо позиції, але дубль не плодимо
+
+        # Якщо є per-item ціни і кількість збігається — переписуємо ціни позицій
+        if per_item_prices and len(per_item_prices) == len(ordered_items):
+            for it, p in zip(ordered_items, per_item_prices):
+                it.price = float(p)
+
+        # Застосовуємо знижку до ОСТАННЬОЇ позиції
+        if discount:
+            d_type, d_val = discount
+            last = ordered_items[-1]
+            base = float(last.price or 0)
+            if d_type == 'Відсоток':
+                new_price = base * (1.0 - d_val / 100.0)
+            else:
+                new_price = base - d_val
+            last.price = max(0.0, round(new_price, 2))
+            last.discount_type = d_type
+            last.discount_value = d_val
+
+        # Перераховуємо total_amount замовлення відповідно до нових цін позицій
+        new_total = round(sum(float(it.price or 0) * (it.quantity or 1) for it in ordered_items), 2)
+        if abs((ord_obj.total_amount or 0) - new_total) > 0.01:
+            ord_obj.total_amount = new_total
+
+        self.session.flush()
+        return True
+
+    def parse_discount(self, discount_text: str) -> Optional[Tuple[str, float]]:
+        """Парсить колонку 'Знижка'.
+
+        Повертає (discount_type, discount_value) або None, якщо знижки немає.
+        - 'Відсоток' для значень з '%'  (напр. '10%', '100%')
+        - 'Фіксована' для абсолютних знижок у грн (напр. '100;', '\\-85;', '160')
+        """
+        if not discount_text:
+            return None
+        s = discount_text.strip().rstrip(';').strip()
+        if not s or s in ('0', 'ㅤ'):
+            return None
+        # Прибираємо екранований мінус '\-'
+        s = s.replace('\\-', '-').replace('−', '-').replace('–', '-')
+        is_percent = s.endswith('%')
+        if is_percent:
+            s = s[:-1].strip()
+        m = re.search(r'-?\d+(?:[\.,]\d+)?', s)
+        if not m:
+            return None
+        try:
+            val = float(m.group(0).replace(',', '.'))
+        except ValueError:
+            return None
+        # Знижка завжди розглядається як зменшення ціни → беремо абсолютне значення
+        val = abs(val)
+        if val == 0:
+            return None
+        return ('Відсоток' if is_percent else 'Фіксована', val)
     
     def get_or_create_reference_data(self):
         """Отримує або створює довідкові дані."""
@@ -754,7 +919,19 @@ class OrdersComprehensiveParser:
             if not product_codes:
                 return False
             
-            # Перевіряємо дублікати замовлень
+            # ── Спочатку пробуємо знайти ВЖЕ існуюче замовлення за
+            # (дата + клієнт + список товарів) — без огляду на Сума.
+            # Це покриває випадок, коли в Sheet після парсингу додали знижку:
+            # хеш-дедуплікатор бачить різні Сума → не визнає дублем,
+            # але реально це той самий запис, який треба ОНОВИТИ, а не дублювати.
+            try:
+                if self._backfill_discount_for_existing(order_data, sheet_date, product_codes):
+                    self.stats['skipped_duplicates'] += 1
+                    return False
+            except Exception as _bf_err:
+                logger.debug(f"Backfill discount skip: {_bf_err}")
+
+            # Перевіряємо дублікати замовлень (хеш по Сума)
             if self.order_deduplicator.is_duplicate(order_data, sheet_date):
                 self.stats['skipped_duplicates'] += 1
                 return False
@@ -950,18 +1127,52 @@ class OrdersComprehensiveParser:
                 else:
                     order.notes = missing_note
             
+            # Парсимо індивідуальні ціни товарів з колонки 'Ціна' (якщо є)
+            per_item_prices = self.parse_item_prices(order_data.get('Ціна', ''))
+            # Парсимо знижку з колонки 'Знижка'
+            discount = self.parse_discount(order_data.get('Знижка', ''))
+
+            # Будуємо список (product_code, product, item_price) для всіх позицій
+            n_items = len(found_products)
+            item_records = []
+            if per_item_prices and len(per_item_prices) == n_items:
+                # Точна відповідність — використовуємо реальні ціни
+                for (code, prod), p in zip(found_products, per_item_prices):
+                    item_records.append([code, prod, float(p)])
+            else:
+                # Фолбек: ділимо суму замовлення порівну
+                fallback = (price / n_items) if n_items > 0 else price
+                for code, prod in found_products:
+                    item_records.append([code, prod, float(fallback)])
+
+            # Застосовуємо знижку до ОСТАННЬОЇ позиції (за вимогою користувача)
+            applied_discount: Optional[Tuple[str, float]] = None
+            if discount and item_records:
+                d_type, d_val = discount
+                last = item_records[-1]
+                original_last_price = last[2]
+                if d_type == 'Відсоток':
+                    new_price = original_last_price * (1.0 - d_val / 100.0)
+                else:  # Фіксована
+                    new_price = original_last_price - d_val
+                last[2] = max(0.0, round(new_price, 2))
+                applied_discount = (d_type, d_val)
+
             # Створюємо позиції замовлення тільки для знайдених/щойно створених товарів
-            for product_code, product in found_products:
-                # Створюємо позицію замовлення
-                item_price = price / len(found_products) if len(found_products) > 0 else price
-                order_item = OrderItem(
+            for idx, (product_code, product, item_price) in enumerate(item_records):
+                kwargs = dict(
                     order_id=order.id,
                     product_id=product.id,
                     quantity=1,  # Зазвичай по 1 штуці
-                    price=item_price
+                    price=item_price,
                 )
+                # Зберігаємо знижку на ОСТАННІЙ позиції
+                if applied_discount and idx == len(item_records) - 1:
+                    kwargs['discount_type'] = applied_discount[0]
+                    kwargs['discount_value'] = applied_discount[1]
+                order_item = OrderItem(**kwargs)
                 self.session.add(order_item)
-                
+
                 # Реєструємо ціну продажу для оновлення
                 if price > 0:
                     self.price_manager.register_sale_price(product_code, item_price, sheet_date)

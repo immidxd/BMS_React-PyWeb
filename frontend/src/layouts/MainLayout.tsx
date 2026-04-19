@@ -108,12 +108,7 @@ return (
         </div>
       </div>
       
-      {/* Плаваюча кнопка оновлення поверх усього UI (прихована під час активного парсингу) */}
-      {!isParsing && !currentJobId && !(hideButtonUntil && Date.now() < hideButtonUntil) && (
-        <div className="fixed right-6 bottom-6 z-[9999] drop-shadow-lg">
-          <RefreshButton onClick={handleRefreshClick} isLoading={isRefreshing} />
-        </div>
-      )}
+      {/* Плаваюча кнопка оновлення — прибрана з UI */}
 
       <FilterPanel 
         isOpen={isFilterPanelOpen} 

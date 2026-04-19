@@ -40,17 +40,18 @@ interface Box {
 }
 
 // ── Сектори (макет 9м × 8м, 1 одиниця SVG = 1 см) ────────────────────────────
+// Кольори — приглушена, матеріальна палітра (не "веселка")
 const SECTORS: Sector[] = [
-  { key: 'lito',  label: 'ЛІТО',  x: 0,   y: 0,   w: 150, h: 300, fill: '#fef3c7', fillDark: '#78350f', stroke: '#f59e0b', canHoldBoxes: true, z: 1 },
-  { key: 'zyma',  label: 'ЗИМА',  x: 150, y: 0,   w: 150, h: 300, fill: '#dbeafe', fillDark: '#1e3a8a', stroke: '#60a5fa', canHoldBoxes: true, z: 1 },
-  { key: 'vesna', label: 'ВЕСНА', x: 0,   y: 300, w: 150, h: 300, fill: '#dcfce7', fillDark: '#14532d', stroke: '#22c55e', canHoldBoxes: true, z: 1 },
-  { key: 'osin',  label: 'ОСІНЬ', x: 150, y: 300, w: 150, h: 300, fill: '#ffedd5', fillDark: '#7c2d12', stroke: '#f97316', canHoldBoxes: true, z: 1 },
-  { key: 'potochne_valizy', label: 'ПОТОЧНЕ (валізи)', x: 0, y: 600, w: 300, h: 200, fill: '#e0e7ff', fillDark: '#312e81', stroke: '#6366f1', canHoldBoxes: true, z: 1 },
-  { key: 'potochne', label: 'ПОТОЧНЕ', x: 300, y: 0, w: 300, h: 600, fill: '#fce7f3', fillDark: '#831843', stroke: '#ec4899', canHoldBoxes: true, z: 1 },
-  { key: 'shafa', label: 'ШАФА', x: 520, y: 300, w: 80,  h: 300, fill: '#f3e8ff', fillDark: '#581c87', stroke: '#a855f7', canHoldBoxes: false, z: 2 },
-  { key: 'stil',  label: 'СТІЛ', x: 380, y: 540, w: 140, h: 60,  fill: '#cbd5e1', fillDark: '#475569', stroke: '#475569', canHoldBoxes: false, z: 2 },
-  { key: 'korydor', label: 'КОРИДОР', x: 300, y: 600, w: 300, h: 200, fill: '#f1f5f9', fillDark: '#1e293b', stroke: '#64748b', canHoldBoxes: true, z: 1 },
-  { key: 'robocha_zona', label: 'РОБОЧА ЗОНА', x: 600, y: 0, w: 300, h: 800, fill: '#dbeafe', fillDark: '#1e3a8a', stroke: '#3b82f6', canHoldBoxes: true, z: 1 },
+  { key: 'lito',  label: 'ЛІТО',  x: 0,   y: 0,   w: 150, h: 300, fill: '#f5efe0', fillDark: '#4a3a20', stroke: '#c4a97a', canHoldBoxes: true, z: 1 },
+  { key: 'zyma',  label: 'ЗИМА',  x: 150, y: 0,   w: 150, h: 300, fill: '#e8eef5', fillDark: '#1e2d3d', stroke: '#7a9ab8', canHoldBoxes: true, z: 1 },
+  { key: 'vesna', label: 'ВЕСНА', x: 0,   y: 300, w: 150, h: 300, fill: '#e8f0e8', fillDark: '#1e3020', stroke: '#7aab80', canHoldBoxes: true, z: 1 },
+  { key: 'osin',  label: 'ОСІНЬ', x: 150, y: 300, w: 150, h: 300, fill: '#f2e8e0', fillDark: '#3d2010', stroke: '#b8886a', canHoldBoxes: true, z: 1 },
+  { key: 'potochne_valizy', label: 'ПОТОЧНЕ (валізи)', x: 0, y: 600, w: 300, h: 200, fill: '#eceaf5', fillDark: '#252040', stroke: '#8a84b8', canHoldBoxes: true, z: 1 },
+  { key: 'potochne', label: 'ПОТОЧНЕ', x: 300, y: 0, w: 300, h: 600, fill: '#f5eaec', fillDark: '#3d1e24', stroke: '#b87a88', canHoldBoxes: true, z: 1 },
+  { key: 'shafa', label: 'ШАФА', x: 520, y: 300, w: 80,  h: 300, fill: '#ece8f0', fillDark: '#302040', stroke: '#9080b0', canHoldBoxes: false, z: 2 },
+  { key: 'stil',  label: 'СТІЛ', x: 380, y: 540, w: 140, h: 60,  fill: '#dddbd8', fillDark: '#38352f', stroke: '#7a7570', canHoldBoxes: false, z: 2 },
+  { key: 'korydor', label: 'КОРИДОР', x: 300, y: 600, w: 300, h: 200, fill: '#ededeb', fillDark: '#252523', stroke: '#8a8a86', canHoldBoxes: true, z: 1 },
+  { key: 'robocha_zona', label: 'РОБОЧА ЗОНА', x: 600, y: 0, w: 300, h: 800, fill: '#e8edf5', fillDark: '#1a2230', stroke: '#6a84a8', canHoldBoxes: true, z: 1 },
 ];
 
 // ── Стіни і двері ────────────────────────────────────────────────────────────
@@ -164,41 +165,106 @@ interface BoxSVGProps {
 }
 
 const BoxSVG: React.FC<BoxSVGProps> = ({ box, posX, posY, isDark, isSelected, isDragging, isDropTarget, layerLevel, onMouseDown, onClick }) => {
-  const baseFill = isDark ? '#92400e' : '#fbbf24';
-  const baseStroke = isDark ? '#fde68a' : '#92400e';
-  const stroke = isDropTarget ? '#10b981' : (isSelected ? '#ef4444' : baseStroke);
-  const strokeW = isDropTarget ? 3 : (isSelected ? 2 : 1);
-  const opacity = isDragging ? 0.7 : (0.75 + layerLevel * 0.08);
+  // Приглушені земляні тони для коробок
+  const topFill    = isDark ? '#6b5a3e' : '#d4b896';  // верхня грань (світла)
+  const frontFill  = isDark ? '#5a4a30' : '#c4a47e';  // передня грань (середня)
+  const sideFill   = isDark ? '#4a3820' : '#a88860';  // бічна грань (темна)
+  const strokeColor = isDropTarget ? '#3d8c5a' : isSelected ? '#8c3d3d' : (isDark ? '#7a6040' : '#8a6840');
+  const strokeW    = isDropTarget ? 2.5 : isSelected ? 2 : 1;
+  const alpha      = isDragging ? 0.65 : 1;
+
+  // Ізометрична 3D-коробка: вид зверху-спереду
+  const W = box.w;
+  const H = box.h;
+  const D = 10; // "глибина" в пікселях SVG — товщина верхньої грані
+
+  // Передня грань (основна)
+  const fx = posX;
+  const fy = posY + D;
+  // Верхня грань (паралелограм)
+  // top-left → top-right → top-right-shifted → top-left-shifted
+  const topPts = `${fx},${fy} ${fx + W},${fy} ${fx + W + D},${fy - D} ${fx + D},${fy - D}`;
+  // Права бічна грань
+  const rightPts = `${fx + W},${fy} ${fx + W},${fy + H} ${fx + W + D},${fy + H - D} ${fx + W + D},${fy - D}`;
+
+  // Тінь (тільки якщо не drag)
+  const shadowX = posX + D + 3;
+  const shadowY = posY + H + 2;
+
   return (
     <g
       onMouseDown={onMouseDown}
       onClick={onClick}
-      style={{ cursor: isDragging ? 'grabbing' : 'grab' }}
+      style={{ cursor: isDragging ? 'grabbing' : 'grab', opacity: alpha }}
+      filter={!isDragging ? 'url(#box-drop-shadow)' : undefined}
     >
-      {/* Тінь під коробкою */}
+      {/* Тінь на підлозі */}
       {!isDragging && (
-        <rect
-          x={posX + 2} y={posY + 3}
-          width={box.w} height={box.h}
-          rx={3}
-          fill="rgba(0,0,0,0.18)"
+        <ellipse
+          cx={posX + W / 2 + D / 2}
+          cy={posY + H + D + 1}
+          rx={W / 2 + 2}
+          ry={4}
+          fill="rgba(0,0,0,0.15)"
         />
       )}
+
+      {/* Передня грань */}
       <rect
-        x={posX} y={posY}
-        width={box.w} height={box.h}
-        rx={3}
-        fill={baseFill}
-        opacity={opacity}
-        stroke={stroke}
+        x={fx} y={fy}
+        width={W} height={H}
+        fill={frontFill}
+        stroke={strokeColor}
         strokeWidth={strokeW}
+        rx={1}
       />
+
+      {/* Верхня грань (паралелограм) */}
+      <polygon points={topPts} fill={topFill} stroke={strokeColor} strokeWidth={strokeW} />
+
+      {/* Права бічна грань */}
+      <polygon points={rightPts} fill={sideFill} stroke={strokeColor} strokeWidth={strokeW} />
+
+      {/* Стрічка/лінія на передній грані для деталі */}
+      <line
+        x1={fx + W * 0.5} y1={fy}
+        x2={fx + W * 0.5} y2={fy + H}
+        stroke={strokeColor} strokeWidth={0.7} strokeOpacity={0.4}
+      />
+      <line
+        x1={fx} y1={fy + H * 0.45}
+        x2={fx + W} y2={fy + H * 0.45}
+        stroke={strokeColor} strokeWidth={0.7} strokeOpacity={0.4}
+      />
+
+      {/* Підсвічування верхнього лівого кута (gloss) */}
+      <rect
+        x={fx + 2} y={fy + 2}
+        width={W * 0.35} height={H * 0.2}
+        rx={1}
+        fill="rgba(255,255,255,0.18)"
+        style={{ pointerEvents: 'none' }}
+      />
+
+      {/* Рамка виділення */}
+      {(isSelected || isDropTarget) && (
+        <rect
+          x={fx - 2} y={fy - D - 2}
+          width={W + D + 4} height={H + D + 4}
+          rx={3}
+          fill="none"
+          stroke={isDropTarget ? '#3d8c5a' : '#8c3d3d'}
+          strokeWidth={2}
+          strokeDasharray={isDropTarget ? '5 3' : undefined}
+          style={{ pointerEvents: 'none' }}
+        />
+      )}
     </g>
   );
 };
 
-// Рендер однієї стіни як набору сегментів
-const renderWall = (w: Wall, idx: number, doorColor: string) => {
+// Рендер однієї стіни — мінімалістичний (одна тонка лінія + м'яка тінь під нею)
+const renderWall = (w: Wall, idx: number, doorColor: string, isDark: boolean) => {
   const segs: Array<{ from: number; to: number }> = [];
   let cursor = w.start;
   const sortedDoors = [...w.doors].sort((a, b) => a.start - b.start);
@@ -207,19 +273,27 @@ const renderWall = (w: Wall, idx: number, doorColor: string) => {
     cursor = d.end;
   }
   if (cursor < w.end) segs.push({ from: cursor, to: w.end });
+
+  const wallColor = isDark ? '#0d0d0d' : '#1a1714';
+  const T = 5;
+
   return (
     <g key={`w-${idx}`} style={{ pointerEvents: 'none' }}>
       {segs.map((s, i) => {
         const props = w.axis === 'h'
           ? { x1: s.from, y1: w.fixed, x2: s.to, y2: w.fixed }
           : { x1: w.fixed, y1: s.from, x2: w.fixed, y2: s.to };
-        return <line key={`seg-${i}`} {...props} stroke="#000" strokeWidth={WALL_THICKNESS} strokeLinecap="square" />;
+        return (
+          <line key={`seg-${i}`} {...props}
+            stroke={wallColor} strokeWidth={T} strokeLinecap="square" />
+        );
       })}
       {sortedDoors.map((d, i) => {
         const props = w.axis === 'h'
           ? { x1: d.start, y1: w.fixed, x2: d.end, y2: w.fixed }
           : { x1: w.fixed, y1: d.start, x2: w.fixed, y2: d.end };
-        return <line key={`door-${i}`} {...props} stroke={doorColor} strokeWidth={WALL_THICKNESS - 2} strokeLinecap="round" strokeDasharray="6 4" />;
+        return <line key={`door-${i}`} {...props}
+          stroke={doorColor} strokeWidth={1.5} strokeLinecap="round" strokeDasharray="5 4" opacity={0.7} />;
       })}
     </g>
   );
@@ -470,35 +544,68 @@ const WarehousePage: React.FC = () => {
               onClick={() => { setSelectedSector(null); setSelectedBoxId(null); }}
             >
               <defs>
-                <pattern id="grid" width="100" height="100" patternUnits="userSpaceOnUse">
-                  <path d="M 100 0 L 0 0 0 100" fill="none" stroke={isDark ? '#374151' : '#e5e7eb'} strokeWidth="0.5" />
+                {/* Дрібна сітка підлоги */}
+                <pattern id="grid-fine" width="25" height="25" patternUnits="userSpaceOnUse">
+                  <path d="M 25 0 L 0 0 0 25" fill="none" stroke={isDark ? '#1f1f1f' : '#ebe9e3'} strokeWidth="0.4" />
                 </pattern>
+                {/* Тінь коробок */}
+                <filter id="box-drop-shadow" x="-20%" y="-20%" width="150%" height="170%">
+                  <feDropShadow dx="1" dy="2" stdDeviation="2" floodColor="rgba(0,0,0,0.3)" />
+                </filter>
+                {/* М'який світловий градієнт зверху для зон */}
+                <linearGradient id="zone-light" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="rgba(255,255,255,0.30)" />
+                  <stop offset="100%" stopColor="rgba(255,255,255,0)" />
+                </linearGradient>
               </defs>
-              <rect x="0" y="0" width="900" height="800" fill="url(#grid)" />
 
-              {/* Сектори */}
+              {/* Фон підлоги */}
+              <rect x="-20" y="-20" width="940" height="840" fill={isDark ? '#0e0e0e' : '#f6f4ef'} />
+              <rect x="0" y="0" width="900" height="800" fill={isDark ? '#141414' : '#fbfaf6'} />
+              <rect x="0" y="0" width="900" height="800" fill="url(#grid-fine)" />
+
+              {/* Сектори — мінімалістично */}
               {sortedSectors.map(s => {
                 const isHover = hoveredSector === s.key;
                 const isSel = selectedSector === s.key;
-                const fill = isDark ? s.fillDark : s.fill;
+                const baseFill = isDark ? s.fillDark : s.fill;
+                const { cx, cy } = sectorCenter(s);
+                const labelFs = Math.min(15, Math.max(9, Math.min(s.w, s.h) / 9));
+
                 return (
                   <g key={s.key}
                     onMouseEnter={() => setHoveredSector(s.key)}
                     onMouseLeave={() => setHoveredSector(null)}
                     onClick={(e) => { e.stopPropagation(); setSelectedSector(s.key); setSelectedBoxId(null); }}
-                    style={{ cursor: 'pointer' }}>
+                    style={{ cursor: 'pointer', transition: 'all 0.15s ease' }}>
+
+                    {/* Заливка */}
                     <rect x={s.x} y={s.y} width={s.w} height={s.h}
-                      fill={fill}
-                      fillOpacity={isHover || isSel ? 0.95 : 0.7}
-                      stroke={isSel || isHover ? s.stroke : 'transparent'}
-                      strokeWidth={isSel ? 2 : isHover ? 1.5 : 0}
-                      strokeDasharray={s.canHoldBoxes === false ? undefined : '4 3'}
-                      style={{ filter: isHover ? 'brightness(1.05)' : 'none', transition: 'all 0.2s ease' }} />
-                    <text x={sectorCenter(s).cx} y={sectorCenter(s).cy}
+                      fill={baseFill}
+                      fillOpacity={isHover || isSel ? 1 : 0.95}
+                    />
+                    {/* М'який світловий градієнт зверху */}
+                    <rect x={s.x} y={s.y} width={s.w} height={Math.min(50, s.h * 0.35)}
+                      fill="url(#zone-light)"
+                      style={{ pointerEvents: 'none' }}
+                    />
+                    {/* Тонка hairline-рамка (показується тільки на hover/select) */}
+                    {(isHover || isSel) && (
+                      <rect x={s.x + 0.5} y={s.y + 0.5} width={s.w - 1} height={s.h - 1}
+                        fill="none"
+                        stroke={s.stroke}
+                        strokeWidth={isSel ? 1.4 : 1}
+                        style={{ pointerEvents: 'none' }}
+                      />
+                    )}
+                    {/* Підпис */}
+                    <text x={cx} y={cy}
                       textAnchor="middle" dominantBaseline="central"
-                      fontSize={Math.min(28, Math.max(10, Math.min(s.w, s.h) / 6))}
+                      fontSize={labelFs}
                       fontWeight="600"
-                      fill={isDark ? '#f3f4f6' : '#1f2937'}
+                      letterSpacing="1.2"
+                      fontFamily="ui-sans-serif, system-ui, sans-serif"
+                      fill={isDark ? 'rgba(235,230,220,0.75)' : 'rgba(40,35,28,0.65)'}
                       style={{ pointerEvents: 'none', userSelect: 'none' }}>
                       {s.label}
                     </text>
@@ -507,7 +614,7 @@ const WarehousePage: React.FC = () => {
               })}
 
               {/* Стіни і двері */}
-              {WALLS.map((w, i) => renderWall(w, i, isDark ? '#fbbf24' : '#a16207'))}
+              {WALLS.map((w, i) => renderWall(w, i, isDark ? '#c8a060' : '#a16207', isDark))}
 
               {/* Коробки */}
               {renderOrder.map(b => {
@@ -533,12 +640,14 @@ const WarehousePage: React.FC = () => {
               {/* Підписи метрів */}
               <g style={{ pointerEvents: 'none' }}>
                 {[0, 300, 600, 900].map((x, i) => (
-                  <text key={i} x={x} y={-6} textAnchor="middle" fontSize="10" fill={isDark ? '#9ca3af' : '#6b7280'}>
+                  <text key={i} x={x} y={-6} textAnchor="middle" fontSize="9"
+                    fill={isDark ? '#888' : '#999'} letterSpacing="0.3">
                     {i === 0 ? '0' : `${i * 3}м`}
                   </text>
                 ))}
                 {[{ y: 0, label: '0' }, { y: 300, label: '3м' }, { y: 600, label: '6м' }, { y: 800, label: '8м' }].map((m, i) => (
-                  <text key={`y${i}`} x={-8} y={m.y + 3} textAnchor="end" fontSize="10" fill={isDark ? '#9ca3af' : '#6b7280'}>
+                  <text key={`y${i}`} x={-8} y={m.y + 3} textAnchor="end" fontSize="9"
+                    fill={isDark ? '#888' : '#999'} letterSpacing="0.3">
                     {m.label}
                   </text>
                 ))}
@@ -595,8 +704,12 @@ const WarehousePage: React.FC = () => {
                     onMouseEnter={() => setHoveredSector(s.key)}
                     onMouseLeave={() => setHoveredSector(null)}
                     onClick={() => setSelectedSector(s.key)}>
-                    <span className="inline-block w-3 h-3 rounded-sm border"
-                      style={{ background: isDark ? s.fillDark : s.fill, borderColor: s.stroke }} />
+                    <span className="inline-block w-3.5 h-3.5 rounded-sm shadow-sm border"
+                      style={{
+                        background: isDark ? s.fillDark : s.fill,
+                        borderColor: s.stroke,
+                        boxShadow: `inset 0 1px 0 rgba(255,255,255,0.3), 1px 1px 2px rgba(0,0,0,0.15)`
+                      }} />
                     <span className="text-gray-700 dark:text-gray-200">{s.label}</span>
                   </li>
                 ))}

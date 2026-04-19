@@ -1892,6 +1892,26 @@ def _parse_orders_sheet(
         except ValueError:
             total_amount = sum(prices)
 
+        # ── Парсимо знижку з колонки 'Знижка' ──────────────────────────────
+        # Формати: '100;', '10%', '100%', '\-85;', '160'
+        _discount_type: str | None = None
+        _discount_value: float | None = None
+        _d = discount_raw.strip().rstrip(";").strip().replace("\\-", "-").replace("−", "-").replace("–", "-")
+        if _d and _d not in ("0", "ㅤ"):
+            _is_pct = _d.endswith("%")
+            if _is_pct:
+                _d = _d[:-1].strip()
+            import re as _re2
+            _m = _re2.search(r"-?\d+(?:[.,]\d+)?", _d)
+            if _m:
+                try:
+                    _dval = abs(float(_m.group(0).replace(",", ".")))
+                    if _dval > 0:
+                        _discount_type = "Відсоток" if _is_pct else "Фіксована"
+                        _discount_value = _dval
+                except ValueError:
+                    pass
+
         # Client (None якщо ім'я порожнє — анонімне замовлення)
         client_id = None
         if client_name.strip():
@@ -2076,6 +2096,7 @@ def _parse_orders_sheet(
             existing_order.deferred_until    = deferred
             existing_order.priority          = priority
             existing_order.notes             = combined_notes if combined_notes else None
+            existing_order.total_amount      = total_amount  # оновлюємо суму (знижку вже враховано в Сума)
             if _sales_channel:
                 existing_order.sales_channel = _sales_channel
             existing_order.updated_at        = datetime.utcnow()
@@ -2106,6 +2127,8 @@ def _parse_orders_sheet(
 
         total_recalc = 0.0
         any_price_substituted = False
+        # Збираємо список (product, item_price) щоб застосувати знижку до останнього
+        _order_items_buf: list = []  # list of (product, item_price)
 
         for pnum, price in zip(product_nums, prices):
             # Strip emoji / special chars from product number
@@ -2131,7 +2154,6 @@ def _parse_orders_sheet(
             # Якщо ціна в товарі є і відрізняється — зберігаємо стару як oldprice.
             if price and price > 0:
                 if not product.price:
-                    # Товар без ціни (напр. є в Замовленнях, але ще немає в Журналі)
                     product.price = price
                     product.updated_at = datetime.utcnow()
                 elif price != product.price:
@@ -2139,12 +2161,30 @@ def _parse_orders_sheet(
                     product.price = price
                     product.updated_at = datetime.utcnow()
 
-            item = OrderItem(
+            _order_items_buf.append((product, item_price))
+
+        # ── Застосовуємо знижку до ОСТАННЬОГО товару ──────────────────────
+        if _discount_type and _discount_value and _order_items_buf:
+            last_prod, last_price = _order_items_buf[-1]
+            if _discount_type == "Відсоток":
+                new_last = max(0.0, round(last_price * (1.0 - _discount_value / 100.0), 2))
+            else:  # Фіксована
+                new_last = max(0.0, round(last_price - _discount_value, 2))
+            _order_items_buf[-1] = (last_prod, new_last)
+
+        # ── Записуємо OrderItems в БД ──────────────────────────────────────
+        for idx, (product, item_price) in enumerate(_order_items_buf):
+            is_last = (idx == len(_order_items_buf) - 1)
+            item_kwargs = dict(
                 order_id   = order.id,
                 product_id = product.id,
                 quantity   = 1,
                 price      = item_price,
             )
+            if is_last and _discount_type and _discount_value:
+                item_kwargs["discount_type"]  = _discount_type
+                item_kwargs["discount_value"] = _discount_value
+            item = OrderItem(**item_kwargs)
             session.add(item)
             items_added += 1
             total_recalc += item_price

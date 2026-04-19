@@ -1,8 +1,9 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import MainLayout from '../layouts/MainLayout';
 import Pagination from '../components/common/Pagination';
 import ProductDetailsModal from '../components/products/ProductDetailsModal';
+import BmsEmpty from '../components/common/BmsEmpty';
 import { DatePicker } from 'antd';
 import dayjs from 'dayjs';
 import 'dayjs/locale/uk';
@@ -18,6 +19,10 @@ interface OrderItem {
   product_name: string;
   quantity: number;
   price: number;
+  discount_type?: string | null;
+  discount_value?: number | null;
+  additional_operation?: string | null;
+  additional_operation_value?: number | null;
   notes: string | null;
 }
 
@@ -409,6 +414,53 @@ const OrdersPage: React.FC<OrdersPageProps> = ({ currentSearchTerm }) => {
   const [filterOpts, setFilterOpts] = useState<FilterOptions | null>(null);
   const [filters, setFilters] = useState<ActiveFilters>({});
 
+  /* ── Column visibility (right-click toggle, per-user persisted) ───────── */
+  const ORDERS_COLUMNS_KEY = 'orders_table_columns_v1';
+  const ordersColumnOrder: { id: string; title: string; optional: boolean }[] = [
+    { id: 'id',           title: '№',         optional: false },
+    { id: 'order_date',   title: 'Дата',      optional: true },
+    { id: 'client_name',  title: 'Клієнт',    optional: false },
+    { id: 'items_count',  title: 'Товари',    optional: true },
+    { id: 'total_amount', title: 'Сума',      optional: false },
+    { id: 'status',       title: 'Статус',    optional: true },
+    { id: 'payment',      title: 'Оплата',    optional: true },
+    { id: 'delivery',     title: 'Доставка',  optional: true },
+    { id: 'tracking',     title: 'Трекінг',   optional: true },
+    { id: 'channel',      title: 'Канал',     optional: true },
+    { id: 'notes',        title: 'Нотатки',   optional: true },
+  ];
+  const ordersDefaultVis: Record<string, boolean> = ordersColumnOrder.reduce(
+    (acc, c) => { acc[c.id] = true; return acc; },
+    {} as Record<string, boolean>
+  );
+  const [colVis, setColVis] = useState<Record<string, boolean>>(() => {
+    try {
+      const raw = localStorage.getItem(ORDERS_COLUMNS_KEY);
+      if (!raw) return ordersDefaultVis;
+      return { ...ordersDefaultVis, ...JSON.parse(raw) };
+    } catch { return ordersDefaultVis; }
+  });
+  useEffect(() => {
+    localStorage.setItem(ORDERS_COLUMNS_KEY, JSON.stringify(colVis));
+  }, [colVis]);
+  const colMenuRef = useRef<HTMLDivElement | null>(null);
+  const [colMenuOpen, setColMenuOpen] = useState(false);
+  const [colMenuPos, setColMenuPos] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
+  useEffect(() => {
+    const onDoc = (e: MouseEvent) => {
+      if (!colMenuRef.current) return setColMenuOpen(false);
+      if (!colMenuRef.current.contains(e.target as Node)) setColMenuOpen(false);
+    };
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, []);
+  const handleColumnsContextMenu: React.MouseEventHandler<HTMLDivElement> = (e) => {
+    e.preventDefault();
+    setColMenuPos({ x: e.clientX, y: e.clientY });
+    setColMenuOpen(true);
+  };
+  const visibleColCount = ordersColumnOrder.filter(c => colVis[c.id]).length;
+
   // Load filter options once
   useEffect(() => {
     fetch('/api/orders/filters').then(r => r.json()).then(setFilterOpts).catch(() => {});
@@ -537,35 +589,45 @@ const OrdersPage: React.FC<OrdersPageProps> = ({ currentSearchTerm }) => {
         ) : error ? (
           <div className="flex justify-center items-center h-48 text-red-500">{error}</div>
         ) : (
-          <div className="overflow-x-auto rounded border border-gray-200 dark:border-gray-700">
+          <div className="overflow-x-auto rounded border border-gray-200 dark:border-gray-700" onContextMenu={handleColumnsContextMenu}>
             <table className="w-full text-sm">
               <thead className="bg-gray-50 dark:bg-gray-700 border-b border-gray-200 dark:border-gray-600">
                 <tr>
-                  <th className="px-3 py-3 text-left font-semibold text-gray-600 dark:text-gray-300 cursor-pointer whitespace-nowrap" onClick={() => handleSort('id')}>
-                    №<SortIcon field="id" />
-                  </th>
-                  <th className="px-3 py-3 text-left font-semibold text-gray-600 dark:text-gray-300 cursor-pointer whitespace-nowrap" onClick={() => handleSort('order_date')}>
-                    Дата<SortIcon field="order_date" />
-                  </th>
-                  <th className="px-3 py-3 text-left font-semibold text-gray-600 dark:text-gray-300 cursor-pointer whitespace-nowrap" onClick={() => handleSort('client_name')}>
-                    Клієнт<SortIcon field="client_name" />
-                  </th>
-                  <th className="px-3 py-3 text-left font-semibold text-gray-600 dark:text-gray-300">Товари</th>
-                  <th className="px-3 py-3 text-left font-semibold text-gray-600 dark:text-gray-300 cursor-pointer whitespace-nowrap" onClick={() => handleSort('total_amount')}>
-                    Сума<SortIcon field="total_amount" />
-                  </th>
-                  <th className="px-3 py-3 text-left font-semibold text-gray-600 dark:text-gray-300">Статус</th>
-                  <th className="px-3 py-3 text-left font-semibold text-gray-600 dark:text-gray-300">Оплата</th>
-                  <th className="px-3 py-3 text-left font-semibold text-gray-600 dark:text-gray-300">Доставка</th>
-                  <th className="px-3 py-3 text-left font-semibold text-gray-600 dark:text-gray-300">Трекінг</th>
-                  <th className="px-3 py-3 text-left font-semibold text-gray-600 dark:text-gray-300">Канал</th>
-                  <th className="px-3 py-3 text-left font-semibold text-gray-600 dark:text-gray-300">Нотатки</th>
+                  {colVis.id && (
+                    <th className="px-3 py-3 text-left font-semibold text-gray-600 dark:text-gray-300 cursor-pointer whitespace-nowrap" onClick={() => handleSort('id')}>
+                      №<SortIcon field="id" />
+                    </th>
+                  )}
+                  {colVis.order_date && (
+                    <th className="px-3 py-3 text-left font-semibold text-gray-600 dark:text-gray-300 cursor-pointer whitespace-nowrap" onClick={() => handleSort('order_date')}>
+                      Дата<SortIcon field="order_date" />
+                    </th>
+                  )}
+                  {colVis.client_name && (
+                    <th className="px-3 py-3 text-left font-semibold text-gray-600 dark:text-gray-300 cursor-pointer whitespace-nowrap" onClick={() => handleSort('client_name')}>
+                      Клієнт<SortIcon field="client_name" />
+                    </th>
+                  )}
+                  {colVis.items_count && (
+                    <th className="px-3 py-3 text-left font-semibold text-gray-600 dark:text-gray-300">Товари</th>
+                  )}
+                  {colVis.total_amount && (
+                    <th className="px-3 py-3 text-left font-semibold text-gray-600 dark:text-gray-300 cursor-pointer whitespace-nowrap" onClick={() => handleSort('total_amount')}>
+                      Сума<SortIcon field="total_amount" />
+                    </th>
+                  )}
+                  {colVis.status &&    <th className="px-3 py-3 text-left font-semibold text-gray-600 dark:text-gray-300">Статус</th>}
+                  {colVis.payment &&   <th className="px-3 py-3 text-left font-semibold text-gray-600 dark:text-gray-300">Оплата</th>}
+                  {colVis.delivery &&  <th className="px-3 py-3 text-left font-semibold text-gray-600 dark:text-gray-300">Доставка</th>}
+                  {colVis.tracking &&  <th className="px-3 py-3 text-left font-semibold text-gray-600 dark:text-gray-300">Трекінг</th>}
+                  {colVis.channel &&   <th className="px-3 py-3 text-left font-semibold text-gray-600 dark:text-gray-300">Канал</th>}
+                  {colVis.notes &&     <th className="px-3 py-3 text-left font-semibold text-gray-600 dark:text-gray-300">Нотатки</th>}
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
                 {orders.length === 0 ? (
                   <tr>
-                    <td colSpan={11} className="text-center py-12 text-gray-400">Замовлень не знайдено</td>
+                    <td colSpan={visibleColCount}><BmsEmpty label="Замовлень не знайдено" /></td>
                   </tr>
                 ) : orders.map(order => {
                   const conflicts = getOrderConflicts(order);
@@ -580,76 +642,98 @@ const OrdersPage: React.FC<OrdersPageProps> = ({ currentSearchTerm }) => {
                       title={hasConflict ? `⚠ ${conflictTitle}` : undefined}
                       onClick={() => setExpandedId(expandedId === order.id ? null : order.id)}
                     >
-                      <td className="px-3 py-2 font-mono text-xs">
-                        <span className={hasConflict ? 'text-orange-600 dark:text-orange-400 font-bold' : 'text-gray-500 dark:text-gray-400'}>
-                          {order.id}{hasConflict && ' ⚠'}
-                        </span>
-                      </td>
-                      <td className="px-3 py-2 whitespace-nowrap text-gray-700 dark:text-gray-300">{fmtDate(order.order_date)}</td>
-                      <td className="px-3 py-2 font-medium max-w-[160px] truncate">
-                        {order.client_name
-                          ? <span className="text-gray-900 dark:text-gray-100">{order.client_name}</span>
-                          : <span className="text-gray-400 dark:text-gray-500 italic">Анонімний</span>}
-                      </td>
-                      <td className="px-3 py-2 text-gray-500 dark:text-gray-400 text-center">
-                        <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-gray-100 dark:bg-gray-600 text-xs font-semibold">
-                          {order.order_items?.length || 0}
-                        </span>
-                      </td>
-                      <td className="px-3 py-2 font-semibold whitespace-nowrap text-gray-900 dark:text-gray-100">{fmtMoney(order.total_amount)}</td>
-                      <td className="px-3 py-2">
-                        {order.order_status_name ? (
-                          <span className="inline-block px-2 py-0.5 rounded-full text-xs font-medium text-white"
-                            style={{ background: STATUS_COLORS[order.order_status_name] || '#6b7280' }}>
-                            {order.order_status_name}
+                      {colVis.id && (
+                        <td className="px-3 py-2 font-mono text-xs">
+                          <span className={hasConflict ? 'text-orange-600 dark:text-orange-400 font-bold' : 'text-gray-500 dark:text-gray-400'}>
+                            {order.id}{hasConflict && ' ⚠'}
                           </span>
-                        ) : <span className="text-gray-400 text-xs">—</span>}
-                      </td>
-                      <td className="px-3 py-2">
-                        {(order.payment_status || order.payment_status_name) ? (
-                          <span className="inline-block px-2 py-0.5 rounded-full text-xs font-medium text-white"
-                            style={{ background: PAYMENT_COLORS[order.payment_status || order.payment_status_name || ''] || '#6b7280' }}>
-                            {order.payment_status || order.payment_status_name}
+                        </td>
+                      )}
+                      {colVis.order_date && (
+                        <td className="px-3 py-2 whitespace-nowrap text-gray-700 dark:text-gray-300">{fmtDate(order.order_date)}</td>
+                      )}
+                      {colVis.client_name && (
+                        <td className="px-3 py-2 font-medium max-w-[160px] truncate">
+                          {order.client_name
+                            ? <span className="text-gray-900 dark:text-gray-100">{order.client_name}</span>
+                            : <span className="text-gray-400 dark:text-gray-500 italic">Анонімний</span>}
+                        </td>
+                      )}
+                      {colVis.items_count && (
+                        <td className="px-3 py-2 text-gray-500 dark:text-gray-400 text-center">
+                          <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-gray-100 dark:bg-gray-600 text-xs font-semibold">
+                            {order.order_items?.length || 0}
                           </span>
-                        ) : <span className="text-gray-400 text-xs">—</span>}
-                      </td>
-                      <td className="px-3 py-2">
-                        {(() => {
-                          const dm = order.delivery_method_name;
-                          if (!dm) return <span className="text-gray-400 text-xs">—</span>;
-                          const dmNorm = normalizeDelivery(dm);
-                          const cls = DELIVERY_COLORS[dmNorm] || 'bg-gray-100 text-gray-600 border-gray-200';
-                          return <span className={`inline-flex px-1.5 py-0 rounded text-[10px] font-semibold border ${cls}`}>{dmNorm}</span>;
-                        })()}
-                      </td>
-                      <td className="px-3 py-2 font-mono text-xs text-gray-500 dark:text-gray-400">
-                        {order.tracking_number || '—'}
-                      </td>
-                      <td className="px-3 py-2">
-                        {(() => {
-                          const ch = (order.sales_channel || 'Ефір') as SalesChannel;
-                          const cls = CHANNEL_COLORS[ch] || 'bg-gray-100 text-gray-600 border-gray-200';
-                          const isDeferred = (order.delivery_method_name || '').toLowerCase().includes('відкладен')
-                            || (order.payment_status || order.payment_status_name || '').toLowerCase().includes('відкладен');
-                          return (
-                            <div className="flex flex-col gap-0.5">
-                              <span className={`inline-flex px-1.5 py-0 rounded text-[10px] font-semibold border ${cls}`}>{ch}</span>
-                              {isDeferred && (
-                                <span className="inline-flex items-center gap-0.5 px-1 py-0 rounded text-[9px] font-medium bg-orange-100 text-orange-700 border border-orange-200">
-                                  {order.deferred_until ? `до ${fmtDate(order.deferred_until)}` : 'Без терміну'}
-                                </span>
-                              )}
-                            </div>
-                          );
-                        })()}
-                      </td>
-                      <td className="px-3 py-2 text-gray-500 dark:text-gray-400 text-xs max-w-[160px] truncate">
-                        {order.notes || '—'}
-                      </td>
+                        </td>
+                      )}
+                      {colVis.total_amount && (
+                        <td className="px-3 py-2 font-semibold whitespace-nowrap text-gray-900 dark:text-gray-100">{fmtMoney(order.total_amount)}</td>
+                      )}
+                      {colVis.status && (
+                        <td className="px-3 py-2">
+                          {order.order_status_name ? (
+                            <span className="inline-block px-2 py-0.5 rounded-full text-xs font-medium text-white"
+                              style={{ background: STATUS_COLORS[order.order_status_name] || '#6b7280' }}>
+                              {order.order_status_name}
+                            </span>
+                          ) : <span className="text-gray-400 text-xs">—</span>}
+                        </td>
+                      )}
+                      {colVis.payment && (
+                        <td className="px-3 py-2">
+                          {(order.payment_status || order.payment_status_name) ? (
+                            <span className="inline-block px-2 py-0.5 rounded-full text-xs font-medium text-white"
+                              style={{ background: PAYMENT_COLORS[order.payment_status || order.payment_status_name || ''] || '#6b7280' }}>
+                              {order.payment_status || order.payment_status_name}
+                            </span>
+                          ) : <span className="text-gray-400 text-xs">—</span>}
+                        </td>
+                      )}
+                      {colVis.delivery && (
+                        <td className="px-3 py-2">
+                          {(() => {
+                            const dm = order.delivery_method_name;
+                            if (!dm) return <span className="text-gray-400 text-xs">—</span>;
+                            const dmNorm = normalizeDelivery(dm);
+                            const cls = DELIVERY_COLORS[dmNorm] || 'bg-gray-100 text-gray-600 border-gray-200';
+                            return <span className={`inline-flex px-1.5 py-0 rounded text-[10px] font-semibold border ${cls}`}>{dmNorm}</span>;
+                          })()}
+                        </td>
+                      )}
+                      {colVis.tracking && (
+                        <td className="px-3 py-2 font-mono text-xs text-gray-500 dark:text-gray-400">
+                          {order.tracking_number || '—'}
+                        </td>
+                      )}
+                      {colVis.channel && (
+                        <td className="px-3 py-2">
+                          {(() => {
+                            const ch = (order.sales_channel || 'Ефір') as SalesChannel;
+                            const cls = CHANNEL_COLORS[ch] || 'bg-gray-100 text-gray-600 border-gray-200';
+                            const isDeferred = (order.delivery_method_name || '').toLowerCase().includes('відкладен')
+                              || (order.payment_status || order.payment_status_name || '').toLowerCase().includes('відкладен');
+                            return (
+                              <div className="flex flex-col gap-0.5">
+                                <span className={`inline-flex px-1.5 py-0 rounded text-[10px] font-semibold border ${cls}`}>{ch}</span>
+                                {isDeferred && (
+                                  <span className="inline-flex items-center gap-0.5 px-1 py-0 rounded text-[9px] font-medium bg-orange-100 text-orange-700 border border-orange-200">
+                                    {order.deferred_until ? `до ${fmtDate(order.deferred_until)}` : 'Без терміну'}
+                                  </span>
+                                )}
+                              </div>
+                            );
+                          })()}
+                        </td>
+                      )}
+                      {colVis.notes && (
+                        <td className="px-3 py-2 text-gray-500 dark:text-gray-400 text-xs max-w-[160px] truncate">
+                          {order.notes || '—'}
+                        </td>
+                      )}
                     </tr>
                     {expandedId === order.id && order.order_items?.length > 0 && (
                       <tr className="bg-blue-50 dark:bg-blue-900/20">
-                        <td colSpan={11} className="px-6 py-3">
+                        <td colSpan={visibleColCount} className="px-6 py-3">
                           <div className="text-xs font-semibold text-gray-500 dark:text-gray-400 mb-2">Позиції замовлення:</div>
                           <table className="w-full text-xs">
                             <thead>
@@ -657,13 +741,41 @@ const OrdersPage: React.FC<OrdersPageProps> = ({ currentSearchTerm }) => {
                                 <th className="text-left pr-4 pb-1">Номер товару</th>
                                 <th className="text-left pr-4 pb-1">Назва</th>
                                 <th className="text-left pr-4 pb-1">К-сть</th>
-                                <th className="text-left pb-1">Ціна</th>
+                                <th className="text-left pr-4 pb-1">Ціна</th>
+                                <th className="text-left pb-1">Знижка / операція</th>
                               </tr>
                             </thead>
                             <tbody>
                               {order.order_items.map(item => {
                                 const googleQ = (item.product_name || '').trim();
                                 const googleUrl = googleQ ? `https://www.google.com/search?q=${encodeURIComponent(googleQ)}` : null;
+                                // Формуємо бейдж знижки/операції
+                                const badges: { label: string; cls: string; title?: string }[] = [];
+                                if (item.discount_type && item.discount_value) {
+                                  if (item.discount_type === 'Відсоток') {
+                                    badges.push({
+                                      label: `−${item.discount_value}%`,
+                                      cls: 'bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300',
+                                      title: `Знижка ${item.discount_value}% від ціни товару`,
+                                    });
+                                  } else {
+                                    badges.push({
+                                      label: `−${fmtMoney(item.discount_value)}`,
+                                      cls: 'bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300',
+                                      title: `Знижка ${fmtMoney(item.discount_value)} грн`,
+                                    });
+                                  }
+                                }
+                                if (item.additional_operation && item.additional_operation_value != null) {
+                                  const op = item.additional_operation;
+                                  const v = item.additional_operation_value;
+                                  const sign = v >= 0 ? '+' : '';
+                                  badges.push({
+                                    label: `${op} ${sign}${fmtMoney(v)}`,
+                                    cls: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300',
+                                    title: `Додаткова операція: ${op} ${v}`,
+                                  });
+                                }
                                 return (
                                 <tr key={item.id} className="border-t border-blue-100 dark:border-blue-800">
                                   <td className="pr-4 py-1 font-mono">
@@ -689,7 +801,21 @@ const OrdersPage: React.FC<OrdersPageProps> = ({ currentSearchTerm }) => {
                                     )}
                                   </td>
                                   <td className="pr-4 py-1">{item.quantity}</td>
-                                  <td className="py-1 font-semibold">{fmtMoney(item.price)}</td>
+                                  <td className="pr-4 py-1 font-semibold">{fmtMoney(item.price)}</td>
+                                  <td className="py-1">
+                                    {badges.length === 0 ? (
+                                      <span className="text-gray-300 dark:text-gray-600">—</span>
+                                    ) : (
+                                      <span className="inline-flex flex-wrap gap-1">
+                                        {badges.map((b, i) => (
+                                          <span key={i} title={b.title}
+                                            className={`px-1.5 py-0.5 rounded-full text-[10px] font-semibold ${b.cls}`}>
+                                            {b.label}
+                                          </span>
+                                        ))}
+                                      </span>
+                                    )}
+                                  </td>
                                 </tr>
                               );})}
                             </tbody>
@@ -702,6 +828,47 @@ const OrdersPage: React.FC<OrdersPageProps> = ({ currentSearchTerm }) => {
                 })}
               </tbody>
             </table>
+          </div>
+        )}
+
+        {/* Column-visibility floating menu (right-click on table) */}
+        {colMenuOpen && (
+          <div
+            ref={colMenuRef}
+            style={{ top: colMenuPos.y, left: colMenuPos.x }}
+            className="fixed z-[10000] w-72 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg p-2"
+          >
+            <div className="px-2 py-1 text-xs text-gray-500 dark:text-gray-400">Видимість колонок</div>
+            <div className="max-h-80 overflow-auto pr-1">
+              {ordersColumnOrder.map(c => (
+                <label
+                  key={c.id}
+                  className="flex items-center justify-between px-2 py-1 text-sm cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700 rounded"
+                >
+                  <span className="text-gray-700 dark:text-gray-200">{c.title}</span>
+                  <input
+                    type="checkbox"
+                    checked={!!colVis[c.id]}
+                    onChange={(e) => setColVis(v => ({ ...v, [c.id]: e.target.checked }))}
+                    disabled={!c.optional && colVis[c.id]}
+                  />
+                </label>
+              ))}
+            </div>
+            <div className="mt-2 grid grid-cols-3 gap-2">
+              <button
+                className="px-2 py-1 text-xs rounded border border-gray-200 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700"
+                onClick={() => setColVis(ordersColumnOrder.reduce((a, c) => { a[c.id] = true; return a; }, {} as Record<string, boolean>))}
+              >Всі</button>
+              <button
+                className="px-2 py-1 text-xs rounded border border-gray-200 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700"
+                onClick={() => setColVis(ordersColumnOrder.reduce((a, c) => { a[c.id] = !c.optional; return a; }, {} as Record<string, boolean>))}
+              >Тільки обов'язкові</button>
+              <button
+                className="px-2 py-1 text-xs rounded border border-gray-200 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700"
+                onClick={() => setColVis(ordersDefaultVis)}
+              >За умовч.</button>
+            </div>
           </div>
         )}
 
