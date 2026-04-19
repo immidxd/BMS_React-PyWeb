@@ -2,11 +2,16 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import or_, text
+import hashlib
 import logging
+from datetime import datetime
 
 from models.database import get_db
-from models.models import Client, Gender
-from schemas.reference import Client as ClientSchema, ClientCreate, ClientUpdate, ClientList
+from models.models import Client, Gender, ClientAddress
+from schemas.reference import (
+    Client as ClientSchema, ClientCreate, ClientUpdate, ClientList,
+    ClientAddress as ClientAddressSchema, ClientAddressCreate, ClientAddressUpdate,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -282,7 +287,285 @@ async def get_client(client_id: int, db: Session = Depends(get_db)):
         "total": pay.get("total", 0) or 0,
     }
 
+    # ── Адресна книга ────────────────────────────────────────────────────
+    addrs = db.query(ClientAddress).filter(
+        ClientAddress.client_id == client_id
+    ).order_by(
+        ClientAddress.is_primary.desc(),
+        ClientAddress.is_active.desc(),
+        ClientAddress.usage_count.desc(),
+        ClientAddress.id.desc(),
+    ).all()
+    result["addresses"] = [_addr_to_dict(a) for a in addrs]
+
     return result
+
+
+# ── Адреси клієнта ────────────────────────────────────────────────────────
+def _addr_to_dict(a: ClientAddress) -> dict:
+    return {
+        "id": a.id, "client_id": a.client_id,
+        "label": a.label, "delivery_type": a.delivery_type,
+        "recipient_name": a.recipient_name, "recipient_phone": a.recipient_phone,
+        "city": a.city, "city_ref": a.city_ref, "region": a.region,
+        "warehouse_number": a.warehouse_number, "warehouse_ref": a.warehouse_ref,
+        "street": a.street, "building": a.building,
+        "apartment": a.apartment, "postal_code": a.postal_code,
+        "is_primary": bool(a.is_primary), "is_active": bool(a.is_active),
+        "source": a.source, "source_order_id": a.source_order_id,
+        "fingerprint": a.fingerprint, "usage_count": a.usage_count or 0,
+        "last_used_at": a.last_used_at.isoformat() if a.last_used_at else None,
+        "notes": a.notes,
+        "created_at": a.created_at.isoformat() if a.created_at else None,
+        "updated_at": a.updated_at.isoformat() if a.updated_at else None,
+    }
+
+
+def _addr_fingerprint(payload: dict) -> str:
+    """Стабільний md5 для дедупу адрес: тип+місто+відділення+вулиця+будинок+квартира."""
+    parts = [
+        (payload.get("delivery_type") or "").strip().lower(),
+        (payload.get("city") or "").strip().lower(),
+        (payload.get("warehouse_number") or "").strip(),
+        (payload.get("street") or "").strip().lower(),
+        (payload.get("building") or "").strip().lower(),
+        (payload.get("apartment") or "").strip().lower(),
+        (payload.get("postal_code") or "").strip(),
+    ]
+    return hashlib.md5("|".join(parts).encode("utf-8")).hexdigest()
+
+
+def _ensure_single_primary(db: Session, client_id: int, except_id: Optional[int] = None):
+    """Знімає is_primary з усіх інших адрес клієнта (для гарантії one-and-only-one)."""
+    q = db.query(ClientAddress).filter(
+        ClientAddress.client_id == client_id,
+        ClientAddress.is_primary == True,  # noqa: E712
+    )
+    if except_id is not None:
+        q = q.filter(ClientAddress.id != except_id)
+    for other in q.all():
+        other.is_primary = False
+
+
+@router.get("/api/clients/{client_id}/addresses", tags=["clients"])
+async def list_client_addresses(client_id: int, db: Session = Depends(get_db)):
+    if not db.query(Client).filter(Client.id == client_id).first():
+        raise HTTPException(404, "Client not found")
+    addrs = db.query(ClientAddress).filter(
+        ClientAddress.client_id == client_id
+    ).order_by(
+        ClientAddress.is_primary.desc(),
+        ClientAddress.is_active.desc(),
+        ClientAddress.usage_count.desc(),
+        ClientAddress.id.desc(),
+    ).all()
+    return [_addr_to_dict(a) for a in addrs]
+
+
+@router.post("/api/clients/{client_id}/addresses", tags=["clients"])
+async def create_client_address(client_id: int, payload: ClientAddressCreate, db: Session = Depends(get_db)):
+    if not db.query(Client).filter(Client.id == client_id).first():
+        raise HTTPException(404, "Client not found")
+    data = payload.dict()
+    fp = _addr_fingerprint(data)
+    # Дедуп: якщо вже є з тим самим fp у цього клієнта — повертаємо існуючу
+    existing = db.query(ClientAddress).filter(
+        ClientAddress.client_id == client_id,
+        ClientAddress.fingerprint == fp,
+    ).first()
+    if existing:
+        # Просто оновлюємо «м'які» поля
+        for k in ("label", "recipient_name", "recipient_phone", "notes"):
+            if data.get(k):
+                setattr(existing, k, data[k])
+        if data.get("is_primary"):
+            _ensure_single_primary(db, client_id, except_id=existing.id)
+            existing.is_primary = True
+        existing.is_active = bool(data.get("is_active", True))
+        db.commit()
+        db.refresh(existing)
+        return _addr_to_dict(existing)
+
+    if data.get("is_primary"):
+        _ensure_single_primary(db, client_id)
+    addr = ClientAddress(
+        client_id=client_id,
+        source="manual",
+        fingerprint=fp,
+        **data,
+    )
+    db.add(addr)
+    db.commit()
+    db.refresh(addr)
+    return _addr_to_dict(addr)
+
+
+@router.put("/api/clients/{client_id}/addresses/{address_id}", tags=["clients"])
+async def update_client_address(client_id: int, address_id: int, payload: ClientAddressUpdate, db: Session = Depends(get_db)):
+    addr = db.query(ClientAddress).filter(
+        ClientAddress.id == address_id,
+        ClientAddress.client_id == client_id,
+    ).first()
+    if not addr:
+        raise HTTPException(404, "Address not found")
+    data = payload.dict(exclude_unset=True)
+    # Якщо примарність вмикають — спершу знімаємо в інших
+    if data.get("is_primary") is True:
+        _ensure_single_primary(db, client_id, except_id=addr.id)
+    for k, v in data.items():
+        setattr(addr, k, v)
+    # Перерахувати fingerprint, якщо геополя змінилися
+    geo_keys = {"delivery_type", "city", "warehouse_number", "street", "building", "apartment", "postal_code"}
+    if geo_keys & set(data.keys()):
+        addr.fingerprint = _addr_fingerprint({
+            "delivery_type": addr.delivery_type, "city": addr.city,
+            "warehouse_number": addr.warehouse_number, "street": addr.street,
+            "building": addr.building, "apartment": addr.apartment,
+            "postal_code": addr.postal_code,
+        })
+    db.commit()
+    db.refresh(addr)
+    return _addr_to_dict(addr)
+
+
+@router.delete("/api/clients/{client_id}/addresses/{address_id}", tags=["clients"])
+async def delete_client_address(client_id: int, address_id: int, db: Session = Depends(get_db)):
+    addr = db.query(ClientAddress).filter(
+        ClientAddress.id == address_id,
+        ClientAddress.client_id == client_id,
+    ).first()
+    if not addr:
+        raise HTTPException(404, "Address not found")
+    db.delete(addr)
+    db.commit()
+    return {"ok": True}
+
+
+@router.post("/api/clients/{client_id}/addresses/{address_id}/set-primary", tags=["clients"])
+async def set_primary_address(client_id: int, address_id: int, db: Session = Depends(get_db)):
+    addr = db.query(ClientAddress).filter(
+        ClientAddress.id == address_id,
+        ClientAddress.client_id == client_id,
+    ).first()
+    if not addr:
+        raise HTTPException(404, "Address not found")
+    _ensure_single_primary(db, client_id, except_id=addr.id)
+    addr.is_primary = True
+    addr.is_active = True  # якщо був архівний — повертаємо
+    db.commit()
+    db.refresh(addr)
+    return _addr_to_dict(addr)
+
+
+@router.post("/api/clients/{client_id}/addresses/import-from-orders", tags=["clients"])
+async def import_addresses_from_orders(client_id: int, db: Session = Depends(get_db)):
+    """Підтягує всі адреси клієнта з історії його замовлень.
+    Дедуплікує по fingerprint. Існуючі адреси не чіпає (тільки збільшує usage_count).
+    """
+    if not db.query(Client).filter(Client.id == client_id).first():
+        raise HTTPException(404, "Client not found")
+
+    rows = db.execute(text("""
+        SELECT a.id AS addr_id, a.address_line1, a.address_line2, a.city, a.state,
+               a.postal_code, a.recipient_name,
+               COUNT(DISTINCT o.id) AS use_count,
+               MAX(o.order_date) AS last_used,
+               MAX(o.id) AS last_order_id,
+               MAX(o.tracking_number) AS tracking_hint
+        FROM orders o
+        JOIN addresses a ON a.id = o.address_id
+        WHERE o.client_id = :cid
+        GROUP BY a.id, a.address_line1, a.address_line2, a.city, a.state,
+                 a.postal_code, a.recipient_name
+    """), {"cid": client_id}).mappings().all()
+
+    imported = 0
+    updated = 0
+    skipped = 0
+
+    import re as _re
+    for r in rows:
+        line1 = (r.get("address_line1") or "").strip()
+        line2 = (r.get("address_line2") or "").strip()
+        city = (r.get("city") or "").strip()
+
+        # Евристика: якщо в рядку є "Відділення №42" або "Поштомат №..." → НП відділення
+        wh_match = _re.search(r"(?:відділ[\w]*|поштомат)\s*[№#]?\s*(\d+)", (line1 + " " + line2), _re.IGNORECASE)
+        if wh_match:
+            delivery_type = "np_warehouse"
+            warehouse_number = wh_match.group(1)
+            street = None
+            building = None
+        elif line1:
+            # Спроба вийняти "вул. X, буд. Y, кв. Z"
+            delivery_type = "np_courier"
+            warehouse_number = None
+            street = line1
+            building = None
+            bm = _re.search(r"(?:буд[\w]*|будинок)\s*[№#]?\s*([\dА-Яа-я/-]+)", line1, _re.IGNORECASE)
+            if bm:
+                building = bm.group(1)
+        else:
+            delivery_type = "other"
+            warehouse_number = None
+            street = None
+            building = None
+
+        payload = {
+            "delivery_type": delivery_type,
+            "city": city or None,
+            "warehouse_number": warehouse_number,
+            "street": street,
+            "building": building,
+            "apartment": None,
+            "postal_code": (r.get("postal_code") or None),
+        }
+        fp = _addr_fingerprint(payload)
+
+        existing = db.query(ClientAddress).filter(
+            ClientAddress.client_id == client_id,
+            ClientAddress.fingerprint == fp,
+        ).first()
+
+        last_used = r.get("last_used")
+        if isinstance(last_used, str):
+            try:
+                last_used = datetime.fromisoformat(last_used)
+            except Exception:
+                last_used = None
+
+        if existing:
+            # Оновлюємо лічильник + last_used якщо новіше
+            existing.usage_count = max(existing.usage_count or 0, int(r.get("use_count") or 0))
+            if last_used and (not existing.last_used_at or last_used > existing.last_used_at):
+                existing.last_used_at = last_used
+            updated += 1
+        else:
+            addr = ClientAddress(
+                client_id=client_id,
+                label=None,
+                delivery_type=delivery_type,
+                recipient_name=r.get("recipient_name"),
+                city=city or None,
+                warehouse_number=warehouse_number,
+                street=street,
+                building=building,
+                postal_code=r.get("postal_code"),
+                is_primary=False,
+                is_active=True,
+                source="imported_from_order",
+                source_order_id=r.get("last_order_id"),
+                fingerprint=fp,
+                usage_count=int(r.get("use_count") or 0),
+                last_used_at=last_used,
+            )
+            db.add(addr)
+            imported += 1
+
+    # Якщо primary порожній і є саме одна найчастіше використовувана адреса — НЕ ставимо
+    # автоматично, просимо користувача підтвердити (smart-suggest).
+    db.commit()
+    return {"imported": imported, "updated": updated, "skipped": skipped}
 
 @router.post("/api/clients", response_model=ClientSchema, tags=["clients"])
 async def create_client(client: ClientCreate, db: Session = Depends(get_db)):

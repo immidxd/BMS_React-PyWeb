@@ -1,5 +1,15 @@
 import React, { useEffect, useState } from 'react';
-import { fetchClient, updateClient } from '../../services/referenceService';
+import {
+  fetchClient,
+  updateClient,
+  fetchClientAddresses,
+  createClientAddress,
+  updateClientAddress,
+  deleteClientAddress,
+  setPrimaryClientAddress,
+  importClientAddressesFromOrders,
+  ClientAddress,
+} from '../../services/referenceService';
 import ProductDetailsModal from '../products/ProductDetailsModal';
 import ProductNumberLink from '../products/ProductNumberLink';
 import { toast } from 'react-toastify';
@@ -64,6 +74,8 @@ interface ClientFull {
   top_colors: { name: string; cnt: number }[];
   top_sizes_eu: { name: string; cnt: number }[];
   payment_split: { paid: number; unpaid: number; partial: number; total: number };
+  // Адреси
+  addresses?: ClientAddress[];
   // Замовлення
   recent_orders: RecentOrder[];
 }
@@ -119,6 +131,11 @@ const ClientDetailsModal: React.FC<Props> = ({ clientId, open, onClose }) => {
   const [editMode, setEditMode] = useState(false);
   const [saving, setSaving] = useState(false);
   const [draft, setDraft] = useState<Partial<ClientFull>>({});
+  // Адреси
+  const [addresses, setAddresses] = useState<ClientAddress[]>([]);
+  const [addrBusy, setAddrBusy] = useState(false);
+  const [addrEditingId, setAddrEditingId] = useState<number | 'new' | null>(null);
+  const [addrDraft, setAddrDraft] = useState<Partial<ClientAddress>>({});
 
   useEffect(() => {
     if (!open || !clientId) return;
@@ -127,10 +144,107 @@ const ClientDetailsModal: React.FC<Props> = ({ clientId, open, onClose }) => {
     setActiveTab('info');
     setEditMode(false);
     setDraft({});
+    setAddresses([]);
+    setAddrEditingId(null);
+    setAddrDraft({});
     fetchClient(clientId)
-      .then((data: any) => setClient(data as ClientFull))
+      .then((data: any) => {
+        setClient(data as ClientFull);
+        // Прокидаємо адреси з GET /api/clients/{id} якщо є
+        if (Array.isArray(data?.addresses)) setAddresses(data.addresses as ClientAddress[]);
+      })
       .finally(() => setLoading(false));
   }, [open, clientId]);
+
+  // ── Address helpers ────────────────────────────────────────────────────────
+  const reloadAddresses = async () => {
+    if (!clientId) return;
+    try {
+      const list = await fetchClientAddresses(clientId);
+      setAddresses(list);
+    } catch (e: any) {
+      console.error(e);
+    }
+  };
+
+  const startAddAddress = () => {
+    setAddrDraft({ delivery_type: 'np_warehouse', is_primary: addresses.length === 0, is_active: true });
+    setAddrEditingId('new');
+  };
+
+  const startEditAddress = (a: ClientAddress) => {
+    setAddrDraft({ ...a });
+    setAddrEditingId(a.id);
+  };
+
+  const cancelAddressEdit = () => { setAddrEditingId(null); setAddrDraft({}); };
+
+  const saveAddress = async () => {
+    if (!clientId) return;
+    setAddrBusy(true);
+    try {
+      const payload: any = {};
+      Object.entries(addrDraft).forEach(([k, v]) => {
+        if (v === '' || v === undefined) payload[k] = null;
+        else payload[k] = v;
+      });
+      if (addrEditingId === 'new') {
+        await createClientAddress(clientId, payload);
+        toast.success('Адресу додано');
+      } else if (typeof addrEditingId === 'number') {
+        await updateClientAddress(clientId, addrEditingId, payload);
+        toast.success('Адресу оновлено');
+      }
+      await reloadAddresses();
+      cancelAddressEdit();
+    } catch (e: any) {
+      toast.error(`Помилка: ${e?.response?.data?.detail || e.message}`);
+    } finally {
+      setAddrBusy(false);
+    }
+  };
+
+  const removeAddress = async (a: ClientAddress) => {
+    if (!clientId) return;
+    if (!window.confirm(`Видалити адресу "${a.label || a.city || '#' + a.id}"?`)) return;
+    setAddrBusy(true);
+    try {
+      await deleteClientAddress(clientId, a.id);
+      await reloadAddresses();
+      toast.success('Адресу видалено');
+    } catch (e: any) {
+      toast.error(`Помилка: ${e?.response?.data?.detail || e.message}`);
+    } finally {
+      setAddrBusy(false);
+    }
+  };
+
+  const makePrimary = async (a: ClientAddress) => {
+    if (!clientId || a.is_primary) return;
+    setAddrBusy(true);
+    try {
+      await setPrimaryClientAddress(clientId, a.id);
+      await reloadAddresses();
+    } catch (e: any) {
+      toast.error(`Помилка: ${e?.response?.data?.detail || e.message}`);
+    } finally {
+      setAddrBusy(false);
+    }
+  };
+
+  const importFromOrders = async () => {
+    if (!clientId) return;
+    setAddrBusy(true);
+    try {
+      const r = await importClientAddressesFromOrders(clientId);
+      toast.success(`Імпортовано: ${r.imported}, пропущено дублів: ${r.skipped}`);
+      await reloadAddresses();
+    } catch (e: any) {
+      toast.error(`Помилка імпорту: ${e?.response?.data?.detail || e.message}`);
+    } finally {
+      setAddrBusy(false);
+    }
+  };
 
   const startEdit = () => {
     if (!client) return;
@@ -450,6 +564,72 @@ const ClientDetailsModal: React.FC<Props> = ({ clientId, open, onClose }) => {
                     </div>
                   </div>
 
+                  {/* ── Адреси доставки ── */}
+                  <div>
+                    <div className="flex items-center justify-between mb-3">
+                      <h3 className="text-xs font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider">
+                        Адреси доставки <span className="normal-case font-normal text-gray-400">— для НП / Укрпошти</span>
+                      </h3>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={importFromOrders}
+                          disabled={addrBusy}
+                          className="text-xs px-2 py-1 rounded border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-50"
+                          title="Зібрати адреси з історії замовлень"
+                        >
+                          ↻ Імпорт з історії
+                        </button>
+                        <button
+                          onClick={startAddAddress}
+                          disabled={addrBusy || addrEditingId !== null}
+                          className="text-xs px-2 py-1 rounded bg-gray-900 text-white hover:bg-black disabled:opacity-50"
+                        >
+                          + Додати
+                        </button>
+                      </div>
+                    </div>
+
+                    {addresses.length === 0 && addrEditingId !== 'new' && (
+                      <div className="text-sm text-gray-400 italic bg-gray-50 dark:bg-gray-700/30 rounded-lg p-4">
+                        Немає збережених адрес. Натисніть «Імпорт з історії», щоб зібрати з минулих замовлень,
+                        або «Додати», щоб ввести вручну.
+                      </div>
+                    )}
+
+                    <div className="space-y-2">
+                      {addresses.map(a => (
+                        addrEditingId === a.id ? (
+                          <AddressEditor
+                            key={a.id}
+                            value={addrDraft}
+                            onChange={setAddrDraft}
+                            onSave={saveAddress}
+                            onCancel={cancelAddressEdit}
+                            saving={addrBusy}
+                          />
+                        ) : (
+                          <AddressRow
+                            key={a.id}
+                            a={a}
+                            onEdit={() => startEditAddress(a)}
+                            onDelete={() => removeAddress(a)}
+                            onMakePrimary={() => makePrimary(a)}
+                            disabled={addrBusy || addrEditingId !== null}
+                          />
+                        )
+                      ))}
+                      {addrEditingId === 'new' && (
+                        <AddressEditor
+                          value={addrDraft}
+                          onChange={setAddrDraft}
+                          onSave={saveAddress}
+                          onCancel={cancelAddressEdit}
+                          saving={addrBusy}
+                        />
+                      )}
+                    </div>
+                  </div>
+
                   {/* ── Соцмережі / Канали зв'язку ── */}
                   <div>
                     <h3 className="text-xs font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider mb-3">Канали зв'язку</h3>
@@ -658,5 +838,252 @@ const StatCard: React.FC<{ label: string; value: number; color: string }> = ({ l
     <div className="text-[11px] leading-tight mt-0.5 opacity-80">{label}</div>
   </div>
 );
+
+/* ── Адреси: типи + UI ────────────────────────────────────────────────────── */
+const DELIVERY_TYPES: { value: string; label: string; icon: string }[] = [
+  { value: 'np_warehouse', label: 'Нова Пошта — відділення', icon: '📦' },
+  { value: 'np_postomat',  label: 'Нова Пошта — поштомат',   icon: '🗄️' },
+  { value: 'np_courier',   label: 'Нова Пошта — кур’єр',     icon: '🚚' },
+  { value: 'up_warehouse', label: 'Укрпошта — відділення',   icon: '✉️' },
+  { value: 'up_courier',   label: 'Укрпошта — кур’єр',       icon: '📮' },
+  { value: 'pickup',       label: 'Самовивіз',               icon: '🏬' },
+  { value: 'other',        label: 'Інше',                    icon: '📍' },
+];
+
+const deliveryLabel = (t?: string | null) => DELIVERY_TYPES.find(d => d.value === t) || DELIVERY_TYPES[6];
+
+const formatAddress = (a: ClientAddress): string => {
+  const t = a.delivery_type || '';
+  const parts: string[] = [];
+  if (a.city) parts.push(a.city);
+  if (t.includes('warehouse') || t.includes('postomat')) {
+    if (a.warehouse_number) parts.push(`відд. №${a.warehouse_number}`);
+  } else if (a.street || a.building) {
+    const street = [a.street, a.building, a.apartment ? `кв. ${a.apartment}` : null].filter(Boolean).join(' ');
+    if (street) parts.push(street);
+  }
+  if (a.postal_code) parts.push(a.postal_code);
+  return parts.join(', ') || '—';
+};
+
+const AddressRow: React.FC<{
+  a: ClientAddress;
+  onEdit: () => void;
+  onDelete: () => void;
+  onMakePrimary: () => void;
+  disabled?: boolean;
+}> = ({ a, onEdit, onDelete, onMakePrimary, disabled }) => {
+  const dt = deliveryLabel(a.delivery_type);
+  return (
+    <div className={`flex items-start gap-3 p-3 rounded-lg border ${a.is_primary ? 'bg-amber-50 dark:bg-amber-900/10 border-amber-200 dark:border-amber-800/40' : 'bg-gray-50 dark:bg-gray-700/30 border-gray-200 dark:border-gray-600'} ${!a.is_active ? 'opacity-60' : ''}`}>
+      <button
+        onClick={onMakePrimary}
+        disabled={disabled || a.is_primary}
+        title={a.is_primary ? 'Основна адреса' : 'Зробити основною'}
+        className={`shrink-0 text-xl leading-none mt-0.5 ${a.is_primary ? 'text-amber-500' : 'text-gray-300 hover:text-amber-400'} disabled:cursor-default`}
+      >
+        ★
+      </button>
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center flex-wrap gap-2">
+          <span className="text-sm font-semibold text-gray-800 dark:text-gray-100">{dt.icon} {dt.label}</span>
+          {a.label && <span className="text-xs px-1.5 py-0.5 rounded bg-gray-200 dark:bg-gray-600 text-gray-700 dark:text-gray-200">{a.label}</span>}
+          {!a.is_active && <span className="text-xs px-1.5 py-0.5 rounded bg-gray-200 dark:bg-gray-600 text-gray-500">архів</span>}
+          {a.usage_count > 0 && <span className="text-[11px] text-gray-400">×{a.usage_count}</span>}
+          {a.source && a.source !== 'manual' && (
+            <span className="text-[11px] text-gray-400" title={`Джерело: ${a.source}`}>auto</span>
+          )}
+        </div>
+        <div className="text-sm text-gray-700 dark:text-gray-300 mt-0.5">{formatAddress(a)}</div>
+        {(a.recipient_name || a.recipient_phone) && (
+          <div className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+            {a.recipient_name || '—'}{a.recipient_phone ? `, ${a.recipient_phone}` : ''}
+          </div>
+        )}
+        {a.notes && <div className="text-xs italic text-gray-500 dark:text-gray-400 mt-0.5">{a.notes}</div>}
+      </div>
+      <div className="shrink-0 flex flex-col gap-1">
+        <button
+          onClick={onEdit}
+          disabled={disabled}
+          className="text-xs px-2 py-1 rounded border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-50"
+        >
+          ✎
+        </button>
+        <button
+          onClick={onDelete}
+          disabled={disabled}
+          className="text-xs px-2 py-1 rounded border border-gray-300 dark:border-gray-600 text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 disabled:opacity-50"
+        >
+          ✕
+        </button>
+      </div>
+    </div>
+  );
+};
+
+const AddressEditor: React.FC<{
+  value: Partial<ClientAddress>;
+  onChange: (v: Partial<ClientAddress>) => void;
+  onSave: () => void;
+  onCancel: () => void;
+  saving?: boolean;
+}> = ({ value, onChange, onSave, onCancel, saving }) => {
+  const set = (k: keyof ClientAddress, v: any) => onChange({ ...value, [k]: v });
+  const t = value.delivery_type || 'np_warehouse';
+  const isWarehouse = t.includes('warehouse') || t.includes('postomat');
+  const isCourier = t.includes('courier') || t === 'other';
+
+  return (
+    <div className="p-3 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 space-y-2">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+        <label className="block">
+          <span className="text-[11px] text-gray-400">Тип доставки</span>
+          <select
+            value={t}
+            onChange={e => set('delivery_type', e.target.value)}
+            className="w-full mt-0.5 px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800"
+          >
+            {DELIVERY_TYPES.map(d => (
+              <option key={d.value} value={d.value}>{d.icon} {d.label}</option>
+            ))}
+          </select>
+        </label>
+        <label className="block">
+          <span className="text-[11px] text-gray-400">Підпис (напр. «Дім», «Офіс»)</span>
+          <input
+            type="text"
+            value={value.label || ''}
+            onChange={e => set('label', e.target.value)}
+            className="w-full mt-0.5 px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800"
+          />
+        </label>
+        <label className="block">
+          <span className="text-[11px] text-gray-400">Імʼя одержувача</span>
+          <input
+            type="text"
+            value={value.recipient_name || ''}
+            onChange={e => set('recipient_name', e.target.value)}
+            className="w-full mt-0.5 px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800"
+          />
+        </label>
+        <label className="block">
+          <span className="text-[11px] text-gray-400">Телефон одержувача</span>
+          <input
+            type="text"
+            value={value.recipient_phone || ''}
+            onChange={e => set('recipient_phone', e.target.value)}
+            className="w-full mt-0.5 px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800"
+          />
+        </label>
+        <label className="block sm:col-span-2">
+          <span className="text-[11px] text-gray-400">Місто</span>
+          <input
+            type="text"
+            value={value.city || ''}
+            onChange={e => set('city', e.target.value)}
+            className="w-full mt-0.5 px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800"
+          />
+        </label>
+        {isWarehouse && (
+          <label className="block sm:col-span-2">
+            <span className="text-[11px] text-gray-400">Номер відділення / поштомату</span>
+            <input
+              type="text"
+              value={value.warehouse_number || ''}
+              onChange={e => set('warehouse_number', e.target.value)}
+              className="w-full mt-0.5 px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800"
+            />
+          </label>
+        )}
+        {isCourier && (
+          <>
+            <label className="block">
+              <span className="text-[11px] text-gray-400">Вулиця</span>
+              <input
+                type="text"
+                value={value.street || ''}
+                onChange={e => set('street', e.target.value)}
+                className="w-full mt-0.5 px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800"
+              />
+            </label>
+            <div className="grid grid-cols-2 gap-2">
+              <label className="block">
+                <span className="text-[11px] text-gray-400">Будинок</span>
+                <input
+                  type="text"
+                  value={value.building || ''}
+                  onChange={e => set('building', e.target.value)}
+                  className="w-full mt-0.5 px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800"
+                />
+              </label>
+              <label className="block">
+                <span className="text-[11px] text-gray-400">Квартира</span>
+                <input
+                  type="text"
+                  value={value.apartment || ''}
+                  onChange={e => set('apartment', e.target.value)}
+                  className="w-full mt-0.5 px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800"
+                />
+              </label>
+            </div>
+          </>
+        )}
+        <label className="block">
+          <span className="text-[11px] text-gray-400">Поштовий індекс</span>
+          <input
+            type="text"
+            value={value.postal_code || ''}
+            onChange={e => set('postal_code', e.target.value)}
+            className="w-full mt-0.5 px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800"
+          />
+        </label>
+      </div>
+      <label className="block">
+        <span className="text-[11px] text-gray-400">Нотатки</span>
+        <textarea
+          value={value.notes || ''}
+          onChange={e => set('notes', e.target.value)}
+          rows={2}
+          className="w-full mt-0.5 px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800"
+        />
+      </label>
+      <div className="flex items-center gap-4 text-sm">
+        <label className="inline-flex items-center gap-1.5">
+          <input
+            type="checkbox"
+            checked={!!value.is_primary}
+            onChange={e => set('is_primary', e.target.checked)}
+          />
+          <span>Основна</span>
+        </label>
+        <label className="inline-flex items-center gap-1.5">
+          <input
+            type="checkbox"
+            checked={value.is_active !== false}
+            onChange={e => set('is_active', e.target.checked)}
+          />
+          <span>Активна</span>
+        </label>
+      </div>
+      <div className="flex justify-end gap-2 pt-1">
+        <button
+          onClick={onCancel}
+          disabled={saving}
+          className="px-3 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700"
+        >
+          Скасувати
+        </button>
+        <button
+          onClick={onSave}
+          disabled={saving}
+          className="px-3 py-1 text-sm rounded bg-gray-900 text-white hover:bg-black disabled:opacity-50"
+        >
+          {saving ? 'Збереження…' : 'Зберегти'}
+        </button>
+      </div>
+    </div>
+  );
+};
 
 export default ClientDetailsModal;

@@ -204,7 +204,82 @@ export const updateClient = async (
 export const deleteClient = async (id: number): Promise<{ message: string }> => {
   const response = await axios.delete(`/api/clients/${id}`);
   return response.data;
-}; 
+};
+
+// ── Client Addresses ────────────────────────────────────────────────────────
+export interface ClientAddress {
+  id: number;
+  client_id: number;
+  label?: string | null;
+  delivery_type: string; // np_warehouse | np_courier | up_warehouse | up_courier | pickup | other
+  recipient_name?: string | null;
+  recipient_phone?: string | null;
+  city?: string | null;
+  city_ref?: string | null;
+  region?: string | null;
+  warehouse_number?: string | null;
+  warehouse_ref?: string | null;
+  street?: string | null;
+  building?: string | null;
+  apartment?: string | null;
+  postal_code?: string | null;
+  is_primary: boolean;
+  is_active: boolean;
+  notes?: string | null;
+  source?: string | null;
+  source_order_id?: number | null;
+  fingerprint?: string | null;
+  usage_count: number;
+  last_used_at?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+export const fetchClientAddresses = async (clientId: number): Promise<ClientAddress[]> => {
+  const response = await axios.get(`/api/clients/${clientId}/addresses`);
+  return response.data;
+};
+
+export const createClientAddress = async (
+  clientId: number,
+  data: Partial<ClientAddress>,
+): Promise<ClientAddress> => {
+  const response = await axios.post(`/api/clients/${clientId}/addresses`, data);
+  return response.data;
+};
+
+export const updateClientAddress = async (
+  clientId: number,
+  addressId: number,
+  data: Partial<ClientAddress>,
+): Promise<ClientAddress> => {
+  const response = await axios.put(`/api/clients/${clientId}/addresses/${addressId}`, data);
+  return response.data;
+};
+
+export const deleteClientAddress = async (
+  clientId: number,
+  addressId: number,
+): Promise<{ ok: boolean }> => {
+  const response = await axios.delete(`/api/clients/${clientId}/addresses/${addressId}`);
+  return response.data;
+};
+
+export const setPrimaryClientAddress = async (
+  clientId: number,
+  addressId: number,
+): Promise<ClientAddress> => {
+  const response = await axios.post(`/api/clients/${clientId}/addresses/${addressId}/set-primary`);
+  return response.data;
+};
+
+export const importClientAddressesFromOrders = async (
+  clientId: number,
+): Promise<{ ok: boolean; imported: number; skipped: number }> => {
+  const response = await axios.post(`/api/clients/${clientId}/addresses/import-from-orders`);
+  return response.data;
+};
+
 
 export const fetchSuppliers = async (
   search?: string,

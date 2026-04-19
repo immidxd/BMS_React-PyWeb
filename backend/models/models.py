@@ -448,9 +448,48 @@ class Address(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
+class ClientAddress(Base):
+    """Адресна книга клієнта — окремо від Address (snapshot per-order).
+    Структуровані поля підготовлені під інтеграцію з Nova Poshta / Ukrposhta API
+    (city_ref, warehouse_ref). Один клієнт може мати багато адрес;
+    is_primary — основна (0 або 1 на клієнта, гарантовано unique-індексом
+    `uq_client_addr_primary`).
+    """
+    __tablename__ = "client_addresses"
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(Integer, ForeignKey("clients.id", ondelete="CASCADE"), nullable=False, index=True)
+    label = Column(String(64), nullable=True)            # "Дім", "Робота", "Мама"
+    delivery_type = Column(String(20), nullable=False, default="np_warehouse")
+    # 'np_warehouse' | 'np_courier' | 'ukrposhta' | 'self_pickup' | 'other'
+    recipient_name = Column(String(255), nullable=True)
+    recipient_phone = Column(String(50), nullable=True)
+    # Гео + refs під API
+    city = Column(String(255), nullable=True)
+    city_ref = Column(String(64), nullable=True)         # NP city ref
+    region = Column(String(255), nullable=True)
+    warehouse_number = Column(String(20), nullable=True) # "42" → "Відділення №42"
+    warehouse_ref = Column(String(64), nullable=True)    # NP warehouse ref
+    street = Column(String(255), nullable=True)
+    building = Column(String(64), nullable=True)
+    apartment = Column(String(32), nullable=True)
+    postal_code = Column(String(20), nullable=True)      # для УП
+    # Метадані
+    is_primary = Column(Boolean, default=False)
+    is_active = Column(Boolean, default=True)
+    source = Column(String(20), default="manual")        # 'manual' | 'imported_from_order' | 'np_api'
+    source_order_id = Column(Integer, ForeignKey("orders.id", ondelete="SET NULL"), nullable=True)
+    fingerprint = Column(String(32), nullable=True)      # md5 для дедупу
+    usage_count = Column(Integer, default=0)
+    last_used_at = Column(DateTime, nullable=True)
+    notes = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class DeliveryStatus(Base):
     __tablename__ = "delivery_statuses"
-    
+
     id = Column(Integer, primary_key=True, index=True)
     status_name = Column(String, unique=True, index=True)
     status_description = Column(Text, nullable=True)

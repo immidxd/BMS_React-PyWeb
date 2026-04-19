@@ -142,3 +142,61 @@ class ClientList(BaseModel):
     page: int = 1
     per_page: int = 20
     pages: int = 1
+
+
+# ── Адресна книга клієнта ───────────────────────────────────────────────────
+class ClientAddressBase(BaseModel):
+    label: Optional[str] = None
+    delivery_type: str = "np_warehouse"
+    recipient_name: Optional[str] = None
+    recipient_phone: Optional[str] = None
+    city: Optional[str] = None
+    city_ref: Optional[str] = None
+    region: Optional[str] = None
+    warehouse_number: Optional[str] = None
+    warehouse_ref: Optional[str] = None
+    street: Optional[str] = None
+    building: Optional[str] = None
+    apartment: Optional[str] = None
+    postal_code: Optional[str] = None
+    is_primary: bool = False
+    is_active: bool = True
+    notes: Optional[str] = None
+
+
+class ClientAddressCreate(ClientAddressBase):
+    pass
+
+
+class ClientAddressUpdate(BaseModel):
+    label: Optional[str] = None
+    delivery_type: Optional[str] = None
+    recipient_name: Optional[str] = None
+    recipient_phone: Optional[str] = None
+    city: Optional[str] = None
+    city_ref: Optional[str] = None
+    region: Optional[str] = None
+    warehouse_number: Optional[str] = None
+    warehouse_ref: Optional[str] = None
+    street: Optional[str] = None
+    building: Optional[str] = None
+    apartment: Optional[str] = None
+    postal_code: Optional[str] = None
+    is_primary: Optional[bool] = None
+    is_active: Optional[bool] = None
+    notes: Optional[str] = None
+
+
+class ClientAddress(ClientAddressBase):
+    id: int
+    client_id: int
+    source: Optional[str] = "manual"
+    source_order_id: Optional[int] = None
+    fingerprint: Optional[str] = None
+    usage_count: int = 0
+    last_used_at: Optional[str] = None
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+    class Config:
+        from_attributes = True

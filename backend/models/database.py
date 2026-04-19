@@ -218,6 +218,43 @@ def init_db():
             """))
             conn.execute(text("CREATE INDEX IF NOT EXISTS idx_tg_mapping_type ON telegram_thread_mapping(type_id)"))
 
+            # ── Адресна книга клієнта (готова під НП/УП API) ──────────────────
+            # Окрема таблиця, не плутаємо з addresses (snapshot per-order).
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS client_addresses (
+                    id SERIAL PRIMARY KEY,
+                    client_id INTEGER NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+                    label VARCHAR(64),
+                    delivery_type VARCHAR(20) NOT NULL DEFAULT 'np_warehouse',
+                    recipient_name VARCHAR(255),
+                    recipient_phone VARCHAR(50),
+                    -- Геогр. поля + refs для майбутнього API
+                    city VARCHAR(255),
+                    city_ref VARCHAR(64),
+                    region VARCHAR(255),
+                    warehouse_number VARCHAR(20),
+                    warehouse_ref VARCHAR(64),
+                    street VARCHAR(255),
+                    building VARCHAR(64),
+                    apartment VARCHAR(32),
+                    postal_code VARCHAR(20),
+                    -- Метадані
+                    is_primary BOOLEAN DEFAULT FALSE,
+                    is_active BOOLEAN DEFAULT TRUE,
+                    source VARCHAR(20) DEFAULT 'manual',
+                    source_order_id INTEGER REFERENCES orders(id) ON DELETE SET NULL,
+                    fingerprint VARCHAR(32),
+                    usage_count INTEGER DEFAULT 0,
+                    last_used_at TIMESTAMP,
+                    notes TEXT,
+                    created_at TIMESTAMP DEFAULT NOW(),
+                    updated_at TIMESTAMP DEFAULT NOW()
+                )
+            """))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS idx_client_addr_client ON client_addresses(client_id)"))
+            conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_client_addr_primary ON client_addresses(client_id) WHERE is_primary = TRUE"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS idx_client_addr_fp ON client_addresses(client_id, fingerprint)"))
+
         # Populate initial reference data (only adds basic reference data, no test data)
         from .seed_data import populate_initial_data
         db = next(get_db())
