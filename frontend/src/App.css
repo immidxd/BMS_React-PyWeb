@@ -655,3 +655,80 @@ select option {
   font-family: var(--bms-font-sans) !important;
   border-radius: 6px !important;
 }
+
+/* ── Native checkboxes / radios → BMS monochrome (auto-inverts in dark) ── */
+.bms-root input[type="checkbox"],
+.bms-root input[type="radio"] {
+  accent-color: var(--bms-primary) !important;
+}
+
+/* ── Lingering blue Tailwind utilities → BMS monochrome ──
+   Покриває фільтр-панель, чекбокси, бейджі-лічильники, "виділений рядок"
+   тощо. У dark-темі --bms-* токени самі інвертуються. */
+.bms-root .bg-blue-500,
+.bms-root .bg-blue-600,
+.bms-root .bg-blue-700,
+.bms-root .bg-indigo-500,
+.bms-root .bg-indigo-600,
+.bms-root .bg-indigo-700 {
+  background-color: var(--bms-primary) !important;
+  color: var(--bms-surface) !important;
+}
+.bms-root .hover\:bg-blue-600:hover,
+.bms-root .hover\:bg-blue-700:hover,
+.bms-root .hover\:bg-indigo-600:hover,
+.bms-root .hover\:bg-indigo-700:hover {
+  background-color: var(--bms-primary-hover, var(--bms-primary)) !important;
+}
+/* Світлі плашки/виділення рядків (bg-blue-50, bg-indigo-50) → нейтральний hover */
+.bms-root .bg-blue-50,
+.bms-root .bg-indigo-50,
+.bms-root .hover\:bg-blue-50:hover,
+.bms-root .hover\:bg-indigo-50:hover {
+  background-color: var(--bms-hover, rgba(0,0,0,0.04)) !important;
+}
+[data-theme="dark"] .bms-root .bg-blue-50,
+[data-theme="dark"] .bms-root .bg-indigo-50,
+[data-theme="dark"] .bms-root .hover\:bg-blue-50:hover,
+[data-theme="dark"] .bms-root .hover\:bg-indigo-50:hover {
+  background-color: var(--bms-hover, rgba(255,255,255,0.06)) !important;
+}
+/* Бейдж-лічильник + dark-варіанти */
+.bms-root .bg-blue-100,
+.bms-root .dark\:bg-blue-900\/30,
+.bms-root .dark\:bg-blue-900\/40,
+.bms-root .dark\:bg-blue-900\/50,
+.bms-root .dark\:bg-blue-900\/20,
+.bms-root .bg-indigo-100 {
+  background-color: var(--bms-hover-strong, rgba(0,0,0,0.08)) !important;
+  color: var(--bms-fg) !important;
+}
+[data-theme="dark"] .bms-root .bg-blue-100,
+[data-theme="dark"] .bms-root .bg-indigo-100 {
+  background-color: rgba(255,255,255,0.10) !important;
+  color: var(--bms-fg) !important;
+}
+/* Сині рамки → BMS border */
+.bms-root .border-blue-200,
+.bms-root .border-blue-400,
+.bms-root .border-blue-500,
+.bms-root .border-blue-700,
+.bms-root .border-indigo-200,
+.bms-root .ring-blue-400,
+.bms-root .ring-blue-500 {
+  border-color: var(--bms-border) !important;
+  --tw-ring-color: var(--bms-fg) !important;
+}
+/* Сині текстові акценти → fg */
+.bms-root .text-blue-300,
+.bms-root .text-blue-800,
+.bms-root .text-blue-900,
+.bms-root .text-indigo-600,
+.bms-root .text-indigo-700,
+.bms-root .text-indigo-800,
+.bms-root .hover\:text-blue-600:hover,
+.bms-root .hover\:text-blue-800:hover,
+.bms-root .dark\:text-blue-300:is(*),
+.bms-root .dark\:text-blue-400:is(*) {
+  color: var(--bms-fg) !important;
+}

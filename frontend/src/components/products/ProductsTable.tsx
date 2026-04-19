@@ -49,7 +49,7 @@ const TableActions = styled(Row)`
 
 const PriceText = styled.span`
     font-weight: 700;
-    color: var(--bms-success, #389e0d);
+    color: var(--bms-fg, #111);
 `;
 
 const OldPriceText = styled.span`

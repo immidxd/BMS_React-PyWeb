@@ -139,16 +139,16 @@ export const ParsingStatus: React.FC<ParsingStatusProps> = ({ jobId = null, onCo
   return (
     <Box sx={{ position: 'fixed', bottom: 16, right: 16, zIndex: 2000, minWidth: 300, maxWidth: 420 }}>
       <Paper elevation={6} sx={{ overflow: 'hidden' }}>
-        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', p: 1, bgcolor: 'primary.main', color: 'primary.contrastText', cursor: 'pointer' }} onClick={() => setExpanded(!expanded)}>
+        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', p: 1, bgcolor: '#111', color: '#fff', cursor: 'pointer' }} onClick={() => setExpanded(!expanded)}>
           <Typography variant="subtitle2" sx={{ fontWeight: 'bold' }}>{subtitle || title}</Typography>
           <IconButton size="small" sx={{ color: 'inherit' }}>{expanded ? <ExpandMore/> : <ExpandLess/>}</IconButton>
         </Box>
-        <LinearProgress variant={Number.isFinite(percent) ? 'determinate' : 'indeterminate'} value={Number.isFinite(percent) ? Math.max(0, Math.min(100, percent)) : undefined} sx={{ height: 6 }} />
+        <LinearProgress variant={Number.isFinite(percent) ? 'determinate' : 'indeterminate'} value={Number.isFinite(percent) ? Math.max(0, Math.min(100, percent)) : undefined} sx={{ height: 6, bgcolor: '#e5e5e5', '& .MuiLinearProgress-bar': { bgcolor: '#111' } }} />
         <Collapse in={expanded}>
           <Box sx={{ p: 2 }}>
             <Typography variant="body2" gutterBottom>{statusLine}</Typography>
             <Box display="flex" alignItems="center" gap={1} mb={1}>
-              <Chip label={`${Number.isFinite(percent) ? percent : 0}%`} size="small" color="primary" />
+              <Chip label={`${Number.isFinite(percent) ? percent : 0}%`} size="small" sx={{ bgcolor: '#111', color: '#fff' }} />
               {(showJob || showPendingJob) && (
                 <>
                   <Chip label={`${job?.processed_items ?? 0} / ${job?.total_items ?? '...'}`} size="small" />

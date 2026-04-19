@@ -2066,6 +2066,52 @@ def _parse_orders_sheet(
                 if existing_order:
                     break
 
+        # Level 2.5: Date-window match (захист від дублів при переносі замовлення між вкладками).
+        # Якщо користувач переніс замовлення на іншу дату/вкладку (або заповнив колонку
+        # "Дата замовлення" іншим числом), Level 1/1.5/2 не зловлять його — fingerprint
+        # та дата відрізняються. Шукаємо у ±7 днів за (client + total + повний сет товарів).
+        # Тільки при ОДНОЗНАЧНОМУ збігу (рівно 1 кандидат), щоб не злити різні замовлення.
+        if not existing_order and client_id and total_amount > 0 and product_nums:
+            from datetime import timedelta as _td
+            _norm_set_current = set(norm_pnums)
+            _num_items_current = len(product_nums)
+            _window_lo = order_date - _td(days=7)
+            _window_hi = order_date + _td(days=7)
+            _candidates = session.query(Order).filter(
+                Order.client_id == client_id,
+                Order.total_amount == total_amount,
+                Order.order_date >= _window_lo,
+                Order.order_date <= _window_hi,
+                Order.order_date != order_date,  # точний date вже перевірений у Level 2
+            ).all()
+            _matches = []
+            for _cand in _candidates:
+                _items = session.query(OrderItem, Product).join(
+                    Product, OrderItem.product_id == Product.id
+                ).filter(OrderItem.order_id == _cand.id).all()
+                if len(_items) != _num_items_current:
+                    continue
+                _cand_set = set(
+                    re.sub(r"[^\wА-ЯҐЄІЇа-яґєії]", "", (p.productnumber or "")).upper()
+                    for _, p in _items
+                )
+                if _cand_set == _norm_set_current:
+                    _matches.append(_cand)
+            if len(_matches) == 1:
+                existing_order = _matches[0]
+                logger.info(
+                    "Order #%d: matched via date-window (was %s → now %s), updating fingerprint %s → %s",
+                    existing_order.id, existing_order.order_date, order_date,
+                    existing_order.source_fingerprint, source_fp,
+                )
+                existing_order.order_date = order_date
+                existing_order.source_fingerprint = source_fp
+            elif len(_matches) > 1:
+                logger.warning(
+                    "Order date-window match ambiguous for client_id=%s date=%s total=%s: %d candidates — skipping merge",
+                    client_id, order_date, total_amount, len(_matches),
+                )
+
         # Level 3: Fallback для старих замовлень без fingerprint
         if not existing_order:
             notes_val = combined_notes if combined_notes else None

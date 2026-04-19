@@ -8,7 +8,7 @@
     align-items: center;
 `,i.Ay.span`
     font-weight: 700;
-    color: var(--bms-success, #389e0d);
+    color: var(--bms-fg, #111);
 `),w=i.Ay.span`
     text-decoration: line-through;
     color: var(--bms-fg-disabled, #999);
