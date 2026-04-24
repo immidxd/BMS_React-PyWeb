@@ -39,6 +39,10 @@ export interface Client {
   return_exchange_count: number;
   has_deferred: boolean;
   rating: number | null;
+  // Step 4: identity flags
+  has_active_flags?: boolean;
+  top_flag_type?: string | null;
+  manually_edited_at?: string | null;
 }
 
 export interface ReferenceList<T> {
@@ -280,6 +284,64 @@ export const importClientAddressesFromOrders = async (
   return response.data;
 };
 
+// ── Client Relations (родичі / друзі / разом замовляють) ───────────────────
+export type RelationType = 'together' | 'family' | 'friend' | 'spouse' | 'other';
+
+export interface ClientRelation {
+  id: number;
+  client_id: number;
+  related_id: number;
+  related_full_name?: string | null;
+  relation_type: RelationType;
+  label?: string | null;
+  source?: string | null;        // 'manual' | 'order_import'
+  confirmed: boolean;
+  notes?: string | null;
+  joint_orders: number;
+  last_order_id?: number | null;
+  last_order_date?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+export const fetchClientRelations = async (clientId: number): Promise<ClientRelation[]> => {
+  const r = await axios.get(`/api/clients/${clientId}/relations`);
+  return r.data;
+};
+
+export const createClientRelation = async (
+  clientId: number,
+  data: { related_id: number; relation_type?: RelationType; label?: string; notes?: string },
+): Promise<{ ok: boolean }> => {
+  const r = await axios.post(`/api/clients/${clientId}/relations`, data);
+  return r.data;
+};
+
+export const updateClientRelation = async (
+  clientId: number,
+  relationId: number,
+  data: Partial<{ relation_type: RelationType; label: string; notes: string; confirmed: boolean }>,
+): Promise<{ ok: boolean; id: number }> => {
+  const r = await axios.put(`/api/clients/${clientId}/relations/${relationId}`, data);
+  return r.data;
+};
+
+export const deleteClientRelation = async (
+  clientId: number,
+  relationId: number,
+  both: boolean = true,
+): Promise<{ ok: boolean }> => {
+  const r = await axios.delete(`/api/clients/${clientId}/relations/${relationId}`, { params: { both } });
+  return r.data;
+};
+
+export const importClientRelationsFromOrders = async (
+  clientId: number,
+): Promise<{ ok: boolean; matches: number; pairs_processed: number }> => {
+  const r = await axios.post(`/api/clients/${clientId}/relations/import-from-orders`);
+  return r.data;
+};
+
 
 export const fetchSuppliers = async (
   search?: string,
@@ -418,4 +480,83 @@ export const groupShipments = async (shipmentIds: number[], groupId?: number, gr
 export const ungroupShipments = async (shipmentIds: number[]): Promise<any> => {
   const response = await axios.post('/api/shipments/ungroup', { shipment_ids: shipmentIds });
   return response.data;
+};
+
+// ── Identity & Aliases (Step 4) ────────────────────────────────────────────
+export interface ClientAlias {
+  id: number;
+  client_id: number;
+  first_name: string | null;
+  last_name: string | null;
+  nickname: string | null;
+  full_raw: string | null;
+  source: string;
+  seen_count: number;
+  first_seen_at: string | null;
+  last_seen_at: string | null;
+}
+
+export type ClientFlagType =
+  | 'possible_duplicate'
+  | 'ambiguous_name_at_parse'
+  | 'phone_mismatch_with_alias'
+  | 'merged_into';
+
+export interface ClientFlag {
+  id: number;
+  client_id: number;
+  flag_type: ClientFlagType | string;
+  severity: 'info' | 'warn' | 'error' | string;
+  peer_client_ids: number[];
+  peer_clients?: { id: number; full_name: string | null; nickname: string | null }[];
+  details: string | null;
+  dismissed: boolean;
+  dismissed_at: string | null;
+  dismissed_by: string | null;
+  created_at: string | null;
+}
+
+export const fetchClientAliases = async (clientId: number): Promise<ClientAlias[]> => {
+  const r = await axios.get(`/api/clients/${clientId}/aliases`);
+  return r.data;
+};
+
+export const createClientAlias = async (
+  clientId: number,
+  data: { first_name?: string | null; last_name?: string | null; nickname?: string | null; full_raw?: string | null },
+): Promise<{ ok: boolean }> => {
+  const r = await axios.post(`/api/clients/${clientId}/aliases`, data);
+  return r.data;
+};
+
+export const deleteClientAlias = async (clientId: number, aliasId: number): Promise<{ ok: boolean }> => {
+  const r = await axios.delete(`/api/clients/${clientId}/aliases/${aliasId}`);
+  return r.data;
+};
+
+export const fetchClientFlags = async (
+  clientId: number,
+  includeDismissed: boolean = false,
+): Promise<ClientFlag[]> => {
+  const r = await axios.get(`/api/clients/${clientId}/flags`, {
+    params: includeDismissed ? { include_dismissed: true } : {},
+  });
+  return r.data;
+};
+
+export const dismissClientFlag = async (
+  clientId: number,
+  flagId: number,
+  note?: string,
+): Promise<{ ok: boolean }> => {
+  const r = await axios.post(`/api/clients/${clientId}/flags/${flagId}/dismiss`, { note });
+  return r.data;
+};
+
+export const mergeClients = async (
+  sourceId: number,
+  targetId: number,
+): Promise<{ ok: boolean; target_id: number; merged_from: number; moved: Record<string, number> }> => {
+  const r = await axios.post(`/api/clients/${sourceId}/merge`, { target_id: targetId });
+  return r.data;
 };

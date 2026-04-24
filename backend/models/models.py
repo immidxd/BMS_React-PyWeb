@@ -1,4 +1,5 @@
 from sqlalchemy import Column, Integer, String, Float, Numeric, DateTime, ForeignKey, Boolean, Text, Date, func
+from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import relationship
 from datetime import datetime
 
@@ -155,7 +156,11 @@ class Client(Base):
     registration_date = Column(DateTime, default=datetime.utcnow)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-    
+
+    # Identity-lock (Step 4): якщо != NULL — парсер не перезатирає поля
+    manually_edited_at = Column(DateTime, nullable=True)
+    manually_edited_fields = Column(Text, nullable=True)  # CSV: 'first_name,last_name,nickname'
+
     # Relationships
     gender = relationship("Gender", back_populates="clients")
     orders = relationship("Order", back_populates="client")
@@ -485,6 +490,74 @@ class ClientAddress(Base):
     notes = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class ClientRelation(Base):
+    """Звʼязок між двома клієнтами (родичі / друзі / разом замовляють).
+    Один напрямок = один рядок (A→B). Симетрія підтримується автодзеркалом
+    при автодетекції з парсера. Лічильник спільних замовлень тримається
+    в junction-таблиці client_relation_orders для стійкості до повторного парсингу.
+    """
+    __tablename__ = "client_relations"
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(Integer, ForeignKey("clients.id", ondelete="CASCADE"), nullable=False, index=True)
+    related_id = Column(Integer, ForeignKey("clients.id", ondelete="CASCADE"), nullable=False, index=True)
+    relation_type = Column(String(20), nullable=False, default="together")
+    # 'together' | 'family' | 'friend' | 'spouse' | 'other'
+    label = Column(String(100), nullable=True)        # 'мама', 'сестра', 'подруга'
+    source = Column(String(20), default="order_import")  # 'order_import' | 'manual'
+    confirmed = Column(Boolean, default=False)        # юзер підтвердив у картці
+    notes = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class ClientRelationOrder(Base):
+    """Junction: кожне замовлення, що підтвердило звʼязок (для дедупу при re-parse)."""
+    __tablename__ = "client_relation_orders"
+
+    relation_id = Column(Integer, ForeignKey("client_relations.id", ondelete="CASCADE"), primary_key=True)
+    order_id = Column(Integer, ForeignKey("orders.id", ondelete="CASCADE"), primary_key=True)
+    noted_at = Column(DateTime, default=datetime.utcnow)
+
+
+class ClientAlias(Base):
+    """Історія всіх варіантів імені/нікнейма цього клієнта (Step 4).
+    Парсер шукає кандидата в т.ч. через aliases, тому ручне редагування
+    нікнейма не призведе до створення дубля при наступному парсингу.
+    """
+    __tablename__ = "client_aliases"
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(Integer, ForeignKey("clients.id", ondelete="CASCADE"), nullable=False, index=True)
+    first_name = Column(String(255), nullable=True)
+    last_name = Column(String(255), nullable=True)
+    nickname = Column(String(255), nullable=True)
+    full_raw = Column(String(500), nullable=True)
+    norm_key = Column(String(500), nullable=False)  # lower(first)|lower(last)|lower(nick)
+    source = Column(String(20), default="parser")
+    # 'parser' | 'manual_edit_history' | 'merge' | 'initial_backfill'
+    seen_count = Column(Integer, default=1)
+    first_seen_at = Column(DateTime, default=datetime.utcnow)
+    last_seen_at = Column(DateTime, default=datetime.utcnow)
+
+
+class ClientFlag(Base):
+    """Прапорці-підсвітки на клієнті (потенційні дублікати, конфлікти імен тощо)."""
+    __tablename__ = "client_flags"
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(Integer, ForeignKey("clients.id", ondelete="CASCADE"), nullable=False, index=True)
+    flag_type = Column(String(40), nullable=False)
+    # 'possible_duplicate' | 'ambiguous_name_at_parse' | 'phone_mismatch_with_alias' | 'merged_into'
+    severity = Column(String(10), default="warn")  # info | warn | error
+    peer_client_ids = Column(ARRAY(Integer), nullable=True)
+    details = Column(Text, nullable=True)
+    dismissed = Column(Boolean, default=False)
+    dismissed_at = Column(DateTime, nullable=True)
+    dismissed_by = Column(String(100), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
 
 
 class DeliveryStatus(Base):

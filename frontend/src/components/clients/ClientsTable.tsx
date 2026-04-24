@@ -44,6 +44,20 @@ const ClientsTable: React.FC = () => {
 
   useEffect(() => { loadClients(); }, [page, perPage, sortBy, sortDir]);
 
+  // Cross-card navigation: open partner client card from relations section
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const ce = e as CustomEvent<{ clientId?: number }>;
+      const id = ce?.detail?.clientId;
+      if (typeof id === 'number' && id > 0) {
+        setDetailsId(id);
+        setDetailsOpen(true);
+      }
+    };
+    window.addEventListener('bms:open-client-card', handler as EventListener);
+    return () => window.removeEventListener('bms:open-client-card', handler as EventListener);
+  }, []);
+
   // Parse URL on mount
   useEffect(() => {
     const params = new URLSearchParams(location.search);
@@ -107,14 +121,29 @@ const ClientsTable: React.FC = () => {
               clients.map((c) => {
                 const rating = c.rating ?? 5;
                 const ratingColor = rating >= 7 ? 'text-green-600 bg-green-50' : rating >= 4 ? 'text-yellow-600 bg-yellow-50' : 'text-red-600 bg-red-50';
+                // Підсвітка проблемних клієнтів (Step 4)
+                const flagTone =
+                  c.top_flag_type === 'phone_mismatch_with_alias' ? 'bg-red-50 hover:bg-red-100' :
+                  c.has_active_flags ? 'bg-amber-50 hover:bg-amber-100' :
+                  'hover:bg-gray-50';
+                const flagTitle =
+                  c.top_flag_type === 'possible_duplicate' ? 'Можливий дублікат' :
+                  c.top_flag_type === 'ambiguous_name_at_parse' ? 'Неоднозначне ім\'я при парсингу' :
+                  c.top_flag_type === 'phone_mismatch_with_alias' ? 'Конфлікт сильного сигналу' :
+                  '';
                 return (
-                  <tr key={c.id} className="border-b last:border-b-0 hover:bg-gray-50">
+                  <tr key={c.id} className={`border-b last:border-b-0 ${flagTone}`}>
                     <td className="px-3 py-2 whitespace-nowrap">{c.id}</td>
                     <td className="px-3 py-2 whitespace-nowrap">
                       <div className="flex items-center gap-1.5">
                         <button onClick={() => { setDetailsId(c.id); setDetailsOpen(true); }} className="underline text-blue-600 hover:text-blue-800">
                           {c.full_name}
                         </button>
+                        {c.has_active_flags && (
+                          <span title={flagTitle || 'Виявлено невідповідність'} className="inline-flex items-center text-amber-600">
+                            ⚠️
+                          </span>
+                        )}
                         {c.has_deferred && (
                           <span title="Має відкладені замовлення" className="inline-flex items-center justify-center w-4 h-4 text-orange-500">
                             <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>

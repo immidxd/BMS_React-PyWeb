@@ -9,6 +9,20 @@ import {
   setPrimaryClientAddress,
   importClientAddressesFromOrders,
   ClientAddress,
+  fetchClientRelations,
+  updateClientRelation,
+  deleteClientRelation,
+  importClientRelationsFromOrders,
+  ClientRelation,
+  RelationType,
+  fetchClientAliases,
+  createClientAlias,
+  deleteClientAlias,
+  fetchClientFlags,
+  dismissClientFlag,
+  mergeClients,
+  ClientAlias,
+  ClientFlag,
 } from '../../services/referenceService';
 import ProductDetailsModal from '../products/ProductDetailsModal';
 import ProductNumberLink from '../products/ProductNumberLink';
@@ -76,6 +90,14 @@ interface ClientFull {
   payment_split: { paid: number; unpaid: number; partial: number; total: number };
   // Адреси
   addresses?: ClientAddress[];
+  // Звʼязки
+  relations?: ClientRelation[];
+  // Identity (Step 4)
+  aliases?: ClientAlias[];
+  flags?: ClientFlag[];
+  has_active_flags?: boolean;
+  manually_edited_at?: string | null;
+  manually_edited_fields?: string | null;
   // Замовлення
   recent_orders: RecentOrder[];
 }
@@ -136,6 +158,17 @@ const ClientDetailsModal: React.FC<Props> = ({ clientId, open, onClose }) => {
   const [addrBusy, setAddrBusy] = useState(false);
   const [addrEditingId, setAddrEditingId] = useState<number | 'new' | null>(null);
   const [addrDraft, setAddrDraft] = useState<Partial<ClientAddress>>({});
+  // Звʼязки
+  const [relations, setRelations] = useState<ClientRelation[]>([]);
+  const [relBusy, setRelBusy] = useState(false);
+  const [relEditingId, setRelEditingId] = useState<number | null>(null);
+  const [relDraft, setRelDraft] = useState<{ relation_type: RelationType; label: string }>({ relation_type: 'together', label: '' });
+  // Identity (Step 4)
+  const [aliases, setAliases] = useState<ClientAlias[]>([]);
+  const [flags, setFlags] = useState<ClientFlag[]>([]);
+  const [aliasBusy, setAliasBusy] = useState(false);
+  const [aliasDraft, setAliasDraft] = useState<{ first_name: string; last_name: string; nickname: string }>({ first_name: '', last_name: '', nickname: '' });
+  const [showAddAlias, setShowAddAlias] = useState(false);
 
   useEffect(() => {
     if (!open || !clientId) return;
@@ -147,14 +180,177 @@ const ClientDetailsModal: React.FC<Props> = ({ clientId, open, onClose }) => {
     setAddresses([]);
     setAddrEditingId(null);
     setAddrDraft({});
+    setRelations([]);
+    setRelEditingId(null);
+    setAliases([]);
+    setFlags([]);
+    setShowAddAlias(false);
+    setAliasDraft({ first_name: '', last_name: '', nickname: '' });
     fetchClient(clientId)
       .then((data: any) => {
         setClient(data as ClientFull);
-        // Прокидаємо адреси з GET /api/clients/{id} якщо є
         if (Array.isArray(data?.addresses)) setAddresses(data.addresses as ClientAddress[]);
+        if (Array.isArray(data?.relations)) setRelations(data.relations as ClientRelation[]);
+        if (Array.isArray(data?.aliases)) setAliases(data.aliases as ClientAlias[]);
+        if (Array.isArray(data?.flags)) setFlags(data.flags as ClientFlag[]);
       })
       .finally(() => setLoading(false));
   }, [open, clientId]);
+
+  // ── Relations helpers ──────────────────────────────────────────────────────
+  const reloadRelations = async () => {
+    if (!clientId) return;
+    try { setRelations(await fetchClientRelations(clientId)); }
+    catch (e) { console.error(e); }
+  };
+
+  const startEditRel = (r: ClientRelation) => {
+    setRelDraft({ relation_type: r.relation_type, label: r.label || '' });
+    setRelEditingId(r.id);
+  };
+  const cancelEditRel = () => { setRelEditingId(null); };
+
+  const saveRel = async () => {
+    if (!clientId || relEditingId == null) return;
+    setRelBusy(true);
+    try {
+      await updateClientRelation(clientId, relEditingId, {
+        relation_type: relDraft.relation_type,
+        label: relDraft.label || undefined,
+        confirmed: true,
+      });
+      await reloadRelations();
+      cancelEditRel();
+      toast.success('Звʼязок оновлено');
+    } catch (e: any) {
+      toast.error(`Помилка: ${e?.response?.data?.detail || e.message}`);
+    } finally { setRelBusy(false); }
+  };
+
+  const confirmRel = async (r: ClientRelation) => {
+    if (!clientId) return;
+    setRelBusy(true);
+    try {
+      await updateClientRelation(clientId, r.id, { confirmed: true });
+      await reloadRelations();
+    } catch (e: any) {
+      toast.error(`Помилка: ${e?.response?.data?.detail || e.message}`);
+    } finally { setRelBusy(false); }
+  };
+
+  const removeRel = async (r: ClientRelation) => {
+    if (!clientId) return;
+    if (!window.confirm(`Видалити звʼязок з "${r.related_full_name || '#' + r.related_id}"? Дзеркальний звʼязок теж буде видалено.`)) return;
+    setRelBusy(true);
+    try {
+      await deleteClientRelation(clientId, r.id, true);
+      await reloadRelations();
+      toast.success('Звʼязок видалено');
+    } catch (e: any) {
+      toast.error(`Помилка: ${e?.response?.data?.detail || e.message}`);
+    } finally { setRelBusy(false); }
+  };
+
+  const importRelations = async () => {
+    if (!clientId) return;
+    setRelBusy(true);
+    try {
+      const r = await importClientRelationsFromOrders(clientId);
+      toast.success(`Імпорт: ${r.matches} збігів, ${r.pairs_processed} пар`);
+      await reloadRelations();
+    } catch (e: any) {
+      toast.error(`Помилка імпорту: ${e?.response?.data?.detail || e.message}`);
+    } finally { setRelBusy(false); }
+  };
+
+  // Клік по імені партнера → перейти в його картку
+  const openPartner = (partnerId: number) => {
+    // Перепризначаємо clientId через хак: емітимо подію через onClose+reopen?
+    // Простіше — onClose, потім батьківський компонент сам відкриє нову. Поки що: просто toast.
+    // Для UX мінімального етапу: відкриваємо в новій вкладці модального API через подію
+    window.dispatchEvent(new CustomEvent('bms:open-client-card', { detail: { clientId: partnerId } }));
+  };
+
+  // ── Identity (Step 4) handlers ────────────────────────────────────────────
+  const reloadAliasesFlags = async () => {
+    if (!clientId) return;
+    try {
+      const [a, f] = await Promise.all([
+        fetchClientAliases(clientId),
+        fetchClientFlags(clientId, false),
+      ]);
+      setAliases(a);
+      setFlags(f);
+    } catch (e) { console.error(e); }
+  };
+
+  const addAlias = async () => {
+    if (!clientId) return;
+    const f = aliasDraft.first_name.trim();
+    const l = aliasDraft.last_name.trim();
+    const n = aliasDraft.nickname.trim();
+    if (!f && !l && !n) {
+      toast.warn('Введіть хоча б одне з полів');
+      return;
+    }
+    setAliasBusy(true);
+    try {
+      await createClientAlias(clientId, {
+        first_name: f || null,
+        last_name: l || null,
+        nickname: n || null,
+      });
+      setAliasDraft({ first_name: '', last_name: '', nickname: '' });
+      setShowAddAlias(false);
+      await reloadAliasesFlags();
+      toast.success('Псевдонім додано');
+    } catch (e: any) {
+      toast.error(`Помилка: ${e?.response?.data?.detail || e.message}`);
+    } finally { setAliasBusy(false); }
+  };
+
+  const removeAlias = async (a: ClientAlias) => {
+    if (!clientId) return;
+    if (!window.confirm(`Видалити цей варіант імені? «${a.full_raw || a.nickname || a.first_name || ''}»`)) return;
+    setAliasBusy(true);
+    try {
+      await deleteClientAlias(clientId, a.id);
+      await reloadAliasesFlags();
+    } catch (e: any) {
+      toast.error(`Помилка: ${e?.response?.data?.detail || e.message}`);
+    } finally { setAliasBusy(false); }
+  };
+
+  const dismissFlag = async (flag: ClientFlag, note: string = 'manual_dismiss') => {
+    if (!clientId) return;
+    try {
+      await dismissClientFlag(clientId, flag.id, note);
+      await reloadAliasesFlags();
+      toast.success('Прапорець знято');
+    } catch (e: any) {
+      toast.error(`Помилка: ${e?.response?.data?.detail || e.message}`);
+    }
+  };
+
+  const mergeWith = async (peerId: number) => {
+    if (!clientId) return;
+    if (!window.confirm(
+      `Об'єднати клієнта #${clientId} → #${peerId}?\n\n` +
+      `Усі замовлення, адреси, звʼязки та псевдоніми клієнта #${clientId} переїдуть до #${peerId}.\n` +
+      `Клієнт #${clientId} буде ВИДАЛЕНО. Дія НЕ зворотна.`
+    )) return;
+    try {
+      const r = await mergeClients(clientId, peerId);
+      toast.success(`Об'єднано: orders=${r.moved.orders}, addr=${r.moved.addresses}, rel=${r.moved.relations}, aliases=${r.moved.aliases}`);
+      // Закриваємо картку source — він видалений, відкриваємо target
+      onClose();
+      setTimeout(() => {
+        window.dispatchEvent(new CustomEvent('bms:open-client-card', { detail: { clientId: peerId } }));
+      }, 150);
+    } catch (e: any) {
+      toast.error(`Merge failed: ${e?.response?.data?.detail || e.message}`);
+    }
+  };
 
   // ── Address helpers ────────────────────────────────────────────────────────
   const reloadAddresses = async () => {
@@ -474,6 +670,21 @@ const ClientDetailsModal: React.FC<Props> = ({ clientId, open, onClose }) => {
                     </div>
                   </div>
 
+                  {/* ── FLAGS банер (Step 4) ─────────────────────────────── */}
+                  {flags && flags.length > 0 && (
+                    <div className="space-y-2">
+                      {flags.map(f => (
+                        <FlagBanner
+                          key={f.id}
+                          flag={f}
+                          onDismiss={() => dismissFlag(f, 'manual_dismiss')}
+                          onMerge={(peerId) => mergeWith(peerId)}
+                          onOpenPeer={openPartner}
+                        />
+                      ))}
+                    </div>
+                  )}
+
                   {/* ── УПОДОБАННЯ (auto-derived з історії) ── */}
                   {(c.top_brands?.length || c.top_types?.length || c.top_sizes_eu?.length || c.top_colors?.length) ? (
                     <div>
@@ -628,6 +839,181 @@ const ClientDetailsModal: React.FC<Props> = ({ clientId, open, onClose }) => {
                         />
                       )}
                     </div>
+                  </div>
+
+                  {/* ── Звʼязки (родичі / друзі / разом замовляють) ── */}
+                  <div>
+                    <div className="flex items-center justify-between mb-3">
+                      <h3 className="text-xs font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider">
+                        Звʼязки <span className="normal-case font-normal text-gray-400">— замовляють разом / родичі / друзі</span>
+                      </h3>
+                      <button
+                        onClick={importRelations}
+                        disabled={relBusy}
+                        className="text-xs px-2 py-1 rounded border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-50"
+                        title="Зібрати звʼязки з нотаток типу 'разом з …'"
+                      >
+                        ↻ Імпорт з історії
+                      </button>
+                    </div>
+
+                    {relations.length === 0 ? (
+                      <div className="text-sm text-gray-400 italic bg-gray-50 dark:bg-gray-700/30 rounded-lg p-4">
+                        Немає виявлених звʼязків. Натисніть «Імпорт з історії», щоб знайти партнерів зі спільних замовлень («разом з …»).
+                      </div>
+                    ) : (
+                      <div className="space-y-2">
+                        {relations.map(r => (
+                          relEditingId === r.id ? (
+                            <div key={r.id} className="p-3 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 space-y-2">
+                              <div className="text-sm font-semibold text-gray-700 dark:text-gray-200">
+                                {r.related_full_name || `#${r.related_id}`}
+                              </div>
+                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                <label className="block">
+                                  <span className="text-[11px] text-gray-400">Тип звʼязку</span>
+                                  <select
+                                    value={relDraft.relation_type}
+                                    onChange={e => setRelDraft(d => ({ ...d, relation_type: e.target.value as RelationType }))}
+                                    className="w-full mt-0.5 px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800"
+                                  >
+                                    <option value="together">🤝 Разом замовляють</option>
+                                    <option value="family">👨‍👩‍👧 Родичі</option>
+                                    <option value="friend">👯 Друзі</option>
+                                    <option value="spouse">💍 Подружжя</option>
+                                    <option value="other">📌 Інше</option>
+                                  </select>
+                                </label>
+                                <label className="block">
+                                  <span className="text-[11px] text-gray-400">Ярлик (напр. «мама», «подруга»)</span>
+                                  <input
+                                    type="text"
+                                    value={relDraft.label}
+                                    onChange={e => setRelDraft(d => ({ ...d, label: e.target.value }))}
+                                    className="w-full mt-0.5 px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800"
+                                  />
+                                </label>
+                              </div>
+                              <div className="flex justify-end gap-2 pt-1">
+                                <button onClick={cancelEditRel} disabled={relBusy} className="px-3 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700">Скасувати</button>
+                                <button onClick={saveRel} disabled={relBusy} className="px-3 py-1 text-sm rounded bg-gray-900 text-white hover:bg-black disabled:opacity-50">{relBusy ? '…' : 'Зберегти'}</button>
+                              </div>
+                            </div>
+                          ) : (
+                            <RelationRow
+                              key={r.id}
+                              r={r}
+                              onOpen={() => openPartner(r.related_id)}
+                              onEdit={() => startEditRel(r)}
+                              onConfirm={() => confirmRel(r)}
+                              onDelete={() => removeRel(r)}
+                              disabled={relBusy || relEditingId !== null}
+                            />
+                          )
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* ── Псевдоніми / Історія імен (Step 4) ── */}
+                  <div>
+                    <div className="flex items-center justify-between mb-3">
+                      <h3 className="text-xs font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider">
+                        Псевдоніми <span className="normal-case font-normal text-gray-400">— всі варіанти імені, які пам'ятає система</span>
+                      </h3>
+                      <div className="flex items-center gap-2">
+                        {(c.manually_edited_at) && (
+                          <span
+                            className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] rounded-full bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-700"
+                            title={`Поля редаговані вручну: ${c.manually_edited_fields || '(невідомо)'}\nПарсер їх не перезатре.`}
+                          >
+                            🔒 Залочено
+                          </span>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => setShowAddAlias(s => !s)}
+                          disabled={aliasBusy}
+                          className="px-2 py-0.5 text-[11px] rounded border border-gray-300 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-50"
+                        >
+                          {showAddAlias ? '✕ Скасувати' : '+ Додати варіант'}
+                        </button>
+                      </div>
+                    </div>
+
+                    {showAddAlias && (
+                      <div className="mb-3 p-3 rounded-lg border border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-700/40 space-y-2">
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                          <input
+                            type="text" placeholder="Ім'я"
+                            value={aliasDraft.first_name}
+                            onChange={e => setAliasDraft(d => ({ ...d, first_name: e.target.value }))}
+                            className="px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800"
+                          />
+                          <input
+                            type="text" placeholder="Прізвище"
+                            value={aliasDraft.last_name}
+                            onChange={e => setAliasDraft(d => ({ ...d, last_name: e.target.value }))}
+                            className="px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800"
+                          />
+                          <input
+                            type="text" placeholder="Нікнейм"
+                            value={aliasDraft.nickname}
+                            onChange={e => setAliasDraft(d => ({ ...d, nickname: e.target.value }))}
+                            className="px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800"
+                          />
+                        </div>
+                        <div className="flex justify-end">
+                          <button
+                            onClick={addAlias} disabled={aliasBusy}
+                            className="px-3 py-1 text-sm rounded bg-gray-900 text-white hover:bg-black disabled:opacity-50"
+                          >
+                            {aliasBusy ? '…' : 'Додати'}
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                    {aliases.length === 0 ? (
+                      <div className="text-sm text-gray-400 italic bg-gray-50 dark:bg-gray-700/30 rounded-lg p-3">
+                        Поки що тільки поточне ім'я. Парсер автоматично запам'ятовуватиме нові варіанти при майбутніх імпортах.
+                      </div>
+                    ) : (
+                      <div className="flex flex-wrap gap-2">
+                        {aliases.map(a => (
+                          <div
+                            key={a.id}
+                            className="group inline-flex items-center gap-1.5 px-2.5 py-1.5 text-sm bg-gray-50 dark:bg-gray-700/40 rounded-lg border border-gray-200 dark:border-gray-600"
+                            title={`Бачено: ${a.seen_count}× • Джерело: ${a.source}\nОстаннє: ${a.last_seen_at ? fmtDate(a.last_seen_at) : '—'}`}
+                          >
+                            <span className="font-medium text-gray-700 dark:text-gray-200">
+                              {a.full_raw || [a.first_name, a.last_name].filter(Boolean).join(' ') || a.nickname || '—'}
+                            </span>
+                            {a.seen_count > 1 && (
+                              <span className="text-[10px] px-1.5 py-0.5 rounded bg-gray-200 dark:bg-gray-600 text-gray-600 dark:text-gray-300">
+                                ×{a.seen_count}
+                              </span>
+                            )}
+                            <span className="text-[10px] text-gray-400">
+                              {a.source === 'parser' ? '🔄' :
+                               a.source === 'manual_edit_history' ? '✏️' :
+                               a.source === 'merge' ? '🔗' :
+                               a.source === 'initial_backfill' ? '📥' : ''}
+                            </span>
+                            {a.source !== 'initial_backfill' && (
+                              <button
+                                onClick={() => removeAlias(a)}
+                                disabled={aliasBusy}
+                                className="ml-1 opacity-0 group-hover:opacity-100 text-red-500 hover:text-red-700 text-xs transition-opacity"
+                                title="Видалити цей варіант"
+                              >
+                                ✕
+                              </button>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
 
                   {/* ── Соцмережі / Канали зв'язку ── */}
@@ -1082,6 +1468,165 @@ const AddressEditor: React.FC<{
           {saving ? 'Збереження…' : 'Зберегти'}
         </button>
       </div>
+    </div>
+  );
+};
+
+/* ── Relations: row component ─────────────────────────────────────────────── */
+const RELATION_LABELS: Record<RelationType, { icon: string; label: string }> = {
+  together: { icon: '🤝', label: 'Разом замовляють' },
+  family:   { icon: '👨‍👩‍👧', label: 'Родичі' },
+  friend:   { icon: '👯', label: 'Друзі' },
+  spouse:   { icon: '💍', label: 'Подружжя' },
+  other:    { icon: '📌', label: 'Інше' },
+};
+
+const fmtRelDate = (d?: string | null) => {
+  if (!d) return '';
+  try { return new Date(d).toLocaleDateString('uk-UA'); } catch { return d; }
+};
+
+const RelationRow: React.FC<{
+  r: ClientRelation;
+  onOpen: () => void;
+  onEdit: () => void;
+  onConfirm: () => void;
+  onDelete: () => void;
+  disabled?: boolean;
+}> = ({ r, onOpen, onEdit, onConfirm, onDelete, disabled }) => {
+  const t = RELATION_LABELS[r.relation_type] || RELATION_LABELS.other;
+  const isAuto = r.source === 'order_import' && !r.confirmed;
+  return (
+    <div className={`flex items-start gap-3 p-3 rounded-lg border ${isAuto ? 'bg-gray-50 dark:bg-gray-700/30 border-gray-200 dark:border-gray-600 border-dashed' : 'bg-gray-50 dark:bg-gray-700/30 border-gray-200 dark:border-gray-600'}`}>
+      <div className="shrink-0 text-xl leading-none mt-0.5">{t.icon}</div>
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center flex-wrap gap-2">
+          <button
+            onClick={onOpen}
+            className="text-sm font-semibold text-gray-800 dark:text-gray-100 hover:underline"
+            title="Відкрити картку"
+          >
+            {r.related_full_name || `#${r.related_id}`}
+          </button>
+          {r.label && (
+            <span className="text-xs px-1.5 py-0.5 rounded bg-gray-200 dark:bg-gray-600 text-gray-700 dark:text-gray-200">{r.label}</span>
+          )}
+          <span className="text-xs px-1.5 py-0.5 rounded bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400">{t.label}</span>
+          {r.joint_orders > 0 && (
+            <span className="text-[11px] text-gray-400">×{r.joint_orders} замовл.</span>
+          )}
+          {isAuto && (
+            <span className="text-[11px] px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300" title="Авто з парсера, ще не підтверджено">
+              auto
+            </span>
+          )}
+        </div>
+        {r.last_order_date && (
+          <div className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+            Останнє спільне: {fmtRelDate(r.last_order_date)}
+          </div>
+        )}
+        {r.notes && <div className="text-xs italic text-gray-500 dark:text-gray-400 mt-0.5">{r.notes}</div>}
+      </div>
+      <div className="shrink-0 flex flex-col gap-1">
+        {isAuto && (
+          <button
+            onClick={onConfirm}
+            disabled={disabled}
+            className="text-xs px-2 py-1 rounded border border-gray-300 dark:border-gray-600 text-green-600 hover:bg-green-50 dark:hover:bg-green-900/20 disabled:opacity-50"
+            title="Підтвердити цей звʼязок"
+          >
+            ✓
+          </button>
+        )}
+        <button
+          onClick={onEdit}
+          disabled={disabled}
+          className="text-xs px-2 py-1 rounded border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-50"
+          title="Редагувати тип/ярлик"
+        >
+          ✎
+        </button>
+        <button
+          onClick={onDelete}
+          disabled={disabled}
+          className="text-xs px-2 py-1 rounded border border-gray-300 dark:border-gray-600 text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 disabled:opacity-50"
+          title="Видалити"
+        >
+          ✕
+        </button>
+      </div>
+    </div>
+  );
+};
+
+/* ── Flag banner (Step 4) ─────────────────────────────────────────────────── */
+const FLAG_LABELS: Record<string, { icon: string; title: string; tone: 'warn' | 'error' | 'info' }> = {
+  possible_duplicate:        { icon: '⚠️', title: 'Можливий дублікат',  tone: 'warn' },
+  ambiguous_name_at_parse:   { icon: '❓', title: 'Неоднозначне ім\'я при парсингу', tone: 'warn' },
+  phone_mismatch_with_alias: { icon: '☎️', title: 'Конфлікт сильного сигналу',     tone: 'error' },
+  merged_into:               { icon: '🔗', title: 'Об\'єднано з іншим клієнтом',   tone: 'info' },
+};
+
+const FlagBanner: React.FC<{
+  flag: ClientFlag;
+  onDismiss: () => void;
+  onMerge: (peerId: number) => void;
+  onOpenPeer: (peerId: number) => void;
+}> = ({ flag, onDismiss, onMerge, onOpenPeer }) => {
+  const meta = FLAG_LABELS[flag.flag_type] || { icon: '🚩', title: flag.flag_type, tone: 'warn' as const };
+  const tones: Record<string, string> = {
+    warn:  'bg-amber-50 dark:bg-amber-900/20 border-amber-300 dark:border-amber-700 text-amber-900 dark:text-amber-200',
+    error: 'bg-red-50 dark:bg-red-900/20 border-red-300 dark:border-red-700 text-red-900 dark:text-red-200',
+    info:  'bg-blue-50 dark:bg-blue-900/20 border-blue-300 dark:border-blue-700 text-blue-900 dark:text-blue-200',
+  };
+  const peers = flag.peer_clients || [];
+  return (
+    <div className={`flex items-start gap-3 p-3 rounded-lg border ${tones[meta.tone]}`}>
+      <div className="text-xl shrink-0 leading-none mt-0.5">{meta.icon}</div>
+      <div className="min-w-0 flex-1">
+        <div className="text-sm font-semibold">
+          {meta.title}
+        </div>
+        {flag.details && (
+          <div className="text-xs opacity-80 mt-0.5">{flag.details}</div>
+        )}
+        {peers.length > 0 && (
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <span className="text-xs opacity-70">Перевір з:</span>
+            {peers.map(p => (
+              <div key={p.id} className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-white/60 dark:bg-gray-800/60 border border-current/20">
+                <button
+                  onClick={() => onOpenPeer(p.id)}
+                  className="text-xs font-medium hover:underline"
+                  title="Відкрити картку"
+                >
+                  {p.full_name || (p.nickname ? `«${p.nickname}»` : `#${p.id}`)}
+                </button>
+                {p.nickname && p.full_name && (
+                  <span className="text-[10px] opacity-70">({p.nickname})</span>
+                )}
+                {flag.flag_type !== 'merged_into' && (
+                  <button
+                    onClick={() => onMerge(p.id)}
+                    className="text-[10px] px-1.5 py-0.5 rounded bg-current/10 hover:bg-current/20"
+                    title="Об'єднати поточного клієнта в цього (поточний буде видалено)"
+                  >
+                    🔗 Об'єднати
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+      <button
+        onClick={onDismiss}
+        className="shrink-0 text-xs px-2 py-1 rounded border border-current/30 hover:bg-current/10"
+        title="Зняти прапорець (це різні люди / перевірив)"
+      >
+        ✓ Це різні люди
+      </button>
     </div>
   );
 };

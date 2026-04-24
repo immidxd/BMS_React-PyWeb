@@ -7,11 +7,54 @@ import logging
 from datetime import datetime
 
 from models.database import get_db
-from models.models import Client, Gender, ClientAddress
+from models.models import (
+    Client, Gender, ClientAddress, ClientRelation, ClientRelationOrder,
+    ClientAlias, ClientFlag,
+)
 from schemas.reference import (
     Client as ClientSchema, ClientCreate, ClientUpdate, ClientList,
     ClientAddress as ClientAddressSchema, ClientAddressCreate, ClientAddressUpdate,
+    ClientRelation as ClientRelationSchema, ClientRelationCreate, ClientRelationUpdate,
+    ClientAlias as ClientAliasSchema, ClientAliasCreate,
+    ClientFlag as ClientFlagSchema, ClientMergeRequest, ClientFlagDismiss,
 )
+
+
+# ── Identity helpers (Step 4) ─────────────────────────────────────────────
+_NAME_LIKE_FIELDS = {"first_name", "last_name", "middle_name", "nickname"}
+
+
+def _norm_alias_key(first: str, last: str, nickname: str) -> str:
+    return "|".join([
+        (first or "").strip().lower(),
+        (last or "").strip().lower(),
+        (nickname or "").strip().lower(),
+    ])
+
+
+def _save_alias_from_client(db: Session, client: Client, source: str = "manual_edit_history") -> None:
+    """Зберегти ПОТОЧНІ first/last/nickname клієнта як alias (перед редагуванням).
+    Idempotent через UNIQUE(client_id, norm_key)."""
+    f = (client.first_name or "").strip()
+    l = (client.last_name or "").strip()
+    n = (client.nickname or "").strip()
+    key = _norm_alias_key(f, l, n)
+    if key == "||":
+        return
+    full_raw = (f + (" " + l if l else "") + (f" ({n})" if n else "")).strip()
+    db.execute(text("""
+        INSERT INTO client_aliases
+            (client_id, first_name, last_name, nickname, full_raw,
+             norm_key, source, seen_count, first_seen_at, last_seen_at)
+        VALUES
+            (:cid, :f, :l, :n, :raw, :k, :src, 1, NOW(), NOW())
+        ON CONFLICT (client_id, norm_key) DO UPDATE
+            SET last_seen_at = NOW(),
+                full_raw = COALESCE(EXCLUDED.full_raw, client_aliases.full_raw)
+    """), {
+        "cid": client.id, "f": f or None, "l": l or None, "n": n or None,
+        "raw": full_raw or None, "k": key, "src": source,
+    })
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -80,6 +123,8 @@ async def get_clients(
             COALESCE(stats.ignored_count, 0) AS ignored_count,
             COALESCE(stats.return_exchange_count, 0) AS return_exchange_count,
             COALESCE(stats.has_deferred, false) AS has_deferred,
+            COALESCE(flags.has_active_flags, false) AS has_active_flags,
+            flags.top_flag_type AS top_flag_type,
             -- Rating formula: base 5.0 + order bonus - cancel/ignore/return penalties + amount bonus, clamped 0-10
             GREATEST(0, LEAST(10,
                 5.0
@@ -100,6 +145,15 @@ async def get_clients(
             FROM orders o
             WHERE o.client_id = c.id
         ) stats ON true
+        LEFT JOIN LATERAL (
+            SELECT
+                TRUE AS has_active_flags,
+                (array_agg(flag_type ORDER BY
+                    CASE severity WHEN 'error' THEN 0 WHEN 'warn' THEN 1 ELSE 2 END,
+                    created_at DESC))[1] AS top_flag_type
+            FROM client_flags cf
+            WHERE cf.client_id = c.id AND cf.dismissed = FALSE
+        ) flags ON true
         {where_sql}
         ORDER BY {sort_col} {direction}, c.id {direction}
         LIMIT :limit_val OFFSET :offset_val
@@ -297,6 +351,108 @@ async def get_client(client_id: int, db: Session = Depends(get_db)):
         ClientAddress.id.desc(),
     ).all()
     result["addresses"] = [_addr_to_dict(a) for a in addrs]
+
+    # ── Звʼязки (родичі/друзі/разом замовляють) ─────────────────────────
+    rel_rows = db.execute(text("""
+        SELECT cr.id, cr.client_id, cr.related_id, cr.relation_type, cr.label,
+               cr.source, cr.confirmed, cr.notes,
+               cr.created_at, cr.updated_at,
+               c2.first_name, c2.last_name,
+               COUNT(DISTINCT cro.order_id) AS joint_orders,
+               MAX(o.id) FILTER (WHERE o.id IS NOT NULL) AS last_order_id,
+               MAX(o.order_date) AS last_order_date
+          FROM client_relations cr
+          JOIN clients c2 ON c2.id = cr.related_id
+          LEFT JOIN client_relation_orders cro ON cro.relation_id = cr.id
+          LEFT JOIN orders o ON o.id = cro.order_id
+         WHERE cr.client_id = :cid
+         GROUP BY cr.id, c2.first_name, c2.last_name
+         ORDER BY MAX(o.order_date) DESC NULLS LAST,
+                  COUNT(DISTINCT cro.order_id) DESC,
+                  cr.id ASC
+    """), {"cid": client_id}).mappings().all()
+    result["relations"] = [
+        {
+            "id": r["id"],
+            "client_id": r["client_id"],
+            "related_id": r["related_id"],
+            "related_full_name": " ".join(filter(None, [r["first_name"], r["last_name"]])).strip() or None,
+            "relation_type": r["relation_type"],
+            "label": r["label"],
+            "source": r["source"],
+            "confirmed": bool(r["confirmed"]),
+            "notes": r["notes"],
+            "joint_orders": int(r["joint_orders"] or 0),
+            "last_order_id": r["last_order_id"],
+            "last_order_date": str(r["last_order_date"]) if r["last_order_date"] else None,
+            "created_at": str(r["created_at"]) if r["created_at"] else None,
+            "updated_at": str(r["updated_at"]) if r["updated_at"] else None,
+        }
+        for r in rel_rows
+    ]
+
+    # ── Aliases (Step 4) ─────────────────────────────────────────────────
+    alias_rows = db.execute(text("""
+        SELECT id, client_id, first_name, last_name, nickname, full_raw,
+               source, seen_count, first_seen_at, last_seen_at
+          FROM client_aliases
+         WHERE client_id = :cid
+         ORDER BY seen_count DESC, last_seen_at DESC, id ASC
+    """), {"cid": client_id}).mappings().all()
+    result["aliases"] = [
+        {
+            "id": a["id"], "client_id": a["client_id"],
+            "first_name": a["first_name"], "last_name": a["last_name"],
+            "nickname": a["nickname"], "full_raw": a["full_raw"],
+            "source": a["source"], "seen_count": int(a["seen_count"] or 1),
+            "first_seen_at": a["first_seen_at"].isoformat() if a["first_seen_at"] else None,
+            "last_seen_at":  a["last_seen_at"].isoformat()  if a["last_seen_at"]  else None,
+        }
+        for a in alias_rows
+    ]
+
+    # ── Flags + hydrated peer details ────────────────────────────────────
+    flag_rows = db.execute(text("""
+        SELECT id, client_id, flag_type, severity, peer_client_ids,
+               details, dismissed, dismissed_at, dismissed_by, created_at
+          FROM client_flags
+         WHERE client_id = :cid AND dismissed = FALSE
+         ORDER BY severity = 'error' DESC, severity = 'warn' DESC, created_at DESC
+    """), {"cid": client_id}).mappings().all()
+
+    # Зібрати усі унікальні peer_ids → один SELECT
+    all_peers = set()
+    for f in flag_rows:
+        for pid in (f["peer_client_ids"] or []):
+            all_peers.add(pid)
+    peer_map = {}
+    if all_peers:
+        rows = db.execute(text("""
+            SELECT id, first_name, last_name, nickname
+              FROM clients WHERE id = ANY(:ids)
+        """), {"ids": list(all_peers)}).mappings().all()
+        for r in rows:
+            peer_map[r["id"]] = {
+                "id": r["id"],
+                "full_name": " ".join(filter(None, [r["first_name"], r["last_name"]])).strip() or None,
+                "nickname": r["nickname"],
+            }
+
+    result["flags"] = [
+        {
+            "id": f["id"], "client_id": f["client_id"],
+            "flag_type": f["flag_type"], "severity": f["severity"],
+            "peer_client_ids": list(f["peer_client_ids"] or []),
+            "peer_clients": [peer_map[pid] for pid in (f["peer_client_ids"] or []) if pid in peer_map],
+            "details": f["details"],
+            "dismissed": bool(f["dismissed"]),
+            "dismissed_at": f["dismissed_at"].isoformat() if f["dismissed_at"] else None,
+            "dismissed_by": f["dismissed_by"],
+            "created_at": f["created_at"].isoformat() if f["created_at"] else None,
+        }
+        for f in flag_rows
+    ]
+    result["has_active_flags"] = len(result["flags"]) > 0
 
     return result
 
@@ -567,6 +723,212 @@ async def import_addresses_from_orders(client_id: int, db: Session = Depends(get
     db.commit()
     return {"imported": imported, "updated": updated, "skipped": skipped}
 
+
+# ── Звʼязки між клієнтами ("разом замовляють", родичі, друзі) ────────────
+# Регекс — лише консервативний шаблон з реальних даних. UA + RU + Latin.
+import re as _re_rel
+_TOGETHER_RE = _re_rel.compile(
+    r"разом\s+з(?:і|о)?\s+([A-Za-z\u0400-\u04FF\u00C0-\u017F][A-Za-z\u0400-\u04FF\u00C0-\u017F'\-]+(?:\s+[A-Za-z\u0400-\u04FF\u00C0-\u017F][A-Za-z\u0400-\u04FF\u00C0-\u017F'\-]+)?)",
+    _re_rel.IGNORECASE,
+)
+
+
+def _extract_together_partner_ids(db: Session, notes: str, exclude_id: int) -> List[int]:
+    """Зі строки нотаток повертає список client_id партнерів.
+    Strict-guard: матчить тільки коли знайдено РІВНО 1 клієнта в БД.
+    Self-references (== exclude_id) ігноруються.
+    """
+    if not notes:
+        return []
+    found: List[int] = []
+    seen: set = set()
+    for m in _TOGETHER_RE.finditer(notes):
+        raw = m.group(1).strip().rstrip(",.;")
+        if not raw or raw.lower() in seen:
+            continue
+        seen.add(raw.lower())
+        rows = db.execute(text("""
+            SELECT id FROM clients
+             WHERE (COALESCE(first_name,'') || ' ' || COALESCE(last_name,'')) ILIKE :q
+                OR (COALESCE(last_name,'')  || ' ' || COALESCE(first_name,'')) ILIKE :q
+             LIMIT 2
+        """), {"q": f"%{raw}%"}).fetchall()
+        if len(rows) != 1:
+            continue
+        partner_id = rows[0][0]
+        if partner_id == exclude_id or partner_id in found:
+            continue
+        found.append(partner_id)
+    return found
+
+
+def _upsert_relation_pair(db: Session, a_id: int, b_id: int, order_id: Optional[int], source: str = "order_import") -> None:
+    """Ідемпотентний апсерт: створює/знаходить два дзеркальні рядки A→B і B→A
+    та (якщо order_id заданий) додає в junction. joint_orders читається з junction.
+    """
+    if a_id == b_id:
+        return
+    for x, y in ((a_id, b_id), (b_id, a_id)):
+        # Get-or-create relation row
+        rid = db.execute(text("""
+            INSERT INTO client_relations (client_id, related_id, relation_type, source, confirmed)
+            VALUES (:c, :r, 'together', :src, FALSE)
+            ON CONFLICT (client_id, related_id) DO UPDATE SET updated_at = NOW()
+            RETURNING id
+        """), {"c": x, "r": y, "src": source}).scalar()
+        if order_id and rid:
+            db.execute(text("""
+                INSERT INTO client_relation_orders (relation_id, order_id)
+                VALUES (:rid, :oid)
+                ON CONFLICT DO NOTHING
+            """), {"rid": rid, "oid": order_id})
+
+
+@router.get("/api/clients/{client_id}/relations", tags=["clients"])
+async def list_client_relations(client_id: int, db: Session = Depends(get_db)):
+    """Список звʼязків клієнта з агрегацією joint_orders + last_order."""
+    rows = db.execute(text("""
+        SELECT cr.id, cr.client_id, cr.related_id, cr.relation_type, cr.label,
+               cr.source, cr.confirmed, cr.notes,
+               cr.created_at, cr.updated_at,
+               c2.first_name, c2.last_name,
+               COUNT(DISTINCT cro.order_id) AS joint_orders,
+               MAX(o.id) FILTER (WHERE o.id IS NOT NULL) AS last_order_id,
+               MAX(o.order_date) AS last_order_date
+          FROM client_relations cr
+          JOIN clients c2 ON c2.id = cr.related_id
+          LEFT JOIN client_relation_orders cro ON cro.relation_id = cr.id
+          LEFT JOIN orders o ON o.id = cro.order_id
+         WHERE cr.client_id = :cid
+         GROUP BY cr.id, c2.first_name, c2.last_name
+         ORDER BY MAX(o.order_date) DESC NULLS LAST,
+                  COUNT(DISTINCT cro.order_id) DESC,
+                  cr.id ASC
+    """), {"cid": client_id}).mappings().all()
+    return [
+        {
+            "id": r["id"],
+            "client_id": r["client_id"],
+            "related_id": r["related_id"],
+            "related_full_name": " ".join(filter(None, [r["first_name"], r["last_name"]])).strip() or None,
+            "relation_type": r["relation_type"],
+            "label": r["label"],
+            "source": r["source"],
+            "confirmed": bool(r["confirmed"]),
+            "notes": r["notes"],
+            "joint_orders": int(r["joint_orders"] or 0),
+            "last_order_id": r["last_order_id"],
+            "last_order_date": str(r["last_order_date"]) if r["last_order_date"] else None,
+            "created_at": str(r["created_at"]) if r["created_at"] else None,
+            "updated_at": str(r["updated_at"]) if r["updated_at"] else None,
+        }
+        for r in rows
+    ]
+
+
+@router.post("/api/clients/{client_id}/relations", tags=["clients"])
+async def create_client_relation(client_id: int, payload: ClientRelationCreate, db: Session = Depends(get_db)):
+    if client_id == payload.related_id:
+        raise HTTPException(status_code=400, detail="Не можна повʼязати клієнта з самим собою")
+    if not db.query(Client).filter(Client.id == client_id).first():
+        raise HTTPException(status_code=404, detail="Client not found")
+    if not db.query(Client).filter(Client.id == payload.related_id).first():
+        raise HTTPException(status_code=404, detail="Related client not found")
+    # Дзеркальний апсерт; обидва рядки вважаємо confirmed=true (це manual)
+    for x, y in ((client_id, payload.related_id), (payload.related_id, client_id)):
+        db.execute(text("""
+            INSERT INTO client_relations (client_id, related_id, relation_type, label, source, confirmed, notes)
+            VALUES (:c, :r, :t, :l, 'manual', TRUE, :n)
+            ON CONFLICT (client_id, related_id) DO UPDATE
+              SET relation_type = EXCLUDED.relation_type,
+                  label         = COALESCE(EXCLUDED.label, client_relations.label),
+                  confirmed     = TRUE,
+                  notes         = COALESCE(EXCLUDED.notes, client_relations.notes),
+                  updated_at    = NOW()
+        """), {"c": x, "r": y, "t": payload.relation_type, "l": payload.label, "n": payload.notes})
+    db.commit()
+    return {"ok": True}
+
+
+@router.put("/api/clients/{client_id}/relations/{relation_id}", tags=["clients"])
+async def update_client_relation(client_id: int, relation_id: int, payload: ClientRelationUpdate, db: Session = Depends(get_db)):
+    rel = db.query(ClientRelation).filter(
+        ClientRelation.id == relation_id, ClientRelation.client_id == client_id
+    ).first()
+    if not rel:
+        raise HTTPException(status_code=404, detail="Relation not found")
+    upd = payload.dict(exclude_unset=True)
+    for k, v in upd.items():
+        setattr(rel, k, v)
+    rel.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(rel)
+    return {"ok": True, "id": rel.id}
+
+
+@router.delete("/api/clients/{client_id}/relations/{relation_id}", tags=["clients"])
+async def delete_client_relation(
+    client_id: int, relation_id: int,
+    both: bool = Query(True, description="Видалити дзеркальний звʼязок теж"),
+    db: Session = Depends(get_db),
+):
+    rel = db.query(ClientRelation).filter(
+        ClientRelation.id == relation_id, ClientRelation.client_id == client_id
+    ).first()
+    if not rel:
+        raise HTTPException(status_code=404, detail="Relation not found")
+    related_id = rel.related_id
+    db.delete(rel)
+    if both:
+        mirror = db.query(ClientRelation).filter(
+            ClientRelation.client_id == related_id, ClientRelation.related_id == client_id
+        ).first()
+        if mirror:
+            db.delete(mirror)
+    db.commit()
+    return {"ok": True}
+
+
+@router.post("/api/clients/{client_id}/relations/import-from-orders", tags=["clients"])
+async def import_relations_from_orders(client_id: int, db: Session = Depends(get_db)):
+    """Сканує всі замовлення цього клієнта на 'разом з <Name>' і апсертить звʼязки.
+    Idempotent: повторний виклик не дублює.
+    """
+    if not db.query(Client).filter(Client.id == client_id).first():
+        raise HTTPException(status_code=404, detail="Client not found")
+    rows = db.execute(text("""
+        SELECT id, notes, order_date FROM orders
+         WHERE client_id = :cid AND notes ILIKE '%разом з%'
+    """), {"cid": client_id}).fetchall()
+    created_pairs = 0
+    linked_orders = 0
+    for r in rows:
+        partner_ids = _extract_together_partner_ids(db, r.notes or "", exclude_id=client_id)
+        for pid in partner_ids:
+            _upsert_relation_pair(db, client_id, pid, r.id, source="order_import")
+            created_pairs += 1
+            linked_orders += 1
+    db.commit()
+    return {"ok": True, "matches": linked_orders, "pairs_processed": created_pairs}
+
+
+@router.post("/api/clients/relations/backfill-all", tags=["clients"])
+async def backfill_all_relations(db: Session = Depends(get_db)):
+    """Одноразовий backfill по всій історії замовлень. Idempotent."""
+    rows = db.execute(text("""
+        SELECT id, client_id, notes FROM orders
+         WHERE notes ILIKE '%разом з%' AND client_id IS NOT NULL
+    """)).fetchall()
+    matches = 0
+    for r in rows:
+        partner_ids = _extract_together_partner_ids(db, r.notes or "", exclude_id=r.client_id)
+        for pid in partner_ids:
+            _upsert_relation_pair(db, r.client_id, pid, r.id, source="order_import")
+            matches += 1
+    db.commit()
+    return {"ok": True, "orders_scanned": len(rows), "matches": matches}
+
+
 @router.post("/api/clients", response_model=ClientSchema, tags=["clients"])
 async def create_client(client: ClientCreate, db: Session = Depends(get_db)):
     """
@@ -593,30 +955,72 @@ async def create_client(client: ClientCreate, db: Session = Depends(get_db)):
 @router.put("/api/clients/{client_id}", response_model=ClientSchema, tags=["clients"])
 async def update_client(client_id: int, client: ClientUpdate, db: Session = Depends(get_db)):
     """
-    Update an existing client
+    Update an existing client.
+    Identity-lock (Step 4):
+      • Якщо змінюється first/last/middle/nickname або strong-signal (phone/fb/tg/ig),
+        то перед апдейтом зберігаємо поточну name-комбінацію як alias
+        (історія імен) і ставимо manually_edited_at + manually_edited_fields.
+      • Парсер після цього не перезатре локнуті поля.
     """
     db_client = db.query(Client).filter(Client.id == client_id).first()
     if not db_client:
         raise HTTPException(status_code=404, detail="Client not found")
-    
+
     # Validate gender if provided
     if client.gender_id:
         gender = db.query(Gender).filter(Gender.id == client.gender_id).first()
         if not gender:
             raise HTTPException(status_code=404, detail="Gender not found")
-    
-    # Update client fields
+
     update_data = client.dict(exclude_unset=True)
+
+    # Визначаємо які поля реально міняються (різниця зі старим значенням)
+    changed_fields = set()
+    for key, new_value in update_data.items():
+        old_value = getattr(db_client, key, None)
+        # Нормалізуємо None vs "" як однакове
+        a = (old_value or "") if isinstance(old_value, (str, type(None))) else old_value
+        b = (new_value or "") if isinstance(new_value, (str, type(None))) else new_value
+        if a != b:
+            changed_fields.add(key)
+
+    # Якщо чіпається ім'я/нікнейм — зберігаємо поточну комбінацію як alias
+    name_touched = bool(changed_fields & _NAME_LIKE_FIELDS)
+    if name_touched:
+        try:
+            _save_alias_from_client(db, db_client, source="manual_edit_history")
+        except Exception as _e:
+            logger.warning("could not save alias snapshot for client %s: %s", client_id, _e)
+
+    # Apply changes
     for key, value in update_data.items():
         setattr(db_client, key, value)
-    
+
+    # Лок-список (CSV) — об'єднуємо зі старим
+    if changed_fields:
+        existing_locked = set()
+        if db_client.manually_edited_fields:
+            existing_locked = {x.strip() for x in db_client.manually_edited_fields.split(",") if x.strip()}
+        new_locked = sorted(existing_locked | changed_fields)
+        db_client.manually_edited_fields = ",".join(new_locked)
+        db_client.manually_edited_at = datetime.utcnow()
+
     db.commit()
     db.refresh(db_client)
-    
-    # Add full_name field
+
+    # Якщо ми змінили ім'я — додаємо НОВУ комбінацію теж як alias (щоб
+    # парсер бачив і нове, і старе ім'я як шляхи до цього клієнта).
+    if name_touched:
+        try:
+            _save_alias_from_client(db, db_client, source="manual_edit_history")
+            db.commit()
+        except Exception as _e:
+            logger.warning("could not save post-edit alias for client %s: %s", client_id, _e)
+            db.rollback()
+
     client_dict = db_client.__dict__.copy()
-    client_dict["full_name"] = f"{db_client.first_name} {db_client.last_name}"
-    
+    client_dict["full_name"] = f"{db_client.first_name or ''} {db_client.last_name or ''}".strip()
+
     return client_dict
 
 @router.delete("/api/clients/{client_id}", tags=["clients"])
@@ -627,7 +1031,220 @@ async def delete_client(client_id: int, db: Session = Depends(get_db)):
     db_client = db.query(Client).filter(Client.id == client_id).first()
     if not db_client:
         raise HTTPException(status_code=404, detail="Client not found")
-    
+
     db.delete(db_client)
     db.commit()
-    return {"message": "Client deleted successfully"} 
+    return {"message": "Client deleted successfully"}
+
+
+# ── Aliases endpoints (Step 4) ────────────────────────────────────────────
+@router.get("/api/clients/{client_id}/aliases", tags=["clients"])
+async def list_client_aliases(client_id: int, db: Session = Depends(get_db)):
+    rows = db.execute(text("""
+        SELECT id, client_id, first_name, last_name, nickname, full_raw,
+               source, seen_count, first_seen_at, last_seen_at
+          FROM client_aliases WHERE client_id = :cid
+         ORDER BY seen_count DESC, last_seen_at DESC, id ASC
+    """), {"cid": client_id}).mappings().all()
+    return [
+        {
+            "id": r["id"], "client_id": r["client_id"],
+            "first_name": r["first_name"], "last_name": r["last_name"],
+            "nickname": r["nickname"], "full_raw": r["full_raw"],
+            "source": r["source"], "seen_count": int(r["seen_count"] or 1),
+            "first_seen_at": r["first_seen_at"].isoformat() if r["first_seen_at"] else None,
+            "last_seen_at":  r["last_seen_at"].isoformat()  if r["last_seen_at"]  else None,
+        }
+        for r in rows
+    ]
+
+
+@router.post("/api/clients/{client_id}/aliases", tags=["clients"])
+async def add_client_alias(client_id: int, payload: ClientAliasCreate, db: Session = Depends(get_db)):
+    """Ручне додавання alias (наприклад: «також відома як ...»)."""
+    if not db.query(Client).filter(Client.id == client_id).first():
+        raise HTTPException(status_code=404, detail="Client not found")
+    f = (payload.first_name or "").strip()
+    l = (payload.last_name or "").strip()
+    n = (payload.nickname or "").strip()
+    if not (f or l or n):
+        raise HTTPException(status_code=400, detail="At least one of first_name/last_name/nickname required")
+    key = _norm_alias_key(f, l, n)
+    raw = payload.full_raw or (f + (" " + l if l else "") + (f" ({n})" if n else "")).strip()
+    db.execute(text("""
+        INSERT INTO client_aliases
+            (client_id, first_name, last_name, nickname, full_raw,
+             norm_key, source, seen_count, first_seen_at, last_seen_at)
+        VALUES (:cid, :f, :l, :n, :raw, :k, 'manual_edit_history', 1, NOW(), NOW())
+        ON CONFLICT (client_id, norm_key) DO UPDATE
+            SET last_seen_at = NOW(),
+                full_raw = COALESCE(EXCLUDED.full_raw, client_aliases.full_raw)
+    """), {"cid": client_id, "f": f or None, "l": l or None, "n": n or None,
+           "raw": raw or None, "k": key})
+    db.commit()
+    return {"ok": True}
+
+
+@router.delete("/api/clients/{client_id}/aliases/{alias_id}", tags=["clients"])
+async def delete_client_alias(client_id: int, alias_id: int, db: Session = Depends(get_db)):
+    res = db.execute(text(
+        "DELETE FROM client_aliases WHERE id = :aid AND client_id = :cid"
+    ), {"aid": alias_id, "cid": client_id})
+    db.commit()
+    if not res.rowcount:
+        raise HTTPException(status_code=404, detail="Alias not found")
+    return {"ok": True}
+
+
+# ── Flags endpoints (Step 4) ──────────────────────────────────────────────
+@router.get("/api/clients/{client_id}/flags", tags=["clients"])
+async def list_client_flags(client_id: int, include_dismissed: bool = False, db: Session = Depends(get_db)):
+    where = "client_id = :cid" + ("" if include_dismissed else " AND dismissed = FALSE")
+    rows = db.execute(text(f"""
+        SELECT id, client_id, flag_type, severity, peer_client_ids,
+               details, dismissed, dismissed_at, dismissed_by, created_at
+          FROM client_flags WHERE {where}
+         ORDER BY dismissed ASC, created_at DESC
+    """), {"cid": client_id}).mappings().all()
+    return [
+        {
+            "id": r["id"], "client_id": r["client_id"],
+            "flag_type": r["flag_type"], "severity": r["severity"],
+            "peer_client_ids": list(r["peer_client_ids"] or []),
+            "details": r["details"],
+            "dismissed": bool(r["dismissed"]),
+            "dismissed_at": r["dismissed_at"].isoformat() if r["dismissed_at"] else None,
+            "dismissed_by": r["dismissed_by"],
+            "created_at": r["created_at"].isoformat() if r["created_at"] else None,
+        }
+        for r in rows
+    ]
+
+
+@router.post("/api/clients/{client_id}/flags/{flag_id}/dismiss", tags=["clients"])
+async def dismiss_client_flag(client_id: int, flag_id: int,
+                              payload: ClientFlagDismiss = None,
+                              db: Session = Depends(get_db)):
+    """«Це різні люди» / «Я перевірив, все ок» — гасить flag."""
+    note = (payload.note if payload else None) or "manual_dismiss"
+    res = db.execute(text("""
+        UPDATE client_flags
+           SET dismissed = TRUE, dismissed_at = NOW(), dismissed_by = :who
+         WHERE id = :fid AND client_id = :cid
+    """), {"fid": flag_id, "cid": client_id, "who": note[:100]})
+    db.commit()
+    if not res.rowcount:
+        raise HTTPException(status_code=404, detail="Flag not found")
+    return {"ok": True}
+
+
+# ── Merge clients (Step 4) ────────────────────────────────────────────────
+@router.post("/api/clients/{source_id}/merge", tags=["clients"])
+async def merge_clients(source_id: int, payload: ClientMergeRequest, db: Session = Depends(get_db)):
+    """Об'єднати source_id у target_id.
+    target залишається; source: orders/addresses/relations переносяться, потім
+    source видаляється; alias-історія source копіюється до target. Створюється
+    flag 'merged_into' для аудиту.
+    """
+    target_id = payload.target_id
+    if source_id == target_id:
+        raise HTTPException(status_code=400, detail="source and target must differ")
+    source = db.query(Client).filter(Client.id == source_id).first()
+    target = db.query(Client).filter(Client.id == target_id).first()
+    if not source or not target:
+        raise HTTPException(status_code=404, detail="Client not found")
+
+    moved = {}
+
+    # 1) Перенести orders → target
+    res = db.execute(text("UPDATE orders SET client_id = :t WHERE client_id = :s"),
+                     {"t": target_id, "s": source_id})
+    moved["orders"] = res.rowcount
+
+    # 2) Перенести addresses (унікальність по fingerprint всередині target)
+    addr_rows = db.execute(text("""
+        SELECT id, fingerprint FROM client_addresses WHERE client_id = :s
+    """), {"s": source_id}).fetchall()
+    moved_addr = 0
+    for arow in addr_rows:
+        # Якщо у target вже є з таким fingerprint — видалити дубль із source
+        exists = db.execute(text("""
+            SELECT 1 FROM client_addresses
+             WHERE client_id = :t AND fingerprint = :fp LIMIT 1
+        """), {"t": target_id, "fp": arow.fingerprint}).first()
+        if exists:
+            db.execute(text("DELETE FROM client_addresses WHERE id = :id"), {"id": arow.id})
+        else:
+            db.execute(text("UPDATE client_addresses SET client_id = :t WHERE id = :id"),
+                       {"t": target_id, "id": arow.id})
+            moved_addr += 1
+    moved["addresses"] = moved_addr
+
+    # 3) Перенести relations (з обох боків) — уникаємо self-loops і дублів пар
+    rel_a = db.execute(text("""
+        UPDATE client_relations
+           SET client_id = :t
+         WHERE client_id = :s AND related_id <> :t
+           AND NOT EXISTS (
+               SELECT 1 FROM client_relations cr2
+                WHERE cr2.client_id = :t AND cr2.related_id = client_relations.related_id
+           )
+    """), {"t": target_id, "s": source_id})
+    rel_b = db.execute(text("""
+        UPDATE client_relations
+           SET related_id = :t
+         WHERE related_id = :s AND client_id <> :t
+           AND NOT EXISTS (
+               SELECT 1 FROM client_relations cr2
+                WHERE cr2.client_id = client_relations.client_id AND cr2.related_id = :t
+           )
+    """), {"t": target_id, "s": source_id})
+    # Решту (дублі/self) — просто видалити
+    db.execute(text("DELETE FROM client_relations WHERE client_id = :s OR related_id = :s"),
+               {"s": source_id})
+    moved["relations"] = (rel_a.rowcount or 0) + (rel_b.rowcount or 0)
+
+    # 4) Перенести aliases (idempotent через unique norm_key)
+    alias_rows = db.execute(text("""
+        SELECT first_name, last_name, nickname, full_raw, norm_key, seen_count
+          FROM client_aliases WHERE client_id = :s
+    """), {"s": source_id}).fetchall()
+    for ar in alias_rows:
+        db.execute(text("""
+            INSERT INTO client_aliases
+                (client_id, first_name, last_name, nickname, full_raw,
+                 norm_key, source, seen_count, first_seen_at, last_seen_at)
+            VALUES (:cid, :f, :l, :n, :raw, :k, 'merge', :sc, NOW(), NOW())
+            ON CONFLICT (client_id, norm_key) DO UPDATE
+                SET seen_count = client_aliases.seen_count + EXCLUDED.seen_count,
+                    last_seen_at = NOW(),
+                    full_raw = COALESCE(EXCLUDED.full_raw, client_aliases.full_raw)
+        """), {"cid": target_id, "f": ar.first_name, "l": ar.last_name,
+               "n": ar.nickname, "raw": ar.full_raw, "k": ar.norm_key,
+               "sc": ar.seen_count})
+    moved["aliases"] = len(alias_rows)
+
+    # 5) Загасити usually-spurious flags для пари (вони вже вирішені)
+    db.execute(text("""
+        UPDATE client_flags SET dismissed = TRUE, dismissed_at = NOW(),
+               dismissed_by = 'merge'
+         WHERE client_id = :t
+           AND flag_type IN ('possible_duplicate', 'phone_mismatch_with_alias',
+                             'ambiguous_name_at_parse')
+           AND :s = ANY(peer_client_ids)
+    """), {"t": target_id, "s": source_id})
+
+    # 6) Створити аудит-flag merged_into на target
+    db.execute(text("""
+        INSERT INTO client_flags
+            (client_id, flag_type, severity, peer_client_ids, details, dismissed, created_at)
+        VALUES (:cid, 'merged_into', 'info', :peers, :det, TRUE, NOW())
+        ON CONFLICT DO NOTHING
+    """), {"cid": target_id, "peers": [source_id],
+           "det": f"Merged client #{source_id} into #{target_id}"})
+
+    # 7) Видалити source клієнта
+    db.delete(source)
+    db.commit()
+
+    return {"ok": True, "target_id": target_id, "merged_from": source_id, "moved": moved} 

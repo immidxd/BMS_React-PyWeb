@@ -207,6 +207,54 @@ def _detect_sales_channel(text_combined: str) -> Optional[str]:
     return None
 
 
+# ── Together-with detection (client_relations auto-link) ─────────────────
+# Регекс — лише консервативний шаблон з реальних даних. UA + RU + Latin.
+_TOGETHER_RE = re.compile(
+    r"разом\s+з(?:і|о)?\s+([A-Za-z\u0400-\u04FF\u00C0-\u017F][A-Za-z\u0400-\u04FF\u00C0-\u017F'\-]+(?:\s+[A-Za-z\u0400-\u04FF\u00C0-\u017F][A-Za-z\u0400-\u04FF\u00C0-\u017F'\-]+)?)",
+    re.IGNORECASE,
+)
+
+
+def _link_together_partners(session: Session, order_id: int, client_id: int, notes: str) -> None:
+    """Знаходить у нотатках 'разом з <Імʼя [Прізвище]>' та апсертить дзеркальні
+    рядки в client_relations + junction client_relation_orders.
+    Strict-guard: матчиться лише коли в БД РІВНО 1 клієнт.
+    Self-references та повторні апсерти ігноруються (idempotent).
+    """
+    from sqlalchemy import text as _sql_text  # local — cheap, avoids module-top change risk
+    seen: set = set()
+    for m in _TOGETHER_RE.finditer(notes or ""):
+        raw = m.group(1).strip().rstrip(",.;")
+        if not raw or raw.lower() in seen:
+            continue
+        seen.add(raw.lower())
+        rows = session.execute(_sql_text("""
+            SELECT id FROM clients
+             WHERE (COALESCE(first_name,'') || ' ' || COALESCE(last_name,'')) ILIKE :q
+                OR (COALESCE(last_name,'')  || ' ' || COALESCE(first_name,'')) ILIKE :q
+             LIMIT 2
+        """), {"q": f"%{raw}%"}).fetchall()
+        if len(rows) != 1:
+            continue
+        partner_id = rows[0][0]
+        if partner_id == client_id:
+            continue
+        # Дзеркальний апсерт: A→B і B→A
+        for x, y in ((client_id, partner_id), (partner_id, client_id)):
+            rid = session.execute(_sql_text("""
+                INSERT INTO client_relations (client_id, related_id, relation_type, source, confirmed)
+                VALUES (:c, :r, 'together', 'order_import', FALSE)
+                ON CONFLICT (client_id, related_id) DO UPDATE SET updated_at = NOW()
+                RETURNING id
+            """), {"c": x, "r": y}).scalar()
+            if rid:
+                session.execute(_sql_text("""
+                    INSERT INTO client_relation_orders (relation_id, order_id)
+                    VALUES (:rid, :oid)
+                    ON CONFLICT DO NOTHING
+                """), {"rid": rid, "oid": order_id})
+
+
 def parse_date_from_sheet_title(title: str) -> Optional[date]:
     """Extract date from sheet title like '24.02.2026' or '24.02.2026(Андрій)'."""
     m = re.match(r"(\d{2})\.(\d{2})\.(\d{4})", title.strip())
@@ -1509,14 +1557,95 @@ def _normalize_name(s: str) -> str:
     return re.sub(r"\s+", " ", s.strip().lower())
 
 
+def _norm_key(first: str, last: str, nickname: str) -> str:
+    """Канонічний ключ для UNIQUE alias (lower(first)|lower(last)|lower(nick))."""
+    return "|".join([
+        (first or "").strip().lower(),
+        (last or "").strip().lower(),
+        (nickname or "").strip().lower(),
+    ])
+
+
+def _register_alias(session: Session, client_id: int,
+                    first: str, last: str, nickname: str,
+                    full_raw: str, source: str = "parser") -> None:
+    """Idempotent upsert у client_aliases. Інкрементує seen_count + last_seen_at.
+    Гарантує що навіть після ручного редагування імені оригінал лишається в історії
+    і парсер знайде кандидата по будь-якому з варіантів.
+    """
+    if not client_id:
+        return
+    key = _norm_key(first or "", last or "", nickname or "")
+    # Pure-empty key (no name at all) — пропускаємо
+    if key == "||":
+        return
+    session.execute(text("""
+        INSERT INTO client_aliases
+            (client_id, first_name, last_name, nickname, full_raw,
+             norm_key, source, seen_count, first_seen_at, last_seen_at)
+        VALUES
+            (:cid, :f, :l, :n, :raw, :k, :src, 1, NOW(), NOW())
+        ON CONFLICT (client_id, norm_key) DO UPDATE
+            SET seen_count = client_aliases.seen_count + 1,
+                last_seen_at = NOW(),
+                full_raw = COALESCE(EXCLUDED.full_raw, client_aliases.full_raw)
+    """), {
+        "cid": client_id,
+        "f": (first or "").strip() or None,
+        "l": (last or "").strip() or None,
+        "n": (nickname or "").strip() or None,
+        "raw": (full_raw or "").strip() or None,
+        "k": key,
+        "src": source,
+    })
+
+
+def _add_client_flag(session: Session, client_id: int, flag_type: str,
+                     peer_ids=None, details: str = "", severity: str = "warn") -> None:
+    """Створити flag, якщо ще немає активного такого ж типу. UNIQUE-індекс гарантує idempotency."""
+    if not client_id:
+        return
+    try:
+        peers = list(peer_ids) if peer_ids else None
+        session.execute(text("""
+            INSERT INTO client_flags
+                (client_id, flag_type, severity, peer_client_ids, details, dismissed, created_at)
+            VALUES (:cid, :ft, :sv, :peers, :det, FALSE, NOW())
+            ON CONFLICT DO NOTHING
+        """), {
+            "cid": client_id, "ft": flag_type, "sv": severity,
+            "peers": peers, "det": details or None,
+        })
+    except Exception as _e:  # noqa: BLE001
+        logger.warning("could not insert client_flag (%s) for %s: %s", flag_type, client_id, _e)
+
+
+def _locked_fields(candidate) -> set:
+    """Поля що НЕ мають перезатиратися парсером (юзер їх відредагував)."""
+    raw = (getattr(candidate, "manually_edited_fields", None) or "").strip()
+    if not raw:
+        return set()
+    return {x.strip() for x in raw.split(",") if x.strip()}
+
+
 def _find_or_create_client(session: Session, name: str, phone: str,
                             facebook: str, viber: str, telegram: str,
                             instagram: str, olx: str, email: str) -> int:
+    """Identity-aware дедуплікація (Step 4):
+      1. Strong signals: phone / facebook / telegram / instagram → exact match
+      2. Alias-based name lookup (client_aliases.norm_key) — пам'ятає історичні варіанти
+      3. Якщо знайдено 2+ кандидатів за іменем → STRICT GUARD: створюємо нового +
+         flag 'ambiguous_name_at_parse' на новому з peer_client_ids
+      4. Якщо знайдений кандидат має конфлікт сильного сигналу (різний phone/fb/tg) →
+         не мерджимо, створюємо нового + flag 'phone_mismatch_with_alias' на обох
+      5. Enrichment поважає manually_edited_fields — не перезатирає locked поля
+      6. Завжди реєструємо/оновлюємо alias для нового рядка → ім'я ніколи не "губиться"
+    """
     from backend.models.models import Client
     from backend.utils.name_parser import parse_client_name
 
-    name = name.strip()
-    if not name:
+    raw_name = (name or "").strip()
+    if not raw_name:
         return None
 
     # Очищення невалідних значень з Google Sheets (#N/A, #REF!, #VALUE! тощо)
@@ -1532,7 +1661,7 @@ def _find_or_create_client(session: Session, name: str, phone: str,
     olx      = _clean(olx)
     email    = _clean(email)
 
-    # Якщо в phone_number стоїть URL (Facebook, Telegram тощо) — переносимо в відповідне поле
+    # Якщо в phone_number стоїть URL — переносимо в відповідне поле
     if phone and phone.startswith(("http://", "https://")):
         if "facebook.com" in phone and not facebook:
             facebook = phone
@@ -1540,63 +1669,122 @@ def _find_or_create_client(session: Session, name: str, phone: str,
             telegram = phone
         elif "instagram.com" in phone and not instagram:
             instagram = phone
-        phone = ""  # URL — не телефон
+        phone = ""
 
-    # Розумний парсинг імені: ім'я/прізвище/нікнейм + стать
-    parsed = parse_client_name(name)
+    parsed = parse_client_name(raw_name)
     first = parsed.first_name or ""
     last  = parsed.last_name or ""
     nickname = parsed.nickname
     gender_id = parsed.gender_id if parsed.gender_id else None
 
-    # Dedup: match by phone (best signal), or by facebook/telegram, or by normalized name/nickname
+    # ── Stage 1: strong signal lookup ────────────────────────────────────
     candidate = None
+    strong_signal_matched = None  # 'phone' | 'facebook' | 'telegram' | 'instagram'
     if phone:
         candidate = session.query(Client).filter(Client.phone_number == phone).first()
+        if candidate:
+            strong_signal_matched = "phone"
     if not candidate and facebook and "facebook.com" in facebook:
         candidate = session.query(Client).filter(Client.facebook == facebook).first()
+        if candidate:
+            strong_signal_matched = "facebook"
     if not candidate and telegram:
         candidate = session.query(Client).filter(Client.telegram == telegram).first()
-    if not candidate:
-        # Python-side name comparison (collation 'C' breaks ilike for Cyrillic)
-        if nickname:
-            # Дедуплікація за нікнеймом
-            nick_lower = nickname.lower()
-            all_clients = session.query(Client).all()
-            for c in all_clients:
-                c_nick = (c.nickname or '').strip().lower()
-                if c_nick and c_nick == nick_lower:
-                    candidate = c
-                    break
-        if not candidate and (first or last):
-            first_lower = first.lower() if first else ""
-            last_lower = last.lower() if last else None
-            all_clients = session.query(Client).all() if not candidate else []
-            for c in all_clients:
-                c_first = (c.first_name or '').strip().lower()
-                c_last = (c.last_name or '').strip().lower() if c.last_name else None
-                if c_first == first_lower and c_last == last_lower:
-                    candidate = c
-                    break
+        if candidate:
+            strong_signal_matched = "telegram"
+    if not candidate and instagram and "instagram.com" in instagram:
+        candidate = session.query(Client).filter(Client.instagram == instagram).first()
+        if candidate:
+            strong_signal_matched = "instagram"
 
-    if candidate:
-        # Enrich existing client with any new contact data
-        if phone   and not candidate.phone_number: candidate.phone_number = phone.strip()
-        if facebook and not candidate.facebook:    candidate.facebook     = facebook.strip()
-        if viber   and not candidate.viber:        candidate.viber        = viber.strip()
-        if telegram and not candidate.telegram:    candidate.telegram     = telegram.strip()
-        if instagram and not candidate.instagram:  candidate.instagram    = instagram.strip()
-        if olx     and not candidate.olx:          candidate.olx          = olx.strip()
-        if email   and not candidate.email:        candidate.email        = email.strip()
-        # Оновити стать якщо не була визначена раніше
-        if gender_id and (not candidate.gender_id or candidate.gender_id == 0):
+    # ── Stage 2: alias-based name lookup (тільки якщо нема strong match) ─
+    ambiguous_peer_ids = []
+    if not candidate and (first or last or nickname):
+        key = _norm_key(first, last, nickname)
+        # Спочатку точне співпадіння full key
+        rows = session.execute(text("""
+            SELECT DISTINCT client_id FROM client_aliases
+             WHERE norm_key = :k
+             LIMIT 5
+        """), {"k": key}).fetchall()
+
+        # Fallback: nickname-only match (якщо повний key не знайшов)
+        if not rows and nickname:
+            nick_only_key = _norm_key("", "", nickname)
+            rows = session.execute(text("""
+                SELECT DISTINCT client_id FROM client_aliases
+                 WHERE norm_key = :k OR norm_key LIKE :wild
+                 LIMIT 5
+            """), {"k": nick_only_key, "wild": f"%|{nickname.lower()}"}).fetchall()
+
+        # Fallback: name-only without nickname
+        if not rows and (first or last):
+            name_only_key = _norm_key(first, last, "")
+            rows = session.execute(text("""
+                SELECT DISTINCT client_id FROM client_aliases
+                 WHERE norm_key = :k OR norm_key LIKE :wild
+                 LIMIT 5
+            """), {"k": name_only_key, "wild": f"{first.lower()}|{(last or '').lower()}|%"}).fetchall()
+
+        cids = [r[0] for r in rows]
+        if len(cids) == 1:
+            candidate = session.query(Client).filter(Client.id == cids[0]).first()
+        elif len(cids) > 1:
+            # Ambiguous → не мерджимо, нижче створимо нового і прапорнемо
+            ambiguous_peer_ids = cids
+
+    # ── Stage 3: conflict detection ───────────────────────────────────────
+    create_new_due_to_conflict = False
+    conflict_details = None
+    if candidate and not strong_signal_matched:
+        # Перевіримо чи в новому рядку є strong signal, який КОНФЛІКТУЄ з кандидатом
+        if phone and candidate.phone_number and candidate.phone_number != phone:
+            create_new_due_to_conflict = True
+            conflict_details = f"phone mismatch: row={phone} vs candidate={candidate.phone_number}"
+        elif facebook and candidate.facebook and candidate.facebook != facebook and "facebook.com" in facebook:
+            create_new_due_to_conflict = True
+            conflict_details = f"facebook mismatch: row={facebook} vs candidate={candidate.facebook}"
+        elif telegram and candidate.telegram and candidate.telegram != telegram:
+            create_new_due_to_conflict = True
+            conflict_details = f"telegram mismatch: row={telegram} vs candidate={candidate.telegram}"
+
+    # ── Stage 4: enrich existing OR create new ────────────────────────────
+    if candidate and not create_new_due_to_conflict:
+        locked = _locked_fields(candidate)
+        manual_lock_active = candidate.manually_edited_at is not None
+
+        def _can_set(field: str, current_value, new_value) -> bool:
+            """Парсер може записати поле тільки якщо: ще порожнє AND (не залочене вручну)."""
+            if not new_value:
+                return False
+            if current_value:
+                return False
+            if manual_lock_active and field in locked:
+                return False
+            return True
+
+        if _can_set("phone_number", candidate.phone_number, phone): candidate.phone_number = phone.strip()
+        if _can_set("facebook", candidate.facebook, facebook):       candidate.facebook = facebook.strip()
+        if _can_set("viber", candidate.viber, viber):                candidate.viber = viber.strip()
+        if _can_set("telegram", candidate.telegram, telegram):       candidate.telegram = telegram.strip()
+        if _can_set("instagram", candidate.instagram, instagram):    candidate.instagram = instagram.strip()
+        if _can_set("olx", candidate.olx, olx):                      candidate.olx = olx.strip()
+        if _can_set("email", candidate.email, email):                candidate.email = email.strip()
+        if gender_id and (not candidate.gender_id or candidate.gender_id == 0) and \
+           not (manual_lock_active and "gender_id" in locked):
             candidate.gender_id = gender_id
-        # Оновити нікнейм якщо з'явився
-        if nickname and not candidate.nickname:
+        # nickname: тільки якщо не залочений І ще порожній
+        if nickname and not candidate.nickname and not (manual_lock_active and "nickname" in locked):
             candidate.nickname = nickname
+
+        # КЛЮЧОВЕ: реєструємо alias ЗАВЖДИ — навіть для locked клієнта.
+        # Так "Льоша (Балу)" знов прийде з Sheets → знайде клієнта по alias
+        # навіть якщо в clients зараз "Льоша" з NULL nickname.
+        _register_alias(session, candidate.id, first, last, nickname, raw_name, source="parser")
         session.flush()
         return candidate.id
 
+    # ── Stage 5: create new client ───────────────────────────────────────
     client = Client(
         first_name   = first if first else None,
         last_name    = last if last else None,
@@ -1613,6 +1801,38 @@ def _find_or_create_client(session: Session, name: str, phone: str,
     )
     session.add(client)
     session.flush()
+
+    # Реєструємо перший alias одразу
+    _register_alias(session, client.id, first, last, nickname, raw_name, source="parser")
+
+    # Якщо створили через ambiguity → flag на новому з peer_ids
+    if ambiguous_peer_ids:
+        _add_client_flag(
+            session, client.id, "ambiguous_name_at_parse",
+            peer_ids=ambiguous_peer_ids,
+            details=f"Created from row '{raw_name}' — same name matches {len(ambiguous_peer_ids)} existing clients",
+        )
+        # Також підсвітимо peers (взаємно)
+        for peer_id in ambiguous_peer_ids:
+            _add_client_flag(
+                session, peer_id, "possible_duplicate",
+                peer_ids=[client.id] + [p for p in ambiguous_peer_ids if p != peer_id],
+                details=f"Same normalized name as new client #{client.id}",
+            )
+
+    # Якщо створили через conflict → flag на обох
+    if create_new_due_to_conflict and candidate:
+        _add_client_flag(
+            session, client.id, "phone_mismatch_with_alias",
+            peer_ids=[candidate.id],
+            details=conflict_details or "Strong-signal mismatch with existing client",
+        )
+        _add_client_flag(
+            session, candidate.id, "phone_mismatch_with_alias",
+            peer_ids=[client.id],
+            details=conflict_details or "Strong-signal mismatch with new client",
+        )
+
     return client.id
 
 
@@ -2170,6 +2390,14 @@ def _parse_orders_sheet(
             session.add(order)
             session.flush()
             orders_added += 1
+
+        # ── Auto-detect "разом з <Name>" → client_relations (safe, isolated) ──
+        # Не валимо парсер, навіть якщо щось пішло не так зі звʼязками.
+        if combined_notes and client_id and order is not None and getattr(order, "id", None):
+            try:
+                _link_together_partners(session, order.id, client_id, combined_notes)
+            except Exception as _rel_e:  # noqa: BLE001
+                logger.warning("client_relations link failed for order=%s: %s", order.id, _rel_e)
 
         total_recalc = 0.0
         any_price_substituted = False

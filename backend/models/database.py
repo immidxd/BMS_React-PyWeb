@@ -255,6 +255,187 @@ def init_db():
             conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_client_addr_primary ON client_addresses(client_id) WHERE is_primary = TRUE"))
             conn.execute(text("CREATE INDEX IF NOT EXISTS idx_client_addr_fp ON client_addresses(client_id, fingerprint)"))
 
+            # ── Звʼязки між клієнтами ("разом замовляють", родичі, друзі) ────
+            # client_relations:   per-pair metadata (1 рядок на напрямок A→B)
+            # client_relation_orders: junction — стійка до повторного парсингу
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS client_relations (
+                    id SERIAL PRIMARY KEY,
+                    client_id INTEGER NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+                    related_id INTEGER NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+                    relation_type VARCHAR(20) NOT NULL DEFAULT 'together',
+                    -- together | family | friend | spouse | other
+                    label VARCHAR(100),
+                    source VARCHAR(20) DEFAULT 'order_import',
+                    -- order_import | manual
+                    confirmed BOOLEAN DEFAULT FALSE,
+                    notes TEXT,
+                    created_at TIMESTAMP DEFAULT NOW(),
+                    updated_at TIMESTAMP DEFAULT NOW(),
+                    CONSTRAINT chk_client_relations_no_self CHECK (client_id <> related_id),
+                    CONSTRAINT uq_client_relations_pair UNIQUE (client_id, related_id)
+                )
+            """))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS idx_client_relations_client ON client_relations(client_id)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS idx_client_relations_related ON client_relations(related_id)"))
+
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS client_relation_orders (
+                    relation_id INTEGER NOT NULL REFERENCES client_relations(id) ON DELETE CASCADE,
+                    order_id INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+                    noted_at TIMESTAMP DEFAULT NOW(),
+                    PRIMARY KEY (relation_id, order_id)
+                )
+            """))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS idx_client_rel_orders_order ON client_relation_orders(order_id)"))
+
+            # ── Identity & Aliases (Step 4) ──────────────────────────────────
+            # 1) Залізна фіксація ручних редагувань
+            conn.execute(text(
+                "ALTER TABLE IF EXISTS clients ADD COLUMN IF NOT EXISTS manually_edited_at TIMESTAMP"
+            ))
+            conn.execute(text(
+                "ALTER TABLE IF EXISTS clients ADD COLUMN IF NOT EXISTS manually_edited_fields TEXT"
+            ))
+            # 2) Історія всіх варіантів імен/нікнеймів цього клієнта.
+            #    Парсер шукає кандидата ПО aliases — тому навіть якщо ти змінив
+            #    "Льоша (Балу)" → "Льоша", оригінал залишиться як alias і
+            #    майбутні рядки з Sheets все одно прив'яжуться до того ж клієнта.
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS client_aliases (
+                    id SERIAL PRIMARY KEY,
+                    client_id INTEGER NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+                    first_name VARCHAR(255),
+                    last_name VARCHAR(255),
+                    nickname VARCHAR(255),
+                    full_raw VARCHAR(500),
+                    -- key для UNIQUE: lower(coalesce(first,'')) || '|' || lower(coalesce(last,'')) || '|' || lower(coalesce(nick,''))
+                    norm_key VARCHAR(500) NOT NULL,
+                    source VARCHAR(20) NOT NULL DEFAULT 'parser',
+                    -- parser | manual_edit_history | merge | initial_backfill
+                    seen_count INTEGER NOT NULL DEFAULT 1,
+                    first_seen_at TIMESTAMP DEFAULT NOW(),
+                    last_seen_at TIMESTAMP DEFAULT NOW(),
+                    CONSTRAINT uq_client_aliases UNIQUE (client_id, norm_key)
+                )
+            """))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS idx_client_aliases_client ON client_aliases(client_id)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS idx_client_aliases_norm ON client_aliases(norm_key)"))
+
+            # 3) Прапорці клієнтів (підсвітка проблемних/невідповідних)
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS client_flags (
+                    id SERIAL PRIMARY KEY,
+                    client_id INTEGER NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+                    flag_type VARCHAR(40) NOT NULL,
+                    -- possible_duplicate | ambiguous_name_at_parse | phone_mismatch_with_alias | merged_into
+                    severity VARCHAR(10) NOT NULL DEFAULT 'warn',
+                    -- info | warn | error
+                    peer_client_ids INTEGER[],
+                    details TEXT,
+                    dismissed BOOLEAN DEFAULT FALSE,
+                    dismissed_at TIMESTAMP,
+                    dismissed_by VARCHAR(100),
+                    created_at TIMESTAMP DEFAULT NOW()
+                )
+            """))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS idx_client_flags_client ON client_flags(client_id)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS idx_client_flags_active ON client_flags(client_id) WHERE dismissed = FALSE"))
+            conn.execute(text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_client_flags_active "
+                "ON client_flags(client_id, flag_type) WHERE dismissed = FALSE"
+            ))
+
+        # ── Однократний backfill звʼязків з історії "разом з ..." ──────────
+        # Idempotent: ON CONFLICT DO NOTHING/DO UPDATE; пропускає вже наявні.
+        # Виконується тільки якщо junction-таблиця порожня (швидкий no-op
+        # при наступних стартах).
+        try:
+            with engine.connect() as conn:
+                empty = conn.execute(text(
+                    "SELECT NOT EXISTS (SELECT 1 FROM client_relation_orders LIMIT 1)"
+                )).scalar()
+                if empty:
+                    logger.info("Backfilling client_relations from historical orders…")
+                    from scripts.sheets_parser import _link_together_partners as _link_together
+                    rows = conn.execute(text("""
+                        SELECT id, client_id, notes FROM orders
+                         WHERE notes ILIKE '%%разом з%%' AND client_id IS NOT NULL
+                    """)).fetchall()
+                    # Use a session for the upsert helper
+                    from sqlalchemy.orm import Session as _Session
+                    with _Session(bind=engine) as _s:
+                        n = 0
+                        for r in rows:
+                            try:
+                                _link_together(_s, r.id, r.client_id, r.notes or "")
+                                n += 1
+                            except Exception as _be:  # noqa: BLE001
+                                logger.warning("backfill skip order=%s: %s", r.id, _be)
+                        _s.commit()
+                    logger.info("Backfill done: scanned %s orders", n)
+        except Exception as _e:  # noqa: BLE001
+            logger.warning("client_relations backfill skipped: %s", _e)
+
+        # ── Identity backfill (Step 4) ─────────────────────────────────────
+        # 1) Створити перший alias для кожного клієнта (norm_key з його імен).
+        # 2) Просканувати потенційні дублікати за нормалізованим іменем →
+        #    додати warn-flags для ручного огляду.
+        # Idempotent: ON CONFLICT DO NOTHING + skip коли в aliases вже є рядок.
+        try:
+            with engine.begin() as conn:
+                # 1) Initial alias backfill
+                conn.execute(text("""
+                    INSERT INTO client_aliases
+                        (client_id, first_name, last_name, nickname, full_raw,
+                         norm_key, source, seen_count)
+                    SELECT
+                        c.id,
+                        NULLIF(c.first_name,''),
+                        NULLIF(c.last_name,''),
+                        NULLIF(c.nickname,''),
+                        TRIM(BOTH ' ' FROM
+                            COALESCE(c.first_name,'') || ' ' ||
+                            COALESCE(c.last_name,'')  ||
+                            CASE WHEN COALESCE(c.nickname,'') <> ''
+                                 THEN ' (' || c.nickname || ')' ELSE '' END
+                        ) AS full_raw,
+                        lower(COALESCE(c.first_name,'')) || '|' ||
+                        lower(COALESCE(c.last_name,''))  || '|' ||
+                        lower(COALESCE(c.nickname,''))   AS norm_key,
+                        'initial_backfill', 1
+                    FROM clients c
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM client_aliases ca WHERE ca.client_id = c.id
+                    )
+                    ON CONFLICT (client_id, norm_key) DO NOTHING
+                """))
+
+                # 2) Duplicate scan — однакові name-комбінації між РІЗНИМИ клієнтами
+                #    Ставимо possible_duplicate flags (тільки якщо ще не існує active).
+                conn.execute(text("""
+                    WITH groups AS (
+                        SELECT
+                            lower(COALESCE(first_name,'')) || '|' ||
+                            lower(COALESCE(last_name,''))  || '|' ||
+                            lower(COALESCE(nickname,''))   AS k,
+                            array_agg(id ORDER BY id) AS ids
+                        FROM clients
+                        WHERE COALESCE(first_name,'') || COALESCE(last_name,'') || COALESCE(nickname,'') <> ''
+                        GROUP BY 1
+                        HAVING COUNT(*) > 1
+                    )
+                    INSERT INTO client_flags (client_id, flag_type, severity, peer_client_ids, details)
+                    SELECT
+                        cid, 'possible_duplicate', 'warn',
+                        (SELECT array_agg(x) FROM unnest(g.ids) x WHERE x <> cid),
+                        'Auto-detected by identical normalized name on startup backfill'
+                    FROM groups g, unnest(g.ids) AS cid
+                    ON CONFLICT DO NOTHING
+                """))
+        except Exception as _e:  # noqa: BLE001
+            logger.warning("identity/aliases backfill skipped: %s", _e)
+
         # Populate initial reference data (only adds basic reference data, no test data)
         from .seed_data import populate_initial_data
         db = next(get_db())
