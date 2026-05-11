@@ -641,21 +641,26 @@ def get_or_create_product(cursor, connection, product_number):
     logger.warning(f"   Або запустити парсинг каталогу товарів")
     
     # Створюємо мінімальний запис тільки для технічних потреб
+    try:
+        from utils.productnumber_normalizer import normalize as _norm_pn
+    except ImportError:
+        from backend.utils.productnumber_normalizer import normalize as _norm_pn
+    canon_number = _norm_pn(product_number) or product_number
     cursor.execute("""
         INSERT INTO products (
-            productnumber, 
+            productnumber,
             statusid,
             quantity,
             description,
-            created_at, 
+            created_at,
             updated_at
         ) VALUES (%s, %s, %s, %s, now(), now())
         RETURNING id
     """, (
-        product_number, 
+        canon_number,
         PRODUCT_STATUS_NOT_SOLD,
         0,  # Нульова кількість - товар НЕ в наявності
-        f"⚠️ ВІДСУТНІЙ В КАТАЛОЗІ: {product_number} - потребує додавання в 'Журнал'"
+        f"⚠️ ВІДСУТНІЙ В КАТАЛОЗІ: {canon_number} - потребує додавання в 'Журнал'"
     ))
     
     pid = cursor.fetchone()[0]

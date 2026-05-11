@@ -22,6 +22,11 @@ from google.oauth2.service_account import Credentials
 from sqlalchemy import or_, text
 from sqlalchemy.orm import Session
 
+try:
+    from utils.productnumber_normalizer import normalize as _normalize_productnumber
+except ImportError:
+    from backend.utils.productnumber_normalizer import normalize as _normalize_productnumber
+
 logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────────────────
@@ -1134,9 +1139,10 @@ def _parse_products_sheet(
                     )
                 updated += 1
             else:
-                # Case 5: brand new productnumber
+                # Case 5: brand new productnumber — store canonical form so
+                # subsequent parses can't recreate the bare/letter-only twin.
                 product = Product(
-                    productnumber         = pnum,
+                    productnumber         = _normalize_productnumber(pnum) or pnum,
                     clonednumbers         = clones or None,
                     model                 = model_val or None,
                     marking               = marking or None,

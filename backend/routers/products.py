@@ -6,6 +6,11 @@ import logging
 from datetime import datetime
 
 try:
+    from utils.productnumber_normalizer import normalize as _norm_pn
+except ImportError:
+    from backend.utils.productnumber_normalizer import normalize as _norm_pn
+
+try:
     from models.database import get_db
     from models import models
     from schemas import product as schemas
@@ -201,15 +206,20 @@ async def create_product(
     Створити новий товар
     """
     try:
+        # Canonicalize the productnumber (#X form, upper-cased letter prefix)
+        # so we don't recreate bare/lowercase twins of existing records.
+        if product_data.productnumber:
+            product_data.productnumber = _norm_pn(product_data.productnumber) or product_data.productnumber
+
         # Перевіряємо, чи вже існує товар з таким номером
         existing_product = product_service.get_product_by_number(db, product_data.productnumber)
-        
+
         if existing_product:
             raise HTTPException(
-                status_code=400, 
+                status_code=400,
                 detail=f"Товар з номером {product_data.productnumber} вже існує"
             )
-        
+
         # Створюємо новий товар
         product = product_service.create_product(db, product_data)
         return product
@@ -235,6 +245,10 @@ async def update_product(
         if not existing_product:
             raise HTTPException(status_code=404, detail=f"Товар з ID {product_id} не знайдено")
         
+        # Canonicalize incoming productnumber on edit
+        if product_data.productnumber:
+            product_data.productnumber = _norm_pn(product_data.productnumber) or product_data.productnumber
+
         # Якщо змінюється номер товару, перевіряємо його унікальність
         if product_data.productnumber and product_data.productnumber != existing_product.productnumber:
             duplicate = product_service.get_product_by_number(db, product_data.productnumber)
