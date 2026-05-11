@@ -44,6 +44,63 @@ _latest_order_sold = _latest_order_confirmed_sold
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Auto-relink SQL — used by /sync, /sync-all, /relink, and startup auto-refresh.
+#
+# Matches each telegram_post to the single best product, in priority order:
+#   1. Size match — if the post advertises a size and one product variant has
+#      that size, prefer it (deterministic on multi-size product numbers).
+#   2. Productnumber form — prefer canonical `#Ф{n}` over `Ф{n}` / `#{n}` / `{n}`.
+#   3. Lowest p.id — deterministic tiebreaker when everything else ties.
+#
+# Without (1) and (3), DISTINCT ON would pick arbitrarily among products that
+# share productnumber (e.g. two rows of `#Ф3009` with sizes 41 and 44), so on
+# successive re-syncs the same post could flip between products → "two rows"
+# in the publications UI for one product number.
+_RELINK_SQL = """
+WITH best AS (
+    SELECT DISTINCT ON (tp.id)
+        tp.id AS tp_id,
+        p.id  AS p_id
+    FROM telegram_posts tp
+    JOIN products p ON p.productnumber IN (
+        tp.product_number_raw,
+        'Ф'  || tp.product_number_raw,
+        '#Ф' || tp.product_number_raw,
+        '#'  || tp.product_number_raw
+    )
+    ORDER BY tp.id,
+        -- Stage 1: post-size matches the product's sizeeu (most specific signal)
+        CASE
+            WHEN tp.sizes_in_post IS NOT NULL
+             AND tp.sizes_in_post <> ''
+             AND tp.sizes_in_post <> '[]'
+             AND EXISTS (
+                SELECT 1 FROM jsonb_array_elements_text(tp.sizes_in_post::jsonb) AS sz(v)
+                WHERE sz.v = COALESCE(p.sizeeu, '')
+                   OR sz.v = split_part(COALESCE(p.sizeeu, ''), '.', 1)
+             )
+            THEN 0 ELSE 1
+        END,
+        -- Stage 2: productnumber form priority
+        CASE p.productnumber
+            WHEN '#Ф' || tp.product_number_raw THEN 1
+            WHEN 'Ф'  || tp.product_number_raw THEN 2
+            WHEN '#'  || tp.product_number_raw THEN 3
+            WHEN tp.product_number_raw         THEN 4
+            ELSE 5
+        END,
+        -- Stage 3: deterministic tiebreaker — oldest product wins
+        p.id
+)
+UPDATE telegram_posts tp
+SET product_id = best.p_id
+FROM best
+WHERE tp.id = best.tp_id
+  AND (tp.product_id IS NULL OR tp.product_id <> best.p_id)
+"""
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Read-only endpoints (safe — no writes to Telegram)
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -555,36 +612,10 @@ async def sync_telegram(
         finally:
             await scanner.disconnect()
 
-        # Auto-relink: fix any wrongly-linked posts (#3716 vs #Ф3716 collisions)
-        # so the user doesn't need to click "Relink" separately after every sync.
+        # Auto-relink: fix any wrongly-linked posts (#3716 vs #Ф3716 collisions,
+        # multi-size product numbers like #Ф3009 with sizes 41 and 44).
         try:
-            relink_res = db.execute(text("""
-                WITH best AS (
-                    SELECT DISTINCT ON (tp.id)
-                        tp.id AS tp_id,
-                        p.id  AS p_id
-                    FROM telegram_posts tp
-                    JOIN products p ON p.productnumber IN (
-                        tp.product_number_raw,
-                        'Ф'  || tp.product_number_raw,
-                        '#Ф' || tp.product_number_raw,
-                        '#'  || tp.product_number_raw
-                    )
-                    ORDER BY tp.id,
-                        CASE p.productnumber
-                            WHEN '#Ф' || tp.product_number_raw THEN 1
-                            WHEN 'Ф'  || tp.product_number_raw THEN 2
-                            WHEN '#'  || tp.product_number_raw THEN 3
-                            WHEN tp.product_number_raw         THEN 4
-                            ELSE 5
-                        END
-                )
-                UPDATE telegram_posts tp
-                SET product_id = best.p_id
-                FROM best
-                WHERE tp.id = best.tp_id
-                  AND (tp.product_id IS NULL OR tp.product_id <> best.p_id)
-            """))
+            relink_res = db.execute(text(_RELINK_SQL))
             db.commit()
             result["auto_relinked"] = relink_res.rowcount
         except Exception as re:
@@ -654,33 +685,10 @@ async def sync_all_telegram(db: Session = Depends(get_db)):
         finally:
             await scanner.disconnect()
 
-        # Auto-relink (same logic as /sync) — fixes wrong matches like #3716 vs #Ф3716
+        # Auto-relink (same logic as /sync)
         relinked = 0
         try:
-            r = db.execute(text("""
-                WITH best AS (
-                    SELECT DISTINCT ON (tp.id) tp.id AS tp_id, p.id AS p_id
-                    FROM telegram_posts tp
-                    JOIN products p ON p.productnumber IN (
-                        tp.product_number_raw,
-                        'Ф'  || tp.product_number_raw,
-                        '#Ф' || tp.product_number_raw,
-                        '#'  || tp.product_number_raw
-                    )
-                    ORDER BY tp.id,
-                        CASE p.productnumber
-                            WHEN '#Ф' || tp.product_number_raw THEN 1
-                            WHEN 'Ф'  || tp.product_number_raw THEN 2
-                            WHEN '#'  || tp.product_number_raw THEN 3
-                            WHEN tp.product_number_raw         THEN 4
-                            ELSE 5
-                        END
-                )
-                UPDATE telegram_posts tp SET product_id = best.p_id
-                FROM best
-                WHERE tp.id = best.tp_id
-                  AND (tp.product_id IS NULL OR tp.product_id <> best.p_id)
-            """))
+            r = db.execute(text(_RELINK_SQL))
             db.commit()
             relinked = r.rowcount
         except Exception as re:
@@ -885,36 +893,7 @@ async def relink_publications(db: Session = Depends(get_db)):
     READ-ONLY for Telegram, only updates local DB.
     """
     try:
-        # Pick best product per telegram_post using priority ranking.
-        # raw = digits only (e.g. "3716"); products may live as "#Ф3716", "Ф3716",
-        # "#3716", or "3716". Prefer Ф-prefixed canonical form.
-        result = db.execute(text("""
-            WITH best AS (
-                SELECT DISTINCT ON (tp.id)
-                    tp.id AS tp_id,
-                    p.id  AS p_id
-                FROM telegram_posts tp
-                JOIN products p ON p.productnumber IN (
-                    tp.product_number_raw,
-                    'Ф'  || tp.product_number_raw,
-                    '#Ф' || tp.product_number_raw,
-                    '#'  || tp.product_number_raw
-                )
-                ORDER BY tp.id,
-                    CASE p.productnumber
-                        WHEN '#Ф' || tp.product_number_raw THEN 1
-                        WHEN 'Ф'  || tp.product_number_raw THEN 2
-                        WHEN '#'  || tp.product_number_raw THEN 3
-                        WHEN tp.product_number_raw         THEN 4
-                        ELSE 5
-                    END
-            )
-            UPDATE telegram_posts tp
-            SET product_id = best.p_id
-            FROM best
-            WHERE tp.id = best.tp_id
-              AND (tp.product_id IS NULL OR tp.product_id <> best.p_id)
-        """))
+        result = db.execute(text(_RELINK_SQL))
         db.commit()
         return {"success": True, "rows_affected": result.rowcount}
     except Exception as e:

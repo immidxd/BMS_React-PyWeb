@@ -241,32 +241,13 @@ async def _auto_startup_publications_refresh():
                         logger.warning(f"Auto-sync: channel {chat_id} failed: {ce}")
                 logger.info(f"Auto-sync: {totals}")
 
-                # 2. Auto-relink: prefer canonical Ф-prefixed product number on collisions
+                # 2. Auto-relink: shared SQL (size-aware, prefix-prioritized)
                 try:
-                    r = db.execute(_sql_text("""
-                        WITH best AS (
-                            SELECT DISTINCT ON (tp.id) tp.id AS tp_id, p.id AS p_id
-                            FROM telegram_posts tp
-                            JOIN products p ON p.productnumber IN (
-                                tp.product_number_raw,
-                                'Ф'  || tp.product_number_raw,
-                                '#Ф' || tp.product_number_raw,
-                                '#'  || tp.product_number_raw
-                            )
-                            ORDER BY tp.id,
-                                CASE p.productnumber
-                                    WHEN '#Ф' || tp.product_number_raw THEN 1
-                                    WHEN 'Ф'  || tp.product_number_raw THEN 2
-                                    WHEN '#'  || tp.product_number_raw THEN 3
-                                    WHEN tp.product_number_raw         THEN 4
-                                    ELSE 5
-                                END
-                        )
-                        UPDATE telegram_posts tp SET product_id = best.p_id
-                        FROM best
-                        WHERE tp.id = best.tp_id
-                          AND (tp.product_id IS NULL OR tp.product_id <> best.p_id)
-                    """))
+                    try:
+                        from routers.publications import _RELINK_SQL
+                    except ImportError:
+                        from backend.routers.publications import _RELINK_SQL
+                    r = db.execute(_sql_text(_RELINK_SQL))
                     db.commit()
                     logger.info(f"Auto-relink: {r.rowcount} posts relinked")
                 except Exception as re:
