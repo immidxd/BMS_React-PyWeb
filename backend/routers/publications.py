@@ -18,48 +18,28 @@ load_dotenv(_ENV_PATH, override=False)
 
 try:
     from models.database import get_db
+    from utils.order_status_logic import (
+        latest_order_confirmed_sold as _latest_order_confirmed_sold,
+        latest_order_reserved as _latest_order_reserved,
+        CONFIRMED_SOLD as _CONFIRMED_SOLD_STATUS_IDS,
+        sql_in_list as _sql_in_list,
+    )
 except ImportError:
     from backend.models.database import get_db
+    from backend.utils.order_status_logic import (
+        latest_order_confirmed_sold as _latest_order_confirmed_sold,
+        latest_order_reserved as _latest_order_reserved,
+        CONFIRMED_SOLD as _CONFIRMED_SOLD_STATUS_IDS,
+        sql_in_list as _sql_in_list,
+    )
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Two distinct "is sold via orders" checks based on the latest order:
-#
-# _latest_order_confirmed_sold — strict. Latest order is in a status that means
-#   "the sale actually happened": 1=Підтверджено, 7=Подарунок. Used to decide
-#   whether to FLAG a product as sold in the publications view.
-#
-# _latest_order_reserved — broad. Latest order is in any non-cancelled state
-#   (i.e. NOT IN 5/6/9 — Відміна/Ігнорування/Повернення). Used for the sibling
-#   check ("is there ANY available unit of this size in stock") where a queued
-#   or pending order still means the unit is committed.
-#
-# Pending/queued statuses (2=Очікується, 3=Уточнити, 4=Фото, 8=В черзі,
-# 10=Обмін, 11=Передати) sit in the gap on purpose — they reserve stock but
-# don't constitute a completed sale.
-def _latest_order_confirmed_sold(pid_ref: str) -> str:
-    return f"""COALESCE((
-        SELECT o.order_status_id
-        FROM order_items oi JOIN orders o ON o.id = oi.order_id
-        WHERE oi.product_id = {pid_ref}
-        ORDER BY o.created_at DESC LIMIT 1
-    ), 0) IN (1, 7)"""
-
-
-def _latest_order_reserved(pid_ref: str) -> str:
-    return f"""COALESCE((
-        SELECT o.order_status_id
-        FROM order_items oi JOIN orders o ON o.id = oi.order_id
-        WHERE oi.product_id = {pid_ref}
-        ORDER BY o.created_at DESC LIMIT 1
-    ), 0) NOT IN (0, 5, 6, 9)"""
-
-
-# Back-compat alias: existing callers that meant "confirmed sold" now route here.
+# Order-status semantics live in utils/order_status_logic.py — see imports above.
+# Back-compat alias for older call sites that meant "confirmed sold".
 _latest_order_sold = _latest_order_confirmed_sold
 
 
@@ -349,7 +329,7 @@ async def get_product_detail_for_publication(
         order_sold_pids = set()
         if all_pids:
             order_rows = db.execute(
-                text("""
+                text(f"""
                     SELECT product_id FROM (
                         SELECT DISTINCT ON (oi.product_id)
                                oi.product_id, o.order_status_id
@@ -358,7 +338,7 @@ async def get_product_detail_for_publication(
                         WHERE oi.product_id = ANY(:pids)
                         ORDER BY oi.product_id, o.created_at DESC
                     ) latest
-                    WHERE latest.order_status_id IN (1, 7)
+                    WHERE latest.order_status_id IN {_sql_in_list(_CONFIRMED_SOLD_STATUS_IDS)}
                 """),
                 {"pids": all_pids}
             ).fetchall()
