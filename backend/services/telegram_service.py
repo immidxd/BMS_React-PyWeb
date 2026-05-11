@@ -56,6 +56,23 @@ RANGE_SIZE_PATTERN = re.compile(r'(\d{2}(?:[.,]\d{1,2})?)\s*[-–—]\s*(\d{2}(?
 # Physical dimensions pattern: "44 × 30 × 14 см" — NOT clothing/shoe sizes
 DIMENSIONS_PATTERN = re.compile(r'\d+\s*[×xXхХ]\s*\d+', re.UNICODE)
 
+# Unicode vulgar-fraction → decimal so "46½" matches DB "46.5"
+_UNICODE_FRACTIONS = {
+    '½': '.5', '¼': '.25', '¾': '.75',
+    '⅓': '.33', '⅔': '.67',
+    '⅕': '.2', '⅖': '.4', '⅗': '.6', '⅘': '.8',
+    '⅙': '.17', '⅚': '.83', '⅛': '.125', '⅜': '.375', '⅝': '.625', '⅞': '.875',
+}
+
+
+def _normalize_fractions(text: str) -> str:
+    if not text:
+        return text
+    for frac, dec in _UNICODE_FRACTIONS.items():
+        if frac in text:
+            text = text.replace(frac, dec)
+    return text
+
 
 def extract_product_numbers(text: str) -> List[str]:
     """Extract all product numbers from post text."""
@@ -90,6 +107,9 @@ def extract_sizes(text: str) -> Tuple[List[str], bool]:
     """
     if not text:
         return ([], False)
+
+    # Normalize unicode fractions: "Розмір: 46½" → "Розмір: 46.5"
+    text = _normalize_fractions(text)
 
     # Check if any size header exists
     header_match = SIZE_HEADER.search(text)
@@ -533,20 +553,25 @@ class TelegramScanner:
             logger.warning(f"⚠️ Pre-unpublish scan failed (continuing anyway): {e}")
 
         # ── 3. Find ALL sold sizes for this product number (by ALL variants) ──
-        # A size is "sold" if status = 'Продано' OR has a confirmed order
-        # Include NULL sizes — product without size info that is sold
+        # A size is "sold" if status = 'Продано' OR the LATEST order on the
+        # product is in active state (1, 7). Cancelled latest orders override
+        # older confirmed ones — the product is back in stock.
+        # Інверсна: вільний лише при 5=Відміна, 6=Ігнорування, 9=Повернення.
+        _LATEST_SOLD = """COALESCE((
+            SELECT o.order_status_id
+            FROM order_items oi JOIN orders o ON o.id = oi.order_id
+            WHERE oi.product_id = p.id
+            ORDER BY o.created_at DESC LIMIT 1
+        ), 0) NOT IN (0, 5, 6, 9)"""
         sold_sizes_rows = db.execute(
-            text("""
+            text(f"""
                 SELECT DISTINCT COALESCE(p.sizeeu, '__NULL__')
                 FROM products p
                 LEFT JOIN statuses s ON s.id = p.statusid
                 WHERE p.productnumber = ANY(:variants)
                   AND (
                       COALESCE(s.statusname, '') = 'Продано'
-                      OR EXISTS (
-                          SELECT 1 FROM order_items oi JOIN orders o ON o.id = oi.order_id
-                          WHERE oi.product_id = p.id AND o.order_status_id IN (1, 7)
-                      )
+                      OR {_LATEST_SOLD}
                   )
             """),
             {"variants": number_variants}
@@ -556,18 +581,15 @@ class TelegramScanner:
         all_sold_sizes = {s for s in _raw_sold if s != '__NULL__'}
 
         # Which sizes still have available (not sold) stock?
-        # A size is "available" if status != 'Продано' AND no confirmed order
+        # A size is "available" if status != 'Продано' AND latest order is NOT active
         available_sizes_rows = db.execute(
-            text("""
+            text(f"""
                 SELECT DISTINCT COALESCE(p.sizeeu, '__NULL__')
                 FROM products p
                 LEFT JOIN statuses s ON s.id = p.statusid
                 WHERE p.productnumber = ANY(:variants)
                   AND COALESCE(s.statusname, '') != 'Продано'
-                  AND NOT EXISTS (
-                      SELECT 1 FROM order_items oi JOIN orders o ON o.id = oi.order_id
-                      WHERE oi.product_id = p.id AND o.order_status_id IN (1, 7)
-                  )
+                  AND NOT {_LATEST_SOLD}
             """),
             {"variants": number_variants}
         ).fetchall()
@@ -726,6 +748,7 @@ class TelegramScanner:
 
                 # Delete ALL album messages
                 to_delete = [mid for mid in album_ids if (chat_id, mid) not in already_deleted_msgs]
+                delete_ok = True  # nothing to delete = already done by prior iteration
                 if to_delete:
                     try:
                         await self.client.delete_messages(entity=chat_entity, message_ids=to_delete)
@@ -737,12 +760,23 @@ class TelegramScanner:
                     except Exception as e:
                         logger.warning(f"⚠️ Delete failed (msgs {to_delete} in {chat_title}): {e}")
                         result["failed"].append({"chat": chat_title, "msg_id": msg_id, "action": "delete", "error": str(e)})
+                        delete_ok = False
 
-                # Update DB status
-                db.execute(
-                    text("UPDATE telegram_posts SET tg_status = 'archived', needs_manual_edit = false WHERE id = :id"),
-                    {"id": db_id}
-                )
+                # Update DB status — archive only if TG delete actually succeeded;
+                # otherwise keep post 'published' and flag for manual edit so UI shows it
+                if delete_ok:
+                    db.execute(
+                        text("UPDATE telegram_posts SET tg_status = 'archived', needs_manual_edit = false WHERE id = :id"),
+                        {"id": db_id}
+                    )
+                else:
+                    db.execute(
+                        text("UPDATE telegram_posts SET needs_manual_edit = true WHERE id = :id"),
+                        {"id": db_id}
+                    )
+                    result.setdefault("needs_manual_edit", []).append({
+                        "chat": chat_title, "msg_id": msg_id, "reason": "delete_failed"
+                    })
 
             except Exception as e:
                 logger.warning(f"⚠️ Error processing post {msg_id} in {chat_title}: {e}")
@@ -887,13 +921,81 @@ class TelegramScanner:
             r = await self.unpublish_product(db, pid, archive_chat)
             results.append(r)
         total_deleted = sum(r.get("deleted", 0) for r in results)
+        total_forwarded = sum(r.get("forwarded", 0) for r in results)
+        total_edited = sum(r.get("edited", 0) for r in results)
+        total_skipped = sum(r.get("skipped", 0) for r in results)
         total_failed = sum(len(r.get("failed", [])) for r in results)
         return {
             "products_processed": len(product_ids),
             "total_deleted": total_deleted,
+            "total_forwarded": total_forwarded,
+            "total_edited": total_edited,
+            "total_skipped": total_skipped,
             "total_failed": total_failed,
             "details": results,
         }
+
+    async def verify_archived_posts(self, db: Session, limit: int = 500) -> Dict:
+        """Walk through telegram_posts marked 'archived' and verify each really
+        no longer exists in Telegram. If a post is still live (B2-bug victim,
+        or external archive flag flipped erroneously), flip it back to
+        'published' so the UI surfaces it again.
+
+        Read-only against Telegram; only DB writes are status flips back.
+        """
+        if not self.client:
+            return {"error": "Not connected to Telegram"}
+
+        rows = db.execute(
+            text("""
+                SELECT id, chat_id, message_id, chat_title
+                FROM telegram_posts
+                WHERE tg_status = 'archived'
+                ORDER BY id DESC
+                LIMIT :lim
+            """),
+            {"lim": limit}
+        ).fetchall()
+
+        stats = {"checked": len(rows), "restored": 0, "still_gone": 0, "errors": 0}
+        if not rows:
+            return stats
+
+        # Group by chat to minimize entity resolution
+        by_chat: Dict[int, List] = {}
+        for r in rows:
+            by_chat.setdefault(int(r[1]), []).append(r)
+
+        for chat_id, posts in by_chat.items():
+            try:
+                chat_entity = await self._resolve_entity(str(chat_id))
+            except Exception as e:
+                logger.warning(f"verify_archived: cannot resolve chat {chat_id}: {e}")
+                stats["errors"] += len(posts)
+                continue
+
+            for db_id, _cid, msg_id, chat_title in posts:
+                try:
+                    tg_msg = await self.client.get_messages(chat_entity, ids=int(msg_id))
+                    if tg_msg is None:
+                        stats["still_gone"] += 1
+                        continue
+                    # Live — flip back to published
+                    db.execute(
+                        text("""UPDATE telegram_posts
+                                SET tg_status = 'published', needs_manual_edit = false
+                                WHERE id = :id"""),
+                        {"id": db_id}
+                    )
+                    stats["restored"] += 1
+                    logger.info(f"verify_archived: restored msg {msg_id} in {chat_title}")
+                except Exception as e:
+                    stats["errors"] += 1
+                    logger.warning(f"verify_archived: error msg {msg_id} in {chat_title}: {e}")
+
+        db.commit()
+        logger.info(f"✅ verify_archived done: {stats}")
+        return stats
 
     def analyze_sold_action(self, db: Session, product_id: int) -> Dict:
         """Analyze what TG action is needed for a SOLD product (read-only analysis)."""

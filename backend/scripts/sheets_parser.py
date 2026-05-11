@@ -19,7 +19,7 @@ from typing import Optional, Callable
 
 import gspread
 from google.oauth2.service_account import Credentials
-from sqlalchemy import or_
+from sqlalchemy import or_, text
 from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
@@ -2151,6 +2151,17 @@ def _parse_orders_sheet(
         pay_status_id   = _resolve_payment_status(session, col(row, "Статус оплати"))
         delivery_id     = _resolve_delivery_method(session, delivery_raw)
         order_status_id = _resolve_order_status(session, col(row, "Статус відповіді"))
+
+        # ── Auto-rule: якщо оплачено, але статус замовлення порожній — Підтверджено ──
+        if order_status_id is None and pay_status_id is not None:
+            from backend.models.models import PaymentStatus, OrderStatus
+            ps_obj = session.query(PaymentStatus).filter_by(id=pay_status_id).first()
+            if ps_obj and ps_obj.status_name and ps_obj.status_name.strip().lower() == "оплачено":
+                os_conf = session.query(OrderStatus).filter(
+                    OrderStatus.status_name == "Підтверджено"
+                ).first()
+                if os_conf:
+                    order_status_id = os_conf.id
         tracking       = col(row, "Номер накладної")
         address_raw    = col(row, "Адреса доставки")
         recipient      = col(row, "Отримувач")

@@ -27,6 +27,26 @@ router = APIRouter()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# SQL helper: "sold via orders" → ONLY if the LATEST order on that product is
+# in confirmed/active state. Catches the case where an old order was
+# Підтверджено but a later order on the same product was Відміна — product is
+# actually back in stock, not sold.
+#   active statuses: 1 = Підтверджено, 7 = Виконано
+def _latest_order_sold(pid_ref: str) -> str:
+    # Інверсна логіка: товар "вільний" лише якщо найсвіжіше замовлення в одному з
+    # ЗАКРИТИХ-без-витрати статусів: 5=Відміна, 6=Ігнорування, 9=Повернення.
+    # Все інше (Підтверджено, В черзі, Очікується, Уточнити, Фото, Подарунок,
+    # Обмін, Передати) → товар зайнятий/витрачений.
+    # COALESCE на 0 щоб product з 0 замовленнями також давав FALSE (нема замовлень = нічого не заброньовано).
+    return f"""COALESCE((
+        SELECT o.order_status_id
+        FROM order_items oi JOIN orders o ON o.id = oi.order_id
+        WHERE oi.product_id = {pid_ref}
+        ORDER BY o.created_at DESC LIMIT 1
+    ), 0) NOT IN (0, 5, 6, 9)"""
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Read-only endpoints (safe — no writes to Telegram)
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -120,18 +140,21 @@ async def get_publications_overview(
         if filter_mode == "published":
             where_parts.append("EXISTS (SELECT 1 FROM telegram_posts tp WHERE tp.product_id = p.id AND tp.tg_status = 'published')")
         elif filter_mode in ("problematic", "sold_live"):
-            # Show product row as problematic ONLY if:
-            # 1. This specific product (p) is sold (by status or confirmed order)
-            # 2. ALL units of this product's size are sold (no available stock)
-            # 3. Has published telegram posts
-            # 4. At least one post advertises a sold size (or has no size info)
-            where_parts.append("""
+            # Product row is problematic when:
+            # 1. p is sold (status='Продано' OR latest order is in active/confirmed state)
+            # 2. No other product row with same productnumber+sizeeu is still available
+            #    (this exact size is fully out of stock)
+            # 3. Has at least one published TG post linked to this product
+            #
+            # Note: we DO NOT cross-check sizes_in_post here — `sizes_in_post` is a
+            # parser-side cache that's often stale/incomplete, and the post is linked
+            # to p directly, so if p is sold and the post is live → it IS problematic
+            # regardless of which sizes the post text mentions. Unlinked posts are
+            # handled separately by filter_mode='unlinked'.
+            where_parts.append(f"""
                 (
                     p.statusid IN (SELECT id FROM statuses WHERE statusname = 'Продано')
-                    OR EXISTS (
-                        SELECT 1 FROM order_items oi JOIN orders o ON o.id = oi.order_id
-                        WHERE oi.product_id = p.id AND o.order_status_id IN (1, 7)
-                    )
+                    OR {_latest_order_sold('p.id')}
                 )
                 AND NOT EXISTS (
                     SELECT 1 FROM products p2
@@ -140,32 +163,11 @@ async def get_publications_overview(
                       AND TRIM(LEADING '#' FROM p2.productnumber) = TRIM(LEADING '#' FROM p.productnumber)
                       AND COALESCE(p2.sizeeu, '') = COALESCE(p.sizeeu, '')
                       AND COALESCE(s2.statusname, '') != 'Продано'
-                      AND NOT EXISTS (
-                          SELECT 1 FROM order_items oi2 JOIN orders o2 ON o2.id = oi2.order_id
-                          WHERE oi2.product_id = p2.id AND o2.order_status_id IN (1, 7)
-                      )
+                      AND NOT {_latest_order_sold('p2.id')}
                 )
                 AND EXISTS (
                     SELECT 1 FROM telegram_posts tp
                     WHERE tp.product_id = p.id AND tp.tg_status = 'published'
-                    AND (
-                        tp.sizes_in_post IS NULL OR tp.sizes_in_post = '' OR tp.sizes_in_post = '[]'
-                        OR EXISTS (
-                            SELECT 1 FROM jsonb_array_elements_text(tp.sizes_in_post::jsonb) AS post_sz(sz)
-                            WHERE NOT EXISTS (
-                                SELECT 1 FROM products avail_p
-                                LEFT JOIN statuses avail_s ON avail_s.id = avail_p.statusid
-                                WHERE TRIM(LEADING '#' FROM avail_p.productnumber) = TRIM(LEADING '#' FROM p.productnumber)
-                                  AND (COALESCE(avail_p.sizeeu, '') = post_sz.sz
-                                       OR split_part(COALESCE(avail_p.sizeeu, ''), '.', 1) = post_sz.sz)
-                                  AND COALESCE(avail_s.statusname, '') != 'Продано'
-                                  AND NOT EXISTS (
-                                      SELECT 1 FROM order_items oi_a JOIN orders o_a ON o_a.id = oi_a.order_id
-                                      WHERE oi_a.product_id = avail_p.id AND o_a.order_status_id IN (1, 7)
-                                  )
-                            )
-                        )
-                    )
                 )
             """)
         elif filter_mode == "unpublished":
@@ -188,11 +190,7 @@ async def get_publications_overview(
                     p.id, p.productnumber, p.model, p.price,
                     CASE
                         WHEN s.statusname = 'Продано' THEN 'Продано'
-                        WHEN EXISTS (
-                            SELECT 1 FROM order_items oi
-                            JOIN orders o ON o.id = oi.order_id
-                            WHERE oi.product_id = p.id AND o.order_status_id IN (1, 7)
-                        ) THEN 'Продано'
+                        WHEN {_latest_order_sold('p.id')} THEN 'Продано'
                         ELSE COALESCE(s.statusname, 'Невідомо')
                     END AS status,
                     COALESCE(pubs.pub_count, 0) AS pub_count,
@@ -329,15 +327,21 @@ async def get_product_detail_for_publication(
             {"variants": variants}
         ).fetchall()
 
-        # Check which products have confirmed orders
+        # Check which products are sold by LATEST order (not just any confirmed)
         all_pids = [row[0] for row in sizes_rows]
         order_sold_pids = set()
         if all_pids:
             order_rows = db.execute(
                 text("""
-                    SELECT DISTINCT oi.product_id
-                    FROM order_items oi JOIN orders o ON o.id = oi.order_id
-                    WHERE oi.product_id = ANY(:pids) AND o.order_status_id IN (1, 7)
+                    SELECT product_id FROM (
+                        SELECT DISTINCT ON (oi.product_id)
+                               oi.product_id, o.order_status_id
+                        FROM order_items oi
+                        JOIN orders o ON o.id = oi.order_id
+                        WHERE oi.product_id = ANY(:pids)
+                        ORDER BY oi.product_id, o.created_at DESC
+                    ) latest
+                    WHERE latest.order_status_id NOT IN (5, 6, 9)
                 """),
                 {"pids": all_pids}
             ).fetchall()
@@ -554,11 +558,148 @@ async def sync_telegram(
         finally:
             await scanner.disconnect()
 
+        # Auto-relink: fix any wrongly-linked posts (#3716 vs #Ф3716 collisions)
+        # so the user doesn't need to click "Relink" separately after every sync.
+        try:
+            relink_res = db.execute(text("""
+                WITH best AS (
+                    SELECT DISTINCT ON (tp.id)
+                        tp.id AS tp_id,
+                        p.id  AS p_id
+                    FROM telegram_posts tp
+                    JOIN products p ON p.productnumber IN (
+                        tp.product_number_raw,
+                        'Ф'  || tp.product_number_raw,
+                        '#Ф' || tp.product_number_raw,
+                        '#'  || tp.product_number_raw
+                    )
+                    ORDER BY tp.id,
+                        CASE p.productnumber
+                            WHEN '#Ф' || tp.product_number_raw THEN 1
+                            WHEN 'Ф'  || tp.product_number_raw THEN 2
+                            WHEN '#'  || tp.product_number_raw THEN 3
+                            WHEN tp.product_number_raw         THEN 4
+                            ELSE 5
+                        END
+                )
+                UPDATE telegram_posts tp
+                SET product_id = best.p_id
+                FROM best
+                WHERE tp.id = best.tp_id
+                  AND (tp.product_id IS NULL OR tp.product_id <> best.p_id)
+            """))
+            db.commit()
+            result["auto_relinked"] = relink_res.rowcount
+        except Exception as re:
+            logger.warning(f"Post-sync auto-relink failed: {re}")
+            db.rollback()
+
         return result
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Sync error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/api/publications/sync-all")
+async def sync_all_telegram(db: Session = Depends(get_db)):
+    """One-click sync: scan ALL known publishing channels and auto-relink.
+
+    Walks through TelegramScanner.KNOWN_CHANNELS, scans each, then runs the
+    same auto-relink as /sync. Returns aggregated stats.
+    """
+    try:
+        api_id = os.getenv("TELEGRAM_API_ID")
+        api_hash = os.getenv("TELEGRAM_API_HASH")
+        phone = os.getenv("TELEGRAM_PHONE")
+
+        if not all([api_id, api_hash, phone]):
+            raise HTTPException(
+                status_code=400,
+                detail="Telegram credentials not configured. Set TELEGRAM_API_ID, TELEGRAM_API_HASH, TELEGRAM_PHONE in .env"
+            )
+
+        try:
+            from services.telegram_service import TelegramScanner
+        except ImportError:
+            from backend.services.telegram_service import TelegramScanner
+
+        scanner = TelegramScanner(api_id=int(api_id), api_hash=api_hash, phone=phone)
+        connected = await scanner.connect()
+        if not connected:
+            raise HTTPException(status_code=500, detail="Failed to connect to Telegram")
+
+        per_channel = []
+        totals = {"posts_scanned": 0, "posts_with_products": 0, "new_posts_saved": 0}
+        try:
+            for chat_id, info in TelegramScanner.KNOWN_CHANNELS.items():
+                try:
+                    res = await scanner.scan_channel(db, str(chat_id), info["type"])
+                    if isinstance(res, dict) and "error" not in res:
+                        for k in totals:
+                            totals[k] += int(res.get(k, 0) or 0)
+                        per_channel.append({
+                            "chat_id": chat_id,
+                            "chat_title": info["title"],
+                            "posts_scanned": res.get("posts_scanned", 0),
+                            "new_posts_saved": res.get("new_posts_saved", 0),
+                        })
+                    else:
+                        per_channel.append({
+                            "chat_id": chat_id,
+                            "chat_title": info["title"],
+                            "error": (res or {}).get("error", "unknown"),
+                        })
+                except Exception as ce:
+                    logger.warning(f"sync-all: channel {chat_id} failed: {ce}")
+                    per_channel.append({"chat_id": chat_id, "chat_title": info["title"], "error": str(ce)})
+        finally:
+            await scanner.disconnect()
+
+        # Auto-relink (same logic as /sync) — fixes wrong matches like #3716 vs #Ф3716
+        relinked = 0
+        try:
+            r = db.execute(text("""
+                WITH best AS (
+                    SELECT DISTINCT ON (tp.id) tp.id AS tp_id, p.id AS p_id
+                    FROM telegram_posts tp
+                    JOIN products p ON p.productnumber IN (
+                        tp.product_number_raw,
+                        'Ф'  || tp.product_number_raw,
+                        '#Ф' || tp.product_number_raw,
+                        '#'  || tp.product_number_raw
+                    )
+                    ORDER BY tp.id,
+                        CASE p.productnumber
+                            WHEN '#Ф' || tp.product_number_raw THEN 1
+                            WHEN 'Ф'  || tp.product_number_raw THEN 2
+                            WHEN '#'  || tp.product_number_raw THEN 3
+                            WHEN tp.product_number_raw         THEN 4
+                            ELSE 5
+                        END
+                )
+                UPDATE telegram_posts tp SET product_id = best.p_id
+                FROM best
+                WHERE tp.id = best.tp_id
+                  AND (tp.product_id IS NULL OR tp.product_id <> best.p_id)
+            """))
+            db.commit()
+            relinked = r.rowcount
+        except Exception as re:
+            logger.warning(f"sync-all auto-relink failed: {re}")
+            db.rollback()
+
+        return {
+            "success": True,
+            "totals": totals,
+            "auto_relinked": relinked,
+            "channels": per_channel,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Sync-all error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -704,26 +845,78 @@ async def unpublish_bulk(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/api/publications/verify-archived")
+async def verify_archived(
+    limit: int = Query(500, ge=1, le=2000),
+    db: Session = Depends(get_db),
+):
+    """Walk through archived telegram_posts and verify each is really deleted
+    in Telegram. Posts that are still live get flipped back to 'published'.
+
+    Idempotent — safe to run repeatedly. Used by auto-startup recovery after
+    the B2 bug (which falsely marked posts archived when TG delete had failed).
+    """
+    api_id = os.getenv("TELEGRAM_API_ID")
+    api_hash = os.getenv("TELEGRAM_API_HASH")
+    phone = os.getenv("TELEGRAM_PHONE")
+    if not all([api_id, api_hash, phone]):
+        raise HTTPException(status_code=400, detail="Telegram credentials not configured")
+
+    try:
+        from services.telegram_service import TelegramScanner
+    except ImportError:
+        from backend.services.telegram_service import TelegramScanner
+
+    scanner = TelegramScanner(api_id=int(api_id), api_hash=api_hash, phone=phone)
+    if not await scanner.connect():
+        raise HTTPException(status_code=500, detail="Failed to connect to Telegram")
+    try:
+        return await scanner.verify_archived_posts(db, limit=limit)
+    finally:
+        await scanner.disconnect()
+
+
 @router.post("/api/publications/relink")
 async def relink_publications(db: Session = Depends(get_db)):
     """Re-link telegram_posts to products by matching product_number_raw → products.productnumber.
+
+    Always picks the BEST candidate (priority: #Ф{n} > Ф{n} > #{n} > {n}) so that
+    duplicates like '#3716' + '#Ф3716' don't cause the post to attach to the wrong
+    (no-Ф) product. Re-links existing rows too — fixes historical wrong matches.
 
     Useful after products are imported or product numbers normalized.
     READ-ONLY for Telegram, only updates local DB.
     """
     try:
+        # Pick best product per telegram_post using priority ranking.
+        # raw = digits only (e.g. "3716"); products may live as "#Ф3716", "Ф3716",
+        # "#3716", or "3716". Prefer Ф-prefixed canonical form.
         result = db.execute(text("""
+            WITH best AS (
+                SELECT DISTINCT ON (tp.id)
+                    tp.id AS tp_id,
+                    p.id  AS p_id
+                FROM telegram_posts tp
+                JOIN products p ON p.productnumber IN (
+                    tp.product_number_raw,
+                    'Ф'  || tp.product_number_raw,
+                    '#Ф' || tp.product_number_raw,
+                    '#'  || tp.product_number_raw
+                )
+                ORDER BY tp.id,
+                    CASE p.productnumber
+                        WHEN '#Ф' || tp.product_number_raw THEN 1
+                        WHEN 'Ф'  || tp.product_number_raw THEN 2
+                        WHEN '#'  || tp.product_number_raw THEN 3
+                        WHEN tp.product_number_raw         THEN 4
+                        ELSE 5
+                    END
+            )
             UPDATE telegram_posts tp
-            SET product_id = p.id
-            FROM products p
-            WHERE tp.product_id IS NULL
-              AND (
-                tp.product_number_raw = p.productnumber
-                OR ('Ф' || tp.product_number_raw) = p.productnumber
-                OR ('#Ф' || tp.product_number_raw) = p.productnumber
-                OR ('#' || tp.product_number_raw) = p.productnumber
-                OR tp.product_number_raw = REPLACE(REPLACE(p.productnumber, '#', ''), 'Ф', '')
-              )
+            SET product_id = best.p_id
+            FROM best
+            WHERE tp.id = best.tp_id
+              AND (tp.product_id IS NULL OR tp.product_id <> best.p_id)
         """))
         db.commit()
         return {"success": True, "rows_affected": result.rowcount}

@@ -131,6 +131,7 @@ def get_products(
                cond.conditionname as condition_name,
                g.gendername as gender_name,
                st.subtypename as subtype_name,
+               sup.company_name as supplier_name,
                COALESCE(sold.sold_count, 0) AS sold_count,
                GREATEST(COALESCE(p.quantity, 0) - COALESCE(sold.sold_count, 0), 0) AS available_qty,
                COALESCE(dup.dup_brands, 0) AS pnum_dup_brands,
@@ -167,6 +168,7 @@ def get_products(
             HAVING COUNT(DISTINCT COALESCE(brandid, 0)) > 1
         ) dup ON dup.productnumber = p.productnumber
         LEFT JOIN deliveries d ON p.deliveryid = d.id
+        LEFT JOIN suppliers sup ON d.supplier_id = sup.id
         LEFT JOIN (
             SELECT oi.product_id, MAX(o.order_date) AS last_sale_date
             FROM order_items oi
@@ -456,7 +458,7 @@ def get_products(
                 'color_name': m.get('color_name'),
                 'condition_name': m.get('condition_name'),
                 'gender_name': m.get('gender_name'),
-                'supplier_name': None,
+                'supplier_name': m.get('supplier_name'),
                 'subtype_name': m.get('subtype_name'),
                 'sold_count': m.get('sold_count', 0),
                 'available_qty': m.get('available_qty'),

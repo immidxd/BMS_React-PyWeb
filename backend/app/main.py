@@ -190,6 +190,103 @@ async def _auto_startup_parse():
     asyncio.create_task(_delayed_start())
 
 
+# ── Auto-startup publications sync + archive recovery ─────────────────────────
+# Після запуску backend:
+#  1) Чекаємо щоб основні системи піднялись
+#  2) Запускаємо sync-all (сканує TG канали, додає нові пости)
+#  3) Перевіряємо всі 'archived' записи — ті що насправді живі в TG,
+#     повертаємо в 'published' (відновлення після B2-баг'ів)
+# Все у фоні — не блокує старт. Помилки логуються, не пропалюють процес.
+@app.on_event("startup")
+async def _auto_startup_publications_refresh():
+    import asyncio
+    import os
+
+    async def _delayed_refresh():
+        await asyncio.sleep(15)  # дати auto-parse піти першим
+        try:
+            api_id = os.getenv("TELEGRAM_API_ID")
+            api_hash = os.getenv("TELEGRAM_API_HASH")
+            phone = os.getenv("TELEGRAM_PHONE")
+            if not all([api_id, api_hash, phone]):
+                logger.info("Auto-publications-refresh skipped: TG creds not set")
+                return
+
+            try:
+                from services.telegram_service import TelegramScanner
+                from models.database import SessionLocal
+            except ImportError:
+                from backend.services.telegram_service import TelegramScanner
+                from backend.models.database import SessionLocal
+            from sqlalchemy import text as _sql_text
+
+            scanner = TelegramScanner(api_id=int(api_id), api_hash=api_hash, phone=phone)
+            if not await scanner.connect():
+                logger.warning("Auto-publications-refresh: TG connect failed")
+                return
+
+            db = SessionLocal()
+            try:
+                # 1. Scan known channels — pull new posts into telegram_posts
+                totals = {"posts_scanned": 0, "new_posts_saved": 0}
+                for chat_id, info in TelegramScanner.KNOWN_CHANNELS.items():
+                    try:
+                        res = await scanner.scan_channel(db, str(chat_id), info["type"])
+                        if isinstance(res, dict) and "error" not in res:
+                            totals["posts_scanned"] += int(res.get("posts_scanned", 0) or 0)
+                            totals["new_posts_saved"] += int(res.get("new_posts_saved", 0) or 0)
+                        else:
+                            logger.warning(f"Auto-sync: channel {chat_id} returned {res}")
+                    except Exception as ce:
+                        logger.warning(f"Auto-sync: channel {chat_id} failed: {ce}")
+                logger.info(f"Auto-sync: {totals}")
+
+                # 2. Auto-relink: prefer canonical Ф-prefixed product number on collisions
+                try:
+                    r = db.execute(_sql_text("""
+                        WITH best AS (
+                            SELECT DISTINCT ON (tp.id) tp.id AS tp_id, p.id AS p_id
+                            FROM telegram_posts tp
+                            JOIN products p ON p.productnumber IN (
+                                tp.product_number_raw,
+                                'Ф'  || tp.product_number_raw,
+                                '#Ф' || tp.product_number_raw,
+                                '#'  || tp.product_number_raw
+                            )
+                            ORDER BY tp.id,
+                                CASE p.productnumber
+                                    WHEN '#Ф' || tp.product_number_raw THEN 1
+                                    WHEN 'Ф'  || tp.product_number_raw THEN 2
+                                    WHEN '#'  || tp.product_number_raw THEN 3
+                                    WHEN tp.product_number_raw         THEN 4
+                                    ELSE 5
+                                END
+                        )
+                        UPDATE telegram_posts tp SET product_id = best.p_id
+                        FROM best
+                        WHERE tp.id = best.tp_id
+                          AND (tp.product_id IS NULL OR tp.product_id <> best.p_id)
+                    """))
+                    db.commit()
+                    logger.info(f"Auto-relink: {r.rowcount} posts relinked")
+                except Exception as re:
+                    logger.warning(f"Auto-relink failed: {re}")
+                    db.rollback()
+
+                # 3. Recovery — phantom archives back to published
+                stats = await scanner.verify_archived_posts(db, limit=1000)
+                logger.info(f"Auto-recovery: {stats}")
+            except Exception as e:
+                logger.warning(f"Auto-publications-refresh inner failed: {e}")
+            finally:
+                db.close()
+                await scanner.disconnect()
+        except Exception as e:
+            logger.warning(f"Auto-publications-refresh startup failed: {e}")
+
+    asyncio.create_task(_delayed_refresh())
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)

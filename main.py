@@ -97,7 +97,7 @@ def main():
     )
 
     # Start the PyWebView application
-    webview.start(clear_webview_cache, window, debug=True)
+    webview.start(clear_webview_cache, window, debug=False)
 
 if __name__ == "__main__":
     main()

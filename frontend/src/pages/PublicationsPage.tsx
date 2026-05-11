@@ -439,7 +439,14 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
         if (data.forwarded > 0) parts.push(`Переслано в WORKSHOP: ${data.forwarded}`);
         if (data.edited > 0) parts.push(`Відредаговано (ростовки): ${data.edited}`);
         if (data.skipped > 0) parts.push(`Пропущено (є ще в наявності): ${data.skipped}`);
-        if (failCount > 0) parts.push(`⚠️ Помилок: ${failCount}`);
+        if (failCount > 0) {
+          parts.push(`⚠️ Помилок: ${failCount}`);
+          const shown = (data.failed as any[]).slice(0, 3).map(f =>
+            `  • ${f.chat || '?'} #${f.msg_id ?? '?'} — ${f.action || 'process'}: ${(f.error || '').slice(0, 120)}`
+          );
+          parts.push(...shown);
+          if (failCount > shown.length) parts.push(`  …і ще ${failCount - shown.length}`);
+        }
         alert(parts.join('\n') || 'Готово');
         fetchItems();
         fetchStats();
@@ -466,8 +473,26 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
       if (!res.ok) {
         alert(`Помилка: ${data.detail || res.status}`);
       } else {
-        alert(`Оброблено: ${data.products_processed} товарів\nВидалено: ${data.total_deleted} постів` +
-              (data.total_failed > 0 ? `\n⚠️ Помилок: ${data.total_failed}` : ''));
+        const lines = [
+          `Оброблено: ${data.products_processed} товарів`,
+          `Видалено: ${data.total_deleted} постів`,
+        ];
+        if (typeof data.total_forwarded === 'number' && data.total_forwarded > 0)
+          lines.push(`Переслано в WORKSHOP: ${data.total_forwarded}`);
+        if (typeof data.total_edited === 'number' && data.total_edited > 0)
+          lines.push(`Відредаговано: ${data.total_edited}`);
+        if (typeof data.total_skipped === 'number' && data.total_skipped > 0)
+          lines.push(`Пропущено: ${data.total_skipped}`);
+        if (data.total_failed > 0) {
+          lines.push(`⚠️ Помилок: ${data.total_failed}`);
+          const fails = (data.details || [])
+            .flatMap((r: any) => (r.failed || []).map((f: any) => ({ ...f, product_id: r.product_id })))
+            .slice(0, 5);
+          for (const f of fails) {
+            lines.push(`  • prod ${f.product_id} / ${f.chat || '?'} #${f.msg_id ?? '?'} — ${f.action || 'process'}: ${(f.error || '').slice(0, 100)}`);
+          }
+        }
+        alert(lines.join('\n'));
         setSelectedIds(new Set());
         fetchItems();
         fetchStats();
