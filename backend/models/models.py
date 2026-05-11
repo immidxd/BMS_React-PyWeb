@@ -161,6 +161,13 @@ class Client(Base):
     manually_edited_at = Column(DateTime, nullable=True)
     manually_edited_fields = Column(Text, nullable=True)  # CSV: 'first_name,last_name,nickname'
 
+    # Identity normalization (Step 5): canonical forms for fast dedup,
+    # backed by partial UNIQUE indexes (ux_clients_*_normalized).
+    phone_normalized     = Column(String, nullable=True)
+    facebook_normalized  = Column(String, nullable=True)
+    instagram_normalized = Column(String, nullable=True)
+    telegram_normalized  = Column(String, nullable=True)
+
     # Relationships
     gender = relationship("Gender", back_populates="clients")
     orders = relationship("Order", back_populates="client")

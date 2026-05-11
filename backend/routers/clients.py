@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import or_, text
 import hashlib
 import logging
+import re
 from datetime import datetime
 
 from models.database import get_db
@@ -18,6 +19,18 @@ from schemas.reference import (
     ClientAlias as ClientAliasSchema, ClientAliasCreate,
     ClientFlag as ClientFlagSchema, ClientMergeRequest, ClientFlagDismiss,
 )
+from utils.identity_normalizer import (
+    normalize_phone, normalize_facebook,
+    normalize_instagram, normalize_telegram,
+)
+
+
+def _apply_normalized(client_obj):
+    """Recompute *_normalized fields from raw values. Idempotent."""
+    client_obj.phone_normalized     = normalize_phone(getattr(client_obj, 'phone_number', None))
+    client_obj.facebook_normalized  = normalize_facebook(getattr(client_obj, 'facebook', None))
+    client_obj.instagram_normalized = normalize_instagram(getattr(client_obj, 'instagram', None))
+    client_obj.telegram_normalized  = normalize_telegram(getattr(client_obj, 'telegram', None))
 
 
 # ── Identity helpers (Step 4) ─────────────────────────────────────────────
@@ -78,12 +91,50 @@ async def get_clients(
     params: dict = {}
 
     if search:
-        where_clauses.append("""
-            (c.first_name ILIKE :search OR c.last_name ILIKE :search
-             OR c.phone_number ILIKE :search OR c.email ILIKE :search
-             OR c.address ILIKE :search)
+        # Шукаємо по: ПІБ / nickname / телефон (raw + normalized) / email /
+        #             соцмережі (telegram/instagram/facebook/viber/olx) /
+        #             історичні aliases (full_raw + first/last/nickname).
+        # ВАЖЛИВО: знімаємо апострофи в обох сторонах — щоб пошук
+        # «мяна» знаходив «Мар'яна», а «вяч» знаходив «В'ячеслав».
+        #
+        # ВНУТРІШНЄ ПРАВИЛО: чистимо у ДВА ПРОХОДИ.
+        # 1) chr(39) знімає ASCII-апостроф (U+0027) — його не можна засунути
+        #    у regex char-class всередині SQL string literal без зламу парсера.
+        # 2) [ʼ’`´] знімає інші типографські варіанти: U+02BC, U+2019,
+        #    U+0060 (gravis), U+00B4 (acute).
+        def _strip_apx(col: str) -> str:
+            return f"regexp_replace(regexp_replace(COALESCE({col},''), chr(39), '', 'g'), '[ʼ’`´]', '', 'g')"
+
+        where_clauses.append(f"""
+            (
+                {_strip_apx('c.first_name')} ILIKE :search_clean
+                OR {_strip_apx('c.last_name')} ILIKE :search_clean
+                OR {_strip_apx('c.nickname')}  ILIKE :search_clean
+                OR c.phone_number ILIKE :search
+                OR c.phone_normalized ILIKE :search_digits
+                OR c.email ILIKE :search
+                OR c.telegram ILIKE :search
+                OR c.instagram ILIKE :search
+                OR c.facebook ILIKE :search
+                OR c.viber ILIKE :search
+                OR c.olx ILIKE :search
+                OR EXISTS (
+                    SELECT 1 FROM client_aliases ca
+                    WHERE ca.client_id = c.id
+                      AND ({_strip_apx('ca.full_raw')}    ILIKE :search_clean
+                           OR {_strip_apx('ca.first_name')} ILIKE :search_clean
+                           OR {_strip_apx('ca.last_name')}  ILIKE :search_clean
+                           OR {_strip_apx('ca.nickname')}   ILIKE :search_clean)
+                )
+            )
         """)
         params["search"] = f"%{search}%"
+        # Версія запиту без апострофів для порівняння з очищеними полями
+        search_clean = re.sub(r"['ʼ’`´]", "", search)
+        params["search_clean"] = f"%{search_clean}%"
+        # Для phone_normalized шукаємо по цифрах (нормалізована форма зберігає лише цифри)
+        digits_only = re.sub(r"\D+", "", search)
+        params["search_digits"] = f"%{digits_only}%" if digits_only else "__NEVER_MATCH__"
 
     if gender_id:
         where_clauses.append("c.gender_id = :gender_id")
@@ -940,10 +991,30 @@ async def create_client(client: ClientCreate, db: Session = Depends(get_db)):
         if not gender:
             raise HTTPException(status_code=404, detail="Gender not found")
     
-    # Create new client
+    # Create new client + compute normalized signals up-front so the partial
+    # UNIQUE indexes catch any duplicate insert attempt as IntegrityError.
     db_client = Client(**client.dict())
+    _apply_normalized(db_client)
     db.add(db_client)
-    db.commit()
+    try:
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        # Try to surface the existing client to the caller
+        for col, val in (
+            ('phone_normalized', db_client.phone_normalized),
+            ('facebook_normalized', db_client.facebook_normalized),
+            ('telegram_normalized', db_client.telegram_normalized),
+            ('instagram_normalized', db_client.instagram_normalized),
+        ):
+            if val:
+                existing = db.query(Client).filter(getattr(Client, col) == val).first()
+                if existing:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=f"Client with same {col.replace('_normalized','')} already exists (id={existing.id})",
+                    )
+        raise HTTPException(status_code=500, detail=f"Could not create client: {e}")
     db.refresh(db_client)
     
     # Add full_name field
@@ -995,6 +1066,10 @@ async def update_client(client_id: int, client: ClientUpdate, db: Session = Depe
     # Apply changes
     for key, value in update_data.items():
         setattr(db_client, key, value)
+
+    # Re-compute normalized signals if any source field was touched.
+    if changed_fields & {"phone_number", "facebook", "instagram", "telegram"}:
+        _apply_normalized(db_client)
 
     # Лок-список (CSV) — об'єднуємо зі старим
     if changed_fields:
@@ -1246,5 +1321,161 @@ async def merge_clients(source_id: int, payload: ClientMergeRequest, db: Session
     # 7) Видалити source клієнта
     db.delete(source)
     db.commit()
+    return {"ok": True, "moved": moved}
 
-    return {"ok": True, "target_id": target_id, "merged_from": source_id, "moved": moved} 
+
+# ── Mass-merge: groups of likely duplicates (Step 5) ──────────────────────
+@router.get("/api/clients/duplicate-groups", tags=["clients"])
+async def list_duplicate_groups(
+    by: str = Query("auto", description="auto|name|phone|facebook|instagram|telegram"),
+    limit: int = Query(100, ge=1, le=500),
+    db: Session = Depends(get_db),
+):
+    """Returns groups of clients that appear to be duplicates.
+
+    'auto' = union of all signal-based + name-based groupings.
+    Each group includes per-client metadata (orders, signals, score) so the
+    frontend can show a one-click bulk-merge UI.
+    """
+    sql_parts = []
+    if by in ("auto", "phone"):
+        sql_parts.append(("phone", "phone_normalized"))
+    if by in ("auto", "facebook"):
+        sql_parts.append(("facebook", "facebook_normalized"))
+    if by in ("auto", "instagram"):
+        sql_parts.append(("instagram", "instagram_normalized"))
+    if by in ("auto", "telegram"):
+        sql_parts.append(("telegram", "telegram_normalized"))
+
+    groups = []
+    seen_clusters = set()  # avoid duplicate clusters (same set of ids reported twice)
+
+    for signal_label, col in sql_parts:
+        rows = db.execute(text(f"""
+            SELECT {col} AS key, array_agg(id ORDER BY id) AS ids
+            FROM clients
+            WHERE {col} IS NOT NULL
+            GROUP BY {col}
+            HAVING COUNT(*) > 1
+            ORDER BY COUNT(*) DESC
+            LIMIT :lim
+        """), {"lim": limit}).fetchall()
+        for r in rows:
+            ids = list(r[1])
+            cluster_key = tuple(sorted(ids))
+            if cluster_key in seen_clusters:
+                continue
+            seen_clusters.add(cluster_key)
+            groups.append({"signal": signal_label, "key": r[0], "client_ids": ids})
+
+    if by in ("auto", "name"):
+        rows = db.execute(text("""
+            SELECT ca.norm_key AS key, array_agg(DISTINCT ca.client_id) AS ids
+            FROM client_aliases ca
+            WHERE ca.norm_key IS NOT NULL AND ca.norm_key <> '||'
+            GROUP BY ca.norm_key
+            HAVING COUNT(DISTINCT ca.client_id) > 1
+            ORDER BY COUNT(DISTINCT ca.client_id) DESC
+            LIMIT :lim
+        """), {"lim": limit}).fetchall()
+        for r in rows:
+            ids = list(r[1])
+            cluster_key = tuple(sorted(ids))
+            if cluster_key in seen_clusters:
+                continue
+            seen_clusters.add(cluster_key)
+            groups.append({"signal": "name", "key": r[0], "client_ids": ids})
+
+    # Hydrate client info for each group
+    all_ids = sorted({i for g in groups for i in g["client_ids"]})
+    if not all_ids:
+        return {"groups": [], "total_clusters": 0, "total_clients": 0}
+
+    info_rows = db.execute(text("""
+        SELECT c.id,
+               COALESCE(NULLIF(TRIM(COALESCE(c.first_name,'') || ' ' || COALESCE(c.last_name,'')),''), c.nickname, '—') AS full_name,
+               c.phone_number, c.facebook, c.telegram, c.instagram, c.email,
+               c.manually_edited_at IS NOT NULL AS is_locked,
+               (SELECT COUNT(*) FROM orders o WHERE o.client_id = c.id) AS orders_count,
+               (SELECT COALESCE(SUM(o.total_amount),0) FROM orders o WHERE o.client_id = c.id) AS total_amount,
+               c.created_at
+        FROM clients c WHERE c.id = ANY(:ids)
+    """), {"ids": all_ids}).mappings().all()
+    by_id = {r["id"]: dict(r) for r in info_rows}
+
+    def _score(c):
+        sig = sum(1 for k in ("phone_number","facebook","telegram","instagram","email") if c.get(k))
+        return (c.get("orders_count") or 0) * 100 + sig * 10 + (1 if c.get("is_locked") else 0)
+
+    out_groups = []
+    for g in groups:
+        clients = [by_id[i] for i in g["client_ids"] if i in by_id]
+        if len(clients) < 2:
+            continue
+        clients.sort(key=_score, reverse=True)
+        suggested = clients[0]["id"]
+        out_groups.append({
+            "signal": g["signal"],
+            "key": str(g["key"])[:120],
+            "suggested_master_id": suggested,
+            "clients": [
+                {
+                    "id": c["id"],
+                    "full_name": c["full_name"],
+                    "phone": c.get("phone_number"),
+                    "facebook": c.get("facebook"),
+                    "telegram": c.get("telegram"),
+                    "instagram": c.get("instagram"),
+                    "email": c.get("email"),
+                    "is_locked": c.get("is_locked"),
+                    "orders_count": c.get("orders_count"),
+                    "total_amount": float(c.get("total_amount") or 0),
+                    "is_suggested_master": c["id"] == suggested,
+                } for c in clients
+            ],
+        })
+
+    return {
+        "groups": out_groups,
+        "total_clusters": len(out_groups),
+        "total_clients": sum(len(g["clients"]) for g in out_groups),
+    }
+
+
+@router.post("/api/clients/merge-bulk", tags=["clients"])
+async def merge_clients_bulk(payload: dict, db: Session = Depends(get_db)):
+    """Bulk merge: payload = { groups: [{ master_id, source_ids: [int,...] }, ...] }.
+
+    For each group, calls merge_clients(source → master) sequentially.
+    Returns per-group status.
+    """
+    groups = (payload or {}).get("groups") or []
+    if not isinstance(groups, list) or not groups:
+        raise HTTPException(status_code=400, detail="payload.groups must be non-empty list")
+
+    results = []
+    total_merged = 0
+    for g in groups:
+        master_id = g.get("master_id")
+        source_ids = g.get("source_ids") or []
+        if not isinstance(master_id, int) or not isinstance(source_ids, list):
+            results.append({"master_id": master_id, "ok": False, "error": "bad payload"})
+            continue
+        merged_here = 0
+        errors = []
+        for sid in source_ids:
+            if not isinstance(sid, int) or sid == master_id:
+                continue
+            try:
+                # Re-use existing single-merge function via direct call
+                req = ClientMergeRequest(target_id=master_id)
+                await merge_clients(sid, req, db)
+                merged_here += 1
+                total_merged += 1
+            except HTTPException as he:
+                errors.append({"source_id": sid, "error": he.detail})
+            except Exception as e:
+                errors.append({"source_id": sid, "error": str(e)})
+        results.append({"master_id": master_id, "merged": merged_here, "errors": errors})
+
+    return {"ok": True, "total_merged": total_merged, "groups": results}

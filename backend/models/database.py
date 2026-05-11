@@ -297,6 +297,21 @@ def init_db():
             conn.execute(text(
                 "ALTER TABLE IF EXISTS clients ADD COLUMN IF NOT EXISTS manually_edited_fields TEXT"
             ))
+            # 1.5) Identity normalization (Step 5):
+            #     canonical форми сильних сигналів → 1 запис на людину навіть
+            #     якщо FB / phone / IG записані по-різному.
+            for col in ("phone_normalized", "facebook_normalized",
+                        "instagram_normalized", "telegram_normalized"):
+                conn.execute(text(
+                    f"ALTER TABLE IF EXISTS clients ADD COLUMN IF NOT EXISTS {col} TEXT"
+                ))
+            # Partial UNIQUE indexes — race-condition guard для паралельного парсингу.
+            for col in ("phone_normalized", "facebook_normalized",
+                        "instagram_normalized", "telegram_normalized"):
+                conn.execute(text(
+                    f"CREATE UNIQUE INDEX IF NOT EXISTS ux_clients_{col} "
+                    f"ON clients({col}) WHERE {col} IS NOT NULL"
+                ))
             # 2) Історія всіх варіантів імен/нікнеймів цього клієнта.
             #    Парсер шукає кандидата ПО aliases — тому навіть якщо ти змінив
             #    "Льоша (Балу)" → "Льоша", оригінал залишиться як alias і
@@ -435,6 +450,39 @@ def init_db():
                 """))
         except Exception as _e:  # noqa: BLE001
             logger.warning("identity/aliases backfill skipped: %s", _e)
+
+        # 3) Identity-normalized backfill (Step 5):
+        #    For any client where *_normalized is NULL but raw value exists,
+        #    compute the canonical form via Python normalizer. Idempotent.
+        try:
+            from utils.identity_normalizer import (
+                normalize_phone, normalize_facebook,
+                normalize_instagram, normalize_telegram,
+            )
+            with engine.begin() as conn:
+                rows = conn.execute(text("""
+                    SELECT id, phone_number, facebook, instagram, telegram
+                    FROM clients
+                    WHERE (phone_number    IS NOT NULL AND phone_normalized    IS NULL)
+                       OR (facebook        IS NOT NULL AND facebook_normalized IS NULL)
+                       OR (instagram       IS NOT NULL AND instagram_normalized IS NULL)
+                       OR (telegram        IS NOT NULL AND telegram_normalized  IS NULL)
+                """)).fetchall()
+                for r in rows:
+                    conn.execute(text("""
+                        UPDATE clients
+                        SET phone_normalized=:p, facebook_normalized=:f,
+                            instagram_normalized=:i, telegram_normalized=:t
+                        WHERE id=:id
+                    """), {
+                        'p': normalize_phone(r[1]), 'f': normalize_facebook(r[2]),
+                        'i': normalize_instagram(r[3]), 't': normalize_telegram(r[4]),
+                        'id': r[0],
+                    })
+                if rows:
+                    logger.info("Backfilled normalized signals for %d clients", len(rows))
+        except Exception as _e:  # noqa: BLE001
+            logger.warning("normalized signals backfill skipped: %s", _e)
 
         # Populate initial reference data (only adds basic reference data, no test data)
         from .seed_data import populate_initial_data

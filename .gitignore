@@ -26,3 +26,18 @@ backend/scripts/secure_creds/*.json
 
 # Cache files
 backend/scripts/cache/
+
+# Telethon session files (auth tokens — NEVER commit)
+backend/.telegram_session/
+backend/bms.session
+backend/bms.session-journal
+*.session
+*.session-journal
+
+# Runtime logs
+backend/unknown_errors.txt
+
+# Worktrees and personal notes
+.claude/
+OPUS_PROMPTS.md
+TASKS_ROADMAP.md
