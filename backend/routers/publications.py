@@ -21,6 +21,7 @@ try:
     from utils.order_status_logic import (
         latest_order_confirmed_sold as _latest_order_confirmed_sold,
         latest_order_reserved as _latest_order_reserved,
+        product_fully_consumed as _product_fully_consumed,
         CONFIRMED_SOLD as _CONFIRMED_SOLD_STATUS_IDS,
         sql_in_list as _sql_in_list,
     )
@@ -29,6 +30,7 @@ except ImportError:
     from backend.utils.order_status_logic import (
         latest_order_confirmed_sold as _latest_order_confirmed_sold,
         latest_order_reserved as _latest_order_reserved,
+        product_fully_consumed as _product_fully_consumed,
         CONFIRMED_SOLD as _CONFIRMED_SOLD_STATUS_IDS,
         sql_in_list as _sql_in_list,
     )
@@ -208,7 +210,7 @@ async def get_publications_overview(
             where_parts.append(f"""
                 (
                     p.statusid IN (SELECT id FROM statuses WHERE statusname = 'Продано')
-                    OR {_latest_order_confirmed_sold('p.id')}
+                    OR {_product_fully_consumed('p.id')}
                 )
                 AND NOT EXISTS (
                     SELECT 1 FROM products p2
@@ -217,7 +219,7 @@ async def get_publications_overview(
                       AND TRIM(LEADING '#' FROM p2.productnumber) = TRIM(LEADING '#' FROM p.productnumber)
                       AND COALESCE(p2.sizeeu, '') = COALESCE(p.sizeeu, '')
                       AND COALESCE(s2.statusname, '') != 'Продано'
-                      AND NOT {_latest_order_reserved('p2.id')}
+                      AND NOT {_product_fully_consumed('p2.id')}
                 )
                 AND EXISTS (
                     SELECT 1 FROM telegram_posts tp
@@ -244,7 +246,7 @@ async def get_publications_overview(
                     p.id, p.productnumber, p.model, p.price,
                     CASE
                         WHEN s.statusname = 'Продано' THEN 'Продано'
-                        WHEN {_latest_order_sold('p.id')} THEN 'Продано'
+                        WHEN {_product_fully_consumed('p.id')} THEN 'Продано'
                         ELSE COALESCE(s.statusname, 'Невідомо')
                     END AS status,
                     COALESCE(pubs.pub_count, 0) AS pub_count,
@@ -385,17 +387,21 @@ async def get_product_detail_for_publication(
         all_pids = [row[0] for row in sizes_rows]
         order_sold_pids = set()
         if all_pids:
+            # A size variant is "Продано" in the detail view only if its stock
+            # is fully consumed: confirmed-sold order_items count meets or
+            # exceeds the row's quantity. A multi-unit product (quantity=3)
+            # with a single buyer is still partially available.
             order_rows = db.execute(
                 text(f"""
-                    SELECT product_id FROM (
-                        SELECT DISTINCT ON (oi.product_id)
-                               oi.product_id, o.order_status_id
-                        FROM order_items oi
-                        JOIN orders o ON o.id = oi.order_id
-                        WHERE oi.product_id = ANY(:pids)
-                        ORDER BY oi.product_id, o.created_at DESC
-                    ) latest
-                    WHERE latest.order_status_id IN {_sql_in_list(_CONFIRMED_SOLD_STATUS_IDS)}
+                    SELECT p.id
+                    FROM products p
+                    WHERE p.id = ANY(:pids)
+                      AND COALESCE((
+                          SELECT COUNT(*) FROM order_items oi
+                          JOIN orders o ON o.id = oi.order_id
+                          WHERE oi.product_id = p.id
+                            AND o.order_status_id IN {_sql_in_list(_CONFIRMED_SOLD_STATUS_IDS)}
+                      ), 0) >= COALESCE(NULLIF(p.quantity, 0), 1)
                 """),
                 {"pids": all_pids}
             ).fetchall()

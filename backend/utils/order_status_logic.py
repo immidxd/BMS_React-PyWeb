@@ -136,3 +136,25 @@ def latest_order_reserved(pid_ref: str) -> str:
     """Latest order on product reserves the stock unit (any non-cancelled,
     non-returned active order)."""
     return latest_order_status_in(pid_ref, RESERVED)
+
+
+def product_fully_consumed(pid_ref: str) -> str:
+    """SQL boolean: this product has NO available stock left, i.e. the count
+    of confirmed-sold order_items meets or exceeds the product's ``quantity``.
+
+    Use this — not :func:`latest_order_confirmed_sold` — when answering "is
+    this row sold out?" for multi-unit products (e.g. quantity=3 with only
+    one buyer is still 2 units in stock, not "Продано").
+
+    ``pid_ref`` is the SQL fragment naming the product id (e.g. ``"p.id"``).
+    Uses COALESCE so a missing quantity defaults to 1 (legacy rows).
+    """
+    sold_set = sql_in_list(CONFIRMED_SOLD)
+    return f"""COALESCE((
+        SELECT COUNT(*) FROM order_items oi
+        JOIN orders o ON o.id = oi.order_id
+        WHERE oi.product_id = {pid_ref}
+          AND o.order_status_id IN {sold_set}
+    ), 0) >= COALESCE((
+        SELECT NULLIF(quantity, 0) FROM products WHERE id = {pid_ref}
+    ), 1)"""
