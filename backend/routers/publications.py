@@ -27,23 +27,40 @@ router = APIRouter()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SQL helper: "sold via orders" → ONLY if the LATEST order on that product is
-# in confirmed/active state. Catches the case where an old order was
-# Підтверджено but a later order on the same product was Відміна — product is
-# actually back in stock, not sold.
-#   active statuses: 1 = Підтверджено, 7 = Виконано
-def _latest_order_sold(pid_ref: str) -> str:
-    # Інверсна логіка: товар "вільний" лише якщо найсвіжіше замовлення в одному з
-    # ЗАКРИТИХ-без-витрати статусів: 5=Відміна, 6=Ігнорування, 9=Повернення.
-    # Все інше (Підтверджено, В черзі, Очікується, Уточнити, Фото, Подарунок,
-    # Обмін, Передати) → товар зайнятий/витрачений.
-    # COALESCE на 0 щоб product з 0 замовленнями також давав FALSE (нема замовлень = нічого не заброньовано).
+# Two distinct "is sold via orders" checks based on the latest order:
+#
+# _latest_order_confirmed_sold — strict. Latest order is in a status that means
+#   "the sale actually happened": 1=Підтверджено, 7=Подарунок. Used to decide
+#   whether to FLAG a product as sold in the publications view.
+#
+# _latest_order_reserved — broad. Latest order is in any non-cancelled state
+#   (i.e. NOT IN 5/6/9 — Відміна/Ігнорування/Повернення). Used for the sibling
+#   check ("is there ANY available unit of this size in stock") where a queued
+#   or pending order still means the unit is committed.
+#
+# Pending/queued statuses (2=Очікується, 3=Уточнити, 4=Фото, 8=В черзі,
+# 10=Обмін, 11=Передати) sit in the gap on purpose — they reserve stock but
+# don't constitute a completed sale.
+def _latest_order_confirmed_sold(pid_ref: str) -> str:
+    return f"""COALESCE((
+        SELECT o.order_status_id
+        FROM order_items oi JOIN orders o ON o.id = oi.order_id
+        WHERE oi.product_id = {pid_ref}
+        ORDER BY o.created_at DESC LIMIT 1
+    ), 0) IN (1, 7)"""
+
+
+def _latest_order_reserved(pid_ref: str) -> str:
     return f"""COALESCE((
         SELECT o.order_status_id
         FROM order_items oi JOIN orders o ON o.id = oi.order_id
         WHERE oi.product_id = {pid_ref}
         ORDER BY o.created_at DESC LIMIT 1
     ), 0) NOT IN (0, 5, 6, 9)"""
+
+
+# Back-compat alias: existing callers that meant "confirmed sold" now route here.
+_latest_order_sold = _latest_order_confirmed_sold
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -154,7 +171,7 @@ async def get_publications_overview(
             where_parts.append(f"""
                 (
                     p.statusid IN (SELECT id FROM statuses WHERE statusname = 'Продано')
-                    OR {_latest_order_sold('p.id')}
+                    OR {_latest_order_confirmed_sold('p.id')}
                 )
                 AND NOT EXISTS (
                     SELECT 1 FROM products p2
@@ -163,7 +180,7 @@ async def get_publications_overview(
                       AND TRIM(LEADING '#' FROM p2.productnumber) = TRIM(LEADING '#' FROM p.productnumber)
                       AND COALESCE(p2.sizeeu, '') = COALESCE(p.sizeeu, '')
                       AND COALESCE(s2.statusname, '') != 'Продано'
-                      AND NOT {_latest_order_sold('p2.id')}
+                      AND NOT {_latest_order_reserved('p2.id')}
                 )
                 AND EXISTS (
                     SELECT 1 FROM telegram_posts tp
@@ -341,7 +358,7 @@ async def get_product_detail_for_publication(
                         WHERE oi.product_id = ANY(:pids)
                         ORDER BY oi.product_id, o.created_at DESC
                     ) latest
-                    WHERE latest.order_status_id NOT IN (5, 6, 9)
+                    WHERE latest.order_status_id IN (1, 7)
                 """),
                 {"pids": all_pids}
             ).fetchall()
