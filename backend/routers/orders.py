@@ -5,8 +5,23 @@ from datetime import date, datetime
 import logging
 
 from backend.models.database import get_db
-from backend.models.models import Order, OrderItem, Client, Product
+from backend.models.models import Order, OrderItem, Client, Product, PaymentStatus, OrderStatus
 from backend.services.order_service import OrderDAO
+
+
+def _apply_paid_auto_confirm(db: Session, data: dict) -> None:
+    """Якщо статус оплати = "Оплачено", а статус замовлення порожній — виставляємо "Підтверджено".
+    Працює in-place над dict, який передається в DAO."""
+    pay_id = data.get("payment_status_id")
+    order_status = data.get("order_status_id")
+    if pay_id is None or order_status is not None:
+        return
+    ps = db.query(PaymentStatus).filter(PaymentStatus.id == pay_id).first()
+    if not ps or not ps.status_name or ps.status_name.strip().lower() != "оплачено":
+        return
+    os_conf = db.query(OrderStatus).filter(OrderStatus.status_name == "Підтверджено").first()
+    if os_conf:
+        data["order_status_id"] = os_conf.id
 from backend.schemas.order import (
     OrderCreate, OrderUpdate, OrderResponse, OrderWithDetails, 
     OrderList, OrderFilters, FilterOptions, OrderListItem
@@ -502,7 +517,9 @@ async def create_order(order: OrderCreate, db: Session = Depends(get_db)):
     
     # Create order with DAO
     order_dao = OrderDAO(db)
-    new_order = order_dao.create_order(order.dict())
+    order_data = order.dict()
+    _apply_paid_auto_confirm(db, order_data)
+    new_order = order_dao.create_order(order_data)
     
     # Recalculate order total
     order_dao.recalculate_order_total(new_order.id)
@@ -539,7 +556,18 @@ async def update_order(
                 raise HTTPException(status_code=404, detail=f"Product with ID {item.product_id} not found")
     
     # Update order
-    updated_order = order_dao.update_order(order_id, order.dict(exclude_unset=True))
+    update_data = order.dict(exclude_unset=True)
+    # Якщо клієнт виставив "Оплачено" і не задав статус замовлення — підвищуємо до "Підтверджено".
+    # Враховуємо також поточний статус: якщо в БД він уже не порожній — не чіпаємо.
+    if "payment_status_id" in update_data and "order_status_id" not in update_data:
+        if existing_order.order_status_id is None:
+            tmp = {"payment_status_id": update_data["payment_status_id"], "order_status_id": None}
+            _apply_paid_auto_confirm(db, tmp)
+            if tmp.get("order_status_id") is not None:
+                update_data["order_status_id"] = tmp["order_status_id"]
+    else:
+        _apply_paid_auto_confirm(db, update_data)
+    updated_order = order_dao.update_order(order_id, update_data)
     
     # Recalculate order total
     order_dao.recalculate_order_total(order_id)
