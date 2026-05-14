@@ -22,9 +22,13 @@ export interface Product {
     sizejp?: string;
     sizecn?: string;
     measurementscm?: string;
+    season?: string;       // multi-value, comma-separated: "Зима, Осінь"
+    dimensions?: string;   // габарити: "40x20x5"
+    width?: string;        // ширина ніжки: "Вузька"/"Стандартна"/"Широка" або B/D/EE
     quantity: number;
     typeid?: number;
     subtypeid?: number;
+    styleid?: number;
     brandid?: number;
     genderid?: number;
     colorid?: number;
@@ -32,6 +36,7 @@ export interface Product {
     manufacturercountryid?: number;
     statusid?: number;
     conditionid?: number;
+    current_conditionid?: number;   // поточний стан (на відміну від conditionid — при завезенні)
     importid?: number;
     deliveryid?: number;
     mainimage?: string;
@@ -58,8 +63,10 @@ export interface Product {
     status_name?: string;
     color_name?: string;
     condition_name?: string;
+    current_condition_name?: string;
     gender_name?: string;
     subtype_name?: string;
+    style_name?: string;
     supplier_name?: string;
 
     // Computed from order_items
@@ -97,6 +104,9 @@ export interface ProductFilters {
     statuses: ReferenceItem[];
     conditions: ReferenceItem[];
     genders: ReferenceItem[];
+    styles?: ReferenceItem[];
+    seasons?: string[];
+    widths?: string[];
     shipments: { id: number; name: string; date: string | null }[];
     price_range: {
         min_price: number;
@@ -122,6 +132,8 @@ export interface ProductFilter {
     colorid?: number;
     statusid?: number;
     conditionid?: number;
+    styleid?: number;
+    current_conditionid?: number;
     // Multi-id arrays (used by filter panel)
     typeids?: number[];
     subtypeids?: number[];
@@ -131,6 +143,10 @@ export interface ProductFilter {
     color_group_ids?: number[];
     statusids?: number[];
     conditionids?: number[];
+    styleids?: number[];
+    current_conditionids?: number[];
+    seasons?: string[];
+    widths?: string[];
     // Price range
     min_price?: number;
     max_price?: number;

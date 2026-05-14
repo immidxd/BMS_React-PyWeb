@@ -28,6 +28,9 @@ class ProductBase(BaseModel):
     sizejp: Optional[str] = Field(None, max_length=10, description="Розмір за японською шкалою")
     sizecn: Optional[str] = Field(None, max_length=10, description="Розмір за китайською шкалою")
     measurementscm: Optional[str] = Field(None, max_length=50, description="Розміри виробу в сантиметрах")
+    season: Optional[str] = Field(None, max_length=100, description="Сезон (multi-value, через кому): \"Зима, Осінь\"")
+    dimensions: Optional[str] = Field(None, max_length=50, description="Габарити: \"40x20x5\"")
+    width: Optional[str] = Field(None, max_length=20, description="Ширина ніжки: 'Вузька'/'Стандартна'/'Широка' або B/D/EE")
     quantity: int = Field(1, ge=0, description="Кількість товару в наявності")
     mainimage: Optional[str] = Field(None, max_length=255, description="URL основного зображення товару")
     is_visible: bool = Field(True, description="Чи відображається товар")
@@ -35,13 +38,15 @@ class ProductBase(BaseModel):
     # Foreign keys
     typeid: Optional[int] = Field(None, description="ID типу товару")
     subtypeid: Optional[int] = Field(None, description="ID підтипу товару")
+    styleid: Optional[int] = Field(None, description="ID стилю товару")
     brandid: Optional[int] = Field(None, description="ID бренду")
     genderid: Optional[int] = Field(None, description="ID статі")
     colorid: Optional[int] = Field(None, description="ID кольору")
     ownercountryid: Optional[int] = Field(None, description="ID країни власника")
     manufacturercountryid: Optional[int] = Field(None, description="ID країни виробника")
     statusid: Optional[int] = Field(None, description="ID статусу товару")
-    conditionid: Optional[int] = Field(None, description="ID стану товару")
+    conditionid: Optional[int] = Field(None, description="ID стану товару (при завезенні)")
+    current_conditionid: Optional[int] = Field(None, description="ID поточного стану товару")
     importid: Optional[int] = Field(None, description="ID імпорту товару")
     deliveryid: Optional[int] = Field(None, description="ID доставки товару")
     
@@ -157,9 +162,10 @@ class Product(ProductBase):
     manufacturer_country_name: Optional[str] = None
     status_name: Optional[str] = None
     condition_name: Optional[str] = None
+    current_condition_name: Optional[str] = None
     import_name: Optional[str] = None
     delivery_name: Optional[str] = None
-    
+
     class Config:
         orm_mode = True
 
@@ -192,19 +198,26 @@ class ProductList(BaseModel):
     statusid: Optional[int] = None
     colorid: Optional[int] = None
     conditionid: Optional[int] = None
+    current_conditionid: Optional[int] = None
     genderid: Optional[int] = None
+    styleid: Optional[int] = None
+    season: Optional[str] = None
+    dimensions: Optional[str] = None
+    width: Optional[str] = None
     importid: Optional[int] = None
     deliveryid: Optional[int] = None
-    
+
     # Related names from JOIN queries
     type_name: Optional[str] = None
     brand_name: Optional[str] = None
     status_name: Optional[str] = None
     color_name: Optional[str] = None
     condition_name: Optional[str] = None
+    current_condition_name: Optional[str] = None
     gender_name: Optional[str] = None
     supplier_name: Optional[str] = None
     subtype_name: Optional[str] = None
+    style_name: Optional[str] = None
 
     # Computed from order_items
     sold_count: int = 0
@@ -243,6 +256,13 @@ class ProductFilter(BaseModel):
     color_group_ids: Optional[List[int]] = None
     statusids: Optional[List[int]] = None
     conditionids: Optional[List[int]] = None
+    # Нові фільтри: стиль, поточний стан, сезон, ширина
+    styleid: Optional[int] = None
+    styleids: Optional[List[int]] = None
+    current_conditionid: Optional[int] = None
+    current_conditionids: Optional[List[int]] = None
+    seasons: Optional[List[str]] = None
+    widths: Optional[List[str]] = None
     # Price range
     min_price: Optional[float] = None
     max_price: Optional[float] = None
@@ -268,6 +288,9 @@ class FilterOptions(BaseModel):
     color_groups: List[Dict[str, Any]] = []
     statuses: List[Dict[str, Any]]
     conditions: List[Dict[str, Any]]
+    styles: List[Dict[str, Any]] = []
+    seasons: List[str] = []
+    widths: List[str] = []
     countries: List[Dict[str, Any]] = []
     shipments: List[Dict[str, Any]] = []
     price_range: Dict[str, float] = {"min_price": 0, "max_price": 0}

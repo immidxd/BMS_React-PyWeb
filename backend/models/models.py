@@ -56,10 +56,16 @@ class Type(Base):
 
 class Subtype(Base):
     __tablename__ = "subtypes"
-    
+
     id = Column(Integer, primary_key=True, index=True)
     subtypename = Column(String(100), unique=True, nullable=False)
     type_id = Column(Integer, ForeignKey("types.id"), nullable=True)
+
+class Style(Base):
+    __tablename__ = "styles"
+
+    id = Column(Integer, primary_key=True, index=True)
+    stylename = Column(String(100), unique=True, nullable=False)
 
 class Country(Base):
     __tablename__ = "countries"
@@ -311,6 +317,9 @@ class Product(Base):
     sizejp = Column(String(20))
     sizecn = Column(String(20))
     measurementscm = Column(String(20))
+    season = Column(String(100))      # multi-value, comma-separated: "Зима, Осінь"
+    dimensions = Column(String(50))   # габарити: "40x20x5"
+    width = Column(String(20))        # ширина ніжки: "Вузька"/"Стандартна"/"Широка" або B/D/EE
     quantity = Column(Integer, default=1)
     mainimage = Column(String(255))
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -319,6 +328,7 @@ class Product(Base):
     # Foreign Keys
     typeid = Column(Integer, ForeignKey("types.id"), nullable=True)
     subtypeid = Column(Integer, ForeignKey("subtypes.id"), nullable=True)
+    styleid = Column(Integer, ForeignKey("styles.id"), nullable=True)
     brandid = Column(Integer, ForeignKey("brands.id"), nullable=True)
     genderid = Column(Integer, ForeignKey("genders.id"), nullable=True)
     colorid = Column(Integer, ForeignKey("colors.id"), nullable=True)
@@ -326,6 +336,7 @@ class Product(Base):
     manufacturercountryid = Column(Integer, ForeignKey("countries.id"), nullable=True)
     statusid = Column(Integer, ForeignKey("statuses.id"), nullable=True)
     conditionid = Column(Integer, ForeignKey("conditions.id"), nullable=True)
+    current_conditionid = Column(Integer, ForeignKey("conditions.id"), nullable=True)
     importid = Column(Integer, nullable=True)
     deliveryid = Column(Integer, ForeignKey("deliveries.id"), nullable=True)
 

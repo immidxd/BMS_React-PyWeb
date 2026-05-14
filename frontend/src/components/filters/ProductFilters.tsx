@@ -364,6 +364,72 @@ const ProductFiltersPanel: React.FC<ProductFiltersPanelProps> = ({ filters, sele
         </FilterSection>
       )}
 
+      {/* Поточний стан */}
+      {filters.conditions?.length > 0 && (
+        <FilterSection title="Поточний стан" badge={(selectedFilters as any).current_conditionids?.length || 0}>
+          <MultiCheckList
+            items={filters.conditions}
+            selected={(selectedFilters as any).current_conditionids || []}
+            onToggle={(id, checked) => {
+              const cur = (selectedFilters as any).current_conditionids || [];
+              const next = checked ? [...cur.filter((x: number) => x !== id), id] : cur.filter((x: number) => x !== id);
+              onFilterChange({ ...selectedFilters, current_conditionids: next.length ? next : undefined } as any);
+            }}
+            maxVisible={10}
+          />
+        </FilterSection>
+      )}
+
+      {/* Стиль */}
+      {filters.styles && filters.styles.length > 0 && (
+        <FilterSection title="Стиль" badge={(selectedFilters as any).styleids?.length || 0}>
+          <MultiCheckList
+            items={filters.styles}
+            selected={(selectedFilters as any).styleids || []}
+            onToggle={(id, checked) => {
+              const cur = (selectedFilters as any).styleids || [];
+              const next = checked ? [...cur.filter((x: number) => x !== id), id] : cur.filter((x: number) => x !== id);
+              onFilterChange({ ...selectedFilters, styleids: next.length ? next : undefined } as any);
+            }}
+            maxVisible={15}
+          />
+        </FilterSection>
+      )}
+
+      {/* Сезон */}
+      {filters.seasons && filters.seasons.length > 0 && (
+        <FilterSection title="Сезон" badge={(selectedFilters as any).seasons?.length || 0}>
+          <MultiCheckList
+            items={filters.seasons.map((s, i) => ({ id: i, name: s }))}
+            selected={(((selectedFilters as any).seasons || []) as string[]).map(s => filters.seasons!.indexOf(s)).filter(i => i >= 0)}
+            onToggle={(idx, checked) => {
+              const all = (selectedFilters as any).seasons || [];
+              const value = filters.seasons![idx];
+              const next = checked ? Array.from(new Set([...all, value])) : all.filter((s: string) => s !== value);
+              onFilterChange({ ...selectedFilters, seasons: next.length ? next : undefined } as any);
+            }}
+            maxVisible={10}
+          />
+        </FilterSection>
+      )}
+
+      {/* Ширина */}
+      {filters.widths && filters.widths.length > 0 && (
+        <FilterSection title="Ширина" badge={(selectedFilters as any).widths?.length || 0}>
+          <MultiCheckList
+            items={filters.widths.map((w, i) => ({ id: i, name: w }))}
+            selected={(((selectedFilters as any).widths || []) as string[]).map(w => filters.widths!.indexOf(w)).filter(i => i >= 0)}
+            onToggle={(idx, checked) => {
+              const all = (selectedFilters as any).widths || [];
+              const value = filters.widths![idx];
+              const next = checked ? Array.from(new Set([...all, value])) : all.filter((w: string) => w !== value);
+              onFilterChange({ ...selectedFilters, widths: next.length ? next : undefined } as any);
+            }}
+            maxVisible={10}
+          />
+        </FilterSection>
+      )}
+
       {/* Статус */}
       {filters.statuses?.length > 0 && (
         <FilterSection title={SECTION_LABELS.statuses} badge={countActive('statusids')}>

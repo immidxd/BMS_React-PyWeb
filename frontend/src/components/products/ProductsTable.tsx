@@ -100,6 +100,7 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
         { id: 'type_name', title: 'Тип', optional: false },
         // 2.1
         { id: 'subtype_name', title: 'Підтип', optional: true },
+        { id: 'style_name', title: 'Стиль', optional: true },
         // 3
         { id: 'brand_name', title: 'Бренд', optional: false },
         // 3.1, 3.2, 3.3
@@ -108,12 +109,15 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
         { id: 'year', title: 'Рік', optional: true },
         // 4
         { id: 'gender_name', title: 'Стать', optional: false },
+        { id: 'season', title: 'Сезон', optional: true },
         // 5
         { id: 'color_name', title: 'Колір', optional: false },
         // 5.1
         { id: 'description', title: 'Опис', optional: true },
         // 6
         { id: 'sizeeu', title: 'Розмір', optional: false },
+        { id: 'width', title: 'Ширина', optional: true },
+        { id: 'dimensions', title: 'Габарити', optional: true },
         // 7
         { id: 'measurementscm', title: 'СМ', optional: false },
         // 8
@@ -124,8 +128,10 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
         { id: 'available_qty', title: 'В наявності', optional: false },
         // 9
         { id: 'status_name', title: 'Статус', optional: false },
-        // 10
-        { id: 'condition_name', title: 'Стан', optional: false },
+        // 10 — основна колонка "Стан" відображає current_conditionid (актуальний стан).
+        // Оригінальний conditionid схований за замовчуванням під назвою "Початковий стан".
+        { id: 'current_condition_name', title: 'Стан', optional: false },
+        { id: 'condition_name', title: 'Початковий стан', optional: true },
         // 11, 12, 13
         { id: 'supplier_name', title: 'Постачальник', optional: true },
         { id: 'is_visible', title: 'Видимість', optional: true },
@@ -314,7 +320,15 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
                     </Tag>
                 );
             } },
-        condition_name: { title: 'Стан', dataIndex: 'condition_name', key: 'condition_name', width: 75 },
+        condition_name: { title: 'Початковий стан', dataIndex: 'condition_name', key: 'condition_name', width: 120 },
+        current_condition_name: { title: 'Стан', dataIndex: 'current_condition_name', key: 'current_condition_name', width: 75 },
+        style_name: { title: 'Стиль', dataIndex: 'style_name', key: 'style_name', width: 110 },
+        season: { title: 'Сезон', dataIndex: 'season', key: 'season', width: 110,
+            render: (v: string) => v ? <span className="text-xs">{v}</span> : null },
+        width: { title: 'Ширина', dataIndex: 'width', key: 'width', width: 80,
+            render: (v: string) => v ? <span className="text-xs">{v}</span> : null },
+        dimensions: { title: 'Габарити', dataIndex: 'dimensions', key: 'dimensions', width: 100,
+            render: (v: string) => v ? <span className="text-xs">{v}</span> : null },
         clonednumbers: { title: 'Номера-клони', dataIndex: 'clonednumbers', key: 'clonednumbers', width: 160 },
         marking: { title: 'Маркування', dataIndex: 'marking', key: 'marking', width: 140,
             render: (text: string, record: Product) => {

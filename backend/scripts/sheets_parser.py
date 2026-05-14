@@ -19,13 +19,8 @@ from typing import Optional, Callable
 
 import gspread
 from google.oauth2.service_account import Credentials
-from sqlalchemy import or_, text
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
-
-try:
-    from utils.productnumber_normalizer import normalize as _normalize_productnumber
-except ImportError:
-    from backend.utils.productnumber_normalizer import normalize as _normalize_productnumber
 
 logger = logging.getLogger(__name__)
 
@@ -127,6 +122,64 @@ _GENDER_MAP = {
     'дитяча': 'Унісекс',
     'дитячий': 'Унісекс',
 }
+
+
+# ── Season auto-classification ──────────────────────────────────────────────
+# Викликається коли в Sheet порожнє поле "Сезон" — підставляє автоматичний.
+# Пріоритет (зверху вниз — перший збіг виграє):
+#   1) Sport-keywords → Всесезон
+#   2) Зима-keywords (description найперший — найбільш explicit)
+#   3) Літо-keywords
+#   4) Демі-keywords
+#   5) Єврозима за видом (Ботинки, Сапоги, Черевики...)
+#   6) Fallback → Всесезон
+_SPORT_KW = (
+    'спорт', 'футзалк', 'футбольн', 'сорокон', 'бутс', 'аквашуз',
+    'волейбольн', 'баскетбольн', 'бігов', 'валянк', 'домашн', 'хатн',
+)
+_WINTER_DESC_KW = (
+    'утеплен', 'з утеплення', 'зим', 'мороз', 'тепл', 'ізоля',
+    'сніг', 'екстим', 'екстрим', 'пуховик', 'градус', 'мінус',
+)
+_WINTER_STSUB_KW = ('зимов', 'зима', 'снігоход', 'уггі')
+_SUMMER_KW = ('літ', 'пляж')
+_SUMMER_TYPE_KW = ('босоніжк', 'шльопанц', 'шльлопанц', 'шльпанц', 'босоніжкиї')
+_DEMI_KW = ('дем', 'весн', 'осін', 'вітрівк', 'стограмівк')
+_EUROWINTER_TYPE_KW = (
+    'ботинк', 'ботінк', 'напівсапог', 'напівботинк', 'сапог',
+    'напівчоб', 'черевик', 'напівчеревик', 'ботильйон', 'чобот',
+)
+
+
+def _classify_season(type_val: str, subtype_val: str, style_val: str,
+                     description: str) -> str:
+    """Auto-classify season when not explicitly set in Sheet."""
+    desc = (description or '').lower()
+    style = (style_val or '').lower()
+    subtype = (subtype_val or '').lower()
+    type_l = (type_val or '').lower()
+    stsub_style = f'{subtype} {style}'
+    all_text = f'{type_l} {subtype} {style} {desc}'
+
+    if any(kw in all_text for kw in _SPORT_KW):
+        return 'Всесезон'
+    if any(kw in desc for kw in _WINTER_DESC_KW):
+        return 'Зима'
+    if any(kw in stsub_style or kw in type_l for kw in _WINTER_STSUB_KW):
+        return 'Зима'
+    if any(kw in desc for kw in _SUMMER_KW):
+        return 'Літо'
+    if any(kw in stsub_style for kw in _SUMMER_KW):
+        return 'Літо'
+    if any(kw in type_l for kw in _SUMMER_TYPE_KW):
+        return 'Літо'
+    if any(kw in desc for kw in _DEMI_KW):
+        return 'Демі'
+    if any(kw in stsub_style for kw in _DEMI_KW):
+        return 'Демі'
+    if any(kw in type_l for kw in _EUROWINTER_TYPE_KW):
+        return 'Єврозима'
+    return 'Всесезон'
 
 
 def _normalize_gender(val: str) -> str:
@@ -866,7 +919,7 @@ def _parse_products_sheet(
     which you then reset by truncating products before a clean full re-parse.
     """
     from backend.models.models import (
-        Product, Brand, Type, Color, Gender,
+        Product, Brand, Type, Color, Gender, Style,
     )
 
     rows = prefetched_rows if prefetched_rows is not None else ws.get_all_values()
@@ -926,6 +979,10 @@ def _parse_products_sheet(
         cm_val     = _normalize_size(col(row, "СМ"))
         price_val  = col(row, "Ціна")
         desc_val   = col(row, "Опис") if "Опис" in header else ""
+        # Опційні розширені колонки (старі аркуші можуть їх не мати)
+        season_val       = col(row, "Сезон").strip() if "Сезон" in header else ""
+        style_val        = col(row, "Стиль").strip() if "Стиль" in header else ""
+        current_cond_val = col(row, "Поточний стан").strip() if "Поточний стан" in header else ""
 
         # ── Resolve FK refs ────────────────────────────────────────────────
         # Guard: split combined types ("Туфлі/кросівки", "Ботинки-челсі") → Type + Subtype
@@ -934,6 +991,11 @@ def _parse_products_sheet(
             type_val = t_part
             if st_part and not sub_val:
                 sub_val = st_part
+
+        # Auto-classify season if not explicitly set in Sheet
+        if not season_val:
+            season_val = _classify_season(type_val, sub_val, style_val, desc_val)
+
         brand_obj  = _get_or_create(session, Brand,  "brandname",  brand_val)  if brand_val  else None
         type_obj   = _get_or_create(session, Type,   "typename",   type_val)   if type_val   else None
         color_obj  = _get_or_create(session, Color,  "colorname",  color_val)  if color_val  else None
@@ -942,6 +1004,14 @@ def _parse_products_sheet(
         own_id     = _get_or_create_country(session, own_cntry)
         sub_id     = _get_or_create_subtype(session, sub_val, type_obj.id if type_obj else None)
         cond_id    = _get_or_create_condition(session, cond_val)
+        # "Поточний стан": якщо порожнє в Sheet → успадковує "Стан"; інакше — окреме значення
+        current_cond_id = (
+            _get_or_create_condition(session, current_cond_val)
+            if current_cond_val
+            else cond_id
+        )
+        style_obj  = _get_or_create(session, Style, "stylename", style_val) if style_val else None
+        style_id   = style_obj.id if style_obj else None
         status_id  = _get_or_create_status(session, status_val if status_val else "Непродано")
 
         brand_id  = brand_obj.id if brand_obj else None
@@ -1065,6 +1135,17 @@ def _parse_products_sheet(
                 full_match.subtypeid = sub_id
             if cond_id and not full_match.conditionid:
                 full_match.conditionid = cond_id
+            # "Поточний стан":
+            #   - якщо явно вказано у Sheet → завжди оновлюємо
+            #   - якщо порожній у Sheet, але в БД ще NULL → успадковуємо "Стан"
+            if current_cond_val and current_cond_id:
+                full_match.current_conditionid = current_cond_id
+            elif not full_match.current_conditionid and cond_id:
+                full_match.current_conditionid = cond_id
+            if season_val and not full_match.season:
+                full_match.season = season_val
+            if style_id and not full_match.styleid:
+                full_match.styleid = style_id
             if mfr_id and not full_match.manufacturercountryid:
                 full_match.manufacturercountryid = mfr_id
             if own_id and not full_match.ownercountryid:
@@ -1139,10 +1220,9 @@ def _parse_products_sheet(
                     )
                 updated += 1
             else:
-                # Case 5: brand new productnumber — store canonical form so
-                # subsequent parses can't recreate the bare/letter-only twin.
+                # Case 5: brand new productnumber
                 product = Product(
-                    productnumber         = _normalize_productnumber(pnum) or pnum,
+                    productnumber         = pnum,
                     clonednumbers         = clones or None,
                     model                 = model_val or None,
                     marking               = marking or None,
@@ -1159,6 +1239,9 @@ def _parse_products_sheet(
                     genderid              = gender_id,
                     colorid               = color_id,
                     conditionid           = cond_id,
+                    current_conditionid   = current_cond_id,
+                    season                = season_val or None,
+                    styleid               = style_id,
                     statusid              = status_id,
                     manufacturercountryid = mfr_id,
                     ownercountryid        = own_id,
@@ -1214,6 +1297,9 @@ def _parse_products_sheet(
                     genderid              = gender_id,
                     colorid               = color_id,
                     conditionid           = cond_id,
+                    current_conditionid   = current_cond_id,
+                    season                = season_val or None,
+                    styleid               = style_id,
                     statusid              = status_id,
                     manufacturercountryid = mfr_id,
                     ownercountryid        = own_id,
@@ -1328,6 +1414,9 @@ def _parse_products_sheet(
                             genderid              = gender_id,
                             colorid               = color_id,
                             conditionid           = cond_id,
+                            current_conditionid   = current_cond_id,
+                            season                = season_val or None,
+                            styleid               = style_id,
                             statusid              = status_id,
                             manufacturercountryid = mfr_id,
                             ownercountryid        = own_id,
@@ -1431,6 +1520,9 @@ def _parse_products_sheet(
                         genderid              = gender_id,
                         colorid               = color_id,
                         conditionid           = cond_id,
+                        current_conditionid   = current_cond_id,
+                        season                = season_val or None,
+                        styleid               = style_id,
                         statusid              = status_id,
                         manufacturercountryid = mfr_id,
                         ownercountryid        = own_id,
@@ -2157,17 +2249,6 @@ def _parse_orders_sheet(
         pay_status_id   = _resolve_payment_status(session, col(row, "Статус оплати"))
         delivery_id     = _resolve_delivery_method(session, delivery_raw)
         order_status_id = _resolve_order_status(session, col(row, "Статус відповіді"))
-
-        # ── Auto-rule: якщо оплачено, але статус замовлення порожній — Підтверджено ──
-        if order_status_id is None and pay_status_id is not None:
-            from backend.models.models import PaymentStatus, OrderStatus
-            ps_obj = session.query(PaymentStatus).filter_by(id=pay_status_id).first()
-            if ps_obj and ps_obj.status_name and ps_obj.status_name.strip().lower() == "оплачено":
-                os_conf = session.query(OrderStatus).filter(
-                    OrderStatus.status_name == "Підтверджено"
-                ).first()
-                if os_conf:
-                    order_status_id = os_conf.id
         tracking       = col(row, "Номер накладної")
         address_raw    = col(row, "Адреса доставки")
         recipient      = col(row, "Отримувач")
@@ -2552,7 +2633,7 @@ def _parse_workspace_sheet(
           (will be highlighted red in UI).
     """
     from backend.models.models import (
-        Product, Brand, Type, Color, Gender,
+        Product, Brand, Type, Color, Gender, Style,
     )
 
     rows = ws.get_all_values()
@@ -2608,6 +2689,10 @@ def _parse_workspace_sheet(
             type_val = t_part
             if st_part and not sub_val:
                 sub_val = st_part
+
+        # Auto-classify season (orders parser has no "Сезон" column)
+        season_val = _classify_season(type_val, sub_val, "", desc_val)
+
         brand_obj  = _get_or_create(session, Brand,  "brandname",  brand_val)  if brand_val  else None
         type_obj   = _get_or_create(session, Type,   "typename",   type_val)   if type_val   else None
         color_obj  = _get_or_create(session, Color,  "colorname",  color_val)  if color_val  else None
@@ -2616,6 +2701,8 @@ def _parse_workspace_sheet(
         own_id     = _get_or_create_country(session, own_cntry)
         sub_id     = _get_or_create_subtype(session, sub_val, type_obj.id if type_obj else None)
         cond_id    = _get_or_create_condition(session, cond_val)
+        # Orders sheet немає "Поточний стан" — успадковуємо від "Стан"
+        current_cond_id = cond_id
 
         brand_id  = brand_obj.id if brand_obj else None
         type_id   = type_obj.id  if type_obj  else None
@@ -2710,6 +2797,7 @@ def _parse_workspace_sheet(
                 price                 = price_float,
                 sizeeu                = size_val or None,
                 measurementscm        = cm_val or None,
+                season                = season_val or None,
                 dateadded             = date.today(),
                 quantity              = 1,
                 brandid               = brand_id,
@@ -2718,6 +2806,7 @@ def _parse_workspace_sheet(
                 genderid              = gender_id,
                 colorid               = color_id,
                 conditionid           = cond_id,
+                current_conditionid   = current_cond_id,
                 manufacturercountryid = mfr_id,
                 ownercountryid        = own_id,
             )

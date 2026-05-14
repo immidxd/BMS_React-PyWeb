@@ -298,8 +298,13 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose }) => {
                     <InfoRow label="Модель" value={p.model} />
                     <InfoRow label="Тип" value={(p as any).type_name} />
                     <InfoRow label="Підтип" value={(p as any).subtype_name} />
+                    <InfoRow label="Стиль" value={(p as any).style_name} />
                     <InfoRow label="Стать" value={(p as any).gender_name} />
+                    <InfoRow label="Сезон" value={p.season} />
                     <InfoRow label="Колір" value={(p as any).color_name} />
+                    <InfoRow label="Габарити" value={p.dimensions} />
+                    <InfoRow label="Ширина" value={p.width} />
+                    <InfoRow label="Поточний стан" value={(p as any).current_condition_name} />
                     <InfoRow label="Маркування" value={p.marking} />
                     <InfoRow label="Рік" value={p.year} />
                     <InfoRow label="Клони" value={p.clonednumbers} />

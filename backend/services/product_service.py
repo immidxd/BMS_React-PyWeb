@@ -129,8 +129,10 @@ def get_products(
                s.statusname as status_name,
                c.colorname as color_name,
                cond.conditionname as condition_name,
+               cur_cond.conditionname as current_condition_name,
                g.gendername as gender_name,
                st.subtypename as subtype_name,
+               sty.stylename as style_name,
                sup.company_name as supplier_name,
                COALESCE(sold.sold_count, 0) AS sold_count,
                GREATEST(COALESCE(p.quantity, 0) - COALESCE(sold.sold_count, 0), 0) AS available_qty,
@@ -151,8 +153,10 @@ def get_products(
         LEFT JOIN statuses s ON p.statusid = s.id
         LEFT JOIN colors c ON p.colorid = c.id
         LEFT JOIN conditions cond ON p.conditionid = cond.id
+        LEFT JOIN conditions cur_cond ON p.current_conditionid = cur_cond.id
         LEFT JOIN genders g ON p.genderid = g.id
         LEFT JOIN subtypes st ON p.subtypeid = st.id
+        LEFT JOIN styles sty ON p.styleid = sty.id
         LEFT JOIN (
             SELECT oi.product_id, COUNT(*) AS sold_count
             FROM order_items oi
@@ -225,9 +229,41 @@ def get_products(
                 where_conditions.append("p.statusid = :statusid")
                 params['statusid'] = filters.statusid
 
+            # Legacy filter "Стан" (conditionid) тепер фільтрує по current_conditionid:
+            # "Стан" у UI означає актуальний стан товару (current_conditionid),
+            # а conditionid у БД зберігає лише оригінальний стан при завезенні.
             if filters.conditionid and not filters.conditionids:
-                where_conditions.append("p.conditionid = :conditionid")
+                where_conditions.append(
+                    "COALESCE(p.current_conditionid, p.conditionid) = :conditionid"
+                )
                 params['conditionid'] = filters.conditionid
+
+            # Нові фільтри
+            if getattr(filters, "styleid", None) and not getattr(filters, "styleids", None):
+                where_conditions.append("p.styleid = :styleid")
+                params['styleid'] = filters.styleid
+            if getattr(filters, "styleids", None):
+                where_conditions.append("p.styleid = ANY(:styleids)")
+                params['styleids'] = filters.styleids
+            if getattr(filters, "current_conditionid", None) and not getattr(filters, "current_conditionids", None):
+                where_conditions.append("p.current_conditionid = :current_conditionid")
+                params['current_conditionid'] = filters.current_conditionid
+            if getattr(filters, "current_conditionids", None):
+                where_conditions.append("p.current_conditionid = ANY(:current_conditionids)")
+                params['current_conditionids'] = filters.current_conditionids
+            if getattr(filters, "seasons", None):
+                # Multi-value season: точна відповідність через TRIM+ILIKE,
+                # щоб "Зима" не зачіпала "Єврозима". UI передає канонічні значення.
+                _sea = []
+                for i, s in enumerate(filters.seasons):
+                    key = f"season_{i}"
+                    _sea.append(f"TRIM(p.season) ILIKE :{key}")
+                    params[key] = s.strip()  # без %, exact match (case-insensitive)
+                if _sea:
+                    where_conditions.append("(" + " OR ".join(_sea) + ")")
+            if getattr(filters, "widths", None):
+                where_conditions.append("p.width = ANY(:widths)")
+                params['widths'] = filters.widths
 
             # Multi-ID filters (arrays) — use ANY(:arr)
             # Тип + Підвид: об'єднуємо через OR (один фільтр на UI)
@@ -269,7 +305,10 @@ def get_products(
                 params['statusids'] = filters.statusids
 
             if filters.conditionids:
-                where_conditions.append("p.conditionid = ANY(:conditionids)")
+                # "Стан" multi-фільтр → теж по поточному стану (з fallback на оригінальний)
+                where_conditions.append(
+                    "COALESCE(p.current_conditionid, p.conditionid) = ANY(:conditionids)"
+                )
                 params['conditionids'] = filters.conditionids
 
             # Price range
@@ -448,6 +487,11 @@ def get_products(
                 'manufacturercountryid': m.get('manufacturercountryid'),
                 'statusid': m.get('statusid'),
                 'conditionid': m.get('conditionid'),
+                'current_conditionid': m.get('current_conditionid'),
+                'styleid': m.get('styleid'),
+                'season': m.get('season'),
+                'dimensions': m.get('dimensions'),
+                'width': m.get('width'),
                 'importid': m.get('importid'),
                 'deliveryid': m.get('deliveryid'),
                 'created_at': str(m.get('created_at')) if m.get('created_at') else None,
@@ -457,9 +501,11 @@ def get_products(
                 'status_name': m.get('status_name'),
                 'color_name': m.get('color_name'),
                 'condition_name': m.get('condition_name'),
+                'current_condition_name': m.get('current_condition_name'),
                 'gender_name': m.get('gender_name'),
                 'supplier_name': m.get('supplier_name'),
                 'subtype_name': m.get('subtype_name'),
+                'style_name': m.get('style_name'),
                 'sold_count': m.get('sold_count', 0),
                 'available_qty': m.get('available_qty'),
                 'pnum_dup_brands': m.get('pnum_dup_brands', 0),
@@ -552,6 +598,10 @@ def get_product_filters(db: Session) -> Dict[str, Any]:
         """)).fetchall()
         statuses = fetch_pairs("SELECT id, statusname FROM statuses ORDER BY statusname")
         conditions = fetch_pairs("SELECT id, conditionname FROM conditions ORDER BY conditionname")
+        styles = fetch_pairs("SELECT id, stylename FROM styles ORDER BY stylename")
+        # Унікальні значення для нових текстових полів (для випадаючих фільтрів)
+        seasons_rows = db.execute(text("SELECT DISTINCT TRIM(season) FROM products WHERE season IS NOT NULL AND season != ''")).fetchall()
+        widths_rows = db.execute(text("SELECT DISTINCT TRIM(width) FROM products WHERE width IS NOT NULL AND width != '' ORDER BY 1")).fetchall()
 
         price_min_max = db.execute(text("SELECT COALESCE(min(price),0) AS min_price, COALESCE(max(price),0) AS max_price FROM products")).mappings().first()
         min_price = float(price_min_max["min_price"]) if price_min_max else 0
@@ -595,6 +645,15 @@ def get_product_filters(db: Session) -> Dict[str, Any]:
             ],
             "statuses": [{"id": s[0], "name": s[1]} for s in statuses],
             "conditions": [{"id": c[0], "name": c[1]} for c in conditions],
+            "styles": [{"id": s[0], "name": s[1]} for s in styles],
+            # Розгортаємо сезон-multi-value у плоский список унікальних значень
+            "seasons": sorted(list({
+                v.strip()
+                for row in seasons_rows
+                for v in (row[0] or "").split(",")
+                if v.strip()
+            })),
+            "widths": [w[0] for w in widths_rows],
             "countries": [{"id": c[0], "name": c[1]} for c in countries],
             "shipments": [{"id": s[0], "name": s[1], "date": str(s[2]) if s[2] else None, "count": s[3]} for s in shipments_rows],
             "price_range": {"min_price": min_price, "max_price": max_price},
@@ -623,6 +682,7 @@ def get_product_with_relations(db: Session, product_id: int) -> Optional[Dict[st
             SELECT p.*,
                    t.typename as type_name,
                    st.subtypename as subtype_name,
+                   sty.stylename as style_name,
                    b.brandname as brand_name,
                    g.gendername as gender_name,
                    c.colorname as color_name,
@@ -630,11 +690,13 @@ def get_product_with_relations(db: Session, product_id: int) -> Optional[Dict[st
                    mc.countryname as manufacturer_country_name,
                    s.statusname as status_name,
                    cond.conditionname as condition_name,
+                   cur_cond.conditionname as current_condition_name,
                    i.importname as import_name,
                    d.deliveryname as delivery_name
             FROM products p
             LEFT JOIN types t ON p.typeid = t.id
             LEFT JOIN subtypes st ON p.subtypeid = st.id
+            LEFT JOIN styles sty ON p.styleid = sty.id
             LEFT JOIN brands b ON p.brandid = b.id
             LEFT JOIN genders g ON p.genderid = g.id
             LEFT JOIN colors c ON p.colorid = c.id
@@ -642,6 +704,7 @@ def get_product_with_relations(db: Session, product_id: int) -> Optional[Dict[st
             LEFT JOIN countries mc ON p.manufacturercountryid = mc.id
             LEFT JOIN statuses s ON p.statusid = s.id
             LEFT JOIN conditions cond ON p.conditionid = cond.id
+            LEFT JOIN conditions cur_cond ON p.current_conditionid = cur_cond.id
             LEFT JOIN imports i ON p.importid = i.id
             LEFT JOIN deliveries d ON p.deliveryid = d.id
             WHERE p.id = :id
