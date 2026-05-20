@@ -32,7 +32,7 @@ type PubColumnId =
   | 'status' | 'publication_count' | 'channels' | 'actions';
 
 const PUB_COLUMN_ORDER: { id: PubColumnId; title: string; optional: boolean }[] = [
-  { id: 'productnumber',     title: '№ товару',  optional: false },
+  { id: 'productnumber',     title: 'Номер',     optional: false },
   { id: 'brand_name',        title: 'Бренд',     optional: false },
   { id: 'type_name',         title: 'Вид',       optional: false },
   { id: 'subtype_name',      title: 'Підвид',    optional: true  },
@@ -722,7 +722,7 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
                   <th className="px-2 py-3 text-center w-8">
                     <input type="checkbox" checked={selectedIds.size > 0 && selectedIds.size === items.filter(i => i.product_id !== null && !i.is_unlinked).length} onChange={toggleSelectAll} className="rounded" />
                   </th>
-                  {isPubColVisible('productnumber')      && <th className="px-3 py-3 text-left font-semibold text-gray-600 dark:text-gray-300 whitespace-nowrap">№ товару</th>}
+                  {isPubColVisible('productnumber')      && <th className="px-3 py-3 text-left font-semibold text-gray-600 dark:text-gray-300 whitespace-nowrap">Номер</th>}
                   {isPubColVisible('brand_name')         && <th className="px-3 py-3 text-left font-semibold text-gray-600 dark:text-gray-300 whitespace-nowrap">Бренд</th>}
                   {isPubColVisible('type_name')          && <th className="px-3 py-3 text-left font-semibold text-gray-600 dark:text-gray-300 whitespace-nowrap">Вид</th>}
                   {isPubColVisible('subtype_name')       && <th className="px-3 py-3 text-left font-semibold text-gray-600 dark:text-gray-300 whitespace-nowrap">Підвид</th>}
