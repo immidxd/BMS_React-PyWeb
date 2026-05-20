@@ -149,17 +149,60 @@ if brands:
 if publications:
     app.include_router(publications.router, tags=["publications"])  # routes already prefixed with /api
 
-# Mount product images directory (local for now, cloud-ready abstraction in services/product_images.py)
+# Mount product images directory (local + Google Drive overlay; abstraction in services/product_images.py)
 try:
     from services.product_images import get_images_dir, URL_PREFIX as IMG_URL_PREFIX
 except ImportError:
     from backend.services.product_images import get_images_dir, URL_PREFIX as IMG_URL_PREFIX
 _images_dir = get_images_dir()
 if os.path.isdir(_images_dir):
-    logger.info(f"Mounting product images from {_images_dir} → {IMG_URL_PREFIX}")
+    logger.info(f"Mounting LOCAL product images from {_images_dir} → {IMG_URL_PREFIX}")
     app.mount(IMG_URL_PREFIX, StaticFiles(directory=_images_dir), name="product-images")
 else:
-    logger.warning(f"Product images dir not found: {_images_dir} — image gallery will be empty")
+    logger.info(f"Local product images dir not found ({_images_dir}) — using Drive only")
+
+# Drive image proxy: streams bytes from Google Drive with disk-cache
+try:
+    from services.product_images_drive import (
+        get_drive_file_bytes, get_drive_index_stats, invalidate_drive_index,
+        URL_PREFIX_DRIVE,
+    )
+except ImportError:
+    try:
+        from backend.services.product_images_drive import (
+            get_drive_file_bytes, get_drive_index_stats, invalidate_drive_index,
+            URL_PREFIX_DRIVE,
+        )
+    except ImportError:
+        get_drive_file_bytes = None
+        URL_PREFIX_DRIVE = "/product-images-drive"
+
+if get_drive_file_bytes is not None:
+    from fastapi import Response, HTTPException
+
+    @app.get(URL_PREFIX_DRIVE + "/{file_id}")
+    async def stream_drive_image(file_id: str):
+        """Proxy: GET image bytes from Google Drive (cached on disk)."""
+        result = get_drive_file_bytes(file_id)
+        if result is None:
+            raise HTTPException(status_code=404, detail="Image not found in Drive")
+        data, mime = result
+        return Response(
+            content=data, media_type=mime,
+            headers={"Cache-Control": "public, max-age=86400"},
+        )
+
+    @app.post("/api/product-images-drive/refresh")
+    async def refresh_drive_index():
+        """Manually rebuild Drive index (e.g. after uploading new photos)."""
+        invalidate_drive_index()
+        return {"ok": True, "stats": get_drive_index_stats()}
+
+    @app.get("/api/product-images-drive/stats")
+    async def drive_index_stats():
+        return get_drive_index_stats()
+
+    logger.info(f"Drive image proxy mounted: {URL_PREFIX_DRIVE}/<file_id>")
 
 # Mount static files from frontend build if available
 frontend_build_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../frontend/build"))

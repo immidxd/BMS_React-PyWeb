@@ -69,14 +69,8 @@ def _sort_key(filename: str, target: str) -> tuple:
     return (1, 0, base.lower())
 
 
-def list_images(productnumber: str) -> List[ImageEntry]:
-    """Повертає список фото товару, відсортований так щоб
-    найменший суфіксний номер був першим (головне фото).
-    """
-    target = _normalize_number(productnumber)
-    if not target:
-        return []
-
+def _list_local_only(target: str) -> List[ImageEntry]:
+    """Локальні фото (без дедуплікації)."""
     images_dir = get_images_dir()
     if not os.path.isdir(images_dir):
         logger.debug(f"Images dir not found: {images_dir}")
@@ -97,12 +91,74 @@ def list_images(productnumber: str) -> List[ImageEntry]:
         return []
 
     matched.sort(key=lambda fn: _sort_key(fn, target))
+    return [
+        ImageEntry(filename=fn, url=f"{URL_PREFIX}/{quote(fn)}", index=i)
+        for i, fn in enumerate(matched)
+    ]
 
+
+def _list_drive_only(target: str) -> List[ImageEntry]:
+    """Drive фото (через провайдер; повертає [] при недоступності API)."""
+    try:
+        from backend.services.product_images_drive import (
+            list_drive_images_for, URL_PREFIX_DRIVE,
+        )
+    except ImportError:
+        try:
+            from services.product_images_drive import (
+                list_drive_images_for, URL_PREFIX_DRIVE,
+            )
+        except ImportError:
+            return []
+    try:
+        drive_entries = list_drive_images_for(target)
+    except Exception as e:
+        logger.warning(f"Drive list failed for {target}: {e}")
+        return []
+    # Sort using same natural-order key as local
+    filenames_sorted = sorted(
+        [(e.filename, e.file_id) for e in drive_entries],
+        key=lambda x: _sort_key(x[0], target),
+    )
     return [
         ImageEntry(
             filename=fn,
-            url=f"{URL_PREFIX}/{quote(fn)}",
+            url=f"{URL_PREFIX_DRIVE}/{quote(fid)}",
             index=i,
         )
-        for i, fn in enumerate(matched)
+        for i, (fn, fid) in enumerate(filenames_sorted)
+    ]
+
+
+def list_images(productnumber: str) -> List[ImageEntry]:
+    """Об'єднаний список фото товару (локально + Drive) з дедуплікацією за filename.
+
+    Принцип:
+      • Локальне ВИГРАЄ при колізії — швидший доступ, без quota.
+      • Drive додається тільки для тих filename-ів, яких НЕ було локально.
+      • Якщо локальної папки немає (інший комп) — буде лише Drive автоматично.
+      • Сортування — натуральне за суфіксним числом → головне фото index=0.
+    """
+    target = _normalize_number(productnumber)
+    if not target:
+        return []
+
+    local = _list_local_only(target)
+    drive = _list_drive_only(target)
+
+    seen_lower = {e.filename.lower() for e in local}
+    merged: List[ImageEntry] = list(local)
+    for e in drive:
+        if e.filename.lower() not in seen_lower:
+            seen_lower.add(e.filename.lower())
+            merged.append(e)
+
+    # Resort merged via natural order on filename
+    merged_sorted = sorted(
+        merged, key=lambda e: _sort_key(e.filename, target)
+    )
+    # Re-index sequentially (0..N) on the merged result
+    return [
+        ImageEntry(filename=e.filename, url=e.url, index=i)
+        for i, e in enumerate(merged_sorted)
     ]
