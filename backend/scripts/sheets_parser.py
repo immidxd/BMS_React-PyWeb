@@ -2715,6 +2715,12 @@ def _parse_workspace_sheet(
         cm_val     = _normalize_size(col(row, "СМ"))
         price_val  = col(row, "Ціна")
         desc_val   = col(row, "Опис") or col(row, "Екстра примітка")
+        # Нові колонки (опційні — старі версії аркуша повернуть "")
+        season_val_sheet = col(row, "Сезон") if "Сезон" in header else ""
+        dimensions_val   = col(row, "Габарити") if "Габарити" in header else ""
+        style_val        = col(row, "Стиль") if "Стиль" in header else ""
+        current_cond_val = col(row, "Поточний стан") if "Поточний стан" in header else ""
+        width_val        = col(row, "Ширина") if "Ширина" in header else ""
 
         # Resolve FK refs
         # Guard: split combined types ("Туфлі/кросівки", "Ботинки-челсі") → Type + Subtype
@@ -2724,8 +2730,9 @@ def _parse_workspace_sheet(
             if st_part and not sub_val:
                 sub_val = st_part
 
-        # Auto-classify season (orders parser has no "Сезон" column)
-        season_val = _classify_season(type_val, sub_val, "", desc_val)
+        # Season: явне значення з аркуша > auto-classify
+        season_val = season_val_sheet.strip() if season_val_sheet else \
+            _classify_season(type_val, sub_val, style_val, desc_val)
 
         brand_obj  = _get_or_create(session, Brand,  "brandname",  brand_val)  if brand_val  else None
         type_obj   = _get_or_create(session, Type,   "typename",   type_val)   if type_val   else None
@@ -2735,8 +2742,13 @@ def _parse_workspace_sheet(
         own_id     = _get_or_create_country(session, own_cntry)
         sub_id     = _get_or_create_subtype(session, sub_val, type_obj.id if type_obj else None)
         cond_id    = _get_or_create_condition(session, cond_val)
-        # Orders sheet немає "Поточний стан" — успадковуємо від "Стан"
-        current_cond_id = cond_id
+        style_obj  = _get_or_create(session, Style, "stylename", style_val) if style_val else None
+        style_id   = style_obj.id if style_obj else None
+        # Поточний стан: явне значення з аркуша > успадкування від "Стан"
+        current_cond_id = (
+            _get_or_create_condition(session, current_cond_val.strip()) or cond_id
+            if current_cond_val.strip() else cond_id
+        )
 
         brand_id  = brand_obj.id if brand_obj else None
         type_id   = type_obj.id  if type_obj  else None
@@ -2797,6 +2809,18 @@ def _parse_workspace_sheet(
             if clones_raw:
                 for extra in clones_raw.split(";"):
                     best_product.clonednumbers = _append_clone(best_product.clonednumbers, extra.strip())
+            # Заповнюємо нові поля з аркуша ТІЛЬКИ якщо в БД порожньо
+            # (Sheets = source of truth, але не перезаписуємо вже заповнене у Журналі)
+            if season_val and not best_product.season:
+                best_product.season = season_val
+            if dimensions_val and not best_product.dimensions:
+                best_product.dimensions = dimensions_val
+            if width_val and not best_product.width:
+                best_product.width = width_val
+            if style_id and not best_product.styleid:
+                best_product.styleid = style_id
+            if current_cond_id and not best_product.current_conditionid:
+                best_product.current_conditionid = current_cond_id
             best_product.updated_at = datetime.utcnow()
             session.flush()
             merged += 1
@@ -2832,6 +2856,9 @@ def _parse_workspace_sheet(
                 sizeeu                = size_val or None,
                 measurementscm        = cm_val or None,
                 season                = season_val or None,
+                dimensions            = dimensions_val or None,
+                width                 = width_val or None,
+                styleid               = style_id,
                 dateadded             = date.today(),
                 quantity              = 1,
                 brandid               = brand_id,
