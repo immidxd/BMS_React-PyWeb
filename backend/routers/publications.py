@@ -252,9 +252,16 @@ async def get_publications_overview(
                     COALESCE(pubs.pub_count, 0) AS pub_count,
                     COALESCE(pubs.channels, '') AS channels,
                     COALESCE(pubs.threads, '') AS threads,
-                    COALESCE(pubs.needs_manual_edit, false) AS needs_manual_edit
+                    COALESCE(pubs.needs_manual_edit, false) AS needs_manual_edit,
+                    b.brandname AS brand_name,
+                    t.typename  AS type_name,
+                    st.subtypename AS subtype_name,
+                    p.sizeeu, p.marking, p.year
                 FROM products p
                 LEFT JOIN statuses s ON s.id = p.statusid
+                LEFT JOIN brands   b ON b.id = p.brandid
+                LEFT JOIN types    t ON t.id = p.typeid
+                LEFT JOIN subtypes st ON st.id = p.subtypeid
                 LEFT JOIN LATERAL (
                     SELECT
                         COUNT(*) AS pub_count,
@@ -285,6 +292,12 @@ async def get_publications_overview(
                 "threads": row[7],
                 "is_unlinked": False,
                 "needs_manual_edit": bool(row[8]),
+                "brand_name":   row[9],
+                "type_name":    row[10],
+                "subtype_name": row[11],
+                "sizeeu":       row[12],
+                "marking":      row[13],
+                "year":         row[14],
             })
 
         return {

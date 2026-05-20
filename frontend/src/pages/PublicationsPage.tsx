@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import MainLayout from '../layouts/MainLayout';
 import Pagination from '../components/common/Pagination';
 import ProductDetailsModal from '../components/products/ProductDetailsModal';
@@ -16,7 +16,37 @@ interface PublicationItem {
   threads: string;
   is_unlinked?: boolean;
   needs_manual_edit?: boolean;
+  // Розширені поля для column-selector
+  brand_name?: string | null;
+  type_name?: string | null;
+  subtype_name?: string | null;
+  sizeeu?: string | null;
+  marking?: string | null;
+  year?: number | null;
 }
+
+/* ── Column definitions ─────────────────────────────────────────────── */
+type PubColumnId =
+  | 'productnumber' | 'brand_name' | 'type_name' | 'subtype_name'
+  | 'model' | 'marking' | 'year' | 'sizeeu' | 'price'
+  | 'status' | 'publication_count' | 'channels' | 'actions';
+
+const PUB_COLUMN_ORDER: { id: PubColumnId; title: string; optional: boolean }[] = [
+  { id: 'productnumber',     title: '№ товару',  optional: false },
+  { id: 'brand_name',        title: 'Бренд',     optional: false },
+  { id: 'type_name',         title: 'Вид',       optional: false },
+  { id: 'subtype_name',      title: 'Підвид',    optional: true  },
+  { id: 'model',             title: 'Модель',    optional: false },
+  { id: 'marking',           title: 'Маркування',optional: true  },
+  { id: 'year',              title: 'Рік',       optional: true  },
+  { id: 'sizeeu',            title: 'Розмір',    optional: true  },
+  { id: 'price',             title: 'Ціна',      optional: true  },
+  { id: 'status',            title: 'Статус',    optional: false },
+  { id: 'publication_count', title: 'Постів',    optional: false },
+  { id: 'channels',          title: 'Канали / Гілки', optional: false },
+  { id: 'actions',           title: 'Дії',       optional: false },
+];
+const PUB_COLUMNS_STORAGE_KEY = 'publications_table_columns_v1';
 
 interface PublicationDetail {
   id: number;
@@ -365,6 +395,42 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
   const [expandedDetail, setExpandedDetail] = useState<any>(null);
   const [expandedLoading, setExpandedLoading] = useState(false);
 
+  // ── Column visibility (right-click menu) ─────────────────────────
+  const colMenuRef = useRef<HTMLDivElement | null>(null);
+  const [colMenuOpen, setColMenuOpen] = useState(false);
+  const [colMenuPos, setColMenuPos] = useState<{x:number;y:number}>({x:0,y:0});
+  const defaultPubVisibility: Record<PubColumnId, boolean> = PUB_COLUMN_ORDER.reduce(
+    (acc, c) => { acc[c.id] = !c.optional; return acc; },
+    {} as Record<PubColumnId, boolean>,
+  );
+  const [pubColumnsVisible, setPubColumnsVisible] = useState<Record<PubColumnId, boolean>>(() => {
+    try {
+      const raw = localStorage.getItem(PUB_COLUMNS_STORAGE_KEY);
+      if (!raw) return defaultPubVisibility;
+      const parsed = JSON.parse(raw);
+      return { ...defaultPubVisibility, ...parsed };
+    } catch {
+      return defaultPubVisibility;
+    }
+  });
+  useEffect(() => {
+    localStorage.setItem(PUB_COLUMNS_STORAGE_KEY, JSON.stringify(pubColumnsVisible));
+  }, [pubColumnsVisible]);
+  useEffect(() => {
+    const onDocClick = (e: MouseEvent) => {
+      if (!colMenuRef.current) return setColMenuOpen(false);
+      if (!colMenuRef.current.contains(e.target as Node)) setColMenuOpen(false);
+    };
+    document.addEventListener('mousedown', onDocClick);
+    return () => document.removeEventListener('mousedown', onDocClick);
+  }, []);
+  const handlePubContextMenu: React.MouseEventHandler<HTMLDivElement> = (e) => {
+    e.preventDefault();
+    setColMenuPos({ x: e.clientX, y: e.clientY });
+    setColMenuOpen(true);
+  };
+  const isPubColVisible = (id: PubColumnId) => !!pubColumnsVisible[id];
+
   const fetchStats = useCallback(async () => {
     try {
       const res = await fetch('/api/publications/stats');
@@ -603,19 +669,26 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
             </div>
           )}
 
-          <div className="overflow-x-auto rounded border border-gray-200 dark:border-gray-700">
+          <div className="overflow-x-auto rounded border border-gray-200 dark:border-gray-700" onContextMenu={handlePubContextMenu}>
             <table className="w-full text-sm">
               <thead className="bg-gray-50 dark:bg-gray-700 border-b border-gray-200 dark:border-gray-600">
                 <tr>
                   <th className="px-2 py-3 text-center w-8">
                     <input type="checkbox" checked={selectedIds.size > 0 && selectedIds.size === items.filter(i => i.product_id !== null && !i.is_unlinked).length} onChange={toggleSelectAll} className="rounded" />
                   </th>
-                  <th className="px-3 py-3 text-left font-semibold text-gray-600 dark:text-gray-300 whitespace-nowrap">№ товару</th>
-                  <th className="px-3 py-3 text-left font-semibold text-gray-600 dark:text-gray-300">Модель</th>
-                  <th className="px-3 py-3 text-left font-semibold text-gray-600 dark:text-gray-300 whitespace-nowrap">Статус</th>
-                  <th className="px-3 py-3 text-center font-semibold text-gray-600 dark:text-gray-300 whitespace-nowrap">Постів</th>
-                  <th className="px-3 py-3 text-left font-semibold text-gray-600 dark:text-gray-300">Канали / Гілки</th>
-                  <th className="px-3 py-3 text-center font-semibold text-gray-600 dark:text-gray-300 whitespace-nowrap">Дії</th>
+                  {isPubColVisible('productnumber')      && <th className="px-3 py-3 text-left font-semibold text-gray-600 dark:text-gray-300 whitespace-nowrap">№ товару</th>}
+                  {isPubColVisible('brand_name')         && <th className="px-3 py-3 text-left font-semibold text-gray-600 dark:text-gray-300 whitespace-nowrap">Бренд</th>}
+                  {isPubColVisible('type_name')          && <th className="px-3 py-3 text-left font-semibold text-gray-600 dark:text-gray-300 whitespace-nowrap">Вид</th>}
+                  {isPubColVisible('subtype_name')       && <th className="px-3 py-3 text-left font-semibold text-gray-600 dark:text-gray-300 whitespace-nowrap">Підвид</th>}
+                  {isPubColVisible('model')              && <th className="px-3 py-3 text-left font-semibold text-gray-600 dark:text-gray-300">Модель</th>}
+                  {isPubColVisible('marking')            && <th className="px-3 py-3 text-left font-semibold text-gray-600 dark:text-gray-300 whitespace-nowrap">Маркування</th>}
+                  {isPubColVisible('year')               && <th className="px-3 py-3 text-center font-semibold text-gray-600 dark:text-gray-300 whitespace-nowrap">Рік</th>}
+                  {isPubColVisible('sizeeu')             && <th className="px-3 py-3 text-center font-semibold text-gray-600 dark:text-gray-300 whitespace-nowrap">Розмір</th>}
+                  {isPubColVisible('price')              && <th className="px-3 py-3 text-right font-semibold text-gray-600 dark:text-gray-300 whitespace-nowrap">Ціна</th>}
+                  {isPubColVisible('status')             && <th className="px-3 py-3 text-left font-semibold text-gray-600 dark:text-gray-300 whitespace-nowrap">Статус</th>}
+                  {isPubColVisible('publication_count')  && <th className="px-3 py-3 text-center font-semibold text-gray-600 dark:text-gray-300 whitespace-nowrap">Постів</th>}
+                  {isPubColVisible('channels')           && <th className="px-3 py-3 text-left font-semibold text-gray-600 dark:text-gray-300">Канали / Гілки</th>}
+                  {isPubColVisible('actions')            && <th className="px-3 py-3 text-center font-semibold text-gray-600 dark:text-gray-300 whitespace-nowrap">Дії</th>}
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
@@ -640,6 +713,7 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
                           <input type="checkbox" checked={selectedIds.has(item.product_id as number)} onChange={() => toggleSelect(item.product_id as number)} className="rounded" />
                         ) : <span className="text-gray-300">—</span>}
                       </td>
+                      {isPubColVisible('productnumber') && (
                       <td className="px-3 py-2 font-mono text-xs text-gray-900 dark:text-gray-100 whitespace-nowrap">
                         {item.product_id ? (
                           <span
@@ -651,6 +725,23 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
                           </span>
                         ) : item.productnumber}
                       </td>
+                      )}
+                      {isPubColVisible('brand_name') && (
+                      <td className="px-3 py-2 text-gray-800 dark:text-gray-200 whitespace-nowrap">
+                        {item.brand_name || <span className="text-gray-400">—</span>}
+                      </td>
+                      )}
+                      {isPubColVisible('type_name') && (
+                      <td className="px-3 py-2 text-gray-800 dark:text-gray-200 whitespace-nowrap">
+                        {item.type_name || <span className="text-gray-400">—</span>}
+                      </td>
+                      )}
+                      {isPubColVisible('subtype_name') && (
+                      <td className="px-3 py-2 text-gray-700 dark:text-gray-300 whitespace-nowrap">
+                        {item.subtype_name || <span className="text-gray-400">—</span>}
+                      </td>
+                      )}
+                      {isPubColVisible('model') && (
                       <td className="px-3 py-2 truncate max-w-xs">
                         {item.model ? (() => {
                           const q = (item.model || '').trim();
@@ -666,6 +757,28 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
                           ) : <span className="text-gray-700 dark:text-gray-300">{item.model}</span>;
                         })() : <span className="text-gray-700 dark:text-gray-300">—</span>}
                       </td>
+                      )}
+                      {isPubColVisible('marking') && (
+                      <td className="px-3 py-2 text-xs text-gray-700 dark:text-gray-300 whitespace-nowrap">
+                        {item.marking || <span className="text-gray-400">—</span>}
+                      </td>
+                      )}
+                      {isPubColVisible('year') && (
+                      <td className="px-3 py-2 text-center text-gray-700 dark:text-gray-300">
+                        {item.year || <span className="text-gray-400">—</span>}
+                      </td>
+                      )}
+                      {isPubColVisible('sizeeu') && (
+                      <td className="px-3 py-2 text-center text-gray-700 dark:text-gray-300 whitespace-nowrap">
+                        {item.sizeeu || <span className="text-gray-400">—</span>}
+                      </td>
+                      )}
+                      {isPubColVisible('price') && (
+                      <td className="px-3 py-2 text-right text-gray-800 dark:text-gray-200 whitespace-nowrap font-medium">
+                        {item.price != null ? `${item.price}₴` : <span className="text-gray-400">—</span>}
+                      </td>
+                      )}
+                      {isPubColVisible('status') && (
                       <td className="px-3 py-2">
                         <span className={`text-xs px-2 py-0.5 rounded ${
                           needsManualEdit
@@ -694,17 +807,23 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
                           </button>
                         )}
                       </td>
+                      )}
+                      {isPubColVisible('publication_count') && (
                       <td className="px-3 py-2 text-center">
                         <span className={`font-medium ${item.publication_count > 0 ? 'text-blue-600 dark:text-blue-400' : 'text-gray-400'}`}>
                           {item.publication_count}
                         </span>
                       </td>
+                      )}
+                      {isPubColVisible('channels') && (
                       <td className="px-3 py-2 text-xs text-gray-600 dark:text-gray-400 truncate max-w-md" title={`${item.channels}\n${item.threads}`}>
                         {item.channels || '—'}
                         {item.threads && item.threads !== '—' && (
                           <span className="text-gray-400 ml-1">/ {item.threads}</span>
                         )}
                       </td>
+                      )}
+                      {isPubColVisible('actions') && (
                       <td className="px-3 py-2 text-center whitespace-nowrap" onClick={e => e.stopPropagation()}>
                         {item.publication_count > 0 && !isUnlinked && item.product_id !== null && (
                           <div className="flex items-center justify-center gap-1">
@@ -730,11 +849,12 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
                           </span>
                         )}
                       </td>
+                      )}
                     </tr>
                     {/* ── Expanded detail row ── */}
                     {isExpanded && (
                       <tr className="bg-blue-50/60 dark:bg-blue-900/10">
-                        <td colSpan={7} className="px-6 py-3">
+                        <td colSpan={1 + PUB_COLUMN_ORDER.filter(c => pubColumnsVisible[c.id]).length} className="px-6 py-3">
                           {expandedLoading ? (
                             <div className="text-xs text-gray-400 py-2">Завантаження...</div>
                           ) : expandedDetail ? (
@@ -816,6 +936,40 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
           </>
         )}
       </div>
+
+      {/* Контекстне меню керування колонками */}
+      {colMenuOpen && (
+        <div
+          ref={colMenuRef}
+          style={{ top: colMenuPos.y, left: colMenuPos.x }}
+          className="fixed z-[10000] w-72 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg p-2"
+        >
+          <div className="px-2 py-1 text-xs text-gray-500">Видимість колонок</div>
+          <div className="max-h-80 overflow-auto pr-1">
+            {PUB_COLUMN_ORDER.map(c => (
+              <label key={c.id} className="flex items-center justify-between px-2 py-1 text-sm cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700 rounded">
+                <span>{c.title}</span>
+                <input
+                  type="checkbox"
+                  checked={!!pubColumnsVisible[c.id]}
+                  onChange={(e) => setPubColumnsVisible(v => ({ ...v, [c.id]: e.target.checked }))}
+                />
+              </label>
+            ))}
+          </div>
+          <div className="mt-2 grid grid-cols-3 gap-2">
+            <button className="text-xs px-2 py-1 rounded border border-gray-300 hover:bg-gray-100 dark:border-gray-600 dark:hover:bg-gray-700"
+              onClick={() => setPubColumnsVisible(PUB_COLUMN_ORDER.reduce((a, c) => (a[c.id] = true, a), {} as Record<PubColumnId, boolean>))}
+            >Всі</button>
+            <button className="text-xs px-2 py-1 rounded border border-gray-300 hover:bg-gray-100 dark:border-gray-600 dark:hover:bg-gray-700"
+              onClick={() => setPubColumnsVisible(PUB_COLUMN_ORDER.reduce((a, c) => (a[c.id] = false, a), {} as Record<PubColumnId, boolean>))}
+            >Приховати</button>
+            <button className="text-xs px-2 py-1 rounded border border-gray-300 hover:bg-gray-100 dark:border-gray-600 dark:hover:bg-gray-700"
+              onClick={() => setPubColumnsVisible(defaultPubVisibility)}
+            >За умовч.</button>
+          </div>
+        </div>
+      )}
 
       {/* Pagination */}
       <div className="fixed bottom-0 left-0 right-0 px-4 py-3 bg-white/95 dark:bg-gray-800/95 backdrop-blur border-t border-gray-200 dark:border-gray-700 z-30">
