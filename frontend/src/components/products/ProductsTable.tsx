@@ -402,7 +402,17 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
                     loading={loading}
                     onRow={(record: Product) => {
                         const issues: string[] = [];
-                        if (!record.productnumber || record.productnumber === '???' || record.productnumber.startsWith('__tmp_rename_') || record.productnumber.startsWith('???_')) issues.push('Товар не має номера');
+                        const noNum = !record.productnumber || record.productnumber === '???'
+                            || record.productnumber.startsWith('__tmp_rename_')
+                            || record.productnumber.startsWith('???_');
+                        if (noNum) {
+                            const clones = (record as any).clonednumbers;
+                            if (clones && String(clones).trim()) {
+                                issues.push(`Тільки номер-клон: ${String(clones).slice(0, 60)}`);
+                            } else {
+                                issues.push('Товар не має номера');
+                            }
+                        }
                         if (!record.type_name) issues.push('Не вказано тип');
                         if (!record.price) issues.push('Ціна = 0 або не вказана');
                         if (!record.supplier_name) issues.push('Не вказано постачальника');
