@@ -399,6 +399,9 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
   const colMenuRef = useRef<HTMLDivElement | null>(null);
   const [colMenuOpen, setColMenuOpen] = useState(false);
   const [colMenuPos, setColMenuPos] = useState<{x:number;y:number}>({x:0,y:0});
+  // Стан для кнопки "Просканувати ВСІ зараз"
+  const [syncingAll, setSyncingAll] = useState(false);
+  const [syncAllMsg, setSyncAllMsg] = useState<string | null>(null);
   const defaultPubVisibility: Record<PubColumnId, boolean> = PUB_COLUMN_ORDER.reduce(
     (acc, c) => { acc[c.id] = !c.optional; return acc; },
     {} as Record<PubColumnId, boolean>,
@@ -487,6 +490,34 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
       fetchStats();
     } catch (e: any) {
       alert(e.message);
+    }
+  };
+
+  // ── Force full sync (всі відомі канали) ─────────────────────────────
+  const handleSyncAll = async () => {
+    if (syncingAll) return;
+    setSyncingAll(true);
+    setSyncAllMsg(null);
+    try {
+      const res = await fetch('/api/publications/sync-all', { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok) {
+        setSyncAllMsg(`❌ ${data.detail || `HTTP ${res.status}`}`);
+      } else {
+        const t = data.totals || {};
+        setSyncAllMsg(
+          `✅ Сканування завершено: ${t.posts_scanned || 0} постів проглянуто, ` +
+          `${t.new_posts_saved || 0} нових збережено, ${data.auto_relinked || 0} перепов'язано.`
+        );
+        fetchItems();
+        fetchStats();
+        // Сховаємо банер через 5 сек
+        setTimeout(() => setSyncAllMsg(null), 5000);
+      }
+    } catch (e: any) {
+      setSyncAllMsg(`❌ ${e.message || 'Помилка'}`);
+    } finally {
+      setSyncingAll(false);
     }
   };
 
@@ -634,13 +665,28 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
               🔗 Перепов'язати
             </button>
             <button
+              onClick={handleSyncAll}
+              disabled={syncingAll}
+              className="px-3 py-1.5 text-sm bg-green-600 hover:bg-green-700 disabled:opacity-60 disabled:cursor-not-allowed text-white rounded transition-colors"
+              title="Просканувати ВСІ відомі канали зараз (інакше це робиться автоматично кожні 30 хв)"
+            >
+              {syncingAll ? '⏳ Скануємо…' : '🔄 Синхронізувати все'}
+            </button>
+            <button
               onClick={() => setSyncOpen(true)}
               className="px-3 py-1.5 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded transition-colors"
+              title="Просканувати конкретний канал за username (для нових/ad-hoc)"
             >
-              📡 Синхронізувати
+              📡 Один канал
             </button>
           </div>
         </div>
+
+        {syncAllMsg && (
+          <div className="mb-3 p-2 text-sm bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-700 rounded">
+            {syncAllMsg}
+          </div>
+        )}
 
         {loading && items.length === 0 ? (
           <div className="flex justify-center items-center h-48 text-gray-400">Завантаження...</div>
