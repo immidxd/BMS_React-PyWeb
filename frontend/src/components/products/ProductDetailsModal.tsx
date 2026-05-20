@@ -55,6 +55,21 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose }) => {
     if (activeIdx >= images.length) setActiveIdx(Math.max(0, images.length - 1));
   }, [images.length, activeIdx]);
 
+  // Preload усі фото товару у фоні (browser http-cache).
+  // Triggers після того як allImages підвантажились → коли користувач переключає
+  // фото стрілками, нова картинка вже в кеші браузера (миттєве переключення).
+  useEffect(() => {
+    if (allImages.length === 0) return;
+    const preloaded: HTMLImageElement[] = [];
+    for (const img of allImages) {
+      const i = new window.Image();
+      i.src = img.url;  // запускає GET; результат → browser cache
+      preloaded.push(i);
+    }
+    // Тримаємо посилання щоб GC не сміттяр зібрав до завершення завантаження
+    return () => { preloaded.length = 0; };
+  }, [allImages]);
+
   // Keyboard: Esc closes, ←/→ navigate gallery
   useEffect(() => {
     if (!open) return;
