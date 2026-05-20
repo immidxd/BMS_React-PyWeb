@@ -32,6 +32,7 @@ class ImageEntry:
     filename: str
     url: str
     index: int  # порядковий номер у галереї (0 = головна)
+    is_defect: bool = False  # фото дефекту (filename типу `<pnum>_defN.<ext>`)
 
 
 def _normalize_number(productnumber: str) -> str:
@@ -52,17 +53,37 @@ def _matches_productnumber(filename: str, target: str) -> bool:
         return False
     base = os.path.splitext(filename)[0]
     pattern = rf"^#?{re.escape(target)}(?=[_.\-\s]|$)"
-    return bool(re.match(pattern, base))
+    return bool(re.match(pattern, base, flags=re.IGNORECASE))
+
+
+def _is_defect_filename(filename: str, target: str) -> bool:
+    """Повертає True для файлів типу `<pnum>_def<N>.<ext>` (з опційним `#`).
+
+    Приклади: `Ф4021_def1.jpeg`, `А1248_def2.JPG`, `#М100_def10.png` → True
+    """
+    if not target:
+        return False
+    base = os.path.splitext(filename)[0]
+    # одразу після номера товару — `_def` + цифри
+    pattern = rf"^#?{re.escape(target)}_def\d+\b"
+    return bool(re.match(pattern, base, flags=re.IGNORECASE))
 
 
 def _sort_key(filename: str, target: str) -> tuple:
     """Натуральний порядок: витягуємо першу числову послідовність ПІСЛЯ номера товару.
-    Файли без числового суфіксу йдуть в кінець (індекс = inf).
+
+    Дефектні фото (`<pnum>_defN`) йдуть В КІНЕЦЬ — щоб не потрапити на index=0.
     Tie-breaker: повне ім'я файлу alphabetically.
     """
     base = os.path.splitext(filename)[0]
-    # видаляємо префікс # та сам номер товару
-    stripped = re.sub(rf"^#?{re.escape(target)}", "", base)
+    # видаляємо префікс # та сам номер товару (case-insensitive — для А1248 → а1248)
+    stripped = re.sub(rf"^#?{re.escape(target)}", "", base, flags=re.IGNORECASE)
+    is_defect = _is_defect_filename(filename, target)
+    if is_defect:
+        # group=2 — обов'язково після всіх звичайних
+        m = re.search(r"_def(\d+)", stripped, flags=re.IGNORECASE)
+        defect_idx = int(m.group(1)) if m else 0
+        return (2, defect_idx, base.lower())
     m = re.search(r"\d+", stripped)
     if m:
         return (0, int(m.group(0)), base.lower())
@@ -92,7 +113,12 @@ def _list_local_only(target: str) -> List[ImageEntry]:
 
     matched.sort(key=lambda fn: _sort_key(fn, target))
     return [
-        ImageEntry(filename=fn, url=f"{URL_PREFIX}/{quote(fn)}", index=i)
+        ImageEntry(
+            filename=fn,
+            url=f"{URL_PREFIX}/{quote(fn)}",
+            index=i,
+            is_defect=_is_defect_filename(fn, target),
+        )
         for i, fn in enumerate(matched)
     ]
 
@@ -125,6 +151,7 @@ def _list_drive_only(target: str) -> List[ImageEntry]:
             filename=fn,
             url=f"{URL_PREFIX_DRIVE}/{quote(fid)}",
             index=i,
+            is_defect=_is_defect_filename(fn, target),
         )
         for i, (fn, fid) in enumerate(filenames_sorted)
     ]
@@ -159,6 +186,6 @@ def list_images(productnumber: str) -> List[ImageEntry]:
     )
     # Re-index sequentially (0..N) on the merged result
     return [
-        ImageEntry(filename=e.filename, url=e.url, index=i)
+        ImageEntry(filename=e.filename, url=e.url, index=i, is_defect=e.is_defect)
         for i, e in enumerate(merged_sorted)
     ]

@@ -185,7 +185,16 @@ async def get_product_images(
     return {
         "productnumber": productnumber,
         "count": len(images),
-        "images": [{"filename": img.filename, "url": img.url, "index": img.index} for img in images],
+        "defect_count": sum(1 for img in images if img.is_defect),
+        "images": [
+            {
+                "filename": img.filename,
+                "url": img.url,
+                "index": img.index,
+                "is_defect": img.is_defect,
+            }
+            for img in images
+        ],
     }
 
 

@@ -2,7 +2,7 @@ import React, { useEffect, useState, useMemo } from 'react';
 import { productService } from '../../services/productService';
 import type { Product } from '../../types/product';
 import { Tag, Spin, Image } from 'antd';
-import { CloseOutlined, PictureOutlined, LeftOutlined, RightOutlined } from '@ant-design/icons';
+import { CloseOutlined, PictureOutlined, LeftOutlined, RightOutlined, WarningOutlined } from '@ant-design/icons';
 
 interface Props {
   productId: number | null;
@@ -14,20 +14,30 @@ interface GalleryImage {
   filename: string;
   url: string;
   index: number;
+  is_defect?: boolean;
 }
 
 const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose }) => {
   const [loading, setLoading] = useState(false);
   const [product, setProduct] = useState<Product | null>(null);
-  const [images, setImages] = useState<GalleryImage[]>([]);
+  const [allImages, setAllImages] = useState<GalleryImage[]>([]);
+  const [showDefects, setShowDefects] = useState(false);
   const [activeIdx, setActiveIdx] = useState(0);
   const [previewVisible, setPreviewVisible] = useState(false);
+
+  // Visible images: звичайні завжди; дефектні — лише коли користувач натиснув ⚠
+  const images = useMemo(
+    () => (showDefects ? allImages : allImages.filter((i) => !i.is_defect)),
+    [allImages, showDefects],
+  );
+  const defectCount = useMemo(() => allImages.filter((i) => i.is_defect).length, [allImages]);
 
   useEffect(() => {
     if (!open || !productId) return;
     setLoading(true);
     setProduct(null);
-    setImages([]);
+    setAllImages([]);
+    setShowDefects(false);
     setActiveIdx(0);
     Promise.allSettled([
       productService.getProduct(productId),
@@ -35,10 +45,15 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose }) => {
     ])
       .then(([prodRes, imgRes]) => {
         if (prodRes.status === 'fulfilled') setProduct(prodRes.value);
-        if (imgRes.status === 'fulfilled') setImages(imgRes.value.images || []);
+        if (imgRes.status === 'fulfilled') setAllImages(imgRes.value.images || []);
       })
       .finally(() => setLoading(false));
   }, [open, productId]);
+
+  // Clamp activeIdx коли images повертаються чи перемикається showDefects
+  useEffect(() => {
+    if (activeIdx >= images.length) setActiveIdx(Math.max(0, images.length - 1));
+  }, [images.length, activeIdx]);
 
   // Keyboard: Esc closes, ←/→ navigate gallery
   useEffect(() => {
@@ -134,6 +149,21 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose }) => {
                       ▤ Ростовка
                     </span>
                   )}
+                  {defectCount > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setShowDefects((v) => !v)}
+                      className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold border transition-colors ${
+                        showDefects
+                          ? 'bg-amber-500 text-white border-amber-600 dark:bg-amber-600 dark:border-amber-500'
+                          : 'bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100 dark:bg-amber-900/30 dark:text-amber-300 dark:border-amber-700 dark:hover:bg-amber-900/50'
+                      }`}
+                      title={showDefects ? 'Сховати фото дефектів' : `Показати фото дефектів (${defectCount})`}
+                    >
+                      <WarningOutlined className="text-[11px]" />
+                      <span>Дефект{defectCount > 1 ? `·${defectCount}` : ''}</span>
+                    </button>
+                  )}
                 </div>
                 <h2 className="text-2xl font-semibold text-gray-900 dark:text-gray-50 truncate leading-tight">
                   {productTitle}
@@ -187,6 +217,12 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose }) => {
                           style={{ objectFit: 'contain', width: '100%', height: '100%', cursor: 'zoom-in' }}
                           wrapperStyle={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
                         />
+                        {activeImage.is_defect && (
+                          <div className="absolute top-3 left-3 inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-semibold bg-amber-500/90 text-white shadow-md pointer-events-none">
+                            <WarningOutlined className="text-xs" />
+                            <span>Дефект</span>
+                          </div>
+                        )}
                         {images.length > 1 && (
                           <>
                             <button
@@ -225,14 +261,23 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose }) => {
                         <button
                           key={img.filename}
                           onClick={() => setActiveIdx(i)}
-                          className={`shrink-0 w-16 h-16 rounded-lg overflow-hidden border-2 transition-all ${
+                          className={`relative shrink-0 w-16 h-16 rounded-lg overflow-hidden border-2 transition-all ${
                             i === activeIdx
-                              ? 'border-primary-500 ring-2 ring-primary-200 dark:ring-primary-800'
-                              : 'border-gray-200 dark:border-gray-700 hover:border-gray-400 dark:hover:border-gray-500 opacity-70 hover:opacity-100'
+                              ? (img.is_defect
+                                  ? 'border-amber-500 ring-2 ring-amber-200 dark:ring-amber-800'
+                                  : 'border-primary-500 ring-2 ring-primary-200 dark:ring-primary-800')
+                              : (img.is_defect
+                                  ? 'border-amber-400/60 hover:border-amber-500 opacity-80 hover:opacity-100'
+                                  : 'border-gray-200 dark:border-gray-700 hover:border-gray-400 dark:hover:border-gray-500 opacity-70 hover:opacity-100')
                           }`}
-                          title={img.filename}
+                          title={img.is_defect ? `Дефект: ${img.filename}` : img.filename}
                         >
                           <img src={img.url} alt={img.filename} className="w-full h-full object-cover" loading="lazy" />
+                          {img.is_defect && (
+                            <span className="absolute top-0.5 right-0.5 inline-flex items-center justify-center w-4 h-4 rounded-full bg-amber-500 text-white text-[9px] shadow">
+                              <WarningOutlined style={{ fontSize: 9 }} />
+                            </span>
+                          )}
                         </button>
                       ))}
                     </div>
