@@ -1864,6 +1864,25 @@ def _find_or_create_client(session: Session, name: str, phone: str,
     # ВАЖЛИВО: порівнюємо НОРМАЛІЗОВАНІ форми, а не raw. Інакше
     # 'https://www.facebook.com/profile.php?id=X' vs 'facebook.com/profile.php?id=X'
     # вважалися б конфліктом, хоча це той самий FB-профіль.
+    try:
+        from backend.utils.identity_normalizer import (
+            normalize_phone as _n_phone,
+            normalize_facebook as _n_fb,
+            normalize_telegram as _n_tg,
+            normalize_instagram as _n_ig,
+        )
+    except ImportError:
+        from utils.identity_normalizer import (
+            normalize_phone as _n_phone,
+            normalize_facebook as _n_fb,
+            normalize_telegram as _n_tg,
+            normalize_instagram as _n_ig,
+        )
+    norm_phone = _n_phone(phone) or ""
+    norm_fb    = _n_fb(facebook) or ""
+    norm_tg    = _n_tg(telegram) or ""
+    norm_ig    = _n_ig(instagram) or ""
+
     create_new_due_to_conflict = False
     conflict_details = None
     if candidate and not strong_signal_matched:
