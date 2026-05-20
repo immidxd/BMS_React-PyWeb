@@ -1146,7 +1146,25 @@ def _save_telegram_post(
                 :thread_id, :thread_title, :msg_id, :text, :date,
                 :sizes, :multi, :grouped_id
             )
-            ON CONFLICT (chat_id, message_id) DO NOTHING
+            ON CONFLICT (chat_id, message_id) DO UPDATE SET
+                -- Поля що можуть змінитись при редагуванні поста у Telegram:
+                -- текст, витягнутий номер товару, лінк на товар (якщо номер виправлено),
+                -- розміри, прапор multi-size. Решта (chat/thread/date) лишається.
+                message_text       = EXCLUDED.message_text,
+                product_number_raw = EXCLUDED.product_number_raw,
+                product_id         = EXCLUDED.product_id,
+                sizes_in_post      = EXCLUDED.sizes_in_post,
+                is_multi_size      = EXCLUDED.is_multi_size,
+                -- Знімаємо прапор "потребує редагування" якщо текст оновлено
+                needs_manual_edit  = false
+            WHERE
+                -- Тільки якщо щось дійсно змінилось — щоб не оновлювати updated_at
+                -- та не triggerati каскадні effects на кожен скан.
+                telegram_posts.message_text       IS DISTINCT FROM EXCLUDED.message_text
+             OR telegram_posts.product_number_raw IS DISTINCT FROM EXCLUDED.product_number_raw
+             OR telegram_posts.product_id         IS DISTINCT FROM EXCLUDED.product_id
+             OR telegram_posts.sizes_in_post      IS DISTINCT FROM EXCLUDED.sizes_in_post
+             OR telegram_posts.is_multi_size      IS DISTINCT FROM EXCLUDED.is_multi_size
             RETURNING id
         """),
         {
