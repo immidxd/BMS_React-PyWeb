@@ -94,6 +94,7 @@ class ClientUpdate(BaseModel):
     first_name: Optional[str] = None
     last_name: Optional[str] = None
     middle_name: Optional[str] = None
+    maiden_name: Optional[str] = None  # дівоче прізвище (жіночий профіль)
     nickname: Optional[str] = None
     phone_number: Optional[str] = None
     email: Optional[str] = None
@@ -115,6 +116,7 @@ class Client(ClientBase):
     id: int
     full_name: str
     middle_name: Optional[str] = None
+    maiden_name: Optional[str] = None
     facebook: Optional[str] = None
     instagram: Optional[str] = None
     telegram: Optional[str] = None

@@ -1379,12 +1379,22 @@ def _parse_products_sheet(
                         )
                         if not (size_same and color_genuinely_differs):
                             return False
-                        # Same marking (article number) = same physical product,
-                        # color was corrected in the sheet → NOT a variant.
-                        # Only treat as variant if markings differ or are absent.
-                        if marking and p.marking and marking.strip().upper() == p.marking.strip().upper():
-                            return False
-                        return True
+                        # Marking analysis (article number = physical product identifier):
+                        #   • DB has marking AND Sheet has marking AND they differ
+                        #       → genuinely different products (real color variant).
+                        #   • Either marking is NULL/empty
+                        #       → cannot prove they're different → assume same product
+                        #       (Sheet is source of truth, color was corrected/refined).
+                        #     Without this rule, parsing a re-edited sheet creates
+                        #     duplicate rows like '#Ф4003' and '#Ф4003-3' when the old
+                        #     DB row lacked marking (legacy data).
+                        db_mark = (p.marking or "").strip().upper()
+                        sheet_mark = (marking or "").strip().upper()
+                        if not db_mark or not sheet_mark:
+                            return False  # treat as same product → update existing
+                        if db_mark == sheet_mark:
+                            return False  # same article = same product
+                        return True  # both markings present and differ → real variant
 
                     # Exclude color variants from update candidates
                     brand_compat_updatable = [p for p in brand_compat if not _is_color_variant(p)]
@@ -1828,23 +1838,47 @@ def _find_or_create_client(session: Session, name: str, phone: str,
         if len(cids) == 1:
             candidate = session.query(Client).filter(Client.id == cids[0]).first()
         elif len(cids) > 1:
-            # Ambiguous → не мерджимо, нижче створимо нового і прапорнемо
-            ambiguous_peer_ids = cids
+            # AMBIGUITY: ОБИРАЄМО НАЙКРАЩОГО кандидата замість створення клона.
+            # Раніше тут було `ambiguous_peer_ids = cids` → парсер створював нового
+            # → chain reaction (1 → 2 → 4 → … → 44 «Мар'яна Сливка» за день).
+            # Ranking: hasStrongSignal DESC, ordersCount DESC, manuallyEdited DESC, id ASC.
+            ranked = session.execute(text("""
+                SELECT c.id,
+                       (CASE WHEN c.phone_number IS NOT NULL AND c.phone_number <> '' THEN 1 ELSE 0 END +
+                        CASE WHEN c.facebook    IS NOT NULL AND c.facebook    <> '' THEN 1 ELSE 0 END +
+                        CASE WHEN c.telegram    IS NOT NULL AND c.telegram    <> '' THEN 1 ELSE 0 END +
+                        CASE WHEN c.instagram   IS NOT NULL AND c.instagram   <> '' THEN 1 ELSE 0 END) AS sig_score,
+                       (SELECT COUNT(*) FROM orders o WHERE o.client_id = c.id) AS orders_cnt,
+                       (CASE WHEN c.manually_edited_at IS NOT NULL THEN 1 ELSE 0 END) AS manual_lock
+                FROM clients c
+                WHERE c.id = ANY(:ids)
+                ORDER BY sig_score DESC, orders_cnt DESC, manual_lock DESC, c.id ASC
+                LIMIT 1
+            """), {"ids": cids}).fetchone()
+            if ranked:
+                candidate = session.query(Client).filter(Client.id == ranked[0]).first()
+                # peers — для м'якого flag possible_duplicate; нового клієнта НЕ створюємо
+                ambiguous_peer_ids = [c for c in cids if c != ranked[0]]
 
     # ── Stage 3: conflict detection ───────────────────────────────────────
+    # ВАЖЛИВО: порівнюємо НОРМАЛІЗОВАНІ форми, а не raw. Інакше
+    # 'https://www.facebook.com/profile.php?id=X' vs 'facebook.com/profile.php?id=X'
+    # вважалися б конфліктом, хоча це той самий FB-профіль.
     create_new_due_to_conflict = False
     conflict_details = None
     if candidate and not strong_signal_matched:
-        # Перевіримо чи в новому рядку є strong signal, який КОНФЛІКТУЄ з кандидатом
-        if phone and candidate.phone_number and candidate.phone_number != phone:
+        if norm_phone and candidate.phone_normalized and candidate.phone_normalized != norm_phone:
             create_new_due_to_conflict = True
-            conflict_details = f"phone mismatch: row={phone} vs candidate={candidate.phone_number}"
-        elif facebook and candidate.facebook and candidate.facebook != facebook and "facebook.com" in facebook:
+            conflict_details = f"phone mismatch: row={norm_phone} vs candidate={candidate.phone_normalized}"
+        elif norm_fb and candidate.facebook_normalized and candidate.facebook_normalized != norm_fb:
             create_new_due_to_conflict = True
-            conflict_details = f"facebook mismatch: row={facebook} vs candidate={candidate.facebook}"
-        elif telegram and candidate.telegram and candidate.telegram != telegram:
+            conflict_details = f"facebook mismatch: row={norm_fb} vs candidate={candidate.facebook_normalized}"
+        elif norm_tg and candidate.telegram_normalized and candidate.telegram_normalized != norm_tg:
             create_new_due_to_conflict = True
-            conflict_details = f"telegram mismatch: row={telegram} vs candidate={candidate.telegram}"
+            conflict_details = f"telegram mismatch: row={norm_tg} vs candidate={candidate.telegram_normalized}"
+        elif norm_ig and candidate.instagram_normalized and candidate.instagram_normalized != norm_ig:
+            create_new_due_to_conflict = True
+            conflict_details = f"instagram mismatch: row={norm_ig} vs candidate={candidate.instagram_normalized}"
 
     # ── Stage 4: enrich existing OR create new ────────────────────────────
     if candidate and not create_new_due_to_conflict:

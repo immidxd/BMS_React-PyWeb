@@ -297,6 +297,29 @@ def init_db():
             conn.execute(text(
                 "ALTER TABLE IF EXISTS clients ADD COLUMN IF NOT EXISTS manually_edited_fields TEXT"
             ))
+            # Дівоче прізвище (для жіночих профілів) — альтернативний пошуковий ключ.
+            conn.execute(text(
+                "ALTER TABLE IF EXISTS clients ADD COLUMN IF NOT EXISTS maiden_name TEXT"
+            ))
+            # Карусель дублікатів: збереження «це різні люди» (щоб пари не пропонувалися знов).
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS client_non_duplicates (
+                  id SERIAL PRIMARY KEY,
+                  client_a_id INTEGER NOT NULL,
+                  client_b_id INTEGER NOT NULL,
+                  dismissed_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                  dismissed_by VARCHAR(100),
+                  note TEXT,
+                  CONSTRAINT client_non_dup_ordered CHECK (client_a_id < client_b_id),
+                  CONSTRAINT uq_client_non_dup UNIQUE (client_a_id, client_b_id)
+                )
+            """))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS idx_cnd_a ON client_non_duplicates(client_a_id)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS idx_cnd_b ON client_non_duplicates(client_b_id)"))
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS idx_clients_maiden_name "
+                "ON clients(LOWER(maiden_name)) WHERE maiden_name IS NOT NULL"
+            ))
             # 1.5) Identity normalization (Step 5):
             #     canonical форми сильних сигналів → 1 запис на людину навіть
             #     якщо FB / phone / IG записані по-різному.

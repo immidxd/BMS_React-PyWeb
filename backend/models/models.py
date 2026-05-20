@@ -119,6 +119,10 @@ class Client(Base):
     first_name = Column(String, nullable=True)
     last_name = Column(String, nullable=True)
     middle_name = Column(String, nullable=True)
+    # Дівоче прізвище (maiden name) — як правило для жіночих профілів.
+    # Використовується ЯК АЛЬТЕРНАТИВНЕ ПРІЗВИЩЕ при пошуку, щоб знайти
+    # «Мар'яну Сливку» за дівочим «Санопал».
+    maiden_name = Column(String, nullable=True)
     nickname = Column(String, nullable=True)
     phone_number = Column(String, nullable=True)
     email = Column(String, nullable=True)

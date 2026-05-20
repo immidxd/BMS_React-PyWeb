@@ -184,6 +184,7 @@ export const updateClient = async (
     first_name: string;
     last_name: string;
     middle_name: string;
+    maiden_name: string;
     nickname: string;
     phone_number: string;
     email: string;

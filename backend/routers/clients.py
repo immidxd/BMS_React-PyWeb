@@ -109,6 +109,7 @@ async def get_clients(
             (
                 {_strip_apx('c.first_name')} ILIKE :search_clean
                 OR {_strip_apx('c.last_name')} ILIKE :search_clean
+                OR {_strip_apx('c.maiden_name')} ILIKE :search_clean
                 OR {_strip_apx('c.nickname')}  ILIKE :search_clean
                 OR c.phone_number ILIKE :search
                 OR c.phone_normalized ILIKE :search_digits
@@ -126,6 +127,19 @@ async def get_clients(
                            OR {_strip_apx('ca.last_name')}  ILIKE :search_clean
                            OR {_strip_apx('ca.nickname')}   ILIKE :search_clean)
                 )
+                OR EXISTS (
+                    -- Пошук за номером замовлення:
+                    --   • точний match по orders.id (набрав «57367» → знайде клієнта цього замовлення)
+                    --   • префіксний match по orders.id (набрав «5736» → знайде усі #5736XX)
+                    --   • ILIKE по alternative_order_number (#Ф123, ALT-foo тощо)
+                    SELECT 1 FROM orders o
+                    WHERE o.client_id = c.id
+                      AND (
+                        (:search_order_id_exact <> 0 AND o.id = :search_order_id_exact)
+                        OR (:search_digits_only <> '' AND CAST(o.id AS TEXT) LIKE :search_digits_only_pfx)
+                        OR o.alternative_order_number ILIKE :search
+                      )
+                )
             )
         """)
         params["search"] = f"%{search}%"
@@ -135,6 +149,15 @@ async def get_clients(
         # Для phone_normalized шукаємо по цифрах (нормалізована форма зберігає лише цифри)
         digits_only = re.sub(r"\D+", "", search)
         params["search_digits"] = f"%{digits_only}%" if digits_only else "__NEVER_MATCH__"
+        # Для пошуку по номеру замовлення:
+        #  search_order_id_exact — int, 0 якщо не число (виключає матч)
+        #  search_digits_only_pfx — '57367%' для prefix-match по o.id
+        try:
+            params["search_order_id_exact"] = int(digits_only) if digits_only else 0
+        except (ValueError, OverflowError):
+            params["search_order_id_exact"] = 0
+        params["search_digits_only"] = digits_only
+        params["search_digits_only_pfx"] = f"{digits_only}%" if digits_only else "__NEVER_MATCH__"
 
     if gender_id:
         where_clauses.append("c.gender_id = :gender_id")
@@ -165,9 +188,15 @@ async def get_clients(
     params["limit_val"] = per_page
     params["offset_val"] = (page - 1) * per_page
 
+    # ВАЖЛИВО: response-схема ClientBase вимагає first_name/last_name як str
+    # (non-Optional), але в БД ці поля дозволяють NULL (унаслідок старих імпортів).
+    # Тому явно перевизначаємо їх через COALESCE → '' для серіалізації, інакше
+    # будь-який клієнт без імені/прізвища валить весь list з ResponseValidationError.
     main_sql = f"""
         SELECT
             c.*,
+            COALESCE(c.first_name, '') AS first_name,
+            COALESCE(c.last_name, '') AS last_name,
             COALESCE(c.first_name, '') || ' ' || COALESCE(c.last_name, '') AS full_name,
             COALESCE(stats.confirmed_orders, 0) AS confirmed_orders,
             COALESCE(stats.cancelled_count, 0) AS cancelled_count,
@@ -463,11 +492,22 @@ async def get_client(client_id: int, db: Session = Depends(get_db)):
     ]
 
     # ── Flags + hydrated peer details ────────────────────────────────────
+    # ВАЖЛИВО: ховаємо «зомбі-флаги» — peer-based флаги, у яких ВСІ peers
+    # вже видалені (наслідок merge/delete операцій). Раніше такі продовжували
+    # світитися в карточці клієнта, лякаючи користувача застарілою інформацією.
     flag_rows = db.execute(text("""
         SELECT id, client_id, flag_type, severity, peer_client_ids,
                details, dismissed, dismissed_at, dismissed_by, created_at
-          FROM client_flags
+          FROM client_flags cf
          WHERE client_id = :cid AND dismissed = FALSE
+           AND (
+             peer_client_ids IS NULL
+             OR array_length(peer_client_ids, 1) IS NULL
+             OR EXISTS (
+                 SELECT 1 FROM unnest(peer_client_ids) p
+                 WHERE EXISTS (SELECT 1 FROM clients c WHERE c.id = p)
+             )
+           )
          ORDER BY severity = 'error' DESC, severity = 'warn' DESC, created_at DESC
     """), {"cid": client_id}).mappings().all()
 
@@ -1016,11 +1056,11 @@ async def create_client(client: ClientCreate, db: Session = Depends(get_db)):
                     )
         raise HTTPException(status_code=500, detail=f"Could not create client: {e}")
     db.refresh(db_client)
-    
-    # Add full_name field
-    client_dict = db_client.__dict__.copy()
-    client_dict["full_name"] = f"{db_client.first_name} {db_client.last_name}"
-    
+    client_dict = {
+        col.name: getattr(db_client, col.name)
+        for col in db_client.__table__.columns
+    }
+    client_dict["full_name"] = f"{db_client.first_name or ''} {db_client.last_name or ''}".strip()
     return client_dict
 
 @router.put("/api/clients/{client_id}", response_model=ClientSchema, tags=["clients"])
@@ -1080,7 +1120,40 @@ async def update_client(client_id: int, client: ClientUpdate, db: Session = Depe
         db_client.manually_edited_fields = ",".join(new_locked)
         db_client.manually_edited_at = datetime.utcnow()
 
-    db.commit()
+    try:
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        # Найчастіша причина — UNIQUE constraint на нормалізованому сигналі
+        # (phone/fb/tg/ig вже належить іншому клієнту). Повертаємо 409 з ID
+        # існуючого власника, щоб UI запропонував мердж замість 500.
+        # Парсимо ПРЯМО з тексту помилки `Key (col)=(value)`, бо db_client тут
+        # уже expired після rollback().
+        msg = str(e)
+        m = re.search(r"Key \((\w+)\)=\(([^)]+)\)", msg)
+        if m:
+            col, val = m.group(1), m.group(2)
+            label_map = {
+                "phone_normalized":     "телефон",
+                "facebook_normalized":  "Facebook",
+                "telegram_normalized":  "Telegram",
+                "instagram_normalized": "Instagram",
+            }
+            label = label_map.get(col)
+            if label and hasattr(Client, col):
+                owner = db.query(Client).filter(getattr(Client, col) == val).first()
+                if owner and owner.id != client_id:
+                    owner_name = " ".join(filter(None,
+                        [owner.first_name, owner.last_name])).strip() or owner.nickname or "—"
+                    raise HTTPException(
+                        status_code=409,
+                        detail=(
+                            f"Цей {label} вже належить клієнту "
+                            f"#{owner.id} ({owner_name}). "
+                            f"Об'єднайте дублікати через «🔀 Об'єднати» у списку Клієнтів."
+                        ),
+                    )
+        raise HTTPException(status_code=500, detail=f"Could not save client: {e}")
     db.refresh(db_client)
 
     # Якщо ми змінили ім'я — додаємо НОВУ комбінацію теж як alias (щоб
@@ -1093,7 +1166,14 @@ async def update_client(client_id: int, client: ClientUpdate, db: Session = Depe
             logger.warning("could not save post-edit alias for client %s: %s", client_id, _e)
             db.rollback()
 
-    client_dict = db_client.__dict__.copy()
+    # ВАЖЛИВО: після кількох commit-ів SQLAlchemy експайрить атрибути ORM-обʼєкта
+    # → `__dict__.copy()` поверне порожньо (тільки _sa_instance_state). Тому
+    # явно refresh-имо і серіалізуємо через атрибутний доступ.
+    db.refresh(db_client)
+    client_dict = {
+        col.name: getattr(db_client, col.name)
+        for col in db_client.__table__.columns
+    }
     client_dict["full_name"] = f"{db_client.first_name or ''} {db_client.last_name or ''}".strip()
 
     return client_dict
@@ -1231,6 +1311,33 @@ async def merge_clients(source_id: int, payload: ClientMergeRequest, db: Session
 
     moved = {}
 
+    # 0) Поглинути ідентифікаційні / контактні поля з source у target —
+    #    тільки якщо у target вони ПОРОЖНІ (не перетираємо вже існуючі дані).
+    #    Це гарантує що телефон/email/соцмережі з зливаного клієнта не
+    #    зникнуть після видалення source.
+    ABSORB_FIELDS = (
+        "phone_number", "email", "facebook", "instagram", "telegram",
+        "viber", "messenger", "tiktok", "olx",
+        "middle_name", "maiden_name", "nickname",
+        "city_of_residence", "country_of_residence",
+        "date_of_birth", "gender_id",
+        "phone_normalized", "facebook_normalized",
+        "instagram_normalized", "telegram_normalized",
+    )
+    absorbed = []
+    for col in ABSORB_FIELDS:
+        cur = getattr(target, col, None)
+        new = getattr(source, col, None)
+        if new and not cur:
+            setattr(target, col, new)
+            # ВАЖЛИВО: чистимо те ж поле в source ДО видалення, щоб не порушити
+            # UNIQUE-constraint (phone_normalized, fb_normalized, ...) при flush.
+            setattr(source, col, None)
+            absorbed.append(col)
+    if absorbed:
+        db.flush()  # фіксуємо обидва UPDATE до transferring orders/aliases
+    moved["absorbed_fields"] = absorbed
+
     # 1) Перенести orders → target
     res = db.execute(text("UPDATE orders SET client_id = :t WHERE client_id = :s"),
                      {"t": target_id, "s": source_id})
@@ -1320,12 +1427,30 @@ async def merge_clients(source_id: int, payload: ClientMergeRequest, db: Session
 
     # 7) Видалити source клієнта
     db.delete(source)
+    db.flush()
+
+    # 8) Auto-prune zombie flags: будь-які флаги по всій БД, у яких ВСІ peer-и
+    #    тепер не існують → dismiss. Запобігає «зомбі-попередженням» в карточках
+    #    інших клієнтів, що раніше посилалися на source як peer.
+    db.execute(text("""
+        UPDATE client_flags
+        SET dismissed = TRUE, dismissed_at = NOW(), dismissed_by = 'auto_peer_deleted'
+        WHERE dismissed = FALSE
+          AND peer_client_ids IS NOT NULL
+          AND array_length(peer_client_ids, 1) > 0
+          AND NOT EXISTS (
+            SELECT 1 FROM unnest(peer_client_ids) p
+            WHERE EXISTS (SELECT 1 FROM clients c WHERE c.id = p)
+          )
+    """))
+
     db.commit()
     return {"ok": True, "moved": moved}
 
 
 # ── Mass-merge: groups of likely duplicates (Step 5) ──────────────────────
-@router.get("/api/clients/duplicate-groups", tags=["clients"])
+@router.get("/api/client-duplicates/groups", tags=["clients"])
+@router.get("/api/clients/duplicate-groups", tags=["clients"])  # legacy alias
 async def list_duplicate_groups(
     by: str = Query("auto", description="auto|name|phone|facebook|instagram|telegram"),
     limit: int = Query(100, ge=1, le=500),
@@ -1369,14 +1494,23 @@ async def list_duplicate_groups(
             groups.append({"signal": signal_label, "key": r[0], "client_ids": ids})
 
     if by in ("auto", "name"):
+        # Групуємо за ПОТОЧНИМ іменем клієнта, а не за client_aliases.
+        # Aliases накопичують історичні/merge-перенесені/parser-злінковані імена,
+        # тож «master»-клієнти з купою aliases вилазили у кожній групі (#7924 мав 148).
         rows = db.execute(text("""
-            SELECT ca.norm_key AS key, array_agg(DISTINCT ca.client_id) AS ids
-            FROM client_aliases ca
-            WHERE ca.norm_key IS NOT NULL AND ca.norm_key <> '||'
-            GROUP BY ca.norm_key
-            HAVING COUNT(DISTINCT ca.client_id) > 1
-            ORDER BY COUNT(DISTINCT ca.client_id) DESC
-            LIMIT :lim
+            SELECT key, array_agg(id ORDER BY id) AS ids
+              FROM (
+                SELECT id,
+                       (lower(COALESCE(TRIM(first_name),'')) || '|' ||
+                        lower(COALESCE(TRIM(last_name),''))  || '|' ||
+                        lower(COALESCE(TRIM(nickname),'')))   AS key
+                  FROM clients
+              ) t
+             WHERE key <> '||'
+             GROUP BY key
+            HAVING COUNT(*) > 1
+             ORDER BY COUNT(*) DESC
+             LIMIT :lim
         """), {"lim": limit}).fetchall()
         for r in rows:
             ids = list(r[1])
@@ -1394,14 +1528,34 @@ async def list_duplicate_groups(
     info_rows = db.execute(text("""
         SELECT c.id,
                COALESCE(NULLIF(TRIM(COALESCE(c.first_name,'') || ' ' || COALESCE(c.last_name,'')),''), c.nickname, '—') AS full_name,
-               c.phone_number, c.facebook, c.telegram, c.instagram, c.email,
+               c.phone_number, c.phone_normalized,
+               c.facebook,  c.facebook_normalized,
+               c.telegram,  c.telegram_normalized,
+               c.instagram, c.instagram_normalized,
+               c.email, c.maiden_name, c.city_of_residence,
                c.manually_edited_at IS NOT NULL AS is_locked,
                (SELECT COUNT(*) FROM orders o WHERE o.client_id = c.id) AS orders_count,
                (SELECT COALESCE(SUM(o.total_amount),0) FROM orders o WHERE o.client_id = c.id) AS total_amount,
-               c.created_at
+               c.created_at,
+               (SELECT json_agg(json_build_object(
+                   'id', o.id,
+                   'date', o.order_date,
+                   'amount', o.total_amount,
+                   'notes', o.notes
+               ) ORDER BY o.order_date DESC NULLS LAST)
+                FROM (SELECT id, order_date, total_amount, notes FROM orders
+                      WHERE client_id = c.id ORDER BY order_date DESC NULLS LAST LIMIT 3) o
+               ) AS recent_orders
         FROM clients c WHERE c.id = ANY(:ids)
     """), {"ids": all_ids}).mappings().all()
     by_id = {r["id"]: dict(r) for r in info_rows}
+
+    # Завантажуємо «це різні люди»-пари між нашими кандидатами, щоб виключити їх
+    pair_rows = db.execute(text("""
+        SELECT client_a_id, client_b_id FROM client_non_duplicates
+         WHERE client_a_id = ANY(:ids) AND client_b_id = ANY(:ids)
+    """), {"ids": all_ids}).fetchall()
+    dismissed_pairs = {tuple(sorted((r[0], r[1]))) for r in pair_rows}
 
     def _score(c):
         sig = sum(1 for k in ("phone_number","facebook","telegram","instagram","email") if c.get(k))
@@ -1412,12 +1566,47 @@ async def list_duplicate_groups(
         clients = [by_id[i] for i in g["client_ids"] if i in by_id]
         if len(clients) < 2:
             continue
+        # Пропустити групу, де ВСІ пари вже відмічені «це різні люди»
+        client_ids = [c["id"] for c in clients]
+        all_pairs_dismissed = True
+        for i, a in enumerate(client_ids):
+            for b in client_ids[i+1:]:
+                if tuple(sorted((a, b))) not in dismissed_pairs:
+                    all_pairs_dismissed = False
+                    break
+            if not all_pairs_dismissed:
+                break
+        if all_pairs_dismissed:
+            continue
+
         clients.sort(key=_score, reverse=True)
         suggested = clients[0]["id"]
+
+        # Confidence: різні нормалізовані сигнали у групі → ризик «різні люди»
+        norm_phones = {c.get("phone_normalized") for c in clients if c.get("phone_normalized")}
+        norm_fbs    = {c.get("facebook_normalized") for c in clients if c.get("facebook_normalized")}
+        norm_tgs    = {c.get("telegram_normalized") for c in clients if c.get("telegram_normalized")}
+        norm_igs    = {c.get("instagram_normalized") for c in clients if c.get("instagram_normalized")}
+        has_signal_conflict = (len(norm_phones) > 1 or len(norm_fbs) > 1
+                               or len(norm_tgs) > 1 or len(norm_igs) > 1)
+        # Confidence labels: high = ймовірно один; low = ризик різних
+        if has_signal_conflict:
+            confidence = "low"
+            confidence_reason = "Різні нормалізовані сигнали (телефон/FB/TG/IG) — ймовірно РІЗНІ люди"
+        elif norm_phones or norm_fbs or norm_tgs or norm_igs:
+            confidence = "high"
+            confidence_reason = "Спільні сигнали або один з кандидатів єдиний з даними"
+        else:
+            confidence = "medium"
+            confidence_reason = "Збіг лише за іменем, без жодних сигналів"
+
         out_groups.append({
             "signal": g["signal"],
             "key": str(g["key"])[:120],
             "suggested_master_id": suggested,
+            "confidence": confidence,
+            "confidence_reason": confidence_reason,
+            "has_signal_conflict": has_signal_conflict,
             "clients": [
                 {
                     "id": c["id"],
@@ -1427,22 +1616,76 @@ async def list_duplicate_groups(
                     "telegram": c.get("telegram"),
                     "instagram": c.get("instagram"),
                     "email": c.get("email"),
+                    "maiden_name": c.get("maiden_name"),
+                    "city": c.get("city_of_residence"),
                     "is_locked": c.get("is_locked"),
                     "orders_count": c.get("orders_count"),
                     "total_amount": float(c.get("total_amount") or 0),
+                    "recent_orders": c.get("recent_orders") or [],
+                    "created_at": c["created_at"].isoformat() if c.get("created_at") else None,
                     "is_suggested_master": c["id"] == suggested,
                 } for c in clients
             ],
         })
 
+    # Сортування: low-confidence (ризик) вниз, високі групи (більше копій) вгору
+    confidence_rank = {"high": 0, "medium": 1, "low": 2}
+    out_groups.sort(key=lambda g: (confidence_rank.get(g["confidence"], 3),
+                                   -len(g["clients"])))
+
+    # Чесний лічильник «скільки всього груп з дублями у БД» (без LIMIT),
+    # щоб у UI було видно реальну шкалу задачі, а не тільки видиму сторінку.
+    total_in_db = 0
+    for _, col in sql_parts:
+        total_in_db += db.execute(text(f"""
+            SELECT COUNT(*) FROM (
+                SELECT 1 FROM clients
+                 WHERE {col} IS NOT NULL
+                 GROUP BY {col}
+                HAVING COUNT(*) > 1
+            ) s
+        """)).scalar() or 0
+    if by in ("auto", "name"):
+        total_in_db += db.execute(text("""
+            SELECT COUNT(*) FROM (
+                SELECT (lower(COALESCE(TRIM(first_name),'')) || '|' ||
+                        lower(COALESCE(TRIM(last_name),''))  || '|' ||
+                        lower(COALESCE(TRIM(nickname),'')))   AS key
+                  FROM clients
+              GROUP BY key
+                HAVING COUNT(*) > 1
+                   AND (lower(COALESCE(TRIM(first_name),'')) || '|' ||
+                        lower(COALESCE(TRIM(last_name),''))  || '|' ||
+                        lower(COALESCE(TRIM(nickname),''))) <> '||'
+            ) s
+        """)).scalar() or 0
+
     return {
         "groups": out_groups,
         "total_clusters": len(out_groups),
         "total_clients": sum(len(g["clients"]) for g in out_groups),
+        "total_in_db": total_in_db,
+        "page_limit": limit,
     }
 
 
-@router.post("/api/clients/merge-bulk", tags=["clients"])
+@router.post("/api/client-duplicates/dismiss-pair/{client_a}/{client_b}", tags=["clients"])
+async def dismiss_duplicate_pair(client_a: int, client_b: int, db: Session = Depends(get_db)):
+    """«Це різні люди» — пара не з'являтиметься у каруселі дублікатів."""
+    if client_a == client_b:
+        raise HTTPException(status_code=400, detail="Cannot dismiss self")
+    a, b = sorted((client_a, client_b))
+    db.execute(text("""
+        INSERT INTO client_non_duplicates (client_a_id, client_b_id, dismissed_by)
+        VALUES (:a, :b, 'user_manual')
+        ON CONFLICT (client_a_id, client_b_id) DO NOTHING
+    """), {"a": a, "b": b})
+    db.commit()
+    return {"ok": True, "client_a": a, "client_b": b}
+
+
+@router.post("/api/client-duplicates/merge-bulk", tags=["clients"])
+@router.post("/api/clients/merge-bulk", tags=["clients"])  # legacy alias
 async def merge_clients_bulk(payload: dict, db: Session = Depends(get_db)):
     """Bulk merge: payload = { groups: [{ master_id, source_ids: [int,...] }, ...] }.
 

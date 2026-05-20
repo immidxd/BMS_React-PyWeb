@@ -48,8 +48,10 @@ interface ClientFull {
   first_name: string;
   last_name: string | null;
   middle_name: string | null;
+  maiden_name: string | null;
   full_name: string;
   nickname: string | null;
+  gender_id: number | null;
   phone_number: string | null;
   email: string | null;
   facebook: string | null;
@@ -448,6 +450,7 @@ const ClientDetailsModal: React.FC<Props> = ({ clientId, open, onClose }) => {
       first_name: client.first_name || '',
       last_name: client.last_name || '',
       middle_name: client.middle_name || '',
+      maiden_name: client.maiden_name || '',
       nickname: client.nickname || '',
       phone_number: client.phone_number || '',
       email: client.email || '',
@@ -561,6 +564,14 @@ const ClientDetailsModal: React.FC<Props> = ({ clientId, open, onClose }) => {
                       <span className="text-xs text-gray-400 font-mono">ID: {c.id}</span>
                       {c.nickname && (c.first_name || c.last_name) && (
                         <span className="text-xs text-gray-400">({[c.first_name, c.last_name].filter(Boolean).join(' ')})</span>
+                      )}
+                      {c.maiden_name && (
+                        <span
+                          className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-pink-50 text-pink-700 border border-pink-200 dark:bg-pink-900/30 dark:text-pink-300 dark:border-pink-800"
+                          title="Дівоче прізвище — використовується для пошуку"
+                        >
+                          👰 {c.maiden_name}
+                        </span>
                       )}
                       {c.nickname && (
                         <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-gray-100 text-gray-500 border border-gray-200 dark:bg-gray-700 dark:text-gray-400 dark:border-gray-600">нікнейм</span>
@@ -722,6 +733,10 @@ const ClientDetailsModal: React.FC<Props> = ({ clientId, open, onClose }) => {
                             <EditRow label="Імʼя" value={draft.first_name as string ?? ''} onChange={v => setDraftField('first_name', v)} />
                             <EditRow label="Прізвище" value={draft.last_name as string ?? ''} onChange={v => setDraftField('last_name', v)} />
                             <EditRow label="По батькові" value={draft.middle_name as string ?? ''} onChange={v => setDraftField('middle_name', v)} />
+                            {/* Дівоче прізвище — для жіночих профілів. Показуємо
+                                завжди, бо gender_id може бути не виставлений; пошук
+                                по цьому полю працює незалежно від статі. */}
+                            <EditRow label="👰 Дівоче прізвище" value={draft.maiden_name as string ?? ''} onChange={v => setDraftField('maiden_name', v)} />
                             <EditRow label="Нікнейм" value={draft.nickname as string ?? ''} onChange={v => setDraftField('nickname', v)} />
                             <EditRow label="📞 Телефон" value={draft.phone_number as string ?? ''} onChange={v => setDraftField('phone_number', v)} />
                             <EditRow label="✉️ Email"   value={draft.email as string ?? ''}        onChange={v => setDraftField('email', v)} />

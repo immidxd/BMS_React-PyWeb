@@ -3,6 +3,7 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import MainLayout from '../layouts/MainLayout';
 import Pagination from '../components/common/Pagination';
 import ClientDetailsModal from '../components/clients/ClientDetailsModal';
+import DuplicatesCarousel from '../components/clients/DuplicatesCarousel';
 
 interface Client {
   id: number;
@@ -65,6 +66,20 @@ const ClientsPage: React.FC<ClientsPageProps> = ({ currentSearchTerm }) => {
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [mergeTargetId, setMergeTargetId] = useState<number | null>(null);
   const [merging, setMerging] = useState(false);
+
+  // Duplicates carousel
+  const [carouselOpen, setCarouselOpen] = useState(false);
+  const [dupCount, setDupCount] = useState<number | null>(null);
+
+  const fetchDupCount = useCallback(async () => {
+    try {
+      const res = await fetch('/api/client-duplicates/groups?limit=500');
+      if (!res.ok) return;
+      const d = await res.json();
+      setDupCount(d.total_clusters ?? 0);
+    } catch { /* silent */ }
+  }, []);
+  useEffect(() => { fetchDupCount(); }, [fetchDupCount]);
 
   const fetchClients = useCallback(async () => {
     setLoading(true);
@@ -214,10 +229,27 @@ const ClientsPage: React.FC<ClientsPageProps> = ({ currentSearchTerm }) => {
             Клієнти
             <span className="ml-2 text-base font-normal text-gray-400">({total})</span>
           </h1>
-          {currentSearchTerm && (
-            <span className="text-sm text-gray-500 dark:text-gray-400">Пошук: «{currentSearchTerm}»</span>
-          )}
+          <div className="flex items-center gap-3">
+            {currentSearchTerm && (
+              <span className="text-sm text-gray-500 dark:text-gray-400">Пошук: «{currentSearchTerm}»</span>
+            )}
+            {dupCount != null && dupCount > 0 && (
+              <button
+                onClick={() => setCarouselOpen(true)}
+                className="px-3 py-1.5 text-sm rounded-lg border border-amber-300 bg-amber-50 hover:bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:border-amber-700 dark:text-amber-200 font-medium transition-colors"
+                title="Переглянути групи можливих дублікатів"
+              >
+                ⚠️ Кандидати на мердж ({dupCount})
+              </button>
+            )}
+          </div>
         </div>
+
+        <DuplicatesCarousel
+          open={carouselOpen}
+          onClose={() => { setCarouselOpen(false); fetchDupCount(); fetchClients(); }}
+          onMerged={() => { fetchDupCount(); fetchClients(); }}
+        />
 
         {/* Merge bar — appears when ≥2 clients selected */}
         {selectedIds.size >= 2 && (
