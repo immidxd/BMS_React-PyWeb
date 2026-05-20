@@ -91,13 +91,16 @@ def _get_service():
 def _extract_pnum_from_filename(filename: str) -> Optional[str]:
     """Витягує первинний номер товару з імені файла.
 
-    `Ф3042_04.jpeg` → `Ф3042`
-    `#Л145_main.jpg` → `Л145`
-    `A1247_07.jpeg` → `A1247`
+    Розділювачі: `_`, `.`, пробіл. Дефіс `-` НЕ є розділювачем,
+    бо `-N` суфікс — частина номера товару (варіант/ростовка):
+    `Ф3042_04.jpeg`   → `Ф3042`
+    `Ф1067-2_01.JPG`  → `Ф1067-2`  (НЕ `Ф1067`)
+    `#Л145_main.jpg`  → `Л145`
+    `A1247_07.jpeg`   → `A1247`
     Returns lowercase для регістронезалежного lookup.
     """
     base = os.path.splitext(filename)[0]
-    m = re.match(r"^#?([^\s_.\-#]+)", base)
+    m = re.match(r"^#?([^\s_.#]+)", base)
     if not m:
         return None
     return m.group(1).strip().lower()

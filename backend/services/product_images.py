@@ -46,13 +46,15 @@ def _matches_productnumber(filename: str, target: str) -> bool:
     """Перевірка чи файл належить товару.
 
     Файл матчить, якщо починається з `target` або `#target`,
-    і одразу після номера йде розділювач (_, ., -, пробіл) або кінець basename.
-    Так `Ф31` НЕ матчить `Ф310`, `Ф3108` тощо.
+    і одразу після номера йде `_`, `.`, пробіл або кінець basename.
+    Важливо: дефіс `-` НЕ є розділювачем! Бо `Ф1067-2` — це окремий
+    productnumber (варіант/ростовка), не атрибут товару `Ф1067`.
+    Так `Ф1067` НЕ матчить `Ф1067-2_01.jpg` (після Ф1067 стоїть `-`).
     """
     if not target:
         return False
     base = os.path.splitext(filename)[0]
-    pattern = rf"^#?{re.escape(target)}(?=[_.\-\s]|$)"
+    pattern = rf"^#?{re.escape(target)}(?=[_.\s]|$)"
     return bool(re.match(pattern, base, flags=re.IGNORECASE))
 
 
