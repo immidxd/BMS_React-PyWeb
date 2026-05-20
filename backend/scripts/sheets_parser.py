@@ -19,7 +19,7 @@ from typing import Optional, Callable
 
 import gspread
 from google.oauth2.service_account import Credentials
-from sqlalchemy import or_
+from sqlalchemy import or_, text
 from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)

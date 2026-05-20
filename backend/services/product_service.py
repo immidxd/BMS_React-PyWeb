@@ -190,9 +190,10 @@ def get_products(
             if filters.search:
                 search = f"%{filters.search}%"
                 where_conditions.append("""
-                    (p.productnumber ILIKE :search OR 
-                     p.model ILIKE :search OR 
-                     p.description ILIKE :search OR 
+                    (p.productnumber ILIKE :search OR
+                     p.clonednumbers ILIKE :search OR
+                     p.model ILIKE :search OR
+                     p.description ILIKE :search OR
                      p.marking ILIKE :search OR
                      p.extranote ILIKE :search OR
                      b.brandname ILIKE :search OR
