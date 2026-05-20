@@ -233,82 +233,98 @@ async def _auto_startup_parse():
     asyncio.create_task(_delayed_start())
 
 
-# ── Auto-startup publications sync + archive recovery ─────────────────────────
-# Після запуску backend:
-#  1) Чекаємо щоб основні системи піднялись
-#  2) Запускаємо sync-all (сканує TG канали, додає нові пости)
-#  3) Перевіряємо всі 'archived' записи — ті що насправді живі в TG,
-#     повертаємо в 'published' (відновлення після B2-баг'ів)
-# Все у фоні — не блокує старт. Помилки логуються, не пропалюють процес.
+# ── Auto-sync publications (Telegram) ─────────────────────────────────────────
+# Single sync cycle: scan channels → relink → recovery.
+# Triggered on startup (after 15s delay) and periodically every PERIOD seconds.
+# Failures are logged and do not crash the process; next cycle retries.
+async def _publications_sync_cycle() -> None:
+    import os
+    api_id = os.getenv("TELEGRAM_API_ID")
+    api_hash = os.getenv("TELEGRAM_API_HASH")
+    phone = os.getenv("TELEGRAM_PHONE")
+    if not all([api_id, api_hash, phone]):
+        logger.info("Publications-sync skipped: TG creds not set")
+        return
+
+    try:
+        from services.telegram_service import TelegramScanner
+        from models.database import SessionLocal
+    except ImportError:
+        from backend.services.telegram_service import TelegramScanner
+        from backend.models.database import SessionLocal
+    from sqlalchemy import text as _sql_text
+
+    scanner = TelegramScanner(api_id=int(api_id), api_hash=api_hash, phone=phone)
+    if not await scanner.connect():
+        logger.warning("Publications-sync: TG connect failed — will retry next cycle")
+        return
+
+    db = SessionLocal()
+    try:
+        totals = {"posts_scanned": 0, "new_posts_saved": 0}
+        for chat_id, info in TelegramScanner.KNOWN_CHANNELS.items():
+            try:
+                res = await scanner.scan_channel(db, str(chat_id), info["type"])
+                if isinstance(res, dict) and "error" not in res:
+                    totals["posts_scanned"] += int(res.get("posts_scanned", 0) or 0)
+                    totals["new_posts_saved"] += int(res.get("new_posts_saved", 0) or 0)
+                else:
+                    logger.warning(f"Pub-sync: channel {chat_id} returned {res}")
+            except Exception as ce:
+                logger.warning(f"Pub-sync: channel {chat_id} failed: {ce}")
+        logger.info(f"Pub-sync: {totals}")
+
+        # Auto-relink
+        try:
+            try:
+                from routers.publications import _RELINK_SQL
+            except ImportError:
+                from backend.routers.publications import _RELINK_SQL
+            r = db.execute(_sql_text(_RELINK_SQL))
+            db.commit()
+            logger.info(f"Pub-relink: {r.rowcount} posts relinked")
+        except Exception as re:
+            logger.warning(f"Pub-relink failed: {re}")
+            db.rollback()
+
+        # Recovery — phantom archives back to published
+        stats = await scanner.verify_archived_posts(db, limit=1000)
+        logger.info(f"Pub-recovery: {stats}")
+    except Exception as e:
+        logger.warning(f"Publications-sync inner failed: {e}")
+    finally:
+        db.close()
+        try:
+            await scanner.disconnect()
+        except Exception:
+            pass
+
+
 @app.on_event("startup")
 async def _auto_startup_publications_refresh():
+    """Initial sync at startup + periodic loop every N seconds."""
     import asyncio
     import os
 
-    async def _delayed_refresh():
-        await asyncio.sleep(15)  # дати auto-parse піти першим
+    # Configurable via env (default 30 minutes)
+    period_sec = int(os.getenv("PUBLICATIONS_SYNC_PERIOD_SEC", "1800"))
+
+    async def _initial_then_periodic():
+        # Initial run: wait 15s for the rest of the app to come up
+        await asyncio.sleep(15)
         try:
-            api_id = os.getenv("TELEGRAM_API_ID")
-            api_hash = os.getenv("TELEGRAM_API_HASH")
-            phone = os.getenv("TELEGRAM_PHONE")
-            if not all([api_id, api_hash, phone]):
-                logger.info("Auto-publications-refresh skipped: TG creds not set")
-                return
-
-            try:
-                from services.telegram_service import TelegramScanner
-                from models.database import SessionLocal
-            except ImportError:
-                from backend.services.telegram_service import TelegramScanner
-                from backend.models.database import SessionLocal
-            from sqlalchemy import text as _sql_text
-
-            scanner = TelegramScanner(api_id=int(api_id), api_hash=api_hash, phone=phone)
-            if not await scanner.connect():
-                logger.warning("Auto-publications-refresh: TG connect failed")
-                return
-
-            db = SessionLocal()
-            try:
-                # 1. Scan known channels — pull new posts into telegram_posts
-                totals = {"posts_scanned": 0, "new_posts_saved": 0}
-                for chat_id, info in TelegramScanner.KNOWN_CHANNELS.items():
-                    try:
-                        res = await scanner.scan_channel(db, str(chat_id), info["type"])
-                        if isinstance(res, dict) and "error" not in res:
-                            totals["posts_scanned"] += int(res.get("posts_scanned", 0) or 0)
-                            totals["new_posts_saved"] += int(res.get("new_posts_saved", 0) or 0)
-                        else:
-                            logger.warning(f"Auto-sync: channel {chat_id} returned {res}")
-                    except Exception as ce:
-                        logger.warning(f"Auto-sync: channel {chat_id} failed: {ce}")
-                logger.info(f"Auto-sync: {totals}")
-
-                # 2. Auto-relink: shared SQL (size-aware, prefix-prioritized)
-                try:
-                    try:
-                        from routers.publications import _RELINK_SQL
-                    except ImportError:
-                        from backend.routers.publications import _RELINK_SQL
-                    r = db.execute(_sql_text(_RELINK_SQL))
-                    db.commit()
-                    logger.info(f"Auto-relink: {r.rowcount} posts relinked")
-                except Exception as re:
-                    logger.warning(f"Auto-relink failed: {re}")
-                    db.rollback()
-
-                # 3. Recovery — phantom archives back to published
-                stats = await scanner.verify_archived_posts(db, limit=1000)
-                logger.info(f"Auto-recovery: {stats}")
-            except Exception as e:
-                logger.warning(f"Auto-publications-refresh inner failed: {e}")
-            finally:
-                db.close()
-                await scanner.disconnect()
+            await _publications_sync_cycle()
         except Exception as e:
-            logger.warning(f"Auto-publications-refresh startup failed: {e}")
+            logger.warning(f"Publications-sync initial cycle failed: {e}")
+        # Periodic loop
+        while True:
+            await asyncio.sleep(period_sec)
+            try:
+                await _publications_sync_cycle()
+            except Exception as e:
+                logger.warning(f"Publications-sync periodic cycle failed: {e}")
 
-    asyncio.create_task(_delayed_refresh())
+    asyncio.create_task(_initial_then_periodic())
 
 
 if __name__ == "__main__":
