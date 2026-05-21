@@ -2640,20 +2640,42 @@ def _parse_orders_sheet(
 
 # ── Workspace parser ─────────────────────────────────────────────────────────
 
+def _strict_match(a, b) -> bool:
+    """Match ONLY if both sides have data and they equal.
+    Empty/None on either side → NOT a match (на відміну від _fields_match
+    який «довіряє» порожньому полю). Потрібно для workspace merge — там
+    порожні поля в Воркспейс-рядку не повинні зараховуватись як ствердження
+    'це той самий товар'.
+    """
+    def is_empty(v):
+        return v is None or str(v).strip() == "" or v == 0
+    if is_empty(a) or is_empty(b):
+        return False
+    return str(a).strip().lower() == str(b).strip().lower()
+
+
 def _workspace_merge_score(
     p: "Product",
-    brand_id, color_id, size_val, marking_val, model_val
+    brand_id, color_id, size_val, marking_val, model_val,
+    type_id=None,
 ) -> int:
     """
     Count how many of the 5 key characteristics match between a DB product
     and a workspace row.  Returns 0-5.
+
+    Hard-block: різний typeid (Ботинки ≠ Кросівки) → 0 одразу.
+    Порожні поля з обох боків — НЕ дають бал (strict match).
     """
+    # Hard-block: типи мають збігатись (якщо вказані з обох боків)
+    if type_id is not None and p.typeid is not None and p.typeid != type_id:
+        return 0
+
     score = 0
-    if _fields_match(p.brandid,  brand_id):  score += 1
-    if _fields_match(p.colorid,  color_id):  score += 1
-    if _fields_match(p.sizeeu,   size_val):  score += 1
-    if _fields_match(p.marking,  marking_val): score += 1
-    if _fields_match(p.model,    model_val):  score += 1
+    if _strict_match(p.brandid,  brand_id):    score += 1
+    if _strict_match(p.colorid,  color_id):    score += 1
+    if _strict_match(p.sizeeu,   size_val):    score += 1
+    if _strict_match(p.marking,  marking_val): score += 1
+    if _strict_match(p.model,    model_val):   score += 1
     return score
 
 
@@ -2815,7 +2837,10 @@ def _parse_workspace_sheet(
         best_product = None
         best_score = 0
         for p in candidates:
-            score = _workspace_merge_score(p, brand_id, color_id, size_val, marking, model_val)
+            score = _workspace_merge_score(
+                p, brand_id, color_id, size_val, marking, model_val,
+                type_id=type_id,
+            )
             if score > best_score:
                 best_score = score
                 best_product = p
