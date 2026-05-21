@@ -189,21 +189,31 @@ def get_products(
         if filters:
             if filters.search:
                 search = f"%{filters.search}%"
+                # Latin → Cyrillic confusables: щоб "A1248" латиниця знаходила
+                # "А1248" кирилицю в clonednumbers (BMS-конвент: номери кириличні).
+                _LAT2CYR = str.maketrans({
+                    'A':'А','B':'В','C':'С','E':'Е','H':'Н','I':'І','K':'К',
+                    'M':'М','O':'О','P':'Р','T':'Т','X':'Х','Y':'У',
+                    'a':'а','b':'в','c':'с','e':'е','h':'н','i':'і','k':'к',
+                    'm':'м','o':'о','p':'р','t':'т','x':'х','y':'у',
+                })
+                search_cyr = f"%{filters.search.translate(_LAT2CYR)}%"
                 where_conditions.append("""
-                    (p.productnumber ILIKE :search OR
-                     p.clonednumbers ILIKE :search OR
-                     p.model ILIKE :search OR
-                     p.description ILIKE :search OR
-                     p.marking ILIKE :search OR
-                     p.extranote ILIKE :search OR
-                     b.brandname ILIKE :search OR
-                     t.typename ILIKE :search OR
-                     c.colorname ILIKE :search OR
-                     g.gendername ILIKE :search OR
+                    (p.productnumber  ILIKE :search OR p.productnumber  ILIKE :search_cyr OR
+                     p.clonednumbers  ILIKE :search OR p.clonednumbers  ILIKE :search_cyr OR
+                     p.model          ILIKE :search OR
+                     p.description    ILIKE :search OR
+                     p.marking        ILIKE :search OR
+                     p.extranote      ILIKE :search OR
+                     b.brandname      ILIKE :search OR
+                     t.typename       ILIKE :search OR
+                     c.colorname      ILIKE :search OR
+                     g.gendername     ILIKE :search OR
                      cond.conditionname ILIKE :search OR
-                     s.statusname ILIKE :search)
+                     s.statusname     ILIKE :search)
                 """)
                 params['search'] = search
+                params['search_cyr'] = search_cyr
                 
             # Single ID filters
             if filters.typeid and not filters.typeids:
