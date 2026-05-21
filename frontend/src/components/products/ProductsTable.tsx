@@ -22,6 +22,8 @@ import {
 import { Product } from '../../types/product';
 import type { TableProps } from 'antd';
 import ProductDetailsModal from './ProductDetailsModal';
+import MergeCandidatesModal from './MergeCandidatesModal';
+import { LinkOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import { productService } from '../../services/productService';
 // Pagination is rendered at page level
@@ -84,6 +86,8 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
     const [visibilityLoading, setVisibilityLoading] = useState<Record<number, boolean>>({});
     const [detailsId, setDetailsId] = useState<number | null>(null);
     const [detailsOpen, setDetailsOpen] = useState<boolean>(false);
+    const [mergeId, setMergeId] = useState<number | null>(null);
+    const [mergeOpen, setMergeOpen] = useState<boolean>(false);
     // Контекстне меню керування колонками
     const storageKey = 'products_table_columns_v2';
     const menuRef = useRef<HTMLDivElement | null>(null);
@@ -354,19 +358,32 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
                     unCheckedChildren={<EyeInvisibleOutlined />}
                 />
             ) },
-        actions: { title: 'Дії', key: 'actions', width: 90, fixed: 'right' as const,
-            render: (_: any, record: Product) => (
-                <Space>
-                    <Tooltip title="Редагувати">
-                        <Button type="primary" icon={<EditOutlined />} size="small" onClick={() => navigate(`/products/${record.id}/edit`)} />
-                    </Tooltip>
-                    <Tooltip title="Видалити">
-                        <Popconfirm title="Ви впевнені, що хочете видалити цей товар?" onConfirm={() => handleDelete(record.id)} okText="Так" cancelText="Ні">
-                            <Button danger icon={<DeleteOutlined />} size="small" />
-                        </Popconfirm>
-                    </Tooltip>
-                </Space>
-            ) },
+        actions: { title: 'Дії', key: 'actions', width: 130, fixed: 'right' as const,
+            render: (_: any, record: Product) => {
+                const pendingCount = (record as any).pending_candidates_count || 0;
+                return (
+                    <Space>
+                        {pendingCount > 0 && (
+                            <Tooltip title={`Кандидатів на об'єднання: ${pendingCount}`}>
+                                <Button
+                                    icon={<LinkOutlined />}
+                                    size="small"
+                                    style={{ borderColor: '#fb923c', color: '#ea580c' }}
+                                    onClick={(e) => { e.stopPropagation(); setMergeId(record.id); setMergeOpen(true); }}
+                                >{pendingCount}</Button>
+                            </Tooltip>
+                        )}
+                        <Tooltip title="Редагувати">
+                            <Button type="primary" icon={<EditOutlined />} size="small" onClick={() => navigate(`/products/${record.id}/edit`)} />
+                        </Tooltip>
+                        <Tooltip title="Видалити">
+                            <Popconfirm title="Ви впевнені, що хочете видалити цей товар?" onConfirm={() => handleDelete(record.id)} okText="Так" cancelText="Ні">
+                                <Button danger icon={<DeleteOutlined />} size="small" />
+                            </Popconfirm>
+                        </Tooltip>
+                    </Space>
+                );
+            } },
     };
     const columns = columnOrder
         .filter(c => visibleMap[c.id])
@@ -391,6 +408,12 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
     return (
         <TableContainer className="max-h-[calc(100vh-220px)]" onContextMenu={handleContextMenu}>
             <ProductDetailsModal productId={detailsId} open={detailsOpen} onClose={() => setDetailsOpen(false)} />
+            <MergeCandidatesModal
+                productId={mergeId}
+                open={mergeOpen}
+                onClose={() => setMergeOpen(false)}
+                onMerged={() => { if (onPageChange) onPageChange(1); }}
+            />
             
             <div className="overflow-x-auto rounded-lg shadow-md border border-gray-200 bg-white dark:bg-gray-800 dark:border-gray-700">
                 <Table

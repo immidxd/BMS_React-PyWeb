@@ -2724,7 +2724,7 @@ def _parse_workspace_sheet(
         except ValueError:
             return ""
 
-    merged = added = skipped = 0
+    merged = added = skipped = candidates_count = 0
     touched_product_ids: set = set()
     total = len(rows) - 1
 
@@ -2834,111 +2834,128 @@ def _parse_workspace_sheet(
             # No brand — must scan all (rare edge case)
             candidates = session.query(Product).all()
 
-        best_product = None
-        best_score = 0
+        # ── Score ВСІ кандидати (для UX-кандидат-merge, без авто-злиття) ──
+        scored_candidates = []
         for p in candidates:
             score = _workspace_merge_score(
                 p, brand_id, color_id, size_val, marking, model_val,
                 type_id=type_id,
             )
-            if score > best_score:
-                best_score = score
-                best_product = p
+            if score >= 2:
+                scored_candidates.append((p, score))
+        # Сортуємо: спершу більший score (UI покаже найкращих)
+        scored_candidates.sort(key=lambda x: -x[1])
 
-        if best_score >= 4 and best_product is not None:
-            # ── MERGE: append workspace number to clonednumbers ──────────
-            if pnum:
-                best_product.clonednumbers = _append_clone(best_product.clonednumbers, pnum)
-            # Also append any extra clones listed in the workspace row
-            if clones_raw:
-                for extra in clones_raw.split(";"):
-                    best_product.clonednumbers = _append_clone(best_product.clonednumbers, extra.strip())
-            # Заповнюємо нові поля з аркуша ТІЛЬКИ якщо в БД порожньо
-            # (Sheets = source of truth, але не перезаписуємо вже заповнене у Журналі)
-            if season_val and not best_product.season:
-                best_product.season = season_val
-            if dimensions_val and not best_product.dimensions:
-                best_product.dimensions = dimensions_val
-            if width_val and not best_product.width:
-                best_product.width = width_val
-            if style_id and not best_product.styleid:
-                best_product.styleid = style_id
-            if current_cond_id and not best_product.current_conditionid:
-                best_product.current_conditionid = current_cond_id
-            best_product.updated_at = datetime.utcnow()
-            session.flush()
-            merged += 1
-            touched_product_ids.add(best_product.id)
-            logger.info(
-                "[workspace] MERGED pnum=%s → product id=%s (score=%d)",
-                pnum or "(none)", best_product.id, best_score
-            )
+        # NO auto-merge. Завжди створюємо NEW product, далі пропонуємо merge
+        # як кандидатів — користувач вирішує через UI.
+        # (Старий auto-merge при score>=4 вимкнено, бо давав false-positive.)
+        if False:
+            # ── DEAD CODE (старий auto-merge), залишено для контексту ─────
+            pass
         else:
-            # ── NEW PRODUCT ──────────────────────────────────────────────
-            # Use workspace number if present; otherwise assign '???'
+            # ── NEW or REUSE PRODUCT (без auto-merge) ────────────────────
             target_pnum = pnum if pnum else "???"
+            from sqlalchemy.exc import IntegrityError as _IE
 
-            # If pnum already exists in DB with matching identity → skip
-            # (idempotency: don't double-insert on re-parse)
+            # Idempotency: якщо pnum уже є в БД — reuse, без створення дубля
+            product = None
             if pnum:
-                existing = session.query(Product).filter(
+                product = session.query(Product).filter(
                     Product.productnumber == pnum
                 ).first()
-                if existing:
+                if product:
                     skipped += 1
-                    continue
+                    touched_product_ids.add(product.id)
+                    logger.info(
+                        "[workspace] REUSED existing product pnum=%s id=%s",
+                        pnum, product.id,
+                    )
 
-            from sqlalchemy.exc import IntegrityError as _IE
-            product = Product(
-                productnumber         = target_pnum,
-                clonednumbers         = clones_raw or None,
-                model                 = model_val or None,
-                marking               = marking or None,
-                year                  = year_int,
-                description           = desc_val or None,
-                price                 = price_float,
-                sizeeu                = size_val or None,
-                measurementscm        = cm_val or None,
-                season                = season_val or None,
-                dimensions            = dimensions_val or None,
-                width                 = width_val or None,
-                styleid               = style_id,
-                dateadded             = date.today(),
-                quantity              = 1,
-                brandid               = brand_id,
-                typeid                = type_id,
-                subtypeid             = sub_id,
-                genderid              = gender_id,
-                colorid               = color_id,
-                conditionid           = cond_id,
-                current_conditionid   = current_cond_id,
-                manufacturercountryid = mfr_id,
-                ownercountryid        = own_id,
-            )
-            session.add(product)
-            try:
-                session.flush()
-                added += 1
-                touched_product_ids.add(product.id)
-                logger.info(
-                    "[workspace] NEW product pnum=%s (score=%d, no match)",
-                    target_pnum, best_score
+            if product is None:
+                product = Product(
+                    productnumber         = target_pnum,
+                    clonednumbers         = clones_raw or None,
+                    model                 = model_val or None,
+                    marking               = marking or None,
+                    year                  = year_int,
+                    description           = desc_val or None,
+                    price                 = price_float,
+                    sizeeu                = size_val or None,
+                    measurementscm        = cm_val or None,
+                    season                = season_val or None,
+                    dimensions            = dimensions_val or None,
+                    width                 = width_val or None,
+                    styleid               = style_id,
+                    dateadded             = date.today(),
+                    quantity              = 1,
+                    brandid               = brand_id,
+                    typeid                = type_id,
+                    subtypeid             = sub_id,
+                    genderid              = gender_id,
+                    colorid               = color_id,
+                    conditionid           = cond_id,
+                    current_conditionid   = current_cond_id,
+                    manufacturercountryid = mfr_id,
+                    ownercountryid        = own_id,
                 )
-            except _IE:
-                session.rollback()
-                existing_now = session.query(Product).filter(
-                    Product.productnumber == target_pnum,
-                    Product.sizeeu == (size_val or None),
-                ).first()
-                if existing_now:
+                session.add(product)
+                try:
+                    session.flush()
+                    added += 1
+                    touched_product_ids.add(product.id)
+                    logger.info(
+                        "[workspace] NEW product pnum=%s (top score=%d)",
+                        target_pnum,
+                        scored_candidates[0][1] if scored_candidates else 0,
+                    )
+                except _IE:
+                    session.rollback()
                     skipped += 1
-                    logger.info("[workspace] CONFLICT skipped (already exists) pnum=%s", target_pnum)
-                else:
-                    skipped += 1
-                    logger.warning("[workspace] SKIPPED unresolvable conflict pnum=%s", target_pnum)
+                    logger.warning(
+                        "[workspace] SKIPPED conflict pnum=%s", target_pnum,
+                    )
+                    continue  # NO candidate insertion if product wasn't created
+
+            # ── INSERT merge_candidates для всіх score≥2 (typeid вже фільтрований) ──
+            # Користувач акцептить/декланє через UI; декланутi пари не пропонуються знову.
+            for cand_product, cand_score in scored_candidates:
+                if cand_product.id == product.id:
+                    continue  # сам себе не пропонуємо
+                # Якщо вже є decision (accepted/declined) — пропускаємо
+                prior = session.execute(
+                    text("""SELECT status FROM merge_candidates
+                            WHERE new_product_id = :np AND suggested_id = :sg"""),
+                    {"np": product.id, "sg": cand_product.id},
+                ).fetchone()
+                if prior is not None:
+                    # pending → залишаємо; accepted/declined → не чіпаємо
+                    continue
+                # Human-readable reason
+                _reasons = []
+                if _strict_match(cand_product.brandid, brand_id):  _reasons.append("бренд")
+                if _strict_match(cand_product.colorid, color_id):  _reasons.append("колір")
+                if _strict_match(cand_product.sizeeu, size_val):   _reasons.append("розмір")
+                if _strict_match(cand_product.marking, marking):   _reasons.append("маркування")
+                if _strict_match(cand_product.model, model_val):   _reasons.append("модель")
+                reason_txt = "збіг: " + "+".join(_reasons) if _reasons else None
+                session.execute(
+                    text("""INSERT INTO merge_candidates
+                                (new_product_id, suggested_id, score, reason, status)
+                            VALUES (:np, :sg, :sc, :rs, 'pending')
+                            ON CONFLICT (new_product_id, suggested_id) DO NOTHING"""),
+                    {"np": product.id, "sg": cand_product.id,
+                     "sc": cand_score, "rs": reason_txt},
+                )
+                candidates_count += 1
 
     session.commit()
-    return {"merged": merged, "added": added, "skipped": skipped, "touched_product_ids": touched_product_ids}
+    return {
+        "merged": merged,
+        "added": added,
+        "skipped": skipped,
+        "candidates_created": candidates_count,
+        "touched_product_ids": touched_product_ids,
+    }
 
 
 # ── Public API ────────────────────────────────────────────────────────────────

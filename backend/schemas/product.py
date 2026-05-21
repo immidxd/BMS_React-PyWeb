@@ -223,6 +223,7 @@ class ProductList(BaseModel):
     sold_count: int = 0
     available_qty: Optional[int] = None
     pnum_dup_brands: int = 0
+    pending_candidates_count: int = 0  # merge-candidate UX badge
     
     class Config:
         from_attributes = True

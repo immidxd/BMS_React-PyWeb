@@ -137,6 +137,7 @@ def get_products(
                COALESCE(sold.sold_count, 0) AS sold_count,
                GREATEST(COALESCE(p.quantity, 0) - COALESCE(sold.sold_count, 0), 0) AS available_qty,
                COALESCE(dup.dup_brands, 0) AS pnum_dup_brands,
+               COALESCE(mc.pending_count, 0) AS pending_candidates_count,
                -- Ростовка: quantity>1 АБО extranote містить "ростовка" АБО (n)-суфікс
                (
                    p.quantity > 1
@@ -181,6 +182,12 @@ def get_products(
               AND o.order_status_id IN (1, 7)
             GROUP BY oi.product_id
         ) last_sale ON last_sale.product_id = p.id
+        LEFT JOIN (
+            SELECT new_product_id, COUNT(*) AS pending_count
+            FROM merge_candidates
+            WHERE status = 'pending'
+            GROUP BY new_product_id
+        ) mc ON mc.new_product_id = p.id
         """
         
         where_conditions = []
@@ -520,6 +527,7 @@ def get_products(
                 'sold_count': m.get('sold_count', 0),
                 'available_qty': m.get('available_qty'),
                 'pnum_dup_brands': m.get('pnum_dup_brands', 0),
+                'pending_candidates_count': int(m.get('pending_candidates_count') or 0),
                 'is_rostovka': bool(m.get('is_rostovka', False)),
             }
             items.append(product_dict)
