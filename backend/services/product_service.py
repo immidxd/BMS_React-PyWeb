@@ -693,7 +693,9 @@ def get_product_with_relations(db: Session, product_id: int) -> Optional[Dict[st
                    cond.conditionname as condition_name,
                    cur_cond.conditionname as current_condition_name,
                    i.importname as import_name,
-                   d.deliveryname as delivery_name
+                   d.deliveryname as delivery_name,
+                   COALESCE(sold.sold_count, 0) AS sold_count,
+                   GREATEST(COALESCE(p.quantity, 0) - COALESCE(sold.sold_count, 0), 0) AS available_qty
             FROM products p
             LEFT JOIN types t ON p.typeid = t.id
             LEFT JOIN subtypes st ON p.subtypeid = st.id
@@ -708,6 +710,14 @@ def get_product_with_relations(db: Session, product_id: int) -> Optional[Dict[st
             LEFT JOIN conditions cur_cond ON p.current_conditionid = cur_cond.id
             LEFT JOIN imports i ON p.importid = i.id
             LEFT JOIN deliveries d ON p.deliveryid = d.id
+            LEFT JOIN (
+                SELECT oi.product_id, COUNT(*) AS sold_count
+                FROM order_items oi
+                JOIN orders o ON o.id = oi.order_id
+                WHERE oi.product_id IS NOT NULL
+                  AND o.order_status_id IN (1, 7)
+                GROUP BY oi.product_id
+            ) sold ON sold.product_id = p.id
             WHERE p.id = :id
         """)
         

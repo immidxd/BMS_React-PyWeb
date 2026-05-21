@@ -59,7 +59,8 @@ DIMENSIONS_PATTERN = re.compile(r'\d+\s*[×xXхХ]\s*\d+', re.UNICODE)
 # Unicode vulgar-fraction → decimal so "46½" matches DB "46.5"
 _UNICODE_FRACTIONS = {
     '½': '.5', '¼': '.25', '¾': '.75',
-    '⅓': '.33', '⅔': '.67',
+    # BMS sizeeu конвент: ⅓=.3, ⅔=.6 (не .33/.67) — щоб збігалось з products.sizeeu
+    '⅓': '.3', '⅔': '.6',
     '⅕': '.2', '⅖': '.4', '⅗': '.6', '⅘': '.8',
     '⅙': '.17', '⅚': '.83', '⅛': '.125', '⅜': '.375', '⅝': '.625', '⅞': '.875',
 }
