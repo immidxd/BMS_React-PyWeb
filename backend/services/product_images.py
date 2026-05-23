@@ -33,6 +33,11 @@ class ImageEntry:
     url: str
     index: int  # порядковий номер у галереї (0 = головна)
     is_defect: bool = False  # фото дефекту (filename типу `<pnum>_defN.<ext>`)
+    kind: str = "official"  # 'official' | 'real' | 'defect'
+    # Convention:
+    #   <pnum>_NN.<ext>     → official (студійні, для постів)
+    #   <pnum>_00NN.<ext>   → real     (мої фото, два нулі на початку)
+    #   <pnum>_defN.<ext>   → defect   (показується в обох галереях)
 
 
 def _normalize_number(productnumber: str) -> str:
@@ -71,21 +76,48 @@ def _is_defect_filename(filename: str, target: str) -> bool:
     return bool(re.match(pattern, base, flags=re.IGNORECASE))
 
 
-def _sort_key(filename: str, target: str) -> tuple:
-    """Натуральний порядок: витягуємо першу числову послідовність ПІСЛЯ номера товару.
+def _is_real_filename(filename: str, target: str) -> bool:
+    """Реальні фото: `<pnum>_00N.<ext>` — рівно два нулі на початку індексу.
 
-    Дефектні фото (`<pnum>_defN`) йдуть В КІНЕЦЬ — щоб не потрапити на index=0.
+    Приклади: `Ф4021_001.jpg`, `А1248_0012.png` → True
+             `Ф4021_01.jpg`,  `Ф4021_def1.jpg` → False
+    """
+    if not target:
+        return False
+    base = os.path.splitext(filename)[0]
+    pattern = rf"^#?{re.escape(target)}_00\d+\b"
+    return bool(re.match(pattern, base, flags=re.IGNORECASE))
+
+
+def _classify(filename: str, target: str) -> str:
+    if _is_defect_filename(filename, target):
+        return "defect"
+    if _is_real_filename(filename, target):
+        return "real"
+    return "official"
+
+
+def _sort_key(filename: str, target: str) -> tuple:
+    """Натуральний порядок усередині кожного kind.
+
+    Групи:  0 — official, 1 — official без числа, 2 — real, 3 — defect (в кінці).
+    Дефектні фото йдуть в кінець спільної стрічки, щоб у whichever-галереї
+    показуватись після всіх «нормальних».
     Tie-breaker: повне ім'я файлу alphabetically.
     """
     base = os.path.splitext(filename)[0]
     # видаляємо префікс # та сам номер товару (case-insensitive — для А1248 → а1248)
     stripped = re.sub(rf"^#?{re.escape(target)}", "", base, flags=re.IGNORECASE)
-    is_defect = _is_defect_filename(filename, target)
-    if is_defect:
-        # group=2 — обов'язково після всіх звичайних
+    kind = _classify(filename, target)
+    if kind == "defect":
         m = re.search(r"_def(\d+)", stripped, flags=re.IGNORECASE)
         defect_idx = int(m.group(1)) if m else 0
-        return (2, defect_idx, base.lower())
+        return (3, defect_idx, base.lower())
+    if kind == "real":
+        m = re.search(r"_00(\d+)", stripped, flags=re.IGNORECASE)
+        real_idx = int(m.group(1)) if m else 0
+        return (2, real_idx, base.lower())
+    # official
     m = re.search(r"\d+", stripped)
     if m:
         return (0, int(m.group(0)), base.lower())
@@ -120,6 +152,7 @@ def _list_local_only(target: str) -> List[ImageEntry]:
             url=f"{URL_PREFIX}/{quote(fn)}",
             index=i,
             is_defect=_is_defect_filename(fn, target),
+            kind=_classify(fn, target),
         )
         for i, fn in enumerate(matched)
     ]
@@ -154,6 +187,7 @@ def _list_drive_only(target: str) -> List[ImageEntry]:
             url=f"{URL_PREFIX_DRIVE}/{quote(fid)}",
             index=i,
             is_defect=_is_defect_filename(fn, target),
+            kind=_classify(fn, target),
         )
         for i, (fn, fid) in enumerate(filenames_sorted)
     ]
@@ -188,6 +222,6 @@ def list_images(productnumber: str) -> List[ImageEntry]:
     )
     # Re-index sequentially (0..N) on the merged result
     return [
-        ImageEntry(filename=e.filename, url=e.url, index=i, is_defect=e.is_defect)
+        ImageEntry(filename=e.filename, url=e.url, index=i, is_defect=e.is_defect, kind=e.kind)
         for i, e in enumerate(merged_sorted)
     ]

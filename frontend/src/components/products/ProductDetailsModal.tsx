@@ -10,11 +10,14 @@ interface Props {
   onClose: () => void;
 }
 
+type GalleryKind = 'official' | 'real' | 'defect';
+
 interface GalleryImage {
   filename: string;
   url: string;
   index: number;
   is_defect?: boolean;
+  kind?: GalleryKind;
 }
 
 const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose }) => {
@@ -22,14 +25,24 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose }) => {
   const [product, setProduct] = useState<Product | null>(null);
   const [allImages, setAllImages] = useState<GalleryImage[]>([]);
   const [showDefects, setShowDefects] = useState(false);
+  const [activeKind, setActiveKind] = useState<'official' | 'real'>('official');
   const [activeIdx, setActiveIdx] = useState(0);
   const [previewVisible, setPreviewVisible] = useState(false);
 
-  // Visible images: звичайні завжди; дефектні — лише коли користувач натиснув ⚠
-  const images = useMemo(
-    () => (showDefects ? allImages : allImages.filter((i) => !i.is_defect)),
-    [allImages, showDefects],
-  );
+  const officialCount = useMemo(() => allImages.filter((i) => (i.kind ?? 'official') === 'official').length, [allImages]);
+  const realCount = useMemo(() => allImages.filter((i) => i.kind === 'real').length, [allImages]);
+  const hasBothKinds = officialCount > 0 && realCount > 0;
+
+  // Visible images:
+  //   • активна галерея (official/real) — її фото;
+  //   • дефекти — спільні для обох, показуються лише коли увімкнено ⚠.
+  const images = useMemo(() => {
+    return allImages.filter((i) => {
+      const k = (i.kind ?? 'official') as GalleryKind;
+      if (k === 'defect') return showDefects;
+      return k === activeKind;
+    });
+  }, [allImages, showDefects, activeKind]);
   const defectCount = useMemo(() => allImages.filter((i) => i.is_defect).length, [allImages]);
 
   useEffect(() => {
@@ -38,6 +51,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose }) => {
     setProduct(null);
     setAllImages([]);
     setShowDefects(false);
+    setActiveKind('official');
     setActiveIdx(0);
     Promise.allSettled([
       productService.getProduct(productId),
@@ -50,7 +64,15 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose }) => {
       .finally(() => setLoading(false));
   }, [open, productId]);
 
-  // Clamp activeIdx коли images повертаються чи перемикається showDefects
+  // Якщо офіційних нема, а реальні є — стартуємо з «Реальні»
+  useEffect(() => {
+    if (allImages.length === 0) return;
+    const hasOfficial = allImages.some((i) => (i.kind ?? 'official') === 'official');
+    const hasReal = allImages.some((i) => i.kind === 'real');
+    if (!hasOfficial && hasReal) setActiveKind('real');
+  }, [allImages]);
+
+  // Clamp activeIdx коли images повертаються чи перемикається showDefects/activeKind
   useEffect(() => {
     if (activeIdx >= images.length) setActiveIdx(Math.max(0, images.length - 1));
   }, [images.length, activeIdx]);
@@ -129,6 +151,10 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose }) => {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
+      <style>{`
+        @keyframes bmsFadeIn { from { opacity: 0; } to { opacity: 1; } }
+        .bms-fade-in { animation: bmsFadeIn 180ms ease-out; }
+      `}</style>
       {/* Backdrop */}
       <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
 
@@ -221,6 +247,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose }) => {
                     {activeImage ? (
                       <>
                         <Image
+                          key={activeImage.url}
                           src={activeImage.url}
                           alt={activeImage.filename}
                           preview={{
@@ -228,7 +255,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose }) => {
                             onVisibleChange: setPreviewVisible,
                             src: activeImage.url,
                           }}
-                          className="!w-full !h-full"
+                          className="!w-full !h-full bms-fade-in"
                           style={{ objectFit: 'contain', width: '100%', height: '100%', cursor: 'zoom-in' }}
                           wrapperStyle={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
                         />
@@ -268,6 +295,36 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose }) => {
                       </div>
                     )}
                   </div>
+
+                  {/* Gallery kind switcher — мінімалістичний segmented (тільки якщо є обидва типи) */}
+                  {hasBothKinds && (
+                    <div className="inline-flex self-start items-center rounded-full bg-gray-100 dark:bg-gray-800/60 p-0.5 text-[11px] font-medium select-none">
+                      <button
+                        type="button"
+                        onClick={() => { if (activeKind !== 'official') { setActiveKind('official'); setActiveIdx(0); } }}
+                        className={`px-3 py-1 rounded-full transition-all duration-200 ${
+                          activeKind === 'official'
+                            ? 'bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-50 shadow-sm'
+                            : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'
+                        }`}
+                        title={`Офіційні фото (${officialCount})`}
+                      >
+                        Офіційні
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => { if (activeKind !== 'real') { setActiveKind('real'); setActiveIdx(0); } }}
+                        className={`px-3 py-1 rounded-full transition-all duration-200 ${
+                          activeKind === 'real'
+                            ? 'bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-50 shadow-sm'
+                            : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'
+                        }`}
+                        title={`Мої реальні фото (${realCount})`}
+                      >
+                        Реальні
+                      </button>
+                    </div>
+                  )}
 
                   {/* Thumbnails */}
                   {images.length > 1 && (
