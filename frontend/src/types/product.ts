@@ -25,6 +25,14 @@ export interface Product {
     season?: string;       // multi-value, comma-separated: "Зима, Осінь"
     dimensions?: string;   // габарити: "40x20x5"
     width?: string;        // ширина ніжки: "Вузька"/"Стандартна"/"Широка" або B/D/EE
+    // Clothing measurements (см)
+    measurements_length?: number;      // довжина
+    measurements_pog_min?: number;     // периметр грудей min
+    measurements_pog_max?: number;     // периметр грудей max
+    measurements_pob_min?: number;     // периметр бьодер min
+    measurements_pob_max?: number;     // периметр бьодер max
+    measurements_pot_min?: number;     // периметр талії min
+    measurements_pot_max?: number;     // периметр талії max
     quantity: number;
     typeid?: number;
     subtypeid?: number;

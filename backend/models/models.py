@@ -324,6 +324,14 @@ class Product(Base):
     season = Column(String(100))      # multi-value, comma-separated: "Зима, Осінь"
     dimensions = Column(String(50))   # габарити: "40x20x5"
     width = Column(String(20))        # ширина ніжки: "Вузька"/"Стандартна"/"Широка" або B/D/EE
+    # Clothing measurements (см)
+    measurements_length = Column(Float)               # довжина
+    measurements_pog_min = Column(Float)              # периметр грудей min
+    measurements_pog_max = Column(Float)              # периметр грудей max
+    measurements_pob_min = Column(Float)              # периметр бьодер min
+    measurements_pob_max = Column(Float)              # периметр бьодер max
+    measurements_pot_min = Column(Float)              # периметр талії min
+    measurements_pot_max = Column(Float)              # периметр талії max
     quantity = Column(Integer, default=1)
     mainimage = Column(String(255))
     created_at = Column(DateTime, default=datetime.utcnow)

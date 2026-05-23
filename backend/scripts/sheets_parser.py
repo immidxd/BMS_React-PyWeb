@@ -55,6 +55,45 @@ def is_skip_sheet(title: str) -> bool:
 
 _MEASUREMENT_RE = re.compile(r'\d+[хxХX]\d+')
 _NUMERIC_SLASH_RE = re.compile(r'^(\d+(?:\.\d+)?)/(\d+(?:\.\d+)?)$')
+_RANGE_RE = re.compile(r'^(\d+(?:\.\d+)?)[–—-](\d+(?:\.\d+)?)$')  # Range: 45-48, 45–48, 45—48
+
+
+def _parse_measurement_range(val: str) -> tuple[Optional[float], Optional[float]]:
+    """
+    Parse clothing measurement (length, chest, hips, waist) into min/max values.
+
+    Returns (min_val, max_val):
+      "45" → (45.0, None)
+      "45-48" / "45–48" / "45—48" → (45.0, 48.0)
+      "45/48" → (45.0, 48.0)
+      "" → (None, None)
+    """
+    s = (val or "").strip().replace(",", ".")
+    if not s:
+        return (None, None)
+
+    # Try range format: "45-48" or "45–48" or "45—48"
+    m_range = _RANGE_RE.match(s)
+    if m_range:
+        try:
+            return (float(m_range.group(1)), float(m_range.group(2)))
+        except (ValueError, TypeError):
+            pass
+
+    # Try slash format: "45/48"
+    m_slash = _NUMERIC_SLASH_RE.match(s)
+    if m_slash:
+        try:
+            return (float(m_slash.group(1)), float(m_slash.group(2)))
+        except (ValueError, TypeError):
+            pass
+
+    # Single value
+    try:
+        val_float = float(s)
+        return (val_float, None)
+    except (ValueError, TypeError):
+        return (None, None)
 
 
 def _normalize_size(val: str) -> str:
@@ -983,6 +1022,23 @@ def _parse_products_sheet(
         season_val       = col(row, "Сезон").strip() if "Сезон" in header else ""
         style_val        = col(row, "Стиль").strip() if "Стиль" in header else ""
         current_cond_val = col(row, "Поточний стан").strip() if "Поточний стан" in header else ""
+        # Нові колонки для заміру одягу (одяг: довжина, ПОГ, ПОБ, ПОТ)
+        length_val = col(row, "Довжина").strip() if "Довжина" in header else ""
+        pog_val    = col(row, "Груди (н/о)").strip() if "Груди (н/о)" in header else ""
+        pob_val    = col(row, "Бедра (н/о)").strip() if "Бедра (н/о)" in header else ""
+        pot_val    = col(row, "Талія (н/о)").strip() if "Талія (н/о)" in header else ""
+
+        # Parse measurements into (min, max) tuples
+        length_float = None
+        try:
+            if length_val:
+                length_float, _ = _parse_measurement_range(length_val)
+        except:
+            pass
+
+        pog_min, pog_max = _parse_measurement_range(pog_val) if pog_val else (None, None)
+        pob_min, pob_max = _parse_measurement_range(pob_val) if pob_val else (None, None)
+        pot_min, pot_max = _parse_measurement_range(pot_val) if pot_val else (None, None)
 
         # ── Resolve FK refs ────────────────────────────────────────────────
         # Guard: split combined types ("Туфлі/кросівки", "Ботинки-челсі") → Type + Subtype
@@ -1231,6 +1287,13 @@ def _parse_products_sheet(
                     price                 = price_float,
                     sizeeu                = size_val or None,
                     measurementscm        = cm_val or None,
+                    measurements_length   = length_float,
+                    measurements_pog_min  = pog_min,
+                    measurements_pog_max  = pog_max,
+                    measurements_pob_min  = pob_min,
+                    measurements_pob_max  = pob_max,
+                    measurements_pot_min  = pot_min,
+                    measurements_pot_max  = pot_max,
                     dateadded             = sheet_date or date.today(),
                     quantity              = 1,
                     brandid               = brand_id,
@@ -1289,6 +1352,13 @@ def _parse_products_sheet(
                     price                 = price_float,
                     sizeeu                = size_val or None,
                     measurementscm        = cm_val or None,
+                    measurements_length   = length_float,
+                    measurements_pog_min  = pog_min,
+                    measurements_pog_max  = pog_max,
+                    measurements_pob_min  = pob_min,
+                    measurements_pob_max  = pob_max,
+                    measurements_pot_min  = pot_min,
+                    measurements_pot_max  = pot_max,
                     dateadded             = sheet_date or date.today(),
                     quantity              = 1,
                     brandid               = brand_id,
@@ -1416,6 +1486,14 @@ def _parse_products_sheet(
                             price                 = price_float,
                             sizeeu                = size_val or None,
                             measurementscm        = cm_val or None,
+                            measurements_length   = length_float,
+                    measurements_pog_min  = pog_min,
+                    measurements_pog_max  = pog_max,
+                    measurements_pob_min  = pob_min,
+                    measurements_pob_max  = pob_max,
+                    measurements_pot_min  = pot_min,
+                    measurements_pot_max  = pot_max,
+
                             dateadded             = sheet_date or date.today(),
                             quantity              = 1,
                             brandid               = brand_id,
@@ -1522,6 +1600,14 @@ def _parse_products_sheet(
                         price                 = price_float,
                         sizeeu                = size_val or None,
                         measurementscm        = cm_val or None,
+                        measurements_length   = length_float,
+                    measurements_pog_min  = pog_min,
+                    measurements_pog_max  = pog_max,
+                    measurements_pob_min  = pob_min,
+                    measurements_pob_max  = pob_max,
+                    measurements_pot_min  = pot_min,
+                    measurements_pot_max  = pot_max,
+
                         dateadded             = sheet_date or date.today(),
                         quantity              = 1,
                         brandid               = brand_id,
