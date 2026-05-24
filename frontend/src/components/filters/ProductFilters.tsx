@@ -223,7 +223,8 @@ const ProductFiltersPanel: React.FC<ProductFiltersPanelProps> = ({ filters, sele
     + typeFilterBadge
     + (selectedFilters.min_price !== undefined || selectedFilters.max_price !== undefined ? 1 : 0)
     + (selectedFilters.sizeeu?.length || 0)
-    + (selectedFilters.min_sizeeu !== undefined || selectedFilters.max_sizeeu !== undefined ? 1 : 0);
+    + (selectedFilters.min_sizeeu !== undefined || selectedFilters.max_sizeeu !== undefined ? 1 : 0)
+    + (selectedFilters.min_measurementscm !== undefined || selectedFilters.max_measurementscm !== undefined ? 1 : 0);
 
   const euSizes = useMemo(() => {
     const raw = filters.size_ranges?.eu || [];
@@ -527,6 +528,51 @@ const ProductFiltersPanel: React.FC<ProductFiltersPanelProps> = ({ filters, sele
           </div>
         </FilterSection>
       )}
+
+      {/* СМ (довжина стопи) */}
+      <FilterSection
+        title="Розмір в СМ"
+        badge={selectedFilters.min_measurementscm !== undefined || selectedFilters.max_measurementscm !== undefined ? 1 : 0}
+      >
+        <div className="flex items-center gap-1.5">
+          <input
+            type="number"
+            step="0.5"
+            min="10"
+            max="40"
+            placeholder="Від"
+            value={selectedFilters.min_measurementscm ?? ''}
+            onChange={e => {
+              const v = e.target.value ? parseFloat(e.target.value) : undefined;
+              onFilterChange({ ...selectedFilters, min_measurementscm: v });
+            }}
+            className="w-full border border-gray-200 dark:border-gray-600 rounded px-2 py-1 text-xs bg-white dark:bg-gray-700 text-gray-800 dark:text-gray-200 focus:outline-none focus:border-blue-400"
+          />
+          <span className="text-gray-400 text-xs flex-shrink-0">—</span>
+          <input
+            type="number"
+            step="0.5"
+            min="10"
+            max="40"
+            placeholder="До"
+            value={selectedFilters.max_measurementscm ?? ''}
+            onChange={e => {
+              const v = e.target.value ? parseFloat(e.target.value) : undefined;
+              onFilterChange({ ...selectedFilters, max_measurementscm: v });
+            }}
+            className="w-full border border-gray-200 dark:border-gray-600 rounded px-2 py-1 text-xs bg-white dark:bg-gray-700 text-gray-800 dark:text-gray-200 focus:outline-none focus:border-blue-400"
+          />
+          {(selectedFilters.min_measurementscm !== undefined || selectedFilters.max_measurementscm !== undefined) && (
+            <button
+              type="button"
+              onClick={() => onFilterChange({ ...selectedFilters, min_measurementscm: undefined, max_measurementscm: undefined })}
+              className="flex-shrink-0 text-gray-400 hover:text-red-500 transition-colors text-sm leading-none"
+              title="Скинути"
+            >×</button>
+          )}
+        </div>
+        <p className="text-[10px] text-gray-400 mt-1">довжина стопи/виробу в см</p>
+      </FilterSection>
 
       {/* Ціна */}
       <FilterSection

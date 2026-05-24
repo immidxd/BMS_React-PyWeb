@@ -134,6 +134,10 @@ def get_products(
                st.subtypename as subtype_name,
                sty.stylename as style_name,
                sup.company_name as supplier_name,
+               sol.soletypename as sole_type_name,
+               tsh.toeshapename as toe_shape_name,
+               fst.fasteningtypename as fastening_type_name,
+               lin.liningname as lining_name,
                COALESCE(sold.sold_count, 0) AS sold_count,
                GREATEST(COALESCE(p.quantity, 0) - COALESCE(sold.sold_count, 0), 0) AS available_qty,
                COALESCE(dup.dup_brands, 0) AS pnum_dup_brands,
@@ -158,6 +162,10 @@ def get_products(
         LEFT JOIN genders g ON p.genderid = g.id
         LEFT JOIN subtypes st ON p.subtypeid = st.id
         LEFT JOIN styles sty ON p.styleid = sty.id
+        LEFT JOIN sole_types sol ON p.soletypeid = sol.id
+        LEFT JOIN toe_shapes tsh ON p.toeshapeid = tsh.id
+        LEFT JOIN fastening_types fst ON p.fasteningtypeid = fst.id
+        LEFT JOIN linings lin ON p.liningid = lin.id
         LEFT JOIN (
             SELECT oi.product_id, COUNT(*) AS sold_count
             FROM order_items oi
@@ -337,6 +345,14 @@ def get_products(
             if filters.max_price is not None:
                 where_conditions.append("p.price <= :max_price")
                 params['max_price'] = filters.max_price
+
+            # Measurements CM range filter
+            if getattr(filters, 'min_measurementscm', None) is not None:
+                where_conditions.append("p.measurementscm_max >= :min_cm")
+                params['min_cm'] = filters.min_measurementscm
+            if getattr(filters, 'max_measurementscm', None) is not None:
+                where_conditions.append("p.measurementscm_min <= :max_cm")
+                params['max_cm'] = filters.max_measurementscm
 
             # Size EU range filter (min/max) — takes priority over multi-select if both are provided
             if filters.min_sizeeu is not None or filters.max_sizeeu is not None:
@@ -524,6 +540,16 @@ def get_products(
                 'supplier_name': m.get('supplier_name'),
                 'subtype_name': m.get('subtype_name'),
                 'style_name': m.get('style_name'),
+                'measurementscm_min': m.get('measurementscm_min'),
+                'measurementscm_max': m.get('measurementscm_max'),
+                'soletypeid': m.get('soletypeid'),
+                'toeshapeid': m.get('toeshapeid'),
+                'fasteningtypeid': m.get('fasteningtypeid'),
+                'liningid': m.get('liningid'),
+                'sole_type_name': m.get('sole_type_name'),
+                'toe_shape_name': m.get('toe_shape_name'),
+                'fastening_type_name': m.get('fastening_type_name'),
+                'lining_name': m.get('lining_name'),
                 'sold_count': m.get('sold_count', 0),
                 'available_qty': m.get('available_qty'),
                 'pnum_dup_brands': m.get('pnum_dup_brands', 0),
@@ -712,8 +738,13 @@ def get_product_with_relations(db: Session, product_id: int) -> Optional[Dict[st
                    cur_cond.conditionname as current_condition_name,
                    i.importname as import_name,
                    d.deliveryname as delivery_name,
+                   sol.soletypename as sole_type_name,
+                   tsh.toeshapename as toe_shape_name,
+                   fst.fasteningtypename as fastening_type_name,
+                   lin.liningname as lining_name,
                    COALESCE(sold.sold_count, 0) AS sold_count,
-                   GREATEST(COALESCE(p.quantity, 0) - COALESCE(sold.sold_count, 0), 0) AS available_qty
+                   GREATEST(COALESCE(p.quantity, 0) - COALESCE(sold.sold_count, 0), 0) AS available_qty,
+                   mat_agg.materials_json
             FROM products p
             LEFT JOIN types t ON p.typeid = t.id
             LEFT JOIN subtypes st ON p.subtypeid = st.id
@@ -728,6 +759,10 @@ def get_product_with_relations(db: Session, product_id: int) -> Optional[Dict[st
             LEFT JOIN conditions cur_cond ON p.current_conditionid = cur_cond.id
             LEFT JOIN imports i ON p.importid = i.id
             LEFT JOIN deliveries d ON p.deliveryid = d.id
+            LEFT JOIN sole_types sol ON p.soletypeid = sol.id
+            LEFT JOIN toe_shapes tsh ON p.toeshapeid = tsh.id
+            LEFT JOIN fastening_types fst ON p.fasteningtypeid = fst.id
+            LEFT JOIN linings lin ON p.liningid = lin.id
             LEFT JOIN (
                 SELECT oi.product_id, COUNT(*) AS sold_count
                 FROM order_items oi
@@ -736,6 +771,20 @@ def get_product_with_relations(db: Session, product_id: int) -> Optional[Dict[st
                   AND o.order_status_id IN (1, 7)
                 GROUP BY oi.product_id
             ) sold ON sold.product_id = p.id
+            LEFT JOIN LATERAL (
+                SELECT json_agg(
+                    json_build_object(
+                        'position', pm.position,
+                        'material_id', pm.material_id,
+                        'materialname', m.materialname,
+                        'category', m.category,
+                        'ord', pm.ord
+                    ) ORDER BY pm.ord
+                ) AS materials_json
+                FROM product_materials pm
+                JOIN materials m ON m.id = pm.material_id
+                WHERE pm.product_id = p.id
+            ) mat_agg ON true
             WHERE p.id = :id
         """)
         
@@ -745,8 +794,18 @@ def get_product_with_relations(db: Session, product_id: int) -> Optional[Dict[st
         if not result:
             logger.warning(f"Product with ID {product_id} not found with relations")
             return None
-        
-        return dict(result)
+
+        data = dict(result)
+        # Parse materials JSON (PostgreSQL returns it as a string or None)
+        import json as _json
+        raw_mat = data.pop('materials_json', None)
+        if isinstance(raw_mat, str):
+            data['materials'] = _json.loads(raw_mat) or []
+        elif isinstance(raw_mat, list):
+            data['materials'] = raw_mat
+        else:
+            data['materials'] = []
+        return data
     except Exception as e:
         logger.error(f"Error fetching product ID {product_id} with relations: {str(e)}")
         raise

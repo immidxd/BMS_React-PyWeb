@@ -124,6 +124,11 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
         { id: 'dimensions', title: 'Габарити', optional: true },
         // 7
         { id: 'measurementscm', title: 'СМ', optional: false },
+        { id: 'sole_type_name', title: 'Тип підошви', optional: true },
+        { id: 'toe_shape_name', title: 'Форма носка', optional: true },
+        { id: 'fastening_type_name', title: 'Застібка', optional: true },
+        { id: 'lining_name', title: 'Підкладка', optional: true },
+        { id: 'materials_summary', title: 'Матеріали', optional: true },
         // 8
         { id: 'price', title: 'Ціна', optional: false },
         // 8.1, 8.2
@@ -272,6 +277,20 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
             }},
         measurementscm: { title: 'СМ', dataIndex: 'measurementscm', key: 'measurementscm', width: 60,
             render: (text: string) => <span className="text-xs">{text}</span> },
+        sole_type_name: { title: 'Тип підошви', dataIndex: 'sole_type_name', key: 'sole_type_name', width: 110,
+            render: (text: string) => text ? <span className="text-xs">{text}</span> : null },
+        toe_shape_name: { title: 'Форма носка', dataIndex: 'toe_shape_name', key: 'toe_shape_name', width: 110,
+            render: (text: string) => text ? <span className="text-xs">{text}</span> : null },
+        fastening_type_name: { title: 'Застібка', dataIndex: 'fastening_type_name', key: 'fastening_type_name', width: 90,
+            render: (text: string) => text ? <span className="text-xs">{text}</span> : null },
+        lining_name: { title: 'Підкладка', dataIndex: 'lining_name', key: 'lining_name', width: 90,
+            render: (text: string) => text ? <span className="text-xs">{text}</span> : null },
+        materials_summary: { title: 'Матеріали', key: 'materials_summary', width: 140,
+            render: (_: any, record: Product) => {
+                if (!record.materials || record.materials.length === 0) return null;
+                const names = record.materials.map(m => m.materialname || '').filter(Boolean);
+                return <span className="text-xs text-gray-600 dark:text-gray-400">{names.join(', ')}</span>;
+            }},
         price: { title: 'Ціна', dataIndex: 'price', key: 'price', width: 50, sorter: true,
             render: (price: number, record: Product) => (
                 <span className="text-xs">

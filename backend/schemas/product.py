@@ -10,6 +10,31 @@ class ReferenceItem(BaseModel):
     class Config:
         from_attributes = True
 
+
+class ProductMaterialEntry(BaseModel):
+    """One material assignment on a product (e.g. upper = шкіра)."""
+    position: str           # upper|middle|insole|sole|membrane
+    material_id: int
+    materialname: Optional[str] = None   # convenience for API consumers
+    category: Optional[str] = None
+    ord: int = 0
+
+    class Config:
+        from_attributes = True
+
+
+# Common measurement/materials fields shared by Base/List/Response.
+# Keeping them as a flat mixin avoids drift between schemas.
+_MEASUREMENT_FIELDS = {
+    "measurements_length_min", "measurements_length_max",
+    "measurements_pog_min", "measurements_pog_max",
+    "measurements_pob_min", "measurements_pob_max",
+    "measurements_pot_min", "measurements_pot_max",
+    "measurements_sleeve_min", "measurements_sleeve_max",
+    "measurements_height_min", "measurements_height_max",
+    "measurements_sole_thickness_min", "measurements_sole_thickness_max",
+}
+
 # Базова модель товару
 class ProductBase(BaseModel):
     productnumber: str = Field(..., min_length=1, max_length=50, description="Унікальний номер товару")
@@ -27,10 +52,34 @@ class ProductBase(BaseModel):
     sizeuk: Optional[str] = Field(None, max_length=10, description="Розмір за британською шкалою")
     sizejp: Optional[str] = Field(None, max_length=10, description="Розмір за японською шкалою")
     sizecn: Optional[str] = Field(None, max_length=10, description="Розмір за китайською шкалою")
-    measurementscm: Optional[str] = Field(None, max_length=50, description="Розміри виробу в сантиметрах")
+    measurementscm: Optional[str] = Field(None, max_length=50, description="Розміри виробу в сантиметрах (display, legacy)")
+    measurementscm_min: Optional[float] = Field(None, description="СМ (min) — для числових range-фільтрів")
+    measurementscm_max: Optional[float] = Field(None, description="СМ (max) — для числових range-фільтрів")
     season: Optional[str] = Field(None, max_length=100, description="Сезон (multi-value, через кому): \"Зима, Осінь\"")
     dimensions: Optional[str] = Field(None, max_length=50, description="Габарити: \"40x20x5\"")
     width: Optional[str] = Field(None, max_length=20, description="Ширина ніжки: 'Вузька'/'Стандартна'/'Широка' або B/D/EE")
+    # Заміри (см) — всі min/max; single value = min == max; діапазон = min<max
+    measurements_length_min: Optional[float] = Field(None, description="Довжина, см (min)")
+    measurements_length_max: Optional[float] = Field(None, description="Довжина, см (max)")
+    measurements_pog_min: Optional[float] = Field(None, description="Напівобхват грудей, см (min)")
+    measurements_pog_max: Optional[float] = Field(None, description="Напівобхват грудей, см (max)")
+    measurements_pob_min: Optional[float] = Field(None, description="Напівобхват бедер, см (min)")
+    measurements_pob_max: Optional[float] = Field(None, description="Напівобхват бедер, см (max)")
+    measurements_pot_min: Optional[float] = Field(None, description="Напівобхват талії, см (min)")
+    measurements_pot_max: Optional[float] = Field(None, description="Напівобхват талії, см (max)")
+    measurements_sleeve_min: Optional[float] = Field(None, description="Довжина рукава, см (min)")
+    measurements_sleeve_max: Optional[float] = Field(None, description="Довжина рукава, см (max)")
+    measurements_height_min: Optional[float] = Field(None, description="Висота взуття, см (min)")
+    measurements_height_max: Optional[float] = Field(None, description="Висота взуття, см (max)")
+    measurements_sole_thickness_min: Optional[float] = Field(None, description="Товщина підошви/платформи, см (min)")
+    measurements_sole_thickness_max: Optional[float] = Field(None, description="Товщина підошви/платформи, см (max)")
+    measurements_heel_min: Optional[float] = Field(None, description="Висота каблука/підбора, см (min)")
+    measurements_heel_max: Optional[float] = Field(None, description="Висота каблука/підбора, см (max)")
+    # Shoe-specific lookup FKs (single value per product)
+    soletypeid: Optional[int] = Field(None, description="ID типу підошви")
+    toeshapeid: Optional[int] = Field(None, description="ID форми носка")
+    fasteningtypeid: Optional[int] = Field(None, description="ID типу застібки")
+    liningid: Optional[int] = Field(None, description="ID типу підкладки")
     quantity: int = Field(1, ge=0, description="Кількість товару в наявності")
     mainimage: Optional[str] = Field(None, max_length=255, description="URL основного зображення товару")
     is_visible: bool = Field(True, description="Чи відображається товар")
@@ -100,6 +149,29 @@ class ProductUpdate(BaseModel):
     sizejp: Optional[str] = None
     sizecn: Optional[str] = None
     measurementscm: Optional[str] = None
+    measurementscm_min: Optional[float] = None
+    measurementscm_max: Optional[float] = None
+    measurements_length_min: Optional[float] = None
+    measurements_length_max: Optional[float] = None
+    measurements_pog_min: Optional[float] = None
+    measurements_pog_max: Optional[float] = None
+    measurements_pob_min: Optional[float] = None
+    measurements_pob_max: Optional[float] = None
+    measurements_pot_min: Optional[float] = None
+    measurements_pot_max: Optional[float] = None
+    measurements_sleeve_min: Optional[float] = None
+    measurements_sleeve_max: Optional[float] = None
+    measurements_height_min: Optional[float] = None
+    measurements_height_max: Optional[float] = None
+    measurements_sole_thickness_min: Optional[float] = None
+    measurements_sole_thickness_max: Optional[float] = None
+    measurements_heel_min: Optional[float] = None
+    measurements_heel_max: Optional[float] = None
+    soletypeid: Optional[int] = None
+    toeshapeid: Optional[int] = None
+    fasteningtypeid: Optional[int] = None
+    liningid: Optional[int] = None
+    materials: Optional[List[ProductMaterialEntry]] = None   # full replace on PUT if provided
     quantity: Optional[int] = None
     mainimage: Optional[str] = None
     is_visible: Optional[bool] = None
@@ -165,6 +237,11 @@ class Product(ProductBase):
     current_condition_name: Optional[str] = None
     import_name: Optional[str] = None
     delivery_name: Optional[str] = None
+    sole_type_name: Optional[str] = None
+    toe_shape_name: Optional[str] = None
+    fastening_type_name: Optional[str] = None
+    lining_name: Optional[str] = None
+    materials: List[ProductMaterialEntry] = []
 
     class Config:
         orm_mode = True
@@ -189,6 +266,8 @@ class ProductList(BaseModel):
     sizejp: Optional[str] = None
     sizecn: Optional[str] = None
     measurementscm: Optional[str] = None
+    measurementscm_min: Optional[float] = None
+    measurementscm_max: Optional[float] = None
     mainimage: Optional[str] = None
     is_visible: Optional[bool] = None
     dateadded: Optional[str] = None
@@ -204,6 +283,32 @@ class ProductList(BaseModel):
     season: Optional[str] = None
     dimensions: Optional[str] = None
     width: Optional[str] = None
+    # Заміри (см) — всі min/max
+    measurements_length_min: Optional[float] = None
+    measurements_length_max: Optional[float] = None
+    measurements_pog_min: Optional[float] = None
+    measurements_pog_max: Optional[float] = None
+    measurements_pob_min: Optional[float] = None
+    measurements_pob_max: Optional[float] = None
+    measurements_pot_min: Optional[float] = None
+    measurements_pot_max: Optional[float] = None
+    measurements_sleeve_min: Optional[float] = None
+    measurements_sleeve_max: Optional[float] = None
+    measurements_height_min: Optional[float] = None
+    measurements_height_max: Optional[float] = None
+    measurements_sole_thickness_min: Optional[float] = None
+    measurements_sole_thickness_max: Optional[float] = None
+    measurements_heel_min: Optional[float] = None
+    measurements_heel_max: Optional[float] = None
+    soletypeid: Optional[int] = None
+    toeshapeid: Optional[int] = None
+    fasteningtypeid: Optional[int] = None
+    liningid: Optional[int] = None
+    sole_type_name: Optional[str] = None
+    toe_shape_name: Optional[str] = None
+    fastening_type_name: Optional[str] = None
+    lining_name: Optional[str] = None
+    materials: List[ProductMaterialEntry] = []
     importid: Optional[int] = None
     deliveryid: Optional[int] = None
 
@@ -271,6 +376,9 @@ class ProductFilter(BaseModel):
     sizeeu: Optional[List[str]] = None
     min_sizeeu: Optional[float] = None   # range filter: from
     max_sizeeu: Optional[float] = None   # range filter: to
+    # Measurements CM range filter
+    min_measurementscm: Optional[float] = None
+    max_measurementscm: Optional[float] = None
     # Visibility
     is_visible: Optional[bool] = None
     with_stock_only: Optional[bool] = None

@@ -30,7 +30,7 @@ SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive",
 ]
-JOURNAL_ID    = "1s5Cz7ZGqhigzysGtAXbIo5tR3ni2zMn1salIaiRc2qA"
+JOURNAL_ID    = "102usNqWz07mKUr77_9K_sp9PcsOiAskSnJybk72OeTk"
 ORDERS_ID     = "1rjCN-xBm-maxp0S0o7Lypp8rHmW2qsBirJ7nfN09lqw"
 WORKSPACE_ID  = "1q0hUp4oM3hAYciibe5v5h4Uc9Jvhkd8Dl7C8yk2niFA"
 WORKSPACE_SHEET = "Воркспейс1"
@@ -55,24 +55,26 @@ def is_skip_sheet(title: str) -> bool:
 
 _MEASUREMENT_RE = re.compile(r'\d+[хxХX]\d+')
 _NUMERIC_SLASH_RE = re.compile(r'^(\d+(?:\.\d+)?)/(\d+(?:\.\d+)?)$')
-_RANGE_RE = re.compile(r'^(\d+(?:\.\d+)?)[–—-](\d+(?:\.\d+)?)$')  # Range: 45-48, 45–48, 45—48
+_RANGE_RE = re.compile(r'^(\d+(?:\.\d+)?)[\-‐‑‒–—―](\d+(?:\.\d+)?)$')
+# Accepts hyphen-minus + Unicode hyphens: ‐ ‑ ‒ – — ―
 
 
 def _parse_measurement_range(val: str) -> tuple[Optional[float], Optional[float]]:
     """
-    Parse clothing measurement (length, chest, hips, waist) into min/max values.
+    Parse a measurement (length/chest/hips/waist/sleeve/height/sole_thickness) into (min, max).
 
-    Returns (min_val, max_val):
-      "45" → (45.0, None)
-      "45-48" / "45–48" / "45—48" → (45.0, 48.0)
-      "45/48" → (45.0, 48.0)
-      "" → (None, None)
+    Convention: single value → (v, v). Lets range filters
+    `WHERE col_min <= X AND col_max >= X` match single values too.
+
+      "45"                              → (45.0, 45.0)
+      "45-48" / "45–48" / "45—48"       → (45.0, 48.0)
+      "45/48"                           → (45.0, 48.0)
+      ""                                → (None, None)
     """
     s = (val or "").strip().replace(",", ".")
     if not s:
         return (None, None)
 
-    # Try range format: "45-48" or "45–48" or "45—48"
     m_range = _RANGE_RE.match(s)
     if m_range:
         try:
@@ -80,7 +82,6 @@ def _parse_measurement_range(val: str) -> tuple[Optional[float], Optional[float]
         except (ValueError, TypeError):
             pass
 
-    # Try slash format: "45/48"
     m_slash = _NUMERIC_SLASH_RE.match(s)
     if m_slash:
         try:
@@ -88,12 +89,219 @@ def _parse_measurement_range(val: str) -> tuple[Optional[float], Optional[float]
         except (ValueError, TypeError):
             pass
 
-    # Single value
     try:
-        val_float = float(s)
-        return (val_float, None)
+        v = float(s)
+        return (v, v)
     except (ValueError, TypeError):
         return (None, None)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Materials parsing
+# ─────────────────────────────────────────────────────────────────────────────
+# Accepted separators between materials in one cell: "," ";" "+" "/"
+_MATERIAL_SPLIT_RE = re.compile(r'\s*[,;+/]\s*')
+# Optional leading percentage: "80% бавовна" → "бавовна"
+_MATERIAL_PCT_RE = re.compile(r'^\s*\d+(?:[.,]\d+)?\s*%\s*')
+
+# Sheet column header → DB position
+MATERIAL_POSITIONS: dict[str, str] = {
+    "Верх":     "upper",
+    "Середина": "middle",
+    "Устілка":  "insole",
+    "Підошва":  "sole",
+    "Мембрана": "membrane",
+}
+
+
+def _split_materials_cell(raw: str) -> list[str]:
+    """'гладка шкіра, текстиль + замша' → ['гладка шкіра','текстиль','замша'] (lowercased)."""
+    if not raw:
+        return []
+    parts = _MATERIAL_SPLIT_RE.split(raw.strip())
+    out: list[str] = []
+    for p in parts:
+        p = _MATERIAL_PCT_RE.sub("", p).strip().lower()
+        if p:
+            out.append(p)
+    return out
+
+
+# Cache: lowercased materialname → material_id. Populated lazily per parser run.
+_materials_cache: dict[str, int] = {}
+
+# Per-table cache for shoe lookups (sole_types / toe_shapes / fastening_types / linings)
+# Keyed by (table_name, lowercased_value) → id.
+_shoe_lookup_cache: dict[tuple[str, str], Optional[int]] = {}
+
+
+def _resolve_shoe_lookup_id(session, table: str, name_col: str, value: str) -> Optional[int]:
+    """
+    Resolve a single-FK lookup (sole_types/toe_shapes/fastening_types/linings) by
+    canonical lowercase name. Never auto-creates; unknown → None (caller decides
+    whether to log to unmapped queue).
+    """
+    if not value:
+        return None
+    key_val = value.strip().lower()
+    if not key_val:
+        return None
+    cache_key = (table, key_val)
+    if cache_key in _shoe_lookup_cache:
+        return _shoe_lookup_cache[cache_key]
+    from sqlalchemy import text as _sql
+    row = session.execute(
+        _sql(f"SELECT id FROM {table} WHERE LOWER({name_col}) = :v LIMIT 1"),
+        {"v": key_val},
+    ).first()
+    rid = int(row[0]) if row else None
+    _shoe_lookup_cache[cache_key] = rid
+    return rid
+
+
+# Sheet column → (table, name_col, FK column on products) for shoe lookups
+SHOE_LOOKUP_COLUMNS: dict[str, tuple[str, str, str]] = {
+    "Тип підошви": ("sole_types",       "soletypename",       "soletypeid"),
+    "Форма носка": ("toe_shapes",       "toeshapename",       "toeshapeid"),
+    "Застібка":    ("fastening_types",  "fasteningtypename",  "fasteningtypeid"),
+    "Підкладка":   ("linings",          "liningname",         "liningid"),
+}
+
+# New min/max measurement pairs (paired so we never set min without max).
+_NEW_MIN_MAX_PAIRS: list[tuple[str, str]] = [
+    ("measurementscm_min",              "measurementscm_max"),
+    ("measurements_length_min",         "measurements_length_max"),
+    ("measurements_pog_min",            "measurements_pog_max"),
+    ("measurements_pob_min",            "measurements_pob_max"),
+    ("measurements_pot_min",            "measurements_pot_max"),
+    ("measurements_sleeve_min",         "measurements_sleeve_max"),
+    ("measurements_height_min",         "measurements_height_max"),
+    ("measurements_sole_thickness_min", "measurements_sole_thickness_max"),
+    ("measurements_heel_min",           "measurements_heel_max"),
+]
+# Single-FK fields (one value per product).
+_NEW_SINGLE_FK_FIELDS: list[str] = [
+    "soletypeid", "toeshapeid", "fasteningtypeid", "liningid",
+]
+
+
+def _apply_new_fields_and_materials(
+    session, prod, *,
+    new_fields: dict,            # {'measurements_*_min/max': float|None, 'soletypeid': int|None, ...}
+    materials_parsed: dict,      # {position: [name,...]} — populated only for non-empty cells
+    source: str | None = None,
+) -> None:
+    """
+    Apply new-style measurement + shoe-lookup + materials data to an EXISTING product
+    in an UPDATE branch.
+
+    Convention (matches existing "Fill NULL identity fields from re-parse" pattern):
+      • Number pairs and single-FK fields are written ONLY if currently NULL in DB.
+        That preserves any manual edits made via UI / DB and never overwrites.
+      • Materials are full-replace per (product_id, position) — but only for positions
+        the sheet actually has non-empty values for, so empty cells never wipe DB rows.
+
+    Idempotent: re-running on the same row+product is a no-op for measurements/FKs
+    (NULL-only guard) and re-asserts the same materials.
+    """
+    for min_f, max_f in _NEW_MIN_MAX_PAIRS:
+        new_min = new_fields.get(min_f)
+        if new_min is not None and getattr(prod, min_f, None) is None:
+            setattr(prod, min_f, new_min)
+            setattr(prod, max_f, new_fields.get(max_f))
+    for f in _NEW_SINGLE_FK_FIELDS:
+        v = new_fields.get(f)
+        if v is not None and getattr(prod, f, None) is None:
+            setattr(prod, f, v)
+    if materials_parsed:
+        _apply_product_materials(session, prod.id, materials_parsed, source)
+
+
+def _resolve_material_id(session, name: str) -> Optional[int]:
+    """Look up canonical material_id by lowercased name. None if unknown — caller logs."""
+    if not name:
+        return None
+    key = name.strip().lower()
+    if not key:
+        return None
+    if key in _materials_cache:
+        return _materials_cache[key]
+    from sqlalchemy import text as _sql
+    row = session.execute(
+        _sql("SELECT id FROM materials WHERE materialname = :n LIMIT 1"),
+        {"n": key},
+    ).first()
+    mid = int(row[0]) if row else None
+    if mid is not None:
+        _materials_cache[key] = mid
+    return mid
+
+
+def _log_unmapped_material(session, raw_value: str, position: str, product_id: Optional[int], sheet_source: Optional[str]) -> None:
+    """Insert/bump unmapped_materials row. Never raises."""
+    if not raw_value:
+        return
+    from sqlalchemy import text as _sql
+    try:
+        session.execute(
+            _sql(
+                """
+                INSERT INTO unmapped_materials (raw_value, position, product_id, sheet_source)
+                VALUES (:rv, :pos, :pid, :src)
+                ON CONFLICT (raw_value, position) DO UPDATE
+                  SET seen_count = unmapped_materials.seen_count + 1,
+                      last_seen  = CURRENT_TIMESTAMP
+                """
+            ),
+            {"rv": raw_value, "pos": position, "pid": product_id, "src": sheet_source},
+        )
+    except Exception:
+        # Logging failures must never break the parser.
+        pass
+
+
+def _apply_product_materials(
+    session,
+    product_id: int,
+    parsed: dict[str, list[str]],   # position → [raw lowercased names]
+    sheet_source: Optional[str] = None,
+) -> None:
+    """
+    Replace materials for a product (only for positions where parsed has a non-empty list).
+    Empty/missing position = leave existing rows untouched (so partial sheet updates don't wipe data).
+    Unknown names → unmapped_materials log; row not inserted.
+    """
+    if not parsed:
+        return
+    from sqlalchemy import text as _sql
+    for position, names in parsed.items():
+        if not names:
+            continue
+        # Wipe existing rows for this (product, position), then re-insert in order.
+        session.execute(
+            _sql("DELETE FROM product_materials WHERE product_id = :pid AND position = :pos"),
+            {"pid": product_id, "pos": position},
+        )
+        ord_idx = 0
+        for nm in names:
+            mid = _resolve_material_id(session, nm)
+            if mid is None:
+                _log_unmapped_material(session, nm, position, product_id, sheet_source)
+                continue
+            try:
+                session.execute(
+                    _sql(
+                        """
+                        INSERT INTO product_materials (product_id, position, material_id, ord)
+                        VALUES (:pid, :pos, :mid, :ord)
+                        ON CONFLICT (product_id, position, material_id) DO UPDATE SET ord = EXCLUDED.ord
+                        """
+                    ),
+                    {"pid": product_id, "pos": position, "mid": mid, "ord": ord_idx},
+                )
+                ord_idx += 1
+            except Exception as e:
+                logger.warning(f"[materials] insert failed pid={product_id} pos={position} mid={mid}: {e}")
 
 
 def _normalize_size(val: str) -> str:
@@ -1022,23 +1230,76 @@ def _parse_products_sheet(
         season_val       = col(row, "Сезон").strip() if "Сезон" in header else ""
         style_val        = col(row, "Стиль").strip() if "Стиль" in header else ""
         current_cond_val = col(row, "Поточний стан").strip() if "Поточний стан" in header else ""
-        # Нові колонки для заміру одягу (одяг: довжина, ПОГ, ПОБ, ПОТ)
-        length_val = col(row, "Довжина").strip() if "Довжина" in header else ""
-        pog_val    = col(row, "Груди (н/о)").strip() if "Груди (н/о)" in header else ""
-        pob_val    = col(row, "Бедра (н/о)").strip() if "Бедра (н/о)" in header else ""
-        pot_val    = col(row, "Талія (н/о)").strip() if "Талія (н/о)" in header else ""
+        # Нові колонки замірів (одяг: довжина, ПОГ, ПОБ, ПОТ, рукав; взуття: висота, товщина підошви)
+        length_val          = col(row, "Довжина").strip()         if "Довжина" in header else ""
+        pog_val             = col(row, "Груди (н/о)").strip()     if "Груди (н/о)" in header else ""
+        pob_val             = col(row, "Бедра (н/о)").strip()     if "Бедра (н/о)" in header else ""
+        pot_val             = col(row, "Талія (н/о)").strip()     if "Талія (н/о)" in header else ""
+        sleeve_val          = col(row, "Рукав").strip()           if "Рукав" in header else ""
+        height_val          = col(row, "Висота").strip()          if "Висота" in header else ""
+        sole_thickness_val  = col(row, "Товщина підошви").strip() if "Товщина підошви" in header else ""
+        heel_val            = col(row, "Підбор").strip()          if "Підбор" in header else ""
 
-        # Parse measurements into (min, max) tuples
-        length_float = None
-        try:
-            if length_val:
-                length_float, _ = _parse_measurement_range(length_val)
-        except:
-            pass
+        # СМ — числовий range alongside legacy TEXT (cm_val above).
+        cm_min, cm_max                 = _parse_measurement_range(cm_val)
+        length_min, length_max         = _parse_measurement_range(length_val)
+        pog_min, pog_max               = _parse_measurement_range(pog_val)
+        pob_min, pob_max               = _parse_measurement_range(pob_val)
+        pot_min, pot_max               = _parse_measurement_range(pot_val)
+        sleeve_min, sleeve_max         = _parse_measurement_range(sleeve_val)
+        height_min, height_max         = _parse_measurement_range(height_val)
+        sole_thickness_min, sole_thickness_max = _parse_measurement_range(sole_thickness_val)
+        heel_min, heel_max                     = _parse_measurement_range(heel_val)
 
-        pog_min, pog_max = _parse_measurement_range(pog_val) if pog_val else (None, None)
-        pob_min, pob_max = _parse_measurement_range(pob_val) if pob_val else (None, None)
-        pot_min, pot_max = _parse_measurement_range(pot_val) if pot_val else (None, None)
+        # Shoe-specific lookups (single FK each). Unknown values → unmapped log, FK stays NULL.
+        sole_type_id = toe_shape_id = fastening_type_id = lining_id = None
+        for sheet_col, (tbl, name_col, fk_col) in SHOE_LOOKUP_COLUMNS.items():
+            if sheet_col not in header:
+                continue
+            raw_val = col(row, sheet_col).strip()
+            if not raw_val:
+                continue
+            rid = _resolve_shoe_lookup_id(session, tbl, name_col, raw_val)
+            if rid is None:
+                # Reuse unmapped_materials infra with position prefix to avoid a new table.
+                _log_unmapped_material(session, raw_val, f"_{fk_col}", None, ws.title)
+                continue
+            if fk_col == "soletypeid":
+                sole_type_id = rid
+            elif fk_col == "toeshapeid":
+                toe_shape_id = rid
+            elif fk_col == "fasteningtypeid":
+                fastening_type_id = rid
+            elif fk_col == "liningid":
+                lining_id = rid
+
+        # Collect all new-style fields into one dict for UPDATE-branch helpers.
+        parsed_new_fields = {
+            "measurementscm_min":      cm_min,             "measurementscm_max":      cm_max,
+            "measurements_length_min": length_min,         "measurements_length_max": length_max,
+            "measurements_pog_min":    pog_min,            "measurements_pog_max":    pog_max,
+            "measurements_pob_min":    pob_min,            "measurements_pob_max":    pob_max,
+            "measurements_pot_min":    pot_min,            "measurements_pot_max":    pot_max,
+            "measurements_sleeve_min": sleeve_min,         "measurements_sleeve_max": sleeve_max,
+            "measurements_height_min": height_min,         "measurements_height_max": height_max,
+            "measurements_sole_thickness_min": sole_thickness_min,
+            "measurements_sole_thickness_max": sole_thickness_max,
+            "measurements_heel_min":   heel_min,           "measurements_heel_max":   heel_max,
+            "soletypeid":              sole_type_id,
+            "toeshapeid":              toe_shape_id,
+            "fasteningtypeid":         fastening_type_id,
+            "liningid":                lining_id,
+        }
+
+        # Матеріали: збираємо за позиціями. Порожня клітинка = не чіпати існуюче в БД.
+        materials_parsed: dict[str, list[str]] = {}
+        for sheet_col, position in MATERIAL_POSITIONS.items():
+            if sheet_col in header:
+                raw_mat = col(row, sheet_col).strip()
+                if raw_mat:
+                    parts = _split_materials_cell(raw_mat)
+                    if parts:
+                        materials_parsed[position] = parts
 
         # ── Resolve FK refs ────────────────────────────────────────────────
         # Guard: split combined types ("Туфлі/кросівки", "Ботинки-челсі") → Type + Subtype
@@ -1228,6 +1489,14 @@ def _parse_products_sheet(
             full_match.updated_at = datetime.utcnow()
             if shipment_id and not full_match.deliveryid:
                 full_match.deliveryid = shipment_id
+            # Нові поля (measurements/lookups/materials) — NULL-only update,
+            # materials = full-replace тільки для непорожніх позицій з аркуша.
+            _apply_new_fields_and_materials(
+                session, full_match,
+                new_fields=parsed_new_fields,
+                materials_parsed=materials_parsed,
+                source=ws.title,
+            )
             # ── Productnumber sync: якщо в Google Sheets номер відрізняється
             # від того що в БД — запам'ятати для відкладеного перейменування.
             # Застосовується після основного циклу двофазно (temp → final),
@@ -1268,6 +1537,12 @@ def _parse_products_sheet(
                 if shipment_id and not orphan.deliveryid:
                     orphan.deliveryid = shipment_id
                 orphan.updated_at = datetime.utcnow()
+                _apply_new_fields_and_materials(
+                    session, orphan,
+                    new_fields=parsed_new_fields,
+                    materials_parsed=materials_parsed,
+                    source=ws.title,
+                )
                 if pnum != orphan.productnumber:
                     pending_renames[orphan.id] = pnum
                     logger.info(
@@ -1287,13 +1562,28 @@ def _parse_products_sheet(
                     price                 = price_float,
                     sizeeu                = size_val or None,
                     measurementscm        = cm_val or None,
-                    measurements_length   = length_float,
-                    measurements_pog_min  = pog_min,
-                    measurements_pog_max  = pog_max,
-                    measurements_pob_min  = pob_min,
-                    measurements_pob_max  = pob_max,
-                    measurements_pot_min  = pot_min,
-                    measurements_pot_max  = pot_max,
+                    measurementscm_min              = cm_min,
+                    measurementscm_max              = cm_max,
+                    measurements_length_min         = length_min,
+                    measurements_length_max         = length_max,
+                    measurements_pog_min            = pog_min,
+                    measurements_pog_max            = pog_max,
+                    measurements_pob_min            = pob_min,
+                    measurements_pob_max            = pob_max,
+                    measurements_pot_min            = pot_min,
+                    measurements_pot_max            = pot_max,
+                    measurements_sleeve_min         = sleeve_min,
+                    measurements_sleeve_max         = sleeve_max,
+                    measurements_height_min         = height_min,
+                    measurements_height_max         = height_max,
+                    measurements_sole_thickness_min = sole_thickness_min,
+                    measurements_sole_thickness_max = sole_thickness_max,
+                    measurements_heel_min           = heel_min,
+                    measurements_heel_max           = heel_max,
+                    soletypeid                      = sole_type_id,
+                    toeshapeid                      = toe_shape_id,
+                    fasteningtypeid                 = fastening_type_id,
+                    liningid                        = lining_id,
                     dateadded             = sheet_date or date.today(),
                     quantity              = 1,
                     brandid               = brand_id,
@@ -1314,6 +1604,7 @@ def _parse_products_sheet(
                 try:
                     session.flush()
                     seen_in_run[product.id] = 1
+                    _apply_product_materials(session, product.id, materials_parsed, ws.title)
                     added += 1
                 except IntegrityError:
                     session.rollback()
@@ -1330,6 +1621,12 @@ def _parse_products_sheet(
                         seen_in_run[existing_now.id] = cnt
                         existing_now.quantity = cnt
                         existing_now.updated_at = datetime.utcnow()
+                        _apply_new_fields_and_materials(
+                            session, existing_now,
+                            new_fields=parsed_new_fields,
+                            materials_parsed=materials_parsed,
+                            source=ws.title,
+                        )
                         session.flush()
                         updated += 1
                     else:
@@ -1352,13 +1649,28 @@ def _parse_products_sheet(
                     price                 = price_float,
                     sizeeu                = size_val or None,
                     measurementscm        = cm_val or None,
-                    measurements_length   = length_float,
-                    measurements_pog_min  = pog_min,
-                    measurements_pog_max  = pog_max,
-                    measurements_pob_min  = pob_min,
-                    measurements_pob_max  = pob_max,
-                    measurements_pot_min  = pot_min,
-                    measurements_pot_max  = pot_max,
+                    measurementscm_min              = cm_min,
+                    measurementscm_max              = cm_max,
+                    measurements_length_min         = length_min,
+                    measurements_length_max         = length_max,
+                    measurements_pog_min            = pog_min,
+                    measurements_pog_max            = pog_max,
+                    measurements_pob_min            = pob_min,
+                    measurements_pob_max            = pob_max,
+                    measurements_pot_min            = pot_min,
+                    measurements_pot_max            = pot_max,
+                    measurements_sleeve_min         = sleeve_min,
+                    measurements_sleeve_max         = sleeve_max,
+                    measurements_height_min         = height_min,
+                    measurements_height_max         = height_max,
+                    measurements_sole_thickness_min = sole_thickness_min,
+                    measurements_sole_thickness_max = sole_thickness_max,
+                    measurements_heel_min           = heel_min,
+                    measurements_heel_max           = heel_max,
+                    soletypeid                      = sole_type_id,
+                    toeshapeid                      = toe_shape_id,
+                    fasteningtypeid                 = fastening_type_id,
+                    liningid                        = lining_id,
                     dateadded             = sheet_date or date.today(),
                     quantity              = 1,
                     brandid               = brand_id,
@@ -1379,6 +1691,7 @@ def _parse_products_sheet(
                 try:
                     session.flush()
                     seen_in_run[product.id] = 1
+                    _apply_product_materials(session, product.id, materials_parsed, ws.title)
                     added += 1
                 except IntegrityError:
                     session.rollback()
@@ -1392,6 +1705,12 @@ def _parse_products_sheet(
                         seen_in_run[existing_now.id] = cnt
                         existing_now.quantity = cnt
                         existing_now.updated_at = datetime.utcnow()
+                        _apply_new_fields_and_materials(
+                            session, existing_now,
+                            new_fields=parsed_new_fields,
+                            materials_parsed=materials_parsed,
+                            source=ws.title,
+                        )
                         session.flush()
                         updated += 1
                     else:
@@ -1486,14 +1805,26 @@ def _parse_products_sheet(
                             price                 = price_float,
                             sizeeu                = size_val or None,
                             measurementscm        = cm_val or None,
-                            measurements_length   = length_float,
-                    measurements_pog_min  = pog_min,
-                    measurements_pog_max  = pog_max,
-                    measurements_pob_min  = pob_min,
-                    measurements_pob_max  = pob_max,
-                    measurements_pot_min  = pot_min,
-                    measurements_pot_max  = pot_max,
-
+                            measurements_length_min         = length_min,
+                            measurements_length_max         = length_max,
+                            measurements_pog_min            = pog_min,
+                            measurements_pog_max            = pog_max,
+                            measurements_pob_min            = pob_min,
+                            measurements_pob_max            = pob_max,
+                            measurements_pot_min            = pot_min,
+                            measurements_pot_max            = pot_max,
+                            measurements_sleeve_min         = sleeve_min,
+                            measurements_sleeve_max         = sleeve_max,
+                            measurements_height_min         = height_min,
+                            measurements_height_max         = height_max,
+                            measurements_sole_thickness_min = sole_thickness_min,
+                            measurements_sole_thickness_max = sole_thickness_max,
+                            measurements_heel_min           = heel_min,
+                            measurements_heel_max           = heel_max,
+                            soletypeid                      = sole_type_id,
+                            toeshapeid                      = toe_shape_id,
+                            fasteningtypeid                 = fastening_type_id,
+                            liningid                        = lining_id,
                             dateadded             = sheet_date or date.today(),
                             quantity              = 1,
                             brandid               = brand_id,
@@ -1514,6 +1845,7 @@ def _parse_products_sheet(
                         try:
                             session.flush()
                             seen_in_run[product.id] = 1
+                            _apply_product_materials(session, product.id, materials_parsed, ws.title)
                             added += 1
                         except IntegrityError:
                             session.rollback()
@@ -1527,6 +1859,12 @@ def _parse_products_sheet(
                                 seen_in_run[existing_now.id] = cnt
                                 existing_now.quantity = cnt
                                 existing_now.updated_at = datetime.utcnow()
+                                _apply_new_fields_and_materials(
+                                    session, existing_now,
+                                    new_fields=parsed_new_fields,
+                                    materials_parsed=materials_parsed,
+                                    source=ws.title,
+                                )
                                 session.flush()
                                 updated += 1
                             else:
@@ -1600,14 +1938,26 @@ def _parse_products_sheet(
                         price                 = price_float,
                         sizeeu                = size_val or None,
                         measurementscm        = cm_val or None,
-                        measurements_length   = length_float,
-                    measurements_pog_min  = pog_min,
-                    measurements_pog_max  = pog_max,
-                    measurements_pob_min  = pob_min,
-                    measurements_pob_max  = pob_max,
-                    measurements_pot_min  = pot_min,
-                    measurements_pot_max  = pot_max,
-
+                        measurements_length_min         = length_min,
+                        measurements_length_max         = length_max,
+                        measurements_pog_min            = pog_min,
+                        measurements_pog_max            = pog_max,
+                        measurements_pob_min            = pob_min,
+                        measurements_pob_max            = pob_max,
+                        measurements_pot_min            = pot_min,
+                        measurements_pot_max            = pot_max,
+                        measurements_sleeve_min         = sleeve_min,
+                        measurements_sleeve_max         = sleeve_max,
+                        measurements_height_min         = height_min,
+                        measurements_height_max         = height_max,
+                        measurements_sole_thickness_min = sole_thickness_min,
+                        measurements_sole_thickness_max = sole_thickness_max,
+                        measurements_heel_min           = heel_min,
+                        measurements_heel_max           = heel_max,
+                        soletypeid                      = sole_type_id,
+                        toeshapeid                      = toe_shape_id,
+                        fasteningtypeid                 = fastening_type_id,
+                        liningid                        = lining_id,
                         dateadded             = sheet_date or date.today(),
                         quantity              = 1,
                         brandid               = brand_id,
@@ -1628,6 +1978,7 @@ def _parse_products_sheet(
                     try:
                         session.flush()
                         seen_in_run[product.id] = 1
+                        _apply_product_materials(session, product.id, materials_parsed, ws.title)
                         added += 1
                     except IntegrityError:
                         session.rollback()
@@ -1641,6 +1992,12 @@ def _parse_products_sheet(
                             seen_in_run[existing_now.id] = cnt
                             existing_now.quantity = cnt
                             existing_now.updated_at = datetime.utcnow()
+                            _apply_new_fields_and_materials(
+                                session, existing_now,
+                                new_fields=parsed_new_fields,
+                                materials_parsed=materials_parsed,
+                                source=ws.title,
+                            )
                             session.flush()
                             updated += 1
                         else:

@@ -320,18 +320,29 @@ class Product(Base):
     sizeuk = Column(String(20))
     sizejp = Column(String(20))
     sizecn = Column(String(20))
-    measurementscm = Column(String(20))
+    measurementscm     = Column(String(20))   # legacy display string ("26", "39-40")
+    measurementscm_min = Column(Float)        # numeric range — used by filters
+    measurementscm_max = Column(Float)
     season = Column(String(100))      # multi-value, comma-separated: "Зима, Осінь"
     dimensions = Column(String(50))   # габарити: "40x20x5"
     width = Column(String(20))        # ширина ніжки: "Вузька"/"Стандартна"/"Широка" або B/D/EE
-    # Clothing measurements (см)
-    measurements_length = Column(Float)               # довжина
-    measurements_pog_min = Column(Float)              # периметр грудей min
-    measurements_pog_max = Column(Float)              # периметр грудей max
-    measurements_pob_min = Column(Float)              # периметр бьодер min
-    measurements_pob_max = Column(Float)              # периметр бьодер max
-    measurements_pot_min = Column(Float)              # периметр талії min
-    measurements_pot_max = Column(Float)              # периметр талії max
+    # Clothing/shoe measurements (см) — всі min/max; single value = min == max
+    measurements_length_min         = Column(Float)   # довжина
+    measurements_length_max         = Column(Float)
+    measurements_pog_min            = Column(Float)   # напівобхват грудей
+    measurements_pog_max            = Column(Float)
+    measurements_pob_min            = Column(Float)   # напівобхват бедер
+    measurements_pob_max            = Column(Float)
+    measurements_pot_min            = Column(Float)   # напівобхват талії
+    measurements_pot_max            = Column(Float)
+    measurements_sleeve_min         = Column(Float)   # рукав
+    measurements_sleeve_max         = Column(Float)
+    measurements_height_min         = Column(Float)   # висота взуття
+    measurements_height_max         = Column(Float)
+    measurements_sole_thickness_min = Column(Float)   # товщина підошви/платформи (рівна частина)
+    measurements_sole_thickness_max = Column(Float)
+    measurements_heel_min           = Column(Float)   # висота каблука/підбора
+    measurements_heel_max           = Column(Float)
     quantity = Column(Integer, default=1)
     mainimage = Column(String(255))
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -351,6 +362,11 @@ class Product(Base):
     current_conditionid = Column(Integer, ForeignKey("conditions.id"), nullable=True)
     importid = Column(Integer, nullable=True)
     deliveryid = Column(Integer, ForeignKey("deliveries.id"), nullable=True)
+    # Shoe-specific lookups (single FK; nullable — більшість legacy без значень)
+    soletypeid       = Column(Integer, ForeignKey("sole_types.id",       ondelete="SET NULL"), nullable=True)
+    toeshapeid       = Column(Integer, ForeignKey("toe_shapes.id",       ondelete="SET NULL"), nullable=True)
+    fasteningtypeid  = Column(Integer, ForeignKey("fastening_types.id",  ondelete="SET NULL"), nullable=True)
+    liningid         = Column(Integer, ForeignKey("linings.id",          ondelete="SET NULL"), nullable=True)
 
     # Relationships
     order_items = relationship("OrderItem", back_populates="product")
@@ -364,6 +380,69 @@ class Product(Base):
     manufacturer_country = relationship("Country", foreign_keys=[manufacturercountryid], primaryjoin="Product.manufacturercountryid == Country.id")
     status = relationship("Status", foreign_keys=[statusid], primaryjoin="Product.statusid == Status.id")
     condition = relationship("Condition", foreign_keys=[conditionid], primaryjoin="Product.conditionid == Condition.id")
+    sole_type      = relationship("SoleType",      foreign_keys=[soletypeid])
+    toe_shape      = relationship("ToeShape",      foreign_keys=[toeshapeid])
+    fastening_type = relationship("FasteningType", foreign_keys=[fasteningtypeid])
+    lining         = relationship("Lining",        foreign_keys=[liningid])
+    materials = relationship(
+        "ProductMaterial",
+        back_populates="product",
+        cascade="all, delete-orphan",
+    )
+
+
+class Material(Base):
+    __tablename__ = "materials"
+
+    id           = Column(Integer, primary_key=True, index=True)
+    materialname = Column(String, unique=True, nullable=False, index=True)   # canonical lowercase
+    parent_id    = Column(Integer, ForeignKey("materials.id", ondelete="SET NULL"), nullable=True)
+    category     = Column(String, nullable=False, default="other")           # leather|textile|synthetic|rubber|membrane|other
+    created_at   = Column(DateTime, default=datetime.utcnow)
+
+    parent   = relationship("Material", remote_side=[id], backref="children")
+
+
+class ProductMaterial(Base):
+    __tablename__ = "product_materials"
+
+    product_id  = Column(Integer, ForeignKey("products.id", ondelete="CASCADE"), primary_key=True)
+    position    = Column(String, primary_key=True)   # upper|middle|insole|sole|membrane
+    material_id = Column(Integer, ForeignKey("materials.id", ondelete="CASCADE"), primary_key=True)
+    ord         = Column(Integer, default=0)
+
+    product  = relationship("Product", back_populates="materials")
+    material = relationship("Material")
+
+
+# ── Shoe-specific lookups (single value per product) ────────────────────────
+class SoleType(Base):
+    __tablename__ = "sole_types"
+    id           = Column(Integer, primary_key=True, index=True)
+    soletypename = Column(String, unique=True, nullable=False, index=True)
+    created_at   = Column(DateTime, default=datetime.utcnow)
+
+
+class ToeShape(Base):
+    __tablename__ = "toe_shapes"
+    id           = Column(Integer, primary_key=True, index=True)
+    toeshapename = Column(String, unique=True, nullable=False, index=True)
+    created_at   = Column(DateTime, default=datetime.utcnow)
+
+
+class FasteningType(Base):
+    __tablename__ = "fastening_types"
+    id                = Column(Integer, primary_key=True, index=True)
+    fasteningtypename = Column(String, unique=True, nullable=False, index=True)
+    created_at        = Column(DateTime, default=datetime.utcnow)
+
+
+class Lining(Base):
+    __tablename__ = "linings"
+    id         = Column(Integer, primary_key=True, index=True)
+    liningname = Column(String, unique=True, nullable=False, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
 
 class ParsingSource(Base):
     __tablename__ = "parsing_sources"

@@ -146,6 +146,14 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose }) => {
     );
   };
 
+  const fmtRange = (min?: number | null, max?: number | null): string | null => {
+    if (min == null && max == null) return null;
+    if (min == null) return `до ${max} см`;
+    if (max == null) return `від ${min} см`;
+    if (min === max) return `${min} см`;
+    return `${min}–${max} см`;
+  };
+
   const activeImage = images[activeIdx];
   const productTitle = p ? ([(p as any).brand_name, p.model].filter(Boolean).join(' ') || (p.productnumber || '').replace(/^#/, '')) : '';
 
@@ -427,6 +435,56 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose }) => {
                     <InfoRow label="Клони" value={p.clonednumbers} />
                     <InfoRow label="Завіз" value={p.dateadded} />
                     <InfoRow label="У базі з" value={p.created_at ? new Date(p.created_at).toLocaleDateString('uk-UA') : null} />
+
+                    {/* Shoe characteristics */}
+                    {(p.sole_type_name || p.toe_shape_name || p.fastening_type_name || p.lining_name ||
+                      p.measurements_height_min != null || p.measurements_sole_thickness_min != null || p.measurements_heel_min != null) && (
+                      <div className="mt-3 pt-3 border-t border-gray-100 dark:border-gray-800">
+                        <div className="text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500 mb-1 font-medium">Взуття</div>
+                        <InfoRow label="Тип підошви" value={p.sole_type_name} />
+                        <InfoRow label="Форма носка" value={p.toe_shape_name} />
+                        <InfoRow label="Застібка" value={p.fastening_type_name} />
+                        <InfoRow label="Підкладка" value={p.lining_name} />
+                        <InfoRow label="Висота" value={fmtRange(p.measurements_height_min, p.measurements_height_max)} />
+                        <InfoRow label="Підошва" value={fmtRange(p.measurements_sole_thickness_min, p.measurements_sole_thickness_max)} />
+                        <InfoRow label="Каблук" value={fmtRange(p.measurements_heel_min, p.measurements_heel_max)} />
+                      </div>
+                    )}
+
+                    {/* Clothing measurements */}
+                    {(p.measurements_length_min != null || p.measurements_pog_min != null ||
+                      p.measurements_pob_min != null || p.measurements_pot_min != null || p.measurements_sleeve_min != null) && (
+                      <div className="mt-3 pt-3 border-t border-gray-100 dark:border-gray-800">
+                        <div className="text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500 mb-1 font-medium">Виміри одягу</div>
+                        <InfoRow label="Довжина" value={fmtRange(p.measurements_length_min, p.measurements_length_max)} />
+                        <InfoRow label="Груди (н/о)" value={fmtRange(p.measurements_pog_min, p.measurements_pog_max)} />
+                        <InfoRow label="Бедра (н/о)" value={fmtRange(p.measurements_pob_min, p.measurements_pob_max)} />
+                        <InfoRow label="Талія (н/о)" value={fmtRange(p.measurements_pot_min, p.measurements_pot_max)} />
+                        <InfoRow label="Рукав" value={fmtRange(p.measurements_sleeve_min, p.measurements_sleeve_max)} />
+                      </div>
+                    )}
+
+                    {/* Materials */}
+                    {p.materials && p.materials.length > 0 && (
+                      <div className="mt-3 pt-3 border-t border-gray-100 dark:border-gray-800">
+                        <div className="text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500 mb-2 font-medium">Матеріали</div>
+                        {(() => {
+                          const posLabels: Record<string, string> = {
+                            upper: 'Верх', middle: 'Середина', insole: 'Устілка',
+                            sole: 'Підошва', membrane: 'Мембрана',
+                          };
+                          const grouped = new Map<string, string[]>();
+                          for (const mat of p.materials!) {
+                            const label = posLabels[mat.position] || mat.position;
+                            if (!grouped.has(label)) grouped.set(label, []);
+                            grouped.get(label)!.push(mat.materialname || String(mat.material_id));
+                          }
+                          return Array.from(grouped.entries()).map(([pos, names]) => (
+                            <InfoRow key={pos} label={pos} value={names.join(', ')} />
+                          ));
+                        })()}
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>

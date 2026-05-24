@@ -3,6 +3,23 @@ export interface ReferenceItem {
     name: string;
 }
 
+export type MaterialPosition = 'upper' | 'middle' | 'insole' | 'sole' | 'membrane';
+
+export interface ProductMaterialEntry {
+    position: MaterialPosition;
+    material_id: number;
+    materialname?: string;
+    category?: string;
+    ord?: number;
+}
+
+export interface Material {
+    id: number;
+    materialname: string;
+    parent_id: number | null;
+    category: string;
+}
+
 export interface Product {
     id: number;
     productnumber: string;
@@ -21,18 +38,39 @@ export interface Product {
     sizeuk?: string;
     sizejp?: string;
     sizecn?: string;
-    measurementscm?: string;
+    measurementscm?: string;       // legacy display string
+    measurementscm_min?: number;   // numeric range (for filters)
+    measurementscm_max?: number;
     season?: string;       // multi-value, comma-separated: "Зима, Осінь"
     dimensions?: string;   // габарити: "40x20x5"
     width?: string;        // ширина ніжки: "Вузька"/"Стандартна"/"Широка" або B/D/EE
-    // Clothing measurements (см)
-    measurements_length?: number;      // довжина
-    measurements_pog_min?: number;     // периметр грудей min
-    measurements_pog_max?: number;     // периметр грудей max
-    measurements_pob_min?: number;     // периметр бьодер min
-    measurements_pob_max?: number;     // периметр бьодер max
-    measurements_pot_min?: number;     // периметр талії min
-    measurements_pot_max?: number;     // периметр талії max
+    // Clothing/shoe measurements (см) — всі min/max; single value = min == max
+    measurements_length_min?: number;          // довжина
+    measurements_length_max?: number;
+    measurements_pog_min?: number;             // напівобхват грудей
+    measurements_pog_max?: number;
+    measurements_pob_min?: number;             // напівобхват бедер
+    measurements_pob_max?: number;
+    measurements_pot_min?: number;             // напівобхват талії
+    measurements_pot_max?: number;
+    measurements_sleeve_min?: number;          // рукав
+    measurements_sleeve_max?: number;
+    measurements_height_min?: number;          // висота взуття
+    measurements_height_max?: number;
+    measurements_sole_thickness_min?: number;  // товщина підошви/платформи (рівна частина)
+    measurements_sole_thickness_max?: number;
+    measurements_heel_min?: number;            // висота каблука/підбора
+    measurements_heel_max?: number;
+    // Shoe-specific single-value lookups
+    soletypeid?: number;
+    toeshapeid?: number;
+    fasteningtypeid?: number;
+    liningid?: number;
+    sole_type_name?: string;
+    toe_shape_name?: string;
+    fastening_type_name?: string;
+    lining_name?: string;
+    materials?: ProductMaterialEntry[];
     quantity: number;
     typeid?: number;
     subtypeid?: number;
@@ -163,6 +201,9 @@ export interface ProductFilter {
     sizeeu?: string[];
     min_sizeeu?: number;
     max_sizeeu?: number;
+    // Measurements CM range
+    min_measurementscm?: number;
+    max_measurementscm?: number;
     // Stock / visibility
     with_stock_only?: boolean;
     is_visible?: boolean;
