@@ -22,7 +22,12 @@ BMS_React-PyWeb.git/
 
 # Ignore build backups
 frontend/build_backup_*/
+
+# Google service-account credentials — НІКОЛИ не комітити (тримати лише локально)
 backend/scripts/secure_creds/*.json
+backend/scripts/temporary/*.json
+**/newproject2024-*.json
+**/*service_account*.json
 
 # Cache files
 backend/scripts/cache/
