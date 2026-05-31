@@ -314,18 +314,27 @@ const StatisticsPage: React.FC<StatisticsPageProps> = () => {
               </span>
             </div>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-              <KpiCard label="Всього товарів" value={fmtNum(summary.total_products)} sub={`Продано: ${fmtNum(summary.products_sold)} | Залишок: ${fmtNum(summary.total_products - summary.products_sold)}`} />
-              <KpiCard label="Загальний виторг" value={fmtPrice(summary.total_revenue)} sub={`${fmtNum(summary.total_orders)} замовлень за весь час`} color="text-emerald-600" />
+              <KpiCard
+                label="Всього товарів"
+                value={fmtNum(summary.total_products)}
+                sub={`Продано повністю: ${fmtNum(summary.products_fully_sold)} • Частково: ${fmtNum(summary.products_partially_sold)} • Залишок: ${fmtNum(summary.products_unsold)}`}
+              />
+              <KpiCard
+                label="Виторг (підтверджено)"
+                value={fmtPrice(summary.total_revenue)}
+                sub={`${fmtNum(summary.confirmed_orders)} підтверджених із ${fmtNum(summary.total_orders)} активних замовлень`}
+                color="text-emerald-600"
+              />
               <KpiCard
                 label="Чистий прибуток"
-                value={fmtPrice(summary.total_revenue - summary.total_purchase_cost)}
-                sub={`Виторг ${fmtShort(summary.total_revenue)} − Собівартість проданого ${fmtShort(summary.total_purchase_cost)}`}
-                color="text-indigo-600"
+                value={fmtPrice(summary.net_profit)}
+                sub={`Виторг ${fmtShort(summary.total_revenue)} − Собівартість ${fmtShort(summary.total_purchase_cost)} − Доставка ${fmtShort(summary.total_delivery_cost)}`}
+                color={summary.net_profit >= 0 ? 'text-indigo-600' : 'text-red-600'}
               />
               <KpiCard
                 label="Вартість залишку"
-                value={fmtPrice(summary.total_inventory_cost - summary.total_purchase_cost)}
-                sub={`${fmtNum(summary.total_products - summary.products_sold)} непроданих товарів`}
+                value={fmtPrice(summary.unsold_inventory_cost)}
+                sub={`${fmtNum(summary.products_unsold + summary.products_partially_sold)} товарів зі стоком`}
                 color="text-amber-600"
               />
             </div>
@@ -563,7 +572,7 @@ const StatisticsPage: React.FC<StatisticsPageProps> = () => {
           ) : delData && delData.items.length > 0 ? (
             <div>
               <div className="overflow-x-auto">
-                <table className="w-full text-sm">
+                <table className="w-full text-sm [&_th]:text-center [&_td]:text-center">
                   <thead className="bg-gray-50 dark:bg-gray-700 border-b">
                     <tr>
                       <th className="px-3 py-2 text-left font-semibold">Назва</th>
@@ -887,7 +896,7 @@ const StatisticsPage: React.FC<StatisticsPageProps> = () => {
               <div>
                 <h4 className="text-sm font-semibold text-gray-600 dark:text-gray-300 mb-2">Топ товарів по продажах</h4>
                 <div className="overflow-x-auto">
-                  <table className="min-w-full text-xs">
+                  <table className="min-w-full text-xs [&_th]:text-center [&_td]:text-center">
                     <thead>
                       <tr className="bg-gray-50 dark:bg-gray-800 text-gray-500 dark:text-gray-400">
                         <th className="px-2 py-1.5 text-left font-medium">#</th>

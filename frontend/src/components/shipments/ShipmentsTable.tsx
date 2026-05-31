@@ -159,7 +159,7 @@ const ShipmentsTable: React.FC = () => {
       )}
 
       <div className="overflow-x-auto rounded shadow border border-gray-200 bg-white">
-        <table className="min-w-full text-sm">
+        <table className="min-w-full text-sm [&_th]:text-center [&_td]:text-center">
           <thead className="bg-gray-50 border-b border-gray-200">
             <tr>
               <th className="px-3 py-3 w-10">
@@ -241,17 +241,20 @@ const ShipmentsTable: React.FC = () => {
         </table>
       </div>
 
-      <div className="flex justify-between items-center mt-4">
-        <span className="text-sm text-gray-500">Всього: {total} поставок</span>
-        {totalPages > 1 && (
-          <Pagination
-            currentPage={page}
-            totalPages={totalPages}
-            totalItems={total}
-            itemsPerPage={perPage}
-            onPageChange={setPage}
-          />
-        )}
+      <div className="grid grid-cols-[1fr_auto_1fr] items-center mt-4 gap-4">
+        <span className="justify-self-start text-sm text-gray-500">Всього: {total} поставок</span>
+        <div className="justify-self-center flex justify-center">
+          {totalPages > 1 && (
+            <Pagination
+              currentPage={page}
+              totalPages={totalPages}
+              totalItems={total}
+              itemsPerPage={perPage}
+              onPageChange={setPage}
+            />
+          )}
+        </div>
+        <span />
       </div>
     </div>
   );

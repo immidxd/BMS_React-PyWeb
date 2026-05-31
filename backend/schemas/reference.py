@@ -78,8 +78,10 @@ class DeliveryMethodList(BaseModel):
 
 # Client schemas
 class ClientBase(BaseModel):
-    first_name: str
-    last_name: str
+    # У БД ці поля nullable (нікнейм-only клієнти, неповні картки). Response-валідація
+    # вимагала str → будь-який PUT таким клієнтам падав 500 ResponseValidationError.
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
     phone_number: Optional[str] = None
     email: Optional[str] = None
     gender_id: Optional[int] = None
@@ -213,7 +215,10 @@ class ClientRelationBase(BaseModel):
 
 
 class ClientRelationCreate(ClientRelationBase):
-    pass
+    # Як ПАРТНЕР видно з боку поточного клієнта (наприклад "Син"),
+    # а inverse_label — як ПОТОЧНИЙ клієнт видно з боку партнера ("Мати").
+    # Якщо не передано — дзеркальний рядок створюється без label.
+    inverse_label: Optional[str] = None
 
 
 class ClientRelationUpdate(BaseModel):

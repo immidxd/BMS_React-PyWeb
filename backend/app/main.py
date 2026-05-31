@@ -212,9 +212,34 @@ if get_drive_file_bytes is not None:
 
 # Mount static files from frontend build if available
 frontend_build_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../frontend/build"))
+
+
+class SPAStaticFiles(StaticFiles):
+    """StaticFiles, що віддає index.html (і будь-який HTML) з no-cache.
+
+    Чому: CRA-білд хешує імена JS/CSS-чанків (їх можна кешувати вічно), АЛЕ
+    index.html посилається на ці хеші й має оновлюватись щобілда. Без
+    Cache-Control браузер/PyWebView застосовує евристичне кешування і тримає
+    старий index.html → старий бандл (симптом: зміни в UI «не застосовуються»).
+    no-cache змушує ревалідувати index.html щоразу; хешовані ассети лишаються
+    кешованими (immutable).
+    """
+    async def get_response(self, path, scope):
+        response = await super().get_response(path, scope)
+        ctype = response.headers.get("content-type", "")
+        if "text/html" in ctype:
+            response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["Expires"] = "0"
+        elif "/static/" in (scope.get("path") or ""):
+            # Хешовані ассети — безпечно кешувати надовго
+            response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        return response
+
+
 if os.path.exists(frontend_build_dir):
     logger.info(f"Mounting static files from {frontend_build_dir}")
-    app.mount("/", StaticFiles(directory=frontend_build_dir, html=True))
+    app.mount("/", SPAStaticFiles(directory=frontend_build_dir, html=True))
 else:
     logger.warning("Frontend build directory not found, static files will not be served")
 

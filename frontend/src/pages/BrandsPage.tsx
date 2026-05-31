@@ -387,7 +387,7 @@ const BrandsPage: React.FC<BrandsPageProps> = ({ currentSearchTerm }) => {
           <div className="flex justify-center items-center h-48 text-red-500">{error}</div>
         ) : (
           <div className="overflow-x-auto rounded border border-gray-200 dark:border-gray-700">
-            <table className="w-full text-sm">
+            <table className="w-full text-sm [&_th]:text-center [&_td]:text-center">
               <thead className="bg-gray-50 dark:bg-gray-700 border-b border-gray-200 dark:border-gray-600">
                 <tr>
                   <th className="px-2 py-3 w-8">
@@ -399,7 +399,7 @@ const BrandsPage: React.FC<BrandsPageProps> = ({ currentSearchTerm }) => {
                     />
                   </th>
                   <th className="px-3 py-3 text-left font-semibold text-gray-600 dark:text-gray-300 cursor-pointer whitespace-nowrap" onClick={() => handleSort('id')}>
-                    №<SortIcon field="id" />
+                    ID<SortIcon field="id" />
                   </th>
                   <th className="px-3 py-3 text-left font-semibold text-gray-600 dark:text-gray-300 cursor-pointer" onClick={() => handleSort('brandname')}>
                     Назва бренду<SortIcon field="brandname" />
@@ -545,15 +545,19 @@ const BrandsPage: React.FC<BrandsPageProps> = ({ currentSearchTerm }) => {
 
       {/* Pagination */}
       <div className="fixed bottom-0 left-0 right-0 px-4 py-3 bg-white/95 dark:bg-gray-800/95 backdrop-blur border-t border-gray-200 dark:border-gray-700 z-30">
-        <div className="flex items-center justify-between gap-4">
-          <Pagination
-            currentPage={page}
-            totalPages={pages}
-            totalItems={total}
-            itemsPerPage={perPage}
-            onPageChange={setPage}
-            onPerPageChange={(n) => { setPerPage(n); setPage(1); }}
-          />
+        <div className="w-full grid grid-cols-[1fr_auto_1fr] items-center gap-4 max-w-screen-2xl mx-auto px-2">
+          <span />
+          <div className="justify-self-center flex justify-center">
+            <Pagination
+              currentPage={page}
+              totalPages={pages}
+              totalItems={total}
+              itemsPerPage={perPage}
+              onPageChange={setPage}
+              onPerPageChange={(n) => { setPerPage(n); setPage(1); }}
+            />
+          </div>
+          <span />
         </div>
       </div>
     </MainLayout>

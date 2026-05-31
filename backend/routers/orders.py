@@ -57,6 +57,7 @@ def get_orders(
     amount_max: Optional[float] = Query(None),
     sales_channels: Optional[List[str]] = Query(None),
     only_problematic: Optional[bool] = Query(None),
+    product_id: Optional[int] = Query(None, description="Показати лише замовлення, що містять цей товар"),
     db: Session = Depends(get_db)
 ):
     """Get paginated orders list using raw SQL — no lazy loading."""
@@ -78,6 +79,14 @@ def get_orders(
     if client_id:
         where.append("o.client_id = :client_id")
         params["client_id"] = client_id
+
+    if product_id:
+        # Показати лише замовлення, що містять вказаний товар (через order_items).
+        where.append("""EXISTS (
+            SELECT 1 FROM order_items oi_pid
+            WHERE oi_pid.order_id = o.id AND oi_pid.product_id = :product_id
+        )""")
+        params["product_id"] = product_id
 
     if order_status_ids:
         where.append("o.order_status_id = ANY(:order_status_ids)")
@@ -380,6 +389,13 @@ async def bulk_update_orders(
         "priority",
     }
     filtered = {k: v for k, v in update_data.items() if k in allowed_fields}
+    # Нормалізуємо ТТН на льоту: Укрпошта 12 цифр з '5' → дописуємо '0'.
+    if "tracking_number" in filtered and filtered["tracking_number"]:
+        try:
+            from backend.scripts.orders_pars import normalize_tracking_number
+        except ImportError:
+            from scripts.orders_pars import normalize_tracking_number
+        filtered["tracking_number"] = normalize_tracking_number(filtered["tracking_number"])
     if not filtered:
         raise HTTPException(status_code=400, detail="Немає валідних полів для оновлення")
     try:

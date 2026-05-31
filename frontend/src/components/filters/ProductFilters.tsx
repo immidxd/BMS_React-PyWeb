@@ -78,9 +78,35 @@ function MultiCheckList({
     [items, search]
   );
   const visible = showAll ? filtered : filtered.slice(0, maxVisible);
+  // Закріплені вибрані значення — завжди видимі, навіть коли пошук їх відфільтрував.
+  const selectedItems = useMemo(
+    () => selected
+      .map(id => items.find(i => i.id === id))
+      .filter((x): x is { id: number; name: string } => !!x),
+    [selected, items]
+  );
 
   return (
     <div>
+      {selectedItems.length > 0 && (
+        <div className="flex flex-wrap gap-1 mb-2">
+          {selectedItems.map(it => (
+            <span
+              key={it.id}
+              className="inline-flex items-center gap-1 pl-2 pr-1 py-0.5 rounded-full text-[11px] font-medium bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300 border border-blue-200 dark:border-blue-800 max-w-full"
+              title={it.name}
+            >
+              <span className="truncate max-w-[150px]">{it.name}</span>
+              <button
+                type="button"
+                onClick={() => onToggle(it.id, false)}
+                className="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full hover:bg-blue-200 dark:hover:bg-blue-800 text-blue-500 dark:text-blue-300"
+                aria-label={`Прибрати «${it.name}»`}
+              >✕</button>
+            </span>
+          ))}
+        </div>
+      )}
       {items.length > 6 && <SearchInput value={search} onChange={setSearch} />}
       <div className="space-y-0.5 max-h-48 overflow-y-auto pr-1">
         {visible.map(item => (
@@ -224,12 +250,19 @@ const ProductFiltersPanel: React.FC<ProductFiltersPanelProps> = ({ filters, sele
     + (selectedFilters.min_price !== undefined || selectedFilters.max_price !== undefined ? 1 : 0)
     + (selectedFilters.sizeeu?.length || 0)
     + (selectedFilters.min_sizeeu !== undefined || selectedFilters.max_sizeeu !== undefined ? 1 : 0)
+    + (selectedFilters.size_letter?.length || 0)
     + (selectedFilters.min_measurementscm !== undefined || selectedFilters.max_measurementscm !== undefined ? 1 : 0);
 
   const euSizes = useMemo(() => {
     const raw = filters.size_ranges?.eu || [];
     return Array.from(new Set(raw)).sort((a, b) => parseFloat(a) - parseFloat(b));
   }, [filters.size_ranges]);
+
+  const letterSizes = useMemo(() => {
+    // Backend повертає вже відсортовано (XS,S,M,L,XL,XXL,…); тут просто dedup на всяк
+    const raw = (filters as any).size_letters || [];
+    return Array.from(new Set(raw)) as string[];
+  }, [filters]);
 
   return (
     <div className="flex flex-col gap-0 text-sm">
@@ -524,6 +557,53 @@ const ProductFiltersPanel: React.FC<ProductFiltersPanelProps> = ({ filters, sele
                   </button>
                 )}
               </div>
+            )}
+          </div>
+        </FilterSection>
+      )}
+
+      {/* Буквений розмір (XS / S / M / L / XL / XXL / ...) */}
+      {letterSizes.length > 0 && (
+        <FilterSection
+          title="Буквений розмір"
+          badge={selectedFilters.size_letter?.length || 0}
+        >
+          <div className="flex flex-wrap gap-1.5">
+            {letterSizes.map(letter => {
+              const isActive = selectedFilters.size_letter?.includes(letter) || false;
+              return (
+                <button
+                  key={letter}
+                  type="button"
+                  onClick={() => {
+                    const cur = selectedFilters.size_letter || [];
+                    const next = isActive
+                      ? cur.filter(x => x !== letter)
+                      : [...cur, letter];
+                    onFilterChange({
+                      ...selectedFilters,
+                      size_letter: next.length > 0 ? next : undefined,
+                    });
+                  }}
+                  className={[
+                    "min-w-[42px] px-2.5 py-1 text-xs rounded border transition-colors",
+                    isActive
+                      ? "bg-blue-500 text-white border-blue-500 dark:bg-blue-600 dark:border-blue-600"
+                      : "bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-200 border-gray-200 dark:border-gray-600 hover:border-blue-400",
+                  ].join(" ")}
+                >
+                  {letter}
+                </button>
+              );
+            })}
+            {selectedFilters.size_letter && selectedFilters.size_letter.length > 0 && (
+              <button
+                type="button"
+                onClick={() => onFilterChange({ ...selectedFilters, size_letter: undefined })}
+                className="ml-1 text-[10px] text-gray-400 hover:text-red-500 hover:underline transition-colors"
+              >
+                Очистити
+              </button>
             )}
           </div>
         </FilterSection>

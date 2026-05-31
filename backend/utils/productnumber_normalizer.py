@@ -40,6 +40,19 @@ import re
 # the source data overwhelmingly uses (Ф, Р, etc.).
 KNOWN_LETTER_PREFIXES = ("Ф", "Р", "Т", "У", "Ш", "Н", "З", "Л", "А", "К")
 
+# Cyrillic↔Latin homoglyph mapping. Catalogue prefixes are all Cyrillic, but
+# manual entry sometimes types a Latin look-alike ("T642" замість "Т642").
+# We canonicalize ALL homoglyphs to their Cyrillic equivalent so the two
+# forms collapse to one key everywhere.
+_HOMOGLYPH_TO_CYR = str.maketrans({
+    # uppercase Latin → Cyrillic
+    "A": "А", "B": "В", "C": "С", "E": "Е", "H": "Н", "I": "І",
+    "K": "К", "M": "М", "O": "О", "P": "Р", "T": "Т", "X": "Х", "Y": "У",
+    # lowercase Latin → Cyrillic
+    "a": "а", "b": "в", "c": "с", "e": "е", "h": "н", "i": "і",
+    "k": "к", "m": "м", "o": "о", "p": "р", "t": "т", "x": "х", "y": "у",
+})
+
 _WHITESPACE_RE = re.compile(r"\s+")
 
 
@@ -81,6 +94,8 @@ def normalize(raw: str | None) -> str | None:
     s = s.lstrip("#")
     if not s:
         return None
+    # Fold Latin homoglyphs → Cyrillic so "T642" and "Т642" collapse.
+    s = s.translate(_HOMOGLYPH_TO_CYR)
     # Upper-case the leading letter if it's one of the known prefixes.
     first = s[0]
     if first.upper() in KNOWN_LETTER_PREFIXES:

@@ -6,11 +6,31 @@ import logging
 
 try:
     from backend.models.database import get_db
+    from backend.utils.order_status_logic import (
+        REVENUE_GENERATING, CONFIRMED_SOLD, CANCELLED_OR_RETURNED, sql_in_list,
+    )
 except ImportError:
     from models.database import get_db
+    from utils.order_status_logic import (
+        REVENUE_GENERATING, CONFIRMED_SOLD, CANCELLED_OR_RETURNED, sql_in_list,
+    )
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+# ── Semantic SQL fragments ───────────────────────────────────────────────────
+# All status logic in this module routes through these constants. Do NOT inline
+# raw status IDs (see backend/utils/order_status_logic.py).
+#
+# REVENUE_SQL          – orders that produce revenue (Підтверджено only).
+# CONFIRMED_SOLD_SQL   – orders that consume stock (Підтверджено + Подарунок).
+# CANCELLED_OR_RET_SQL – orders that returned stock to the shelf
+#                        (Відміна/Ігнорування/Повернення); used as a "skip these"
+#                        filter for "active" order counts.
+REVENUE_SQL = sql_in_list(REVENUE_GENERATING)              # (1)
+CONFIRMED_SOLD_SQL = sql_in_list(CONFIRMED_SOLD)           # (1, 7)
+CANCELLED_OR_RET_SQL = sql_in_list(CANCELLED_OR_RETURNED)  # (5, 6, 9)
 
 
 # ── Sales statistics ─────────────────────────────────────────────────────────
@@ -23,10 +43,14 @@ async def get_sales_stats(
 ) -> Dict[str, Any]:
     """Sales/revenue by month/quarter/year.
 
-    Returns: revenue (sum of order_items.price), orders count, items sold count.
-    Only counts orders with status != 5 (Скасовано).
+    Semantics:
+      • orders       – distinct orders NOT in (Відміна/Ігнорування/Повернення)
+      • items_sold   – order_items where order status IN (Підтверджено, Подарунок)
+      • revenue      – SUM(price × qty) where order status = Підтверджено
+      • cost         – SUM(p.price × qty) for the items that consumed stock
+      • profit       – revenue − cost
     """
-    conditions = ["o.order_status_id != 5", "o.order_date IS NOT NULL"]
+    conditions = [f"o.order_status_id NOT IN {CANCELLED_OR_RET_SQL}", "o.order_date IS NOT NULL"]
     params: Dict[str, Any] = {}
 
     if year:
@@ -40,19 +64,19 @@ async def get_sales_stats(
 
     if period == "month":
         group_expr = "TO_CHAR(o.order_date, 'YYYY-MM')"
-        label_expr = "TO_CHAR(o.order_date, 'YYYY-MM')"
     elif period == "quarter":
         group_expr = "TO_CHAR(o.order_date, 'YYYY') || '-Q' || EXTRACT(QUARTER FROM o.order_date)::int"
-        label_expr = group_expr
-    else:  # year
+    else:
         group_expr = "TO_CHAR(o.order_date, 'YYYY')"
-        label_expr = "TO_CHAR(o.order_date, 'YYYY')"
 
     rows = db.execute(text(f"""
-        SELECT {label_expr} AS period_label,
+        SELECT {group_expr} AS period_label,
                COUNT(DISTINCT o.id) AS orders_count,
-               COUNT(oi.id) AS items_sold,
-               COALESCE(SUM(oi.price * oi.quantity), 0)::float AS revenue
+               COUNT(oi.id) FILTER (WHERE o.order_status_id IN {CONFIRMED_SOLD_SQL}) AS items_sold,
+               COALESCE(SUM((oi.price * oi.quantity))
+                        FILTER (WHERE o.order_status_id IN {REVENUE_SQL}), 0)::float AS revenue,
+               COALESCE(SUM((p.price * oi.quantity))
+                        FILTER (WHERE o.order_status_id IN {CONFIRMED_SOLD_SQL}), 0)::float AS cost
         FROM orders o
         JOIN order_items oi ON oi.order_id = o.id
         LEFT JOIN products p ON p.id = oi.product_id
@@ -60,28 +84,13 @@ async def get_sales_stats(
         GROUP BY {group_expr}
         ORDER BY {group_expr}
     """), params).mappings().all()
-
-    # Also compute cost basis (purchase price) for net profit
-    cost_rows = db.execute(text(f"""
-        SELECT {label_expr} AS period_label,
-               COALESCE(SUM(p.price * oi.quantity), 0)::float AS cost
-        FROM orders o
-        JOIN order_items oi ON oi.order_id = o.id
-        LEFT JOIN products p ON p.id = oi.product_id
-        WHERE {where}
-        GROUP BY {group_expr}
-        ORDER BY {group_expr}
-    """), params).mappings().all()
-
-    cost_map = {r["period_label"]: r["cost"] for r in cost_rows}
 
     data = []
     for r in rows:
-        label = r["period_label"]
-        revenue = r["revenue"]
-        cost = cost_map.get(label, 0)
+        revenue = r["revenue"] or 0
+        cost = r["cost"] or 0
         data.append({
-            "period": label,
+            "period": r["period_label"],
             "orders": r["orders_count"],
             "items_sold": r["items_sold"],
             "revenue": round(revenue, 2),
@@ -100,7 +109,10 @@ async def get_shipments_stats(
     supplier_id: Optional[int] = Query(None),
     db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
-    """Delivery stats: total cost, avg price per item, items count, sell efficiency."""
+    """Delivery stats: total cost, avg price per item, items count, sell efficiency.
+
+    Sold-rate denominator: count of products in the delivery. Numerator:
+    products that have ≥1 order_item in CONFIRMED_SOLD (stock consumed)."""
     conditions = ["d.deliverydate IS NOT NULL"]
     params: Dict[str, Any] = {}
 
@@ -125,6 +137,7 @@ async def get_shipments_stats(
                COUNT(DISTINCT d.id) AS shipments_count,
                COALESCE(SUM(ps.items_count), 0) AS total_items,
                COALESCE(SUM(ps.total_cost), 0)::float AS total_cost,
+               COALESCE(SUM(d.delivery_cost), 0)::float AS delivery_cost,
                CASE WHEN SUM(ps.items_count) > 0
                     THEN ROUND((SUM(ps.total_cost) / SUM(ps.items_count))::numeric, 2)::float
                     ELSE 0 END AS avg_item_price
@@ -138,15 +151,17 @@ async def get_shipments_stats(
         ORDER BY {group_expr}
     """), params).mappings().all()
 
-    # Revenue from products of these deliveries (sell efficiency)
+    # Revenue + sold units from products of these deliveries
     revenue_rows = db.execute(text(f"""
         SELECT {group_expr} AS period_label,
-               COALESCE(SUM(oi.price * oi.quantity), 0)::float AS revenue,
-               COUNT(DISTINCT oi.product_id) AS sold_items
+               COALESCE(SUM((oi.price * oi.quantity))
+                        FILTER (WHERE o.order_status_id IN {REVENUE_SQL}), 0)::float AS revenue,
+               COUNT(DISTINCT p.id)
+                   FILTER (WHERE o.order_status_id IN {CONFIRMED_SOLD_SQL}) AS sold_items
         FROM deliveries d
         JOIN products p ON p.deliveryid = d.id
-        JOIN order_items oi ON oi.product_id = p.id
-        JOIN orders o ON o.id = oi.order_id AND o.order_status_id != 5
+        LEFT JOIN order_items oi ON oi.product_id = p.id
+        LEFT JOIN orders o ON o.id = oi.order_id
         WHERE {where}
         GROUP BY {group_expr}
         ORDER BY {group_expr}
@@ -158,18 +173,20 @@ async def get_shipments_stats(
     for r in rows:
         label = r["period_label"]
         rev = rev_map.get(label, {})
-        revenue = rev.get("revenue", 0)
+        revenue = rev.get("revenue", 0) if rev else 0
         cost = r["total_cost"]
+        delivery_cost = r["delivery_cost"] or 0
         data.append({
             "period": label,
             "shipments": r["shipments_count"],
             "items": r["total_items"],
             "total_cost": round(cost, 2),
+            "delivery_cost": round(delivery_cost, 2),
             "avg_price": r["avg_item_price"],
             "revenue": round(revenue, 2),
-            "profit": round(revenue - cost, 2),
-            "sold_items": rev.get("sold_items", 0),
-            "sell_rate": round(rev.get("sold_items", 0) / r["total_items"] * 100, 1) if r["total_items"] > 0 else 0,
+            "profit": round(revenue - cost - delivery_cost, 2),
+            "sold_items": rev.get("sold_items", 0) if rev else 0,
+            "sell_rate": round((rev.get("sold_items", 0) or 0) / r["total_items"] * 100, 1) if r["total_items"] else 0,
         })
 
     return {"period_type": period, "data": data}
@@ -183,7 +200,7 @@ async def get_suppliers_stats(
     limit: int = Query(15, ge=1, le=50),
     db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
-    """Top suppliers by total cost / avg price, optionally by period."""
+    """Top suppliers by total purchase cost, optionally split by period."""
     params: Dict[str, Any] = {"lim": limit}
 
     if period == "total":
@@ -209,7 +226,7 @@ async def get_suppliers_stats(
                 SELECT COALESCE(SUM(oi.price * oi.quantity), 0) AS revenue,
                        COUNT(DISTINCT oi.product_id) AS sold_items
                 FROM order_items oi
-                JOIN orders o ON o.id = oi.order_id AND o.order_status_id != 5
+                JOIN orders o ON o.id = oi.order_id AND o.order_status_id IN {CONFIRMED_SOLD_SQL}
                 JOIN products p ON p.id = oi.product_id
                 JOIN deliveries d ON d.id = p.deliveryid
                 WHERE d.supplier_id = s.id
@@ -219,79 +236,131 @@ async def get_suppliers_stats(
             LIMIT :lim
         """), params).mappings().all()
 
-        return {
-            "period_type": "total",
-            "data": [dict(r) for r in rows],
-        }
+        return {"period_type": "total", "data": [dict(r) for r in rows]}
+
+    conditions = ["d.deliverydate IS NOT NULL"]
+    if year:
+        conditions.append("EXTRACT(YEAR FROM d.deliverydate) = :year")
+        params["year"] = year
+    where = " AND ".join(conditions)
+
+    if period == "month":
+        group_expr = "TO_CHAR(d.deliverydate, 'YYYY-MM')"
+    elif period == "quarter":
+        group_expr = "TO_CHAR(d.deliverydate, 'YYYY') || '-Q' || EXTRACT(QUARTER FROM d.deliverydate)::int"
     else:
-        conditions = ["d.deliverydate IS NOT NULL"]
-        if year:
-            conditions.append("EXTRACT(YEAR FROM d.deliverydate) = :year")
-            params["year"] = year
-        where = " AND ".join(conditions)
+        group_expr = "TO_CHAR(d.deliverydate, 'YYYY')"
 
-        if period == "month":
-            group_expr = "TO_CHAR(d.deliverydate, 'YYYY-MM')"
-        elif period == "quarter":
-            group_expr = "TO_CHAR(d.deliverydate, 'YYYY') || '-Q' || EXTRACT(QUARTER FROM d.deliverydate)::int"
-        else:
-            group_expr = "TO_CHAR(d.deliverydate, 'YYYY')"
+    rows = db.execute(text(f"""
+        SELECT s.company_name AS supplier_name,
+               {group_expr} AS period_label,
+               COALESCE(SUM(ps.total_cost), 0)::float AS total_cost,
+               COALESCE(SUM(ps.items_count), 0) AS items_count,
+               CASE WHEN SUM(ps.items_count) > 0
+                    THEN ROUND((SUM(ps.total_cost) / SUM(ps.items_count))::numeric, 2)::float
+                    ELSE 0 END AS avg_price
+        FROM deliveries d
+        JOIN suppliers s ON s.id = d.supplier_id
+        LEFT JOIN LATERAL (
+            SELECT COUNT(*) AS items_count, COALESCE(SUM(p.price), 0) AS total_cost
+            FROM products p WHERE p.deliveryid = d.id
+        ) ps ON true
+        WHERE {where}
+        GROUP BY s.company_name, {group_expr}
+        ORDER BY {group_expr}, total_cost DESC
+    """), params).mappings().all()
 
-        rows = db.execute(text(f"""
-            SELECT s.company_name AS supplier_name,
-                   {group_expr} AS period_label,
-                   COALESCE(SUM(ps.total_cost), 0)::float AS total_cost,
-                   COALESCE(SUM(ps.items_count), 0) AS items_count,
-                   CASE WHEN SUM(ps.items_count) > 0
-                        THEN ROUND((SUM(ps.total_cost) / SUM(ps.items_count))::numeric, 2)::float
-                        ELSE 0 END AS avg_price
-            FROM deliveries d
-            JOIN suppliers s ON s.id = d.supplier_id
-            LEFT JOIN LATERAL (
-                SELECT COUNT(*) AS items_count, COALESCE(SUM(p.price), 0) AS total_cost
-                FROM products p WHERE p.deliveryid = d.id
-            ) ps ON true
-            WHERE {where}
-            GROUP BY s.company_name, {group_expr}
-            ORDER BY {group_expr}, total_cost DESC
-        """), params).mappings().all()
-
-        return {
-            "period_type": period,
-            "data": [dict(r) for r in rows],
-        }
+    return {"period_type": period, "data": [dict(r) for r in rows]}
 
 
 # ── Summary KPIs ─────────────────────────────────────────────────────────────
 @router.get("/api/statistics/summary")
-async def get_summary_stats(
-    db: Session = Depends(get_db),
-) -> Dict[str, Any]:
-    """Key performance indicators for dashboard cards."""
-    row = db.execute(text("""
+async def get_summary_stats(db: Session = Depends(get_db)) -> Dict[str, Any]:
+    """Key performance indicators for dashboard cards.
+
+    Authoritative definitions for the whole stats UI:
+      • total_products          – COUNT(*) FROM products
+      • total_units             – SUM(quantity) – respects ростовки
+      • products_sold           – products with at least one CONFIRMED_SOLD order item
+      • products_fully_sold     – products where confirmed-sold units ≥ quantity
+      • products_partially_sold – partial sale, still has stock
+      • products_unsold         – never sold
+      • total_orders            – orders NOT cancelled/ignored/returned
+      • confirmed_orders        – orders with status = Підтверджено
+      • total_revenue           – SUM(price × qty) WHERE order = Підтверджено
+      • total_purchase_cost     – SUM(p.price × qty) for stock-consuming orders
+      • total_delivery_cost     – SUM(deliveries.delivery_cost)
+      • net_profit              – revenue − purchase_cost − delivery_cost
+      • unsold_inventory_cost   – SUM(p.price) for products with remaining stock
+      • total_inventory_cost    – SUM(p.price) FROM products (raw)
+    """
+    row = db.execute(text(f"""
+        WITH product_sales AS (
+            SELECT oi.product_id,
+                   COUNT(*) FILTER (WHERE o.order_status_id IN {CONFIRMED_SOLD_SQL}) AS sold_units
+            FROM order_items oi
+            JOIN orders o ON o.id = oi.order_id
+            GROUP BY oi.product_id
+        )
         SELECT
             (SELECT COUNT(*) FROM products) AS total_products,
-            (SELECT COUNT(*) FROM orders WHERE order_status_id != 5) AS total_orders,
-            (SELECT COUNT(DISTINCT oi.product_id)
-             FROM order_items oi
-             JOIN orders o ON o.id = oi.order_id AND o.order_status_id != 5) AS products_sold,
+            (SELECT COALESCE(SUM(quantity), 0) FROM products) AS total_units,
+
+            (SELECT COUNT(*) FROM products p
+                JOIN product_sales ps ON ps.product_id = p.id
+                WHERE ps.sold_units > 0) AS products_sold,
+            (SELECT COUNT(*) FROM products p
+                JOIN product_sales ps ON ps.product_id = p.id
+                WHERE ps.sold_units >= COALESCE(NULLIF(p.quantity, 0), 1)) AS products_fully_sold,
+            (SELECT COUNT(*) FROM products p
+                JOIN product_sales ps ON ps.product_id = p.id
+                WHERE ps.sold_units > 0
+                  AND ps.sold_units < COALESCE(NULLIF(p.quantity, 0), 1)) AS products_partially_sold,
+            (SELECT COUNT(*) FROM products p
+                LEFT JOIN product_sales ps ON ps.product_id = p.id
+                WHERE COALESCE(ps.sold_units, 0) = 0) AS products_unsold,
+
+            (SELECT COUNT(*) FROM orders
+                WHERE order_status_id NOT IN {CANCELLED_OR_RET_SQL}) AS total_orders,
+            (SELECT COUNT(*) FROM orders
+                WHERE order_status_id IN {REVENUE_SQL}) AS confirmed_orders,
+
             (SELECT COALESCE(SUM(oi.price * oi.quantity), 0)::float
              FROM order_items oi
-             JOIN orders o ON o.id = oi.order_id AND o.order_status_id != 5) AS total_revenue,
-            (SELECT COALESCE(SUM(p.price), 0)::float
+             JOIN orders o ON o.id = oi.order_id
+             WHERE o.order_status_id IN {REVENUE_SQL}) AS total_revenue,
+
+            (SELECT COALESCE(SUM(p.price * oi.quantity), 0)::float
              FROM order_items oi
-             JOIN orders o ON o.id = oi.order_id AND o.order_status_id != 5
-             JOIN products p ON p.id = oi.product_id) AS total_purchase_cost,
+             JOIN orders o ON o.id = oi.order_id
+             JOIN products p ON p.id = oi.product_id
+             WHERE o.order_status_id IN {CONFIRMED_SOLD_SQL}) AS total_purchase_cost,
+
+            (SELECT COALESCE(SUM(delivery_cost), 0)::float FROM deliveries) AS total_delivery_cost,
+
+            (SELECT COALESCE(SUM(p.price), 0)::float FROM products p
+                LEFT JOIN product_sales ps ON ps.product_id = p.id
+                WHERE COALESCE(ps.sold_units, 0) < COALESCE(NULLIF(p.quantity, 0), 1)) AS unsold_inventory_cost,
+
             (SELECT COALESCE(SUM(price), 0)::float FROM products) AS total_inventory_cost,
+
             (SELECT COUNT(*) FROM suppliers) AS total_suppliers,
             (SELECT COUNT(*) FROM deliveries) AS total_shipments,
             (SELECT COALESCE(SUM(p.price), 0)::float FROM products p WHERE p.deliveryid IS NOT NULL) AS total_shipment_cost
     """)).mappings().first()
 
-    return dict(row) if row else {}
+    if not row:
+        return {}
+
+    data = dict(row)
+    rev = data["total_revenue"] or 0
+    cost = data["total_purchase_cost"] or 0
+    dcost = data["total_delivery_cost"] or 0
+    data["net_profit"] = round(rev - cost - dcost, 2)
+    return data
 
 
-# ── Available years for period selectors ─────────────────────────────────────
+# ── Available years ──────────────────────────────────────────────────────────
 @router.get("/api/statistics/years")
 async def get_available_years(db: Session = Depends(get_db)) -> Dict[str, Any]:
     order_years = db.execute(text(
@@ -304,16 +373,15 @@ async def get_available_years(db: Session = Depends(get_db)) -> Dict[str, Any]:
     return {"years": all_years}
 
 
-# ── Delivery (shipment) detail statistics ────────────────────────────────────
+# ── Delivery detail ──────────────────────────────────────────────────────────
 @router.get("/api/statistics/delivery/{delivery_id}")
 async def get_delivery_detail_stats(
     delivery_id: int,
     db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
-    """Detailed statistics for a single delivery/shipment."""
+    """Detailed statistics for a single delivery."""
     logger.info(f"Fetching delivery detail stats for delivery_id={delivery_id}")
 
-    # Basic delivery info
     delivery = db.execute(text("""
         SELECT d.id, d.deliveryname, d.deliverydate, d.delivery_cost,
                s.company_name AS supplier_name
@@ -325,8 +393,7 @@ async def get_delivery_detail_stats(
         from fastapi import HTTPException
         raise HTTPException(status_code=404, detail="Delivery not found")
 
-    # Aggregated product stats
-    stats = db.execute(text("""
+    stats = db.execute(text(f"""
         SELECT
             COUNT(*) AS total_pairs,
             COALESCE(SUM(p.price), 0)::float AS purchase_cost,
@@ -336,17 +403,16 @@ async def get_delivery_detail_stats(
         LEFT JOIN LATERAL (
             SELECT DISTINCT oi.product_id
             FROM order_items oi
-            JOIN orders o ON o.id = oi.order_id AND o.order_status_id NOT IN (5, 6)
+            JOIN orders o ON o.id = oi.order_id AND o.order_status_id IN {CONFIRMED_SOLD_SQL}
             WHERE oi.product_id = p.id
         ) sold ON true
         WHERE p.deliveryid = :id
     """), {"id": delivery_id}).mappings().first()
 
-    # Revenue from sold items
-    revenue = db.execute(text("""
+    revenue = db.execute(text(f"""
         SELECT COALESCE(SUM(oi.price * oi.quantity), 0)::float AS revenue
         FROM order_items oi
-        JOIN orders o ON o.id = oi.order_id AND o.order_status_id NOT IN (5, 6)
+        JOIN orders o ON o.id = oi.order_id AND o.order_status_id IN {REVENUE_SQL}
         JOIN products p ON p.id = oi.product_id
         WHERE p.deliveryid = :id
     """), {"id": delivery_id}).scalar() or 0
@@ -361,29 +427,26 @@ async def get_delivery_detail_stats(
     cost_per_pair = round(total_cost / total_pairs, 2) if total_pairs > 0 else 0
     net_revenue = round(revenue - total_cost, 2)
 
-    # Size distribution (EU)
     sizes = db.execute(text("""
         SELECT p.sizeeu AS size, COUNT(*) AS count
         FROM products p WHERE p.deliveryid = :id AND p.sizeeu IS NOT NULL AND p.sizeeu != ''
         GROUP BY p.sizeeu ORDER BY p.sizeeu
     """), {"id": delivery_id}).mappings().all()
 
-    # Measurement distribution (CM)
     measurements = db.execute(text("""
         SELECT p.measurementscm AS measurement, COUNT(*) AS count
         FROM products p WHERE p.deliveryid = :id AND p.measurementscm IS NOT NULL AND p.measurementscm != ''
         GROUP BY p.measurementscm ORDER BY p.measurementscm
     """), {"id": delivery_id}).mappings().all()
 
-    # Type distribution
+    # FIX: was `product_types` (junction table, always 0 rows) → must be `types`
     types = db.execute(text("""
         SELECT COALESCE(t.typename, 'Без типу') AS type_name, COUNT(*) AS count
-        FROM products p LEFT JOIN product_types t ON t.id = p.typeid
+        FROM products p LEFT JOIN types t ON t.id = p.typeid
         WHERE p.deliveryid = :id
         GROUP BY t.typename ORDER BY count DESC
     """), {"id": delivery_id}).mappings().all()
 
-    # Status distribution
     statuses = db.execute(text("""
         SELECT COALESCE(ps.statusname, 'Без статусу') AS status_name, COUNT(*) AS count
         FROM products p LEFT JOIN product_statuses ps ON ps.id = p.statusid
@@ -410,7 +473,7 @@ async def get_delivery_detail_stats(
     }
 
 
-# ── Deliveries list with basic metrics ───────────────────────────────────────
+# ── Deliveries list with metrics ─────────────────────────────────────────────
 @router.get("/api/statistics/deliveries")
 async def get_deliveries_stats(
     page: int = Query(1, ge=1),
@@ -419,7 +482,7 @@ async def get_deliveries_stats(
     year: Optional[int] = Query(None),
     db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
-    """List all deliveries with summary metrics for the statistics page."""
+    """Per-delivery summary table for the shipments grid."""
     logger.info(f"Fetching deliveries stats list: page={page}, supplier_id={supplier_id}, year={year}")
 
     conditions: List[str] = []
@@ -449,8 +512,8 @@ async def get_deliveries_stats(
                     THEN ROUND(ps.sold_count::numeric / ps.total_pairs * 100, 1)::float
                     ELSE 0 END AS sell_rate,
                COALESCE(rev.revenue, 0)::float AS revenue,
-               -- Прибуток: виторг - закупівельна ціна завозу (з Sheet) - вартість доставки
-               -- Якщо purchase_cost у delivery ще не заповнено (0) — fallback на SUM(p.price)
+               -- Прибуток = виторг (status=Підтверджено) − собівартість проданого − delivery_cost.
+               -- Собівартість беремо з deliveries.purchase_cost якщо заповнено, інакше з SUM(p.price).
                COALESCE(rev.revenue, 0)::float
                    - CASE WHEN COALESCE(d.purchase_cost, 0) > 0
                            THEN COALESCE(d.purchase_cost, 0)::float
@@ -462,7 +525,8 @@ async def get_deliveries_stats(
             SELECT COUNT(*) AS total_pairs,
                    COALESCE(SUM(p.price), 0) AS price_sum,
                    COUNT(*) FILTER (WHERE EXISTS (
-                       SELECT 1 FROM order_items oi JOIN orders o ON o.id = oi.order_id AND o.order_status_id NOT IN (5,6)
+                       SELECT 1 FROM order_items oi
+                       JOIN orders o ON o.id = oi.order_id AND o.order_status_id IN {CONFIRMED_SOLD_SQL}
                        WHERE oi.product_id = p.id
                    )) AS sold_count
             FROM products p WHERE p.deliveryid = d.id
@@ -470,7 +534,7 @@ async def get_deliveries_stats(
         LEFT JOIN LATERAL (
             SELECT COALESCE(SUM(oi.price * oi.quantity), 0) AS revenue
             FROM order_items oi
-            JOIN orders o ON o.id = oi.order_id AND o.order_status_id NOT IN (5,6)
+            JOIN orders o ON o.id = oi.order_id AND o.order_status_id IN {REVENUE_SQL}
             JOIN products p ON p.id = oi.product_id
             WHERE p.deliveryid = d.id
         ) rev ON true
@@ -488,7 +552,7 @@ async def get_deliveries_stats(
     }
 
 
-# ── Supplier detail statistics ───────────────────────────────────────────────
+# ── Supplier detail ──────────────────────────────────────────────────────────
 @router.get("/api/statistics/supplier/{supplier_id}")
 async def get_supplier_detail_stats(
     supplier_id: int,
@@ -504,8 +568,7 @@ async def get_supplier_detail_stats(
         from fastapi import HTTPException
         raise HTTPException(status_code=404, detail="Supplier not found")
 
-    # Overview
-    overview = db.execute(text("""
+    overview = db.execute(text(f"""
         SELECT
             COUNT(DISTINCT d.id) AS total_deliveries,
             COUNT(DISTINCT p.id) AS total_products,
@@ -518,10 +581,12 @@ async def get_supplier_detail_stats(
         FROM deliveries d
         JOIN products p ON p.deliveryid = d.id
         LEFT JOIN LATERAL (
-            SELECT COALESCE(SUM(oi.price * oi.quantity), 0) AS revenue,
-                   COUNT(DISTINCT oi.product_id) AS sold_items
+            SELECT COALESCE(SUM(oi.price * oi.quantity)
+                            FILTER (WHERE o.order_status_id IN {REVENUE_SQL}), 0) AS revenue,
+                   COUNT(DISTINCT oi.product_id)
+                            FILTER (WHERE o.order_status_id IN {CONFIRMED_SOLD_SQL}) AS sold_items
             FROM order_items oi
-            JOIN orders o ON o.id = oi.order_id AND o.order_status_id NOT IN (5,6)
+            JOIN orders o ON o.id = oi.order_id
             JOIN products p2 ON p2.id = oi.product_id
             JOIN deliveries d2 ON d2.id = p2.deliveryid
             WHERE d2.supplier_id = :id
@@ -533,7 +598,6 @@ async def get_supplier_detail_stats(
     revenue = (overview["revenue"] or 0) if overview else 0
     profit = round(revenue - total_spent, 2)
 
-    # Top brands
     top_brands = db.execute(text("""
         SELECT b.brandname AS name, COUNT(*) AS count
         FROM deliveries d JOIN products p ON p.deliveryid = d.id
@@ -542,27 +606,27 @@ async def get_supplier_detail_stats(
         GROUP BY b.brandname ORDER BY count DESC LIMIT 10
     """), {"id": supplier_id}).mappings().all()
 
-    # Top types
+    # FIX: was `product_types` (junction, 0 rows) → must be `types`
     top_types = db.execute(text("""
         SELECT t.typename AS name, COUNT(*) AS count
         FROM deliveries d JOIN products p ON p.deliveryid = d.id
-        JOIN product_types t ON t.id = p.typeid
+        JOIN types t ON t.id = p.typeid
         WHERE d.supplier_id = :id
         GROUP BY t.typename ORDER BY count DESC LIMIT 10
     """), {"id": supplier_id}).mappings().all()
 
-    # Monthly trend (last 12 months)
-    trend = db.execute(text("""
+    trend = db.execute(text(f"""
         SELECT TO_CHAR(d.deliverydate, 'YYYY-MM') AS month,
                COUNT(DISTINCT p.id) AS products,
                COALESCE(SUM(p.price), 0)::float AS cost,
                COALESCE(SUM(
-                   CASE WHEN oi.id IS NOT NULL THEN oi.price * oi.quantity ELSE 0 END
+                   CASE WHEN o.order_status_id IN {REVENUE_SQL}
+                        THEN oi.price * oi.quantity ELSE 0 END
                ), 0)::float AS revenue
         FROM deliveries d
         JOIN products p ON p.deliveryid = d.id
         LEFT JOIN order_items oi ON oi.product_id = p.id
-        LEFT JOIN orders o ON o.id = oi.order_id AND o.order_status_id NOT IN (5,6)
+        LEFT JOIN orders o ON o.id = oi.order_id
         WHERE d.supplier_id = :id AND d.deliverydate IS NOT NULL
         GROUP BY TO_CHAR(d.deliverydate, 'YYYY-MM')
         ORDER BY month
@@ -589,36 +653,39 @@ async def get_clients_stats(
     limit: int = Query(15, ge=1, le=50),
     db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
-    """Client analytics: top clients, new clients trend, avg check trend, rating distribution."""
+    """Client analytics. Per BMS convention top-client metrics are strictly
+    confirmed (status=Підтверджено) — gifts/pending don't count as a client's
+    realized spend or order tally.
+    """
     logger.info("Fetching client statistics")
 
-    # Top clients by revenue
-    top_by_revenue = db.execute(text("""
+    # Беремо метрики з orders.total_amount, БЕЗ JOIN order_items.
+    # Раніше JOIN order_items відкидав легасі-ордери без позицій (parser не зміг
+    # розпізнати productnumber у sheet) — у Светлани #9226: 467 confirmed,
+    # але тільки 169 з items → stats показувала 169/328k, картка 467/869k.
+    # Тепер обидва ендпоінти показують однакові числа з orders.total_amount.
+    top_by_revenue = db.execute(text(f"""
         SELECT c.id, c.first_name || ' ' || c.last_name AS name,
-               COUNT(DISTINCT o.id) AS orders_count,
-               COALESCE(SUM(oi.price * oi.quantity), 0)::float AS total_revenue
+               COUNT(o.id) AS orders_count,
+               COALESCE(SUM(o.total_amount), 0)::float AS total_revenue
         FROM clients c
-        JOIN orders o ON o.client_id = c.id AND o.order_status_id NOT IN (5,6)
-        JOIN order_items oi ON oi.order_id = o.id
+        JOIN orders o ON o.client_id = c.id AND o.order_status_id IN {REVENUE_SQL}
         GROUP BY c.id, c.first_name, c.last_name
         ORDER BY total_revenue DESC
         LIMIT :lim
     """), {"lim": limit}).mappings().all()
 
-    # Top clients by order count
-    top_by_orders = db.execute(text("""
+    top_by_orders = db.execute(text(f"""
         SELECT c.id, c.first_name || ' ' || c.last_name AS name,
-               COUNT(DISTINCT o.id) AS orders_count,
-               COALESCE(SUM(oi.price * oi.quantity), 0)::float AS total_revenue
+               COUNT(o.id) AS orders_count,
+               COALESCE(SUM(o.total_amount), 0)::float AS total_revenue
         FROM clients c
-        JOIN orders o ON o.client_id = c.id AND o.order_status_id NOT IN (5,6)
-        JOIN order_items oi ON oi.order_id = o.id
+        JOIN orders o ON o.client_id = c.id AND o.order_status_id IN {REVENUE_SQL}
         GROUP BY c.id, c.first_name, c.last_name
         ORDER BY orders_count DESC
         LIMIT :lim
     """), {"lim": limit}).mappings().all()
 
-    # New clients per month
     new_clients_trend = db.execute(text("""
         SELECT TO_CHAR(first_order_date, 'YYYY-MM') AS month,
                COUNT(*) AS new_clients
@@ -628,25 +695,20 @@ async def get_clients_stats(
         ORDER BY month
     """)).mappings().all()
 
-    # Average check trend (by month)
-    avg_check_trend = db.execute(text("""
-        SELECT TO_CHAR(o.order_date, 'YYYY-MM') AS month,
-               ROUND(AVG(order_total)::numeric, 2)::float AS avg_check,
+    # Avg check — теж з orders.total_amount, не з items (див. коментар вище).
+    avg_check_trend = db.execute(text(f"""
+        SELECT TO_CHAR(order_date, 'YYYY-MM') AS month,
+               ROUND(AVG(total_amount)::numeric, 2)::float AS avg_check,
                COUNT(*) AS orders_count
-        FROM (
-            SELECT o.id, o.order_date, SUM(oi.price * oi.quantity) AS order_total
-            FROM orders o
-            JOIN order_items oi ON oi.order_id = o.id
-            WHERE o.order_status_id NOT IN (5,6) AND o.order_date IS NOT NULL
-            GROUP BY o.id, o.order_date
-        ) sub
-        JOIN orders o ON o.id = sub.id
-        GROUP BY TO_CHAR(o.order_date, 'YYYY-MM')
+        FROM orders
+        WHERE order_status_id IN {REVENUE_SQL}
+          AND order_date IS NOT NULL
+          AND total_amount IS NOT NULL
+        GROUP BY TO_CHAR(order_date, 'YYYY-MM')
         ORDER BY month
     """)).mappings().all()
 
-    # Rating distribution (using same formula as in clients endpoint)
-    rating_dist = db.execute(text("""
+    rating_dist = db.execute(text(f"""
         SELECT category, COUNT(*) AS count
         FROM (
             SELECT
@@ -669,7 +731,7 @@ async def get_clients_stats(
                 FROM clients c
                 LEFT JOIN LATERAL (
                     SELECT
-                        COUNT(*) FILTER (WHERE o.order_status_id NOT IN (5,6,9,10)) AS confirmed_orders,
+                        COUNT(*) FILTER (WHERE o.order_status_id IN {REVENUE_SQL}) AS confirmed_orders,
                         COUNT(*) FILTER (WHERE o.order_status_id = 5) AS cancelled_count,
                         COUNT(*) FILTER (WHERE o.order_status_id = 6) AS ignored_count,
                         COUNT(*) FILTER (WHERE o.order_status_id IN (9,10)) AS return_exchange_count
@@ -690,98 +752,102 @@ async def get_clients_stats(
     }
 
 
-# ── Products statistics ───────────────────────────────────────────────────────
+# ── Products statistics ──────────────────────────────────────────────────────
 @router.get("/api/statistics/products")
 async def get_products_stats(
     limit: int = Query(15, ge=1, le=50),
     db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
-    """Product analytics: top selling products, top brands, type distribution, channel distribution."""
+    """Top selling products, top brands, type/channel distribution, inventory summary.
+
+    "Sold" everywhere = CONFIRMED_SOLD (Підтверджено + Подарунок).
+    "Revenue" = REVENUE_GENERATING (Підтверджено only).
+    """
     logger.info("Fetching product statistics")
 
-    # Top selling products (by sold count)
-    top_products = db.execute(text("""
+    top_products = db.execute(text(f"""
         SELECT p.productnumber, p.model,
                b.brandname AS brand,
                t.typename AS type,
-               COUNT(oi.id) AS sold_count,
-               COALESCE(SUM(oi.price * oi.quantity), 0)::float AS revenue
+               COUNT(oi.id) FILTER (WHERE o.order_status_id IN {CONFIRMED_SOLD_SQL}) AS sold_count,
+               COALESCE(SUM(oi.price * oi.quantity)
+                        FILTER (WHERE o.order_status_id IN {REVENUE_SQL}), 0)::float AS revenue
         FROM order_items oi
         JOIN products p ON p.id = oi.product_id
         LEFT JOIN brands b ON b.id = p.brandid
         LEFT JOIN types t ON t.id = p.typeid
         JOIN orders o ON o.id = oi.order_id
-        WHERE o.order_status_id NOT IN (5, 6)
-          AND oi.product_id IS NOT NULL
+        WHERE o.order_status_id IN {CONFIRMED_SOLD_SQL}
         GROUP BY p.productnumber, p.model, b.brandname, t.typename
         ORDER BY sold_count DESC
         LIMIT :limit
     """), {"limit": limit}).fetchall()
 
-    # Top brands by revenue
-    top_brands = db.execute(text("""
+    top_brands = db.execute(text(f"""
         SELECT b.brandname AS brand,
                COUNT(DISTINCT o.id) AS orders_count,
-               COUNT(oi.id) AS sold_count,
-               COALESCE(SUM(oi.price * oi.quantity), 0)::float AS revenue
+               COUNT(oi.id) FILTER (WHERE o.order_status_id IN {CONFIRMED_SOLD_SQL}) AS sold_count,
+               COALESCE(SUM(oi.price * oi.quantity)
+                        FILTER (WHERE o.order_status_id IN {REVENUE_SQL}), 0)::float AS revenue
         FROM order_items oi
         JOIN products p ON p.id = oi.product_id
         JOIN brands b ON b.id = p.brandid
         JOIN orders o ON o.id = oi.order_id
-        WHERE o.order_status_id NOT IN (5, 6)
-          AND oi.product_id IS NOT NULL
+        WHERE o.order_status_id IN {CONFIRMED_SOLD_SQL}
           AND b.brandname IS NOT NULL
         GROUP BY b.brandname
         ORDER BY revenue DESC
         LIMIT :limit
     """), {"limit": limit}).fetchall()
 
-    # Type distribution
-    type_dist = db.execute(text("""
+    type_dist = db.execute(text(f"""
         SELECT t.typename AS type,
-               COUNT(oi.id) AS sold_count,
-               COALESCE(SUM(oi.price * oi.quantity), 0)::float AS revenue
+               COUNT(oi.id) FILTER (WHERE o.order_status_id IN {CONFIRMED_SOLD_SQL}) AS sold_count,
+               COALESCE(SUM(oi.price * oi.quantity)
+                        FILTER (WHERE o.order_status_id IN {REVENUE_SQL}), 0)::float AS revenue
         FROM order_items oi
         JOIN products p ON p.id = oi.product_id
         JOIN types t ON t.id = p.typeid
         JOIN orders o ON o.id = oi.order_id
-        WHERE o.order_status_id NOT IN (5, 6)
-          AND oi.product_id IS NOT NULL
+        WHERE o.order_status_id IN {CONFIRMED_SOLD_SQL}
           AND t.typename IS NOT NULL
         GROUP BY t.typename
         ORDER BY sold_count DESC
         LIMIT 10
     """)).fetchall()
 
-    # Sales channel distribution (orders count and revenue)
-    channel_dist = db.execute(text("""
+    channel_dist = db.execute(text(f"""
         SELECT COALESCE(o.sales_channel, 'Ефір') AS channel,
                COUNT(DISTINCT o.id) AS orders_count,
-               COALESCE(SUM(oi.price * oi.quantity), 0)::float AS revenue
+               COALESCE(SUM(oi.price * oi.quantity)
+                        FILTER (WHERE o.order_status_id IN {REVENUE_SQL}), 0)::float AS revenue
         FROM orders o
         LEFT JOIN order_items oi ON oi.order_id = o.id
-        WHERE o.order_status_id NOT IN (5, 6)
+        WHERE o.order_status_id NOT IN {CANCELLED_OR_RET_SQL}
         GROUP BY COALESCE(o.sales_channel, 'Ефір')
         ORDER BY orders_count DESC
     """)).fetchall()
 
-    # Inventory summary: available vs sold by status
-    inventory_summary = db.execute(text("""
-        SELECT
-            COUNT(*) FILTER (WHERE p.quantity > 0) AS total_products,
-            COALESCE(SUM(p.quantity), 0) AS total_units,
-            COUNT(*) FILTER (WHERE COALESCE(sold.sold_count, 0) >= p.quantity AND p.quantity > 0) AS fully_sold,
-            COUNT(*) FILTER (WHERE COALESCE(sold.sold_count, 0) = 0 AND p.quantity > 0) AS fully_available,
-            COUNT(*) FILTER (WHERE COALESCE(sold.sold_count, 0) > 0 AND COALESCE(sold.sold_count, 0) < p.quantity) AS partially_sold,
-            COUNT(*) FILTER (WHERE p.quantity > 1) AS rostovkas
-        FROM products p
-        LEFT JOIN (
+    # Inventory summary: total / fully sold / partially sold / available / rostovkas.
+    # "fully_sold" uses confirmed-sold units ≥ quantity (so multi-unit products
+    # aren't marked sold until all units leave).
+    inventory_summary = db.execute(text(f"""
+        WITH s AS (
             SELECT oi.product_id, COUNT(*) AS sold_count
             FROM order_items oi
-            JOIN orders o ON o.id = oi.order_id
-            WHERE o.order_status_id NOT IN (5)
+            JOIN orders o ON o.id = oi.order_id AND o.order_status_id IN {CONFIRMED_SOLD_SQL}
             GROUP BY oi.product_id
-        ) sold ON sold.product_id = p.id
+        )
+        SELECT
+            COUNT(*) AS total_products,
+            COALESCE(SUM(p.quantity), 0) AS total_units,
+            COUNT(*) FILTER (WHERE COALESCE(s.sold_count, 0) >= COALESCE(NULLIF(p.quantity, 0), 1)) AS fully_sold,
+            COUNT(*) FILTER (WHERE COALESCE(s.sold_count, 0) = 0) AS fully_available,
+            COUNT(*) FILTER (WHERE COALESCE(s.sold_count, 0) > 0
+                              AND COALESCE(s.sold_count, 0) < COALESCE(NULLIF(p.quantity, 0), 1)) AS partially_sold,
+            COUNT(*) FILTER (WHERE p.quantity > 1) AS rostovkas
+        FROM products p
+        LEFT JOIN s ON s.product_id = p.id
     """)).fetchone()
 
     return {

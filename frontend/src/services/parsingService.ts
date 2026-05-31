@@ -92,28 +92,6 @@ export const fetchParsingLogs = async (limit: number = 50): Promise<ParsingLog[]
   return response.data;
 };
 
-// Function to start orders parsing script
-export const startOrdersParsing = async () => {
-  try {
-    const response = await fetch(`/api/parsing/orders`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-    });
-    
-    if (!response.ok) {
-      const errorData = await response.json();
-      throw new Error(errorData.detail || 'Failed to start orders parsing');
-    }
-    
-    return await response.json();
-  } catch (error) {
-    console.error('Error starting orders parsing:', error);
-    throw error;
-  }
-};
-
 export const startSheetsJob = async (mode: string): Promise<{ jobId: number }> => {
   const response = await fetch(`/api/parsing/run?mode=${mode}`, { method: 'POST' });
   if (!response.ok) throw new Error((await response.json()).detail || 'Failed');
@@ -131,24 +109,3 @@ export const startWorkspaceParsing = async (): Promise<{ jobId: number }> => {
   return response.json();
 };
 
-// Function to start Google Sheets parsing script
-export const startGoogleSheetsParsing = async () => {
-  try {
-    const response = await fetch(`/api/parsing/googlesheets`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-    });
-    
-    if (!response.ok) {
-      const errorData = await response.json();
-      throw new Error(errorData.detail || 'Failed to start Google Sheets parsing');
-    }
-    
-    return await response.json();
-  } catch (error) {
-    console.error('Error starting Google Sheets parsing:', error);
-    throw error;
-  }
-}; 

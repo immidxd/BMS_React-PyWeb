@@ -26,6 +26,7 @@ import MergeCandidatesModal from './MergeCandidatesModal';
 import { LinkOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import { productService } from '../../services/productService';
+import { CopyOnClick, UnknownIf, isUnknownValue, BrandName } from '../common/displayHelpers';
 // Pagination is rendered at page level
 
 // Column configuration type
@@ -88,11 +89,16 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
     const [detailsOpen, setDetailsOpen] = useState<boolean>(false);
     const [mergeId, setMergeId] = useState<number | null>(null);
     const [mergeOpen, setMergeOpen] = useState<boolean>(false);
-    // Контекстне меню керування колонками
-    const storageKey = 'products_table_columns_v2';
+    // Контекстне меню керування колонками (тільки на шапці таблиці)
+    const storageKey = 'products_table_columns_v3';
     const menuRef = useRef<HTMLDivElement | null>(null);
     const [menuOpen, setMenuOpen] = useState(false);
     const [menuPos, setMenuPos] = useState<{x:number;y:number}>({x:0,y:0});
+    // Контекстне меню дій над товаром (на рядку таблиці)
+    const rowMenuRef = useRef<HTMLDivElement | null>(null);
+    const [rowMenuOpen, setRowMenuOpen] = useState(false);
+    const [rowMenuPos, setRowMenuPos] = useState<{x:number;y:number}>({x:0,y:0});
+    const [rowMenuRecord, setRowMenuRecord] = useState<Product | null>(null);
     const columnOrder: { id: string; title: string; optional: boolean }[] = [
         // 0.1 (опціонально перед №1)
         { id: 'id', title: 'ID', optional: true },
@@ -113,7 +119,7 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
         { id: 'year', title: 'Рік', optional: true },
         // 4
         { id: 'gender_name', title: 'Стать', optional: false },
-        { id: 'season', title: 'Сезон', optional: true },
+        { id: 'season', title: 'Сезон', optional: false },
         // 5
         { id: 'color_name', title: 'Колір', optional: false },
         // 5.1
@@ -162,16 +168,43 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
     useEffect(() => { localStorage.setItem(storageKey, JSON.stringify(visibleMap)); }, [visibleMap]);
     useEffect(() => {
         const onDocClick = (e: MouseEvent) => {
-            if (!menuRef.current) return setMenuOpen(false);
-            if (!menuRef.current.contains(e.target as Node)) setMenuOpen(false);
+            if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenuOpen(false);
+            else if (!menuRef.current) setMenuOpen(false);
+            if (rowMenuRef.current && !rowMenuRef.current.contains(e.target as Node)) setRowMenuOpen(false);
+            else if (!rowMenuRef.current) setRowMenuOpen(false);
         };
         document.addEventListener('mousedown', onDocClick);
         return () => document.removeEventListener('mousedown', onDocClick);
     }, []);
-    const handleContextMenu: React.MouseEventHandler<HTMLDivElement> = (e) => {
+    // ПКМ на шапці таблиці → меню видимості колонок
+    const handleHeaderContextMenu: React.MouseEventHandler<HTMLElement> = (e) => {
         e.preventDefault();
+        setRowMenuOpen(false);
         setMenuPos({ x: e.clientX, y: e.clientY });
         setMenuOpen(true);
+    };
+    // ПКМ на рядку товару → меню дій над товаром
+    const handleRowContextMenu = (e: React.MouseEvent, record: Product) => {
+        e.preventDefault();
+        setMenuOpen(false);
+        setRowMenuRecord(record);
+        setRowMenuPos({ x: e.clientX, y: e.clientY });
+        setRowMenuOpen(true);
+    };
+    // "Показати в замовленнях" — кладемо фільтр і перемикаємо вкладку
+    const handleShowInOrders = (record: Product) => {
+        const sold = record.sold_count ?? 0;
+        if (sold <= 0) {
+            message.info('Товар не продано — немає замовлень для показу');
+            return;
+        }
+        const label = (record.productnumber || '').replace(/^#/, '') || `ID ${record.id}`;
+        localStorage.setItem('bms_orders_pending_filter', JSON.stringify({
+            product_id: record.id,
+            product_label: label,
+        }));
+        window.dispatchEvent(new CustomEvent('bms:switch-to-orders'));
+        setRowMenuOpen(false);
     };
     
     // Обробник зміни видимості товару
@@ -214,41 +247,61 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
     // Опис усіх можливих колонок уніфіковано, з рендерами
     const allColumns: Record<string, any> = {
         id: {
-            title: 'ID', dataIndex: 'id', key: 'id', width: 45, sorter: true,
+            title: 'ID', dataIndex: 'id', key: 'id', width: 60, sorter: true,
+            render: (id: number) => <CopyOnClick value={id} className="bms-mono text-xs" />,
         },
         productnumber: {
-            title: 'Номер', dataIndex: 'productnumber', key: 'productnumber', width: 80,
-            render: (text: string, record: Product) => (
-                <div className="flex flex-col gap-0.5">
-                    {(() => {
-                        const url = buildGoogleUrl(record);
-                        const label = (text || '').replace(/^#/, '');
-                        return url ? (
-                            <a
-                                href={url}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className={`text-xs text-left font-medium ${googleCellClass}`}
-                                title={googleTitle}
-                                onClick={(e) => e.stopPropagation()}
-                            >{label}</a>
-                        ) : (
-                            <span className="text-xs text-left font-medium text-gray-800 dark:text-gray-200">{label}</span>
-                        );
-                    })()}
-                    {record.is_rostovka && (
-                        <Tooltip title={`Ростовка — набір розмірів (${record.quantity} од.)`}>
-                            <span className="inline-flex items-center gap-0.5 px-1 py-0 rounded text-[9px] font-semibold bg-purple-100 text-purple-700 border border-purple-200 w-fit cursor-help">
-                                ▤ Рост.
-                            </span>
-                        </Tooltip>
-                    )}
-                </div>
-            ),
+            title: 'Номер', dataIndex: 'productnumber', key: 'productnumber', width: 64,
+            render: (text: string, record: Product) => {
+                const label = (text || '').replace(/^#/, '');
+                if (isUnknownValue(label)) {
+                    return (
+                        <div className="flex flex-col gap-0.5 items-center">
+                            <UnknownIf value={label} className="text-xs font-medium" />
+                            {record.is_rostovka && (
+                                <Tooltip title={`Ростовка — набір розмірів (${record.quantity} од.)`}>
+                                    <span className="inline-flex items-center gap-0.5 px-1 py-0 rounded text-[9px] font-semibold bg-purple-100 text-purple-700 border border-purple-200 w-fit cursor-help">▤ Рост.</span>
+                                </Tooltip>
+                            )}
+                        </div>
+                    );
+                }
+                const url = buildGoogleUrl(record);
+                const numberCell = (
+                    <CopyOnClick
+                        value={label}
+                        display={
+                            url ? (
+                                <a
+                                    href={url}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="text-xs font-medium cursor-pointer text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300"
+                                    title={googleTitle}
+                                    onClick={(e) => { e.stopPropagation(); }}
+                                >{label}</a>
+                            ) : (
+                                <span className="text-xs font-medium text-gray-800 dark:text-gray-200">{label}</span>
+                            )
+                        }
+                    />
+                );
+                return (
+                    <div className="flex flex-col gap-0.5 items-center">
+                        {numberCell}
+                        {record.is_rostovka && (
+                            <Tooltip title={`Ростовка — набір розмірів (${record.quantity} од.)`}>
+                                <span className="inline-flex items-center gap-0.5 px-1 py-0 rounded text-[9px] font-semibold bg-purple-100 text-purple-700 border border-purple-200 w-fit cursor-help">▤ Рост.</span>
+                            </Tooltip>
+                        )}
+                    </div>
+                );
+            },
         },
         model: { title: 'Модель', dataIndex: 'model', key: 'model', width: 140,
             render: (text: string, record: Product) => {
                 if (!text) return null;
+                if (isUnknownValue(text)) return <UnknownIf value={text} />;
                 const url = buildGoogleUrl(record);
                 return url ? (
                     <a href={url} target="_blank" rel="noopener noreferrer"
@@ -257,18 +310,25 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
                     >{text}</a>
                 ) : <span>{text}</span>;
             } },
-        brand_name: { title: 'Бренд', dataIndex: 'brand_name', key: 'brand_name', width: 110 },
-        type_name: { title: 'Тип', dataIndex: 'type_name', key: 'type_name', width: 110 },
-        subtype_name: { title: 'Підтип', dataIndex: 'subtype_name', key: 'subtype_name', width: 120 },
-        gender_name: { title: 'Стать', dataIndex: 'gender_name', key: 'gender_name', width: 75 },
-        color_name: { title: 'Колір', dataIndex: 'color_name', key: 'color_name', width: 65 },
-        sizeeu: { title: 'Розмір (EU)', dataIndex: 'sizeeu', key: 'sizeeu', width: 70,
+        brand_name: { title: 'Бренд', dataIndex: 'brand_name', key: 'brand_name', width: 110,
+            render: (v: string) => <BrandName value={v} /> },
+        type_name: { title: 'Тип', dataIndex: 'type_name', key: 'type_name', width: 110,
+            render: (v: string) => <UnknownIf value={v} /> },
+        subtype_name: { title: 'Підтип', dataIndex: 'subtype_name', key: 'subtype_name', width: 120,
+            render: (v: string) => <UnknownIf value={v} /> },
+        gender_name: { title: 'Стать', dataIndex: 'gender_name', key: 'gender_name', width: 75,
+            render: (v: string) => <UnknownIf value={v} /> },
+        color_name: { title: 'Колір', dataIndex: 'color_name', key: 'color_name', width: 65,
+            render: (v: string) => <UnknownIf value={v} /> },
+        sizeeu: { title: 'Розмір', dataIndex: 'sizeeu', key: 'sizeeu', width: 70,
             render: (text: string, record: Product) => {
                 const isRost = record.is_rostovka;
-                if (!text) return <span className="text-gray-300 text-xs">—</span>;
+                const letter = (record as any).size_letter;
+                const display = text && letter ? `${text} · ${letter}` : (text || letter || '');
+                if (!display) return <span className="text-gray-300 text-xs">—</span>;
                 return (
                     <span className={`text-xs ${isRost ? 'text-purple-700 font-medium' : ''}`}>
-                        {text}
+                        {display}
                         {isRost && record.quantity > 1 && (
                             <span className="text-purple-400 ml-0.5">×{record.quantity}</span>
                         )}
@@ -276,7 +336,7 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
                 );
             }},
         measurementscm: { title: 'СМ', dataIndex: 'measurementscm', key: 'measurementscm', width: 60,
-            render: (text: string) => <span className="text-xs">{text}</span> },
+            render: (text: string) => text ? <span className="text-xs">{text}</span> : <span className="text-gray-300 text-xs">—</span> },
         sole_type_name: { title: 'Тип підошви', dataIndex: 'sole_type_name', key: 'sole_type_name', width: 110,
             render: (text: string) => text ? <span className="text-xs">{text}</span> : null },
         toe_shape_name: { title: 'Форма носка', dataIndex: 'toe_shape_name', key: 'toe_shape_name', width: 110,
@@ -291,10 +351,15 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
                 const names = record.materials.map(m => m.materialname || '').filter(Boolean);
                 return <span className="text-xs text-gray-600 dark:text-gray-400">{names.join(', ')}</span>;
             }},
-        price: { title: 'Ціна', dataIndex: 'price', key: 'price', width: 50, sorter: true,
+        price: { title: 'Ціна', dataIndex: 'price', key: 'price', width: 70, sorter: true,
             render: (price: number, record: Product) => (
                 <span className="text-xs">
-                    {price !== undefined && price !== null && <PriceText>{Number(price).toFixed(0)}₴</PriceText>}
+                    {price !== undefined && price !== null && (
+                        <CopyOnClick
+                            value={Number(price).toFixed(0)}
+                            display={<PriceText>{Number(price).toFixed(0)}₴</PriceText>}
+                        />
+                    )}
                 </span>
             )},
         oldprice: { title: 'Стара ціна', dataIndex: 'oldprice', key: 'oldprice', width: 90,
@@ -319,35 +384,66 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
             render: (_: any, record: Product) => {
                 const sold = record.sold_count ?? 0;
                 const qty = record.quantity ?? 0;
+                // Журнал — джерело істини. Статус з аркуша має пріоритет.
+                // Перевизначаємо лише коли він порожній/невідомий,
+                // або коли фактичні продажі вже перевершили заявлене ('Продано').
+                const FINAL = new Set(['Продано', 'Подаровано', 'Повернуто', 'Пошкоджений']);
                 const staticStatus = record.status_name || '';
-                let displayStatus = staticStatus;
-                if (staticStatus === 'Подаровано') {
-                    displayStatus = 'Подаровано';
-                } else if (sold > 0 && sold >= qty && qty > 0) {
+                let displayStatus: string;
+                if (FINAL.has(staticStatus)) {
+                    displayStatus = staticStatus;
+                } else if (sold > 0 && qty > 0 && sold >= qty) {
                     displayStatus = 'Продано';
-                } else if (sold > 0 && sold < qty) {
+                } else {
+                    // 'Непродано', '', NULL → усі вважаємо непроданими (це default-стан).
                     displayStatus = 'Непродано';
                 }
                 const colorMap: Record<string, string> = {
-                    'Непродано':  'green',
-                    'Продано':    'red',
-                    'Подаровано': 'purple',
+                    'Непродано':   'green',
+                    'Продано':     'red',
+                    'Подаровано':  'purple',
+                    'Повернуто':   'orange',
+                    'Пошкоджений': 'volcano',
                 };
-                const color = displayStatus.startsWith('Продано') ? 'red' : (colorMap[displayStatus] || (displayStatus ? 'geekblue' : 'default'));
+                const color = colorMap[displayStatus] || 'default';
                 return (
                     <Tag
                         color={color}
-                        style={{ display: 'block', maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', padding: '0 6px', fontSize: 12 }}
+                        style={{ display: 'block', maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', padding: '0 6px', fontSize: 12, textAlign: 'center' }}
                     >
-                        {displayStatus || 'Не вказано'}
+                        {displayStatus}
                     </Tag>
                 );
             } },
         condition_name: { title: 'Початковий стан', dataIndex: 'condition_name', key: 'condition_name', width: 120 },
         current_condition_name: { title: 'Стан', dataIndex: 'current_condition_name', key: 'current_condition_name', width: 75 },
         style_name: { title: 'Стиль', dataIndex: 'style_name', key: 'style_name', width: 110 },
-        season: { title: 'Сезон', dataIndex: 'season', key: 'season', width: 110,
-            render: (v: string) => v ? <span className="text-xs">{v}</span> : null },
+        season: { title: 'Сезон', dataIndex: 'season', key: 'season', width: 150,
+            render: (v: string) => {
+                if (!v) return null;
+                // CSV може містити кілька сезонів ('Демі, Єврозима'). Рендеримо кожен як окремий Tag.
+                const seasonColor: Record<string, string> = {
+                    'Зима':     'blue',
+                    'Єврозима': 'cyan',
+                    'Літо':     'gold',
+                    'Демі':     'green',
+                    'Всесезон': 'default',
+                };
+                const parts = v.split(',').map(s => s.trim()).filter(Boolean);
+                return (
+                    <span style={{ display: 'inline-flex', flexWrap: 'wrap', gap: 2 }}>
+                        {parts.map((p, i) => (
+                            <Tag
+                                key={i}
+                                color={seasonColor[p] || 'default'}
+                                style={{ margin: 0, padding: '0 6px', fontSize: 12, textAlign: 'center' }}
+                            >
+                                {p}
+                            </Tag>
+                        ))}
+                    </span>
+                );
+            } },
         width: { title: 'Ширина', dataIndex: 'width', key: 'width', width: 80,
             render: (v: string) => v ? <span className="text-xs">{v}</span> : null },
         dimensions: { title: 'Габарити', dataIndex: 'dimensions', key: 'dimensions', width: 100,
@@ -404,10 +500,17 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
                 );
             } },
     };
+    // Центрування всіх колонок за замовчуванням, окрім "Опис" (великий текст)
+    // та колонок, де вже явно задано align (рідкісні випадки — не перетираємо).
+    const NO_CENTER_KEYS = new Set(['description']);
     const columns = columnOrder
         .filter(c => visibleMap[c.id])
         .map(c => allColumns[c.id])
-        .filter(Boolean);
+        .filter(Boolean)
+        .map((col: any) => {
+            if (col.align || NO_CENTER_KEYS.has(col.key)) return col;
+            return { ...col, align: 'center' as const };
+        });
     
     const handleTableChange: TableProps<Product>['onChange'] = (pagination, filters, sorter) => {
         // AntD can return sorter as object or array; handle both
@@ -425,7 +528,7 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
     };
 
     return (
-        <TableContainer className="max-h-[calc(100vh-220px)]" onContextMenu={handleContextMenu}>
+        <TableContainer className="max-h-[calc(100vh-220px)]">
             <ProductDetailsModal productId={detailsId} open={detailsOpen} onClose={() => setDetailsOpen(false)} />
             <MergeCandidatesModal
                 productId={mergeId}
@@ -468,12 +571,14 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
                             title: hasIssue ? `⚠ ${conflictTitle}` : undefined,
                             className: `cursor-pointer ${hasIssue ? 'bms-conflict-row' : 'bms-row-hover'}`,
                             onDoubleClick: () => { setDetailsId(record.id); setDetailsOpen(true); },
+                            onContextMenu: (e: React.MouseEvent) => handleRowContextMenu(e, record),
                         };
                     }}
+                    onHeaderRow={() => ({ onContextMenu: handleHeaderContextMenu as any })}
                     // y: заповнюємо висоту вікна мінус шапка сторінки
                     scroll={{ x: 'max-content', y: 'calc(100vh - 260px)' }}
                     tableLayout="fixed"
-                    className="min-w-[1200px] xl:min-w-[1400px] 2xl:min-w-[1600px]"
+                    className="min-w-[1100px] xl:min-w-[1250px] 2xl:min-w-[1400px]"
                     size="small"
                     bordered={false}
                     onChange={handleTableChange}
@@ -505,6 +610,47 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
                     <button className="text-xs px-2 py-1 rounded border border-gray-300 hover:bg-gray-100" onClick={() => setVisibleMap(() => columnOrder.reduce((a, c) => (a[c.id] = false, a), {} as Record<string, boolean>))}>Приховати</button>
                     <button className="text-xs px-2 py-1 rounded border border-gray-300 hover:bg-gray-100" onClick={() => setVisibleMap(defaultVisibility)}>За умовч.</button>
                   </div>
+                </div>
+            )}
+
+            {/* Контекстне меню дій над товаром (ПКМ на рядку) */}
+            {rowMenuOpen && rowMenuRecord && (
+                <div
+                  ref={rowMenuRef}
+                  style={{ top: rowMenuPos.y, left: rowMenuPos.x }}
+                  className="fixed z-[10000] w-60 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg py-1"
+                >
+                  <div className="px-3 py-1.5 text-[11px] text-gray-400 dark:text-gray-500 border-b border-gray-100 dark:border-gray-700 truncate">
+                    {(rowMenuRecord.productnumber || '').replace(/^#/, '') || `ID ${rowMenuRecord.id}`}
+                  </div>
+                  {(() => {
+                    const sold = rowMenuRecord.sold_count ?? 0;
+                    const isSold = sold > 0;
+                    return (
+                      <button
+                        type="button"
+                        disabled={!isSold}
+                        onClick={() => handleShowInOrders(rowMenuRecord)}
+                        title={isSold ? 'Перейти у Замовлення та показати це замовлення' : 'Товар ще не продано'}
+                        className={`w-full flex items-center gap-2 px-3 py-2 text-sm text-left ${
+                          isSold
+                            ? 'text-gray-700 dark:text-gray-200 hover:bg-blue-50 dark:hover:bg-blue-900/30 cursor-pointer'
+                            : 'text-gray-300 dark:text-gray-600 cursor-not-allowed'
+                        }`}
+                      >
+                        <span>📦</span>
+                        <span>Показати в замовленнях</span>
+                      </button>
+                    );
+                  })()}
+                  <button
+                    type="button"
+                    onClick={() => { setDetailsId(rowMenuRecord.id); setDetailsOpen(true); setRowMenuOpen(false); }}
+                    className="w-full flex items-center gap-2 px-3 py-2 text-sm text-left text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 cursor-pointer"
+                  >
+                    <span>🔍</span>
+                    <span>Відкрити картку товару</span>
+                  </button>
                 </div>
             )}
         </TableContainer>

@@ -217,7 +217,9 @@ async def get_clients(
         FROM clients c
         LEFT JOIN LATERAL (
             SELECT
-                COUNT(*) FILTER (WHERE o.order_status_id NOT IN (5, 6, 9, 10)) AS confirmed_orders,
+                -- Див. get_client(): «Підтверджено» = строго status=1 (виручка),
+                -- подарунки/повернення/скасування/pending — НЕ підтверджено.
+                COUNT(*) FILTER (WHERE o.order_status_id = 1) AS confirmed_orders,
                 COUNT(*) FILTER (WHERE o.order_status_id = 5) AS cancelled_count,
                 COUNT(*) FILTER (WHERE o.order_status_id = 6) AS ignored_count,
                 COUNT(*) FILTER (WHERE o.order_status_id IN (9, 10)) AS return_exchange_count,
@@ -292,7 +294,11 @@ async def get_client(client_id: int, db: Session = Depends(get_db)):
         LEFT JOIN LATERAL (
             SELECT
                 COUNT(*) AS total_orders,
-                COUNT(*) FILTER (WHERE o.order_status_id NOT IN (5, 6, 9, 10)) AS confirmed_orders,
+                -- «Підтверджено» = строго status=1. Раніше було NOT IN (5,6,9,10),
+                -- що ХИБНО включало подарунки (7) та pending-статуси (2/3/4/8/11),
+                -- через що 25 подарунків + 25 «підтверджено» в одного клієнта = 50,
+                -- а реально замовлень 28. Подарунки тепер лічаться лише у gift_count.
+                COUNT(*) FILTER (WHERE o.order_status_id = 1) AS confirmed_orders,
                 COUNT(*) FILTER (WHERE o.order_status_id = 5) AS cancelled_count,
                 COUNT(*) FILTER (WHERE o.order_status_id = 6) AS ignored_count,
                 COUNT(*) FILTER (WHERE o.order_status_id IN (9, 10)) AS return_exchange_count,
@@ -300,19 +306,28 @@ async def get_client(client_id: int, db: Session = Depends(get_db)):
                 COUNT(*) FILTER (WHERE o.order_status_id = 7) AS gift_count,
                 COUNT(*) FILTER (WHERE o.order_status_id = 3) AS clarify_count,
                 BOOL_OR(o.deferred_until IS NOT NULL) AS has_deferred,
-                SUM(o.total_amount) FILTER (WHERE o.order_status_id NOT IN (5, 6)) AS total_amount,
-                AVG(o.total_amount) FILTER (WHERE o.order_status_id NOT IN (5, 6)) AS avg_amount,
-                MAX(o.total_amount) FILTER (WHERE o.order_status_id NOT IN (5, 6)) AS max_amount,
+                -- Грошові агрегати — тільки реальна виручка (status=1).
+                -- Подарунки, повернення, обміни, скасування не дають доходу.
+                SUM(o.total_amount) FILTER (WHERE o.order_status_id = 1) AS total_amount,
+                AVG(o.total_amount) FILTER (WHERE o.order_status_id = 1) AS avg_amount,
+                MAX(o.total_amount) FILTER (WHERE o.order_status_id = 1) AS max_amount,
                 MIN(o.order_date) AS first_order,
                 MAX(o.order_date) AS last_order
             FROM orders o
             WHERE o.client_id = c.id
         ) stats ON true
         LEFT JOIN LATERAL (
+            -- «Куплено моделей» = унікальні товари у РЕАЛЬНО куплених замовленнях.
+            -- Враховуємо тільки status=1 (Підтверджено). Виключаємо:
+            --   • 5 Відміна / 6 Ігнорування / 9 Повернення — стічок повернувся
+            --   • 7 Подарунок — товар фізично пішов, але це НЕ покупка клієнта
+            --   • 2/3/4/8/10/11 pending — ще не закрите
+            -- Див. backend/utils/order_status_logic.REVENUE_GENERATING.
             SELECT COUNT(DISTINCT oi.product_id) AS purchased_models
             FROM orders o2
             JOIN order_items oi ON oi.order_id = o2.id
             WHERE o2.client_id = c.id
+              AND o2.order_status_id = 1
         ) models ON true
         WHERE c.id = :client_id
     """)
@@ -322,7 +337,9 @@ async def get_client(client_id: int, db: Session = Depends(get_db)):
 
     result = dict(row)
 
-    # Останні замовлення клієнта (до 20)
+    # Усі замовлення клієнта. Раніше було LIMIT 20 — для оптовиків з сотнями
+    # ордерів UI показував лише верхівку, що збивало з пантелику ("чому 668?").
+    # Витягуємо все: відповідь ~200B/ордер × 700 = ~140KB, прийнятно.
     orders_sql = text("""
         SELECT
             o.id,
@@ -350,7 +367,6 @@ async def get_client(client_id: int, db: Session = Depends(get_db)):
         ) items ON true
         WHERE o.client_id = :client_id
         ORDER BY o.order_date DESC, o.id DESC
-        LIMIT 20
     """)
     orders_rows = db.execute(orders_sql, {"client_id": client_id}).mappings().all()
     result["recent_orders"] = [dict(r) for r in orders_rows]
@@ -519,14 +535,28 @@ async def get_client(client_id: int, db: Session = Depends(get_db)):
     peer_map = {}
     if all_peers:
         rows = db.execute(text("""
-            SELECT id, first_name, last_name, nickname
-              FROM clients WHERE id = ANY(:ids)
+            SELECT c.id, c.first_name, c.last_name, c.nickname,
+                   c.phone_number, c.facebook, c.telegram, c.instagram, c.email,
+                   c.created_at,
+                   (SELECT COUNT(*) FROM orders o WHERE o.client_id = c.id) AS orders_count,
+                   (SELECT COALESCE(SUM(o.total_amount), 0) FROM orders o WHERE o.client_id = c.id) AS total_amount,
+                   (SELECT MAX(o.order_date) FROM orders o WHERE o.client_id = c.id) AS last_order_date
+              FROM clients c WHERE c.id = ANY(:ids)
         """), {"ids": list(all_peers)}).mappings().all()
         for r in rows:
             peer_map[r["id"]] = {
                 "id": r["id"],
                 "full_name": " ".join(filter(None, [r["first_name"], r["last_name"]])).strip() or None,
                 "nickname": r["nickname"],
+                "phone": r["phone_number"],
+                "facebook": r["facebook"],
+                "telegram": r["telegram"],
+                "instagram": r["instagram"],
+                "email": r["email"],
+                "orders_count": int(r["orders_count"] or 0),
+                "total_amount": float(r["total_amount"] or 0),
+                "last_order_date": r["last_order_date"].isoformat() if r["last_order_date"] else None,
+                "created_at": r["created_at"].isoformat() if r["created_at"] else None,
             }
 
     result["flags"] = [
@@ -925,8 +955,15 @@ async def create_client_relation(client_id: int, payload: ClientRelationCreate, 
         raise HTTPException(status_code=404, detail="Client not found")
     if not db.query(Client).filter(Client.id == payload.related_id).first():
         raise HTTPException(status_code=404, detail="Related client not found")
-    # Дзеркальний апсерт; обидва рядки вважаємо confirmed=true (це manual)
-    for x, y in ((client_id, payload.related_id), (payload.related_id, client_id)):
+    # Дзеркальний апсерт. relation_type/notes симетричні → однакові з обох боків.
+    # label АСИМЕТРИЧНИЙ («Син»↔«Мати»): прямий рядок отримує payload.label,
+    # дзеркальний — payload.inverse_label (або NULL).
+    inverse_label = getattr(payload, "inverse_label", None)
+    pairs = (
+        (client_id, payload.related_id, payload.label),
+        (payload.related_id, client_id, inverse_label),
+    )
+    for x, y, lab in pairs:
         db.execute(text("""
             INSERT INTO client_relations (client_id, related_id, relation_type, label, source, confirmed, notes)
             VALUES (:c, :r, :t, :l, 'manual', TRUE, :n)
@@ -936,7 +973,7 @@ async def create_client_relation(client_id: int, payload: ClientRelationCreate, 
                   confirmed     = TRUE,
                   notes         = COALESCE(EXCLUDED.notes, client_relations.notes),
                   updated_at    = NOW()
-        """), {"c": x, "r": y, "t": payload.relation_type, "l": payload.label, "n": payload.notes})
+        """), {"c": x, "r": y, "t": payload.relation_type, "l": lab, "n": payload.notes})
     db.commit()
     return {"ok": True}
 
@@ -1084,6 +1121,15 @@ async def update_client(client_id: int, client: ClientUpdate, db: Session = Depe
             raise HTTPException(status_code=404, detail="Gender not found")
 
     update_data = client.dict(exclude_unset=True)
+
+    # Захист від sentinel-значень Google Sheets (#N/A, #REF! тощо), які
+    # потрапляють у форму через copy-paste з аркуша. Парсер фільтрує їх
+    # у `_clean`, тут — на ручному рівні API.
+    _INVALID_SENTINELS = {"#N/A", "#REF!", "#VALUE!", "#ERROR!", "#NAME?",
+                          "#NULL!", "#DIV/0!", "#NUM!"}
+    for k, v in list(update_data.items()):
+        if isinstance(v, str) and v.strip().upper() in _INVALID_SENTINELS:
+            update_data[k] = None
 
     # Визначаємо які поля реально міняються (різниця зі старим значенням)
     changed_fields = set()
@@ -1309,20 +1355,37 @@ async def merge_clients(source_id: int, payload: ClientMergeRequest, db: Session
     if not source or not target:
         raise HTTPException(status_code=404, detail="Client not found")
 
+    # ── Anti-contamination guard ────────────────────────────────────────────
+    # Target з 3+ alias-ами з попередніх мерджів — ймовірний симптом mass-merge.
+    # Перевіряємо ДО абсорбції, щоб не множити зливання різних людей в одного.
+    # Override: передай ?force=true (зараз — не реалізовано в payload, лише через
+    # пряме редагування БД). Краще unzip-нути через split_41855-style скрипт.
+    bad_alias_count = db.execute(text("""
+        SELECT COUNT(*) FROM client_aliases
+         WHERE client_id = :tid AND source = 'merge' AND seen_count >= 20
+    """), {"tid": target_id}).scalar() or 0
+    if bad_alias_count >= 3:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Цільовий клієнт #{target_id} вже містить {bad_alias_count} "
+                f"alias-ів з попередніх мерджів (з seen_count≥20 кожен). Ймовірно "
+                f"це наслідок mass-merge помилки. Не зливаємо щоб не множити "
+                f"забруднення. Спочатку розклеїти target через split-скрипт."
+            ),
+        )
+
     moved = {}
 
-    # 0) Поглинути ідентифікаційні / контактні поля з source у target —
-    #    тільки якщо у target вони ПОРОЖНІ (не перетираємо вже існуючі дані).
-    #    Це гарантує що телефон/email/соцмережі з зливаного клієнта не
-    #    зникнуть після видалення source.
+    # 0a) Поглинути НЕ-контактні ідентифікаційні поля з source у target —
+    #     тільки якщо у target вони ПОРОЖНІ. Контактні канали (phone/fb/tg/...)
+    #     обробляються окремо нижче через client_contacts, щоб збереглись
+    #     ВСІ варіанти (новий+старий phone, два FB і т.д.), а не лише той,
+    #     що першим потрапив у master.
     ABSORB_FIELDS = (
-        "phone_number", "email", "facebook", "instagram", "telegram",
-        "viber", "messenger", "tiktok", "olx",
         "middle_name", "maiden_name", "nickname",
         "city_of_residence", "country_of_residence",
         "date_of_birth", "gender_id",
-        "phone_normalized", "facebook_normalized",
-        "instagram_normalized", "telegram_normalized",
     )
     absorbed = []
     for col in ABSORB_FIELDS:
@@ -1330,13 +1393,49 @@ async def merge_clients(source_id: int, payload: ClientMergeRequest, db: Session
         new = getattr(source, col, None)
         if new and not cur:
             setattr(target, col, new)
-            # ВАЖЛИВО: чистимо те ж поле в source ДО видалення, щоб не порушити
-            # UNIQUE-constraint (phone_normalized, fb_normalized, ...) при flush.
-            setattr(source, col, None)
             absorbed.append(col)
     if absorbed:
-        db.flush()  # фіксуємо обидва UPDATE до transferring orders/aliases
+        db.flush()
     moved["absorbed_fields"] = absorbed
+
+    # 0b) Перенести всі канали звʼязку source → target.
+    #     UNIQUE(kind, normalized) гарантує, що ті ж самі контакти не задвояться.
+    #     Primary з source ОБОВʼЯЗКОВО гасимо до переносу — у target вже є свій
+    #     primary (один на kind), новоприбулі канали стають secondary.
+    db.execute(text("""
+        UPDATE client_contacts
+           SET is_primary = FALSE
+         WHERE client_id = :s AND is_primary = TRUE
+    """), {"s": source_id})
+    # Дублі (kind, normalized) існують → видаляємо ті, що в source, бо target вже має.
+    db.execute(text("""
+        DELETE FROM client_contacts
+         WHERE client_id = :s
+           AND normalized IS NOT NULL
+           AND EXISTS (
+               SELECT 1 FROM client_contacts t
+                WHERE t.client_id = :t
+                  AND t.kind = client_contacts.kind
+                  AND t.normalized = client_contacts.normalized
+           )
+    """), {"s": source_id, "t": target_id})
+    res_contacts = db.execute(text("""
+        UPDATE client_contacts
+           SET client_id = :t,
+               source = COALESCE(source, 'merge')
+         WHERE client_id = :s
+    """), {"t": target_id, "s": source_id})
+    moved["contacts"] = res_contacts.rowcount or 0
+
+    # Чистимо primary-колонки на source ДО видалення, щоб не порушити
+    # legacy partial UNIQUE-індекси (ux_clients_*_normalized) при flush.
+    for col in ("phone_number", "email", "facebook", "instagram", "telegram",
+                "viber", "messenger", "tiktok", "olx",
+                "phone_normalized", "facebook_normalized",
+                "instagram_normalized", "telegram_normalized"):
+        if hasattr(source, col):
+            setattr(source, col, None)
+    db.flush()
 
     # 1) Перенести orders → target
     res = db.execute(text("UPDATE orders SET client_id = :t WHERE client_id = :s"),
@@ -1525,6 +1624,20 @@ async def list_duplicate_groups(
     if not all_ids:
         return {"groups": [], "total_clusters": 0, "total_clients": 0}
 
+    # Усі канали звʼязку для UI каруселі — щоб видно було, що у людини
+    # реально 2 FB / 2 phone і це не «різні люди».
+    contacts_rows = db.execute(text("""
+        SELECT client_id, kind, value, is_primary
+          FROM client_contacts
+         WHERE client_id = ANY(:ids)
+         ORDER BY client_id, kind, is_primary DESC, id
+    """), {"ids": all_ids}).mappings().all()
+    contacts_by_client: dict[int, list[dict]] = {}
+    for cr in contacts_rows:
+        contacts_by_client.setdefault(cr["client_id"], []).append({
+            "kind": cr["kind"], "value": cr["value"], "is_primary": bool(cr["is_primary"]),
+        })
+
     info_rows = db.execute(text("""
         SELECT c.id,
                COALESCE(NULLIF(TRIM(COALESCE(c.first_name,'') || ' ' || COALESCE(c.last_name,'')),''), c.nickname, '—') AS full_name,
@@ -1624,6 +1737,7 @@ async def list_duplicate_groups(
                     "recent_orders": c.get("recent_orders") or [],
                     "created_at": c["created_at"].isoformat() if c.get("created_at") else None,
                     "is_suggested_master": c["id"] == suggested,
+                    "contacts": contacts_by_client.get(c["id"], []),
                 } for c in clients
             ],
         })

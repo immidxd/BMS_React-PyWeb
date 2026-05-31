@@ -450,6 +450,25 @@ def validate_text(value, max_length=None):
        text = text[:max_length]
    return text or None
 
+def normalize_tracking_number(value):
+    """Нормалізує ТТН.
+
+    Google Sheets зрізає провідний нуль у числових клітинках, тому
+    Укрпошта-ТТН '0506...' приходять як '506...'. Якщо отримуємо рівно
+    12 цифр і перша '5' (Укрпошта формат) — додаємо нуль на початок.
+    Інші формати (Нова пошта 14 цифр '20...', тощо) повертаємо як є.
+    """
+    if not value:
+        return value
+    s = str(value).strip()
+    if not s:
+        return value
+    # 12 digits starting with '5' → Укрпошта без провідного нуля
+    if re.fullmatch(r"5\d{11}", s):
+        return "0" + s
+    return s
+
+
 def validate_decimal(value):
    if not value:
        return None
@@ -1296,110 +1315,6 @@ def upsert_order(
        return new_id
 
 # -------------------------------------------------------
-#   Обробка аркуша "Клієнти" (за потреби)
-# -------------------------------------------------------
-def process_clients_sheet_data(rows, sheet_name):
-   conn = connect_to_db()
-   if not conn:
-       logger.error("Не вдалося підключитися до БД (processing 'Клієнти').")
-       return
-   
-   # Ініціалізуємо таблиці відстеження
-   init_tracking_tables(conn)
-   
-   cur = conn.cursor()
-
-   for i, row in enumerate(rows[1:], start=2):
-       if len(row) < 8:
-           continue
-       
-       # Обчислюємо хеш рядка для перевірки змін
-       row_hash = compute_row_hash(row)
-       existing_hash_info = get_existing_row_hash(cur, sheet_name, i)
-       
-       # Пропускаємо рядок якщо хеш не змінився і він був успішно оброблений раніше
-       if existing_hash_info and existing_hash_info['hash'] == row_hash and existing_hash_info['is_processed']:
-           continue
-       
-       full_name = validate_text(row[0])
-       phone     = validate_text(row[1], max_length=20)
-       facebook  = validate_text(row[2], max_length=255)
-       viber     = validate_text(row[3], max_length=255)
-       telegram  = validate_text(row[4], max_length=255)
-       instagram = validate_text(row[5], max_length=255)
-       olx       = validate_text(row[6], max_length=255)
-       email     = validate_text(row[7], max_length=255)
-
-       if not full_name:
-           update_row_hash(cur, conn, sheet_name, i, row_hash, None, False, "Відсутнє ім'я клієнта")
-           continue
-           
-       try:
-           client_id = get_or_create_client(cur, conn, full_name)
-           if not client_id:
-               update_row_hash(cur, conn, sheet_name, i, row_hash, full_name, False, "Не вдалося створити клієнта")
-               continue
-
-           cur.execute("""
-               SELECT phone_number, facebook, viber, telegram, instagram, olx, email
-                 FROM clients
-                WHERE id=%s
-           """,(client_id,))
-           ex = cur.fetchone()
-           if not ex:
-               update_row_hash(cur, conn, sheet_name, i, row_hash, full_name, False, "Клієнт не знайдений після створення")
-               continue
-               
-           ex_phone, ex_fb, ex_vb, ex_tg, ex_ig, ex_olx, ex_em = ex
-
-           update_fields = []
-           update_vals = []
-
-           def maybe_update_phone(new_phone, old_phone):
-               if new_phone and (not old_phone or not old_phone.strip()):
-                   cur.execute("SELECT id FROM clients WHERE phone_number=%s",(new_phone,))
-                   conf = cur.fetchone()
-                   if conf and conf[0] != client_id:
-                       logger.warning(
-                           f"[{sheet_name} row={i}] Телефон {new_phone} вже зайнятий іншим (id={conf[0]})."
-                       )
-                       return
-                   update_fields.append("phone_number=%s")
-                   update_vals.append(new_phone)
-
-           def maybe_update(field_name, new_val, old_val):
-               if new_val and (not old_val or not old_val.strip()):
-                   update_fields.append(f"{field_name}=%s")
-                   update_vals.append(new_val)
-
-           maybe_update_phone(phone, ex_phone)
-           maybe_update("facebook", facebook, ex_fb)
-           maybe_update("viber", viber, ex_vb)
-           maybe_update("telegram", telegram, ex_tg)
-           maybe_update("instagram", instagram, ex_ig)
-           maybe_update("olx", olx, ex_olx)
-           maybe_update("email", email, ex_em)
-
-           if update_fields:
-               sql_str = "UPDATE clients SET " + ", ".join(update_fields) + ", updated_at=now() WHERE id=%s"
-               update_vals.append(client_id)
-               cur.execute(sql_str, tuple(update_vals))
-               conn.commit()
-               
-           # Оновлюємо хеш рядка після успішної обробки
-           update_row_hash(cur, conn, sheet_name, i, row_hash, full_name, True)
-
-       except Exception as e:
-           logger.error(f"[{sheet_name}] Рядок {i} => Помилка: {e}")
-           conn.rollback()
-           update_row_hash(cur, conn, sheet_name, i, row_hash, full_name, False, str(e))
-   
-   # Оновлюємо прогрес обробки аркуша
-   update_sheet_progress(cur, conn, sheet_name, len(rows))
-   cur.close()
-   conn.close()
-
-# -------------------------------------------------------
 #   Обробка замовлень (основна логіка)
 # -------------------------------------------------------
 def process_orders_sheet_data(rows, sheet_name, force_process=False):
@@ -1545,7 +1460,7 @@ def process_orders_sheet_data(rows, sheet_name, force_process=False):
             note_s              = validate_text(row[18])
 
             raw_delivery_status = validate_text(row[21])
-            tracking_number     = validate_text(row[22])
+            tracking_number     = normalize_tracking_number(validate_text(row[22]))
             raw_deferred_until  = validate_text(row[24])
             raw_priority        = validate_text(row[25])
 

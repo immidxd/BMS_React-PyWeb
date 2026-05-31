@@ -3,6 +3,7 @@ import { productService } from '../../services/productService';
 import type { Product } from '../../types/product';
 import { Tag, Spin, Image } from 'antd';
 import { CloseOutlined, PictureOutlined, LeftOutlined, RightOutlined, WarningOutlined } from '@ant-design/icons';
+import { CopyOnClick, formatBrandName } from '../common/displayHelpers';
 
 interface Props {
   productId: number | null;
@@ -126,6 +127,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose }) => {
   const sizesLine = useMemo(() => {
     if (!p) return null;
     const parts: { label: string; val: any }[] = [
+      { label: 'Буквений', val: (p as any).size_letter },
       { label: 'EU', val: p.sizeeu },
       { label: 'UA', val: p.sizeua },
       { label: 'USA', val: p.sizeusa },
@@ -136,12 +138,16 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose }) => {
 
   if (!open) return null;
 
-  const InfoRow: React.FC<{ label: string; value?: React.ReactNode }> = ({ label, value }) => {
+  const InfoRow: React.FC<{ label: string; value?: React.ReactNode; copyable?: boolean }> = ({ label, value, copyable }) => {
     if (value === null || value === undefined || value === '') return null;
     return (
       <div className="flex items-baseline gap-3 py-1.5">
-        <span className="text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500 min-w-[90px] shrink-0 font-medium">{label}</span>
-        <span className="text-sm text-gray-800 dark:text-gray-200 break-words">{value}</span>
+        <span className="text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500 w-[128px] shrink-0 font-medium">{label}</span>
+        <span className="text-sm text-gray-800 dark:text-gray-200 break-words">
+          {copyable && (typeof value === 'string' || typeof value === 'number')
+            ? <CopyOnClick value={value as string | number} />
+            : value}
+        </span>
       </div>
     );
   };
@@ -155,7 +161,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose }) => {
   };
 
   const activeImage = images[activeIdx];
-  const productTitle = p ? ([(p as any).brand_name, p.model].filter(Boolean).join(' ') || (p.productnumber || '').replace(/^#/, '')) : '';
+  const productTitle = p ? ([formatBrandName((p as any).brand_name), p.model].filter(Boolean).join(' ') || (p.productnumber || '').replace(/^#/, '')) : '';
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
@@ -188,7 +194,9 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose }) => {
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-3 mb-1">
                   <span className="text-xs font-mono text-gray-400 dark:text-gray-500 px-2 py-0.5 rounded bg-gray-100 dark:bg-gray-800">
-                    {(p.productnumber || '').replace(/^#/, '') || '—'}
+                    {(p.productnumber || '').replace(/^#/, '')
+                      ? <CopyOnClick value={(p.productnumber || '').replace(/^#/, '')} />
+                      : '—'}
                   </span>
                   {(p as any).type_name && (
                     <span className="text-xs text-gray-500 dark:text-gray-400">{(p as any).type_name}{(p as any).subtype_name ? ` · ${(p as any).subtype_name}` : ''}</span>
@@ -215,7 +223,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose }) => {
                   )}
                 </div>
                 <h2 className="text-2xl font-semibold text-gray-900 dark:text-gray-50 truncate leading-tight">
-                  {productTitle}
+                  {productTitle ? <CopyOnClick value={productTitle} /> : productTitle}
                 </h2>
               </div>
               {(() => {
@@ -369,7 +377,12 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose }) => {
                   {/* Price */}
                   <div className="flex items-baseline gap-3 mb-3">
                     {p.price != null && p.price > 0 ? (
-                      <span className="text-3xl font-bold text-gray-900 dark:text-gray-50">{Number(p.price).toFixed(0)} ₴</span>
+                      <span className="text-3xl font-bold text-gray-900 dark:text-gray-50">
+                        <CopyOnClick
+                          value={Number(p.price).toFixed(0)}
+                          display={<>{Number(p.price).toFixed(0)} ₴</>}
+                        />
+                      </span>
                     ) : (
                       <span className="text-xl text-gray-300 dark:text-gray-600">Ціна не вказана</span>
                     )}
@@ -419,8 +432,8 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose }) => {
                   {/* Specifications */}
                   <div className="border-t border-gray-100 dark:border-gray-800 pt-4">
                     <div className="text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500 mb-2 font-medium">Характеристики</div>
-                    <InfoRow label="Бренд" value={(p as any).brand_name} />
-                    <InfoRow label="Модель" value={p.model} />
+                    <InfoRow label="Бренд" value={formatBrandName((p as any).brand_name)} />
+                    <InfoRow label="Модель" value={p.model} copyable />
                     <InfoRow label="Тип" value={(p as any).type_name} />
                     <InfoRow label="Підтип" value={(p as any).subtype_name} />
                     <InfoRow label="Стиль" value={(p as any).style_name} />
@@ -430,7 +443,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose }) => {
                     <InfoRow label="Габарити" value={p.dimensions} />
                     <InfoRow label="Ширина" value={p.width} />
                     <InfoRow label="Поточний стан" value={(p as any).current_condition_name} />
-                    <InfoRow label="Маркування" value={p.marking} />
+                    <InfoRow label="Маркування" value={p.marking} copyable />
                     <InfoRow label="Рік" value={p.year} />
                     <InfoRow label="Клони" value={p.clonednumbers} />
                     <InfoRow label="Завіз" value={p.dateadded} />
@@ -493,7 +506,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose }) => {
               {p.description && (
                 <div className="px-6 pb-4">
                   <div className="text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500 mb-2 font-medium">Опис</div>
-                  <p className="text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap leading-relaxed bg-gray-50 dark:bg-gray-800/40 rounded-lg px-4 py-3">
+                  <p className="text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap leading-relaxed bg-gray-50 dark:bg-gray-800/40 rounded-lg px-4 py-3 first-letter:uppercase">
                     {p.description}
                   </p>
                 </div>

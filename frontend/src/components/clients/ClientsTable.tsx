@@ -4,6 +4,7 @@ import { fetchClients, type Client, type ClientList } from '../../services/refer
 import Pagination from '../common/Pagination';
 import ClientDetailsModal from './ClientDetailsModal';
 import BmsEmpty from '../common/BmsEmpty';
+import { CopyOnClick } from '../common/displayHelpers';
 
 const ClientsTable: React.FC = () => {
   const [clients, setClients] = useState<Client[]>([]);
@@ -89,7 +90,7 @@ const ClientsTable: React.FC = () => {
       {/* Локальне поле пошуку видалено — використовуємо глобальний пошук у заголовку */}
 
       <div className="overflow-x-auto rounded shadow border border-gray-200 bg-white">
-        <table className="min-w-full text-sm">
+        <table className="min-w-full text-sm [&_th]:text-center [&_td]:text-center">
           <thead className="bg-gray-50 border-b border-gray-200">
             <tr>
               <th className="px-3 py-3 text-left font-semibold cursor-pointer" onClick={() => { setSortBy('id'); setSortDir(sortDir === 'asc' ? 'desc' : 'asc'); }}>ID</th>
@@ -133,7 +134,7 @@ const ClientsTable: React.FC = () => {
                   '';
                 return (
                   <tr key={c.id} className={`border-b last:border-b-0 ${flagTone}`}>
-                    <td className="px-3 py-2 whitespace-nowrap">{c.id}</td>
+                    <td className="px-3 py-2 whitespace-nowrap"><CopyOnClick value={c.id} className="bms-mono text-xs" /></td>
                     <td className="px-3 py-2 whitespace-nowrap">
                       <div className="flex items-center gap-1.5">
                         <button onClick={() => { setDetailsId(c.id); setDetailsOpen(true); }} className="underline text-blue-600 hover:text-blue-800">

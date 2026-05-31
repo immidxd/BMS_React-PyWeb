@@ -3,6 +3,7 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import MainLayout from '../layouts/MainLayout';
 import Pagination from '../components/common/Pagination';
 import ClientDetailsModal from '../components/clients/ClientDetailsModal';
+import { CopyOnClick } from '../components/common/displayHelpers';
 import DuplicatesCarousel from '../components/clients/DuplicatesCarousel';
 
 interface Client {
@@ -134,22 +135,83 @@ const ClientsPage: React.FC<ClientsPageProps> = ({ currentSearchTerm }) => {
     </span>
   );
 
+  // Канонічні стилі бейджів соцмереж/майданчиків — НАСИЧЕНІ кольори з білим
+  // текстом (бліді -100 відтінки читались як сірі, особливо blue-100).
+  const SOCIAL_STYLES: Record<string, string> = {
+    // ⚠️ НЕ використовувати bg-blue-500/600/700 — App.css перефарбовує їх у
+    // брендовий чорний (--bms-primary) через !important. Тому точний hex Facebook.
+    'FB':    'bg-[#4267B2] !text-white',   // Facebook — класичний (менш насичений) синій
+    'VB':    'bg-violet-600 text-white',   // Viber — фіолетовий
+    'TG':    'bg-sky-500 text-white',      // Telegram — блакитний
+    'TT':    'bg-black text-white',        // TikTok — чорний
+    'IG':    'bg-pink-600 text-white',     // Instagram — рожевий
+    'OLX':   'bg-teal-600 text-white',     // OLX — бірюзовий
+    'GD':    'bg-gray-500 text-white',     // Grailed — сірий
+    'Shafa': 'bg-black text-white',        // Shafa — чорний
+  };
+  // Побудувати http(s)-посилання на профіль за значенням з БД.
+  // Повертає null, якщо лінк сформувати неможливо (тоді мітка некліковна).
+  const buildSocialHref = (label: string, raw: string): string | null => {
+    const v = (raw || '').trim();
+    if (!v) return null;
+    if (/^https?:\/\//i.test(v)) return v;              // вже повний URL
+    const handle = v.replace(/^@/, '').replace(/^\//, '');
+    switch (label) {
+      case 'FB':  return v.includes('facebook.com')  ? `https://${v}` : `https://facebook.com/${handle}`;
+      case 'IG':  return v.includes('instagram.com') ? `https://${v}` : `https://instagram.com/${handle}`;
+      case 'TG':  return v.includes('t.me')          ? `https://${v}` : `https://t.me/${handle}`;
+      case 'OLX': return v.includes('.')             ? `https://${v.replace(/^www\./, '')}` : null;
+      // Viber-значення зазвичай телефон, не веб-URL → не робимо клікабельним
+      default:    return v.includes('.') ? `https://${v}` : null;
+    }
+  };
+    // Валідність значення соцмережі: відсіюємо сміття (ціни «1250;», голі суми),
+    // що потрапило в поле через помилку мапінгу при парсингу. Для веб-мереж
+    // (OLX/FB/IG/TG) значення має містити літери або бути URL — НЕ голе число.
+    // Для VB (Viber) телефон є валідним.
+  const isValidSocial = (label: string, raw?: string | null): boolean => {
+    const v = (raw || '').trim();
+    if (!v) return false;
+    if (label === 'VB') return true;                 // Viber — телефон ок
+    if (/^[\d\s;,.+()-]+$/.test(v)) return false;    // голе число/ціна/телефон → не вебмережа
+    return true;
+  };
   const socials = (c: Client) => {
     const links = [
-      c.telegram && { label: 'TG', val: c.telegram },
-      c.instagram && { label: 'IG', val: c.instagram },
-      c.facebook && { label: 'FB', val: c.facebook },
-      c.viber && { label: 'Viber', val: c.viber },
-      c.olx && { label: 'OLX', val: c.olx },
+      isValidSocial('TG', c.telegram) && { label: 'TG', val: c.telegram! },
+      isValidSocial('IG', c.instagram) && { label: 'IG', val: c.instagram! },
+      isValidSocial('FB', c.facebook) && { label: 'FB', val: c.facebook! },
+      // Viber у БД може бути як 'Viber' або 'VB' — у таблиці ЗАВЖДИ показуємо 'VB'
+      isValidSocial('VB', c.viber) && { label: 'VB', val: c.viber! },
+      isValidSocial('OLX', c.olx) && { label: 'OLX', val: c.olx! },
     ].filter(Boolean) as { label: string; val: string }[];
     if (!links.length) return <span className="text-gray-400 text-xs">—</span>;
     return (
-      <div className="flex flex-wrap gap-1">
-        {links.map(l => (
-          <span key={l.label} className="inline-block px-1.5 py-0.5 bg-gray-100 dark:bg-gray-600 rounded text-xs text-gray-600 dark:text-gray-300" title={l.val}>
-            {l.label}
-          </span>
-        ))}
+      <div className="flex flex-wrap gap-1 justify-center">
+        {links.map(l => {
+          const cls = `inline-block px-1.5 py-0.5 rounded text-xs font-medium ${SOCIAL_STYLES[l.label] || 'bg-gray-100 text-gray-600 dark:bg-gray-600 dark:text-gray-300'}`;
+          const href = buildSocialHref(l.label, l.val);
+          if (href) {
+            return (
+              <a
+                key={l.label}
+                href={href}
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={(e) => e.stopPropagation()}
+                title={`Відкрити: ${l.val}`}
+                className={`${cls} no-underline hover:no-underline hover:opacity-80 transition-opacity cursor-pointer`}
+              >
+                {l.label}
+              </a>
+            );
+          }
+          return (
+            <span key={l.label} className={cls} title={l.val}>
+              {l.label}
+            </span>
+          );
+        })}
       </div>
     );
   };
@@ -292,7 +354,7 @@ const ClientsPage: React.FC<ClientsPageProps> = ({ currentSearchTerm }) => {
           <div className="flex justify-center items-center h-48 text-red-500">{error}</div>
         ) : (
           <div className="overflow-x-auto rounded border border-gray-200 dark:border-gray-700">
-            <table className="w-full text-sm">
+            <table className="w-full text-sm [&_th]:text-center [&_td]:text-center">
               <thead className="bg-gray-50 dark:bg-gray-700 border-b border-gray-200 dark:border-gray-600">
                 <tr>
                   <th className="px-2 py-3 text-center w-8">
@@ -305,7 +367,7 @@ const ClientsPage: React.FC<ClientsPageProps> = ({ currentSearchTerm }) => {
                     />
                   </th>
                   <th className="px-3 py-3 text-left font-semibold text-gray-600 dark:text-gray-300 cursor-pointer whitespace-nowrap" onClick={() => handleSort('id')}>
-                    №<SortIcon field="id" />
+                    Номер<SortIcon field="id" />
                   </th>
                   <th className="px-3 py-3 text-left font-semibold text-gray-600 dark:text-gray-300 cursor-pointer" onClick={() => handleSort('last_name')}>
                     ПІБ<SortIcon field="last_name" />
@@ -340,12 +402,14 @@ const ClientsPage: React.FC<ClientsPageProps> = ({ currentSearchTerm }) => {
                         onChange={() => toggleSelect(c.id)}
                       />
                     </td>
-                    <td className="px-3 py-2 text-gray-500 dark:text-gray-400 font-mono text-xs">{c.id}</td>
+                    <td className="px-3 py-2 text-gray-500 dark:text-gray-400 font-mono text-xs">
+                      <CopyOnClick value={c.id} />
+                    </td>
                     <td className="px-3 py-2 font-medium text-gray-900 dark:text-gray-100 max-w-[200px]">
                       <span className="block truncate">{c.full_name || '—'}</span>
                     </td>
                     <td className="px-3 py-2 text-gray-600 dark:text-gray-300 whitespace-nowrap font-mono text-xs">
-                      {c.phone_number || '—'}
+                      {c.phone_number ? <CopyOnClick value={c.phone_number} /> : '—'}
                     </td>
                     <td className="px-3 py-2 text-gray-600 dark:text-gray-300 text-xs max-w-[160px] truncate">
                       {c.email || '—'}
@@ -382,19 +446,21 @@ const ClientsPage: React.FC<ClientsPageProps> = ({ currentSearchTerm }) => {
 
         {/* Footer pagination */}
         <div className="fixed bottom-0 left-0 right-0 px-4 py-3 bg-white/95 dark:bg-gray-800/95 backdrop-blur border-t border-gray-100 dark:border-gray-700 z-20">
-          <div className="max-w-screen-2xl mx-auto flex items-center justify-between gap-4">
-            <span className="text-sm text-gray-500 dark:text-gray-400">
+          <div className="w-full grid grid-cols-1 md:grid-cols-[1fr_auto_1fr] items-center gap-4 max-w-screen-2xl mx-auto px-2">
+            <span className="order-2 md:order-none justify-self-start text-sm text-gray-500 dark:text-gray-400">
               Всього: <strong>{total}</strong> клієнтів
             </span>
-            <Pagination
-              currentPage={page}
-              totalPages={pages}
-              totalItems={total}
-              itemsPerPage={perPage}
-              onPageChange={setPage}
-              onPerPageChange={(n) => { setPerPage(n); setPage(1); }}
-            />
-            <span className="text-xs text-gray-400">
+            <div className="order-1 md:order-none justify-self-center flex justify-center">
+              <Pagination
+                currentPage={page}
+                totalPages={pages}
+                totalItems={total}
+                itemsPerPage={perPage}
+                onPageChange={setPage}
+                onPerPageChange={(n) => { setPerPage(n); setPage(1); }}
+              />
+            </div>
+            <span className="order-3 md:order-none justify-self-end text-xs text-gray-400">
               Стор. {page} з {pages}
             </span>
           </div>

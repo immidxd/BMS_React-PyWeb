@@ -278,15 +278,15 @@ def get_products(
                 where_conditions.append("p.current_conditionid = ANY(:current_conditionids)")
                 params['current_conditionids'] = filters.current_conditionids
             if getattr(filters, "seasons", None):
-                # Multi-value season: точна відповідність через TRIM+ILIKE,
-                # щоб "Зима" не зачіпала "Єврозима". UI передає канонічні значення.
-                _sea = []
-                for i, s in enumerate(filters.seasons):
-                    key = f"season_{i}"
-                    _sea.append(f"TRIM(p.season) ILIKE :{key}")
-                    params[key] = s.strip()  # без %, exact match (case-insensitive)
-                if _sea:
-                    where_conditions.append("(" + " OR ".join(_sea) + ")")
+                # Multi-value season: products.season може містити CSV
+                # ('Демі, Єврозима'). Розбиваємо в Postgres-масив і шукаємо
+                # перетин з фільтром (&&). Це коректно ловить ОБИДВА варіанти:
+                # фільтр 'Демі' знайде і 'Демі', і 'Демі, Єврозима'.
+                where_conditions.append(
+                    "string_to_array(regexp_replace(COALESCE(p.season, ''), "
+                    "'\\s*,\\s*', ',', 'g'), ',') && :seasons_arr"
+                )
+                params['seasons_arr'] = [s.strip() for s in filters.seasons if s and s.strip()]
             if getattr(filters, "widths", None):
                 where_conditions.append("p.width = ANY(:widths)")
                 params['widths'] = filters.widths
@@ -403,15 +403,22 @@ def get_products(
                     where_conditions.append("p.sizeeu = ANY(:sizeeu)")
                 params['sizeeu'] = filters.sizeeu
 
+            if filters.size_letter:
+                where_conditions.append("p.size_letter = ANY(:size_letter)")
+                params['size_letter'] = filters.size_letter
+
             if filters.with_stock_only:
                 where_conditions.append("p.quantity > 0")
 
             if filters.only_unsold:
-                # Показати товари де є хоча б одна непродана пара
-                # (quantity - sold_count > 0), виключаючи повністю продані/подаровані
+                # "Тільки непродані" = є залишок (quantity - sold_count > 0)
+                # ТА status з Журналу не є фінальним (Продано/Подаровано/Повернуто).
+                # Журнал — джерело істини: якщо там стоїть "Продано" — товар не показуємо
+                # навіть коли немає запису в order_items (це валідний кейс — товар відданий
+                # без формального замовлення).
                 where_conditions.append("""(
                     GREATEST(COALESCE(p.quantity, 0) - COALESCE(sold.sold_count, 0), 0) > 0
-                    AND (s.statusname IS NULL OR s.statusname NOT IN ('Подаровано', 'Повернуто'))
+                    AND (s.statusname IS NULL OR s.statusname NOT IN ('Продано', 'Подаровано', 'Повернуто'))
                 )""")
 
             if filters.only_problematic:
@@ -457,11 +464,17 @@ def get_products(
         
         # Add ORDER BY — compound sort modes + simple column fallback
         sort_map = {
-            # d.deliverydate = дата з delivery (назва аркуша журналу = реальна дата завозу)
-            # p.dateadded = fallback дата, для аркушів без парсованої дати = date.today()
-            "created_at":     "d.deliverydate DESC NULLS LAST, p.dateadded DESC NULLS LAST, p.id DESC",
-            "created_at_asc": "d.deliverydate ASC NULLS LAST, p.dateadded ASC NULLS LAST, p.id ASC",
-            "delivery_date":  "d.deliverydate DESC NULLS LAST, p.id DESC",
+            # "Найновіші" = нещодавно ДОДАНІ в базу (p.created_at) — напр. дописав
+            # товар у старий завіз. updated_at не годиться: парсинг бампить його
+            # для всіх рядків. Тай-брейк p.id для стабільної пагінації.
+            "created_at":     "p.created_at DESC NULLS LAST, p.id DESC",
+            "created_at_asc": "p.created_at ASC NULLS LAST, p.id ASC",
+            # "За датою завозу" = реальна дата завозу = COALESCE(d.deliverydate, p.dateadded).
+            # d.deliverydate з аркуша журналу (назва = дата завозу); якщо товар
+            # ще не прив'язаний до delivery — fallback p.dateadded, інакше через
+            # NULLS LAST він провалився б у кінець.
+            "delivery_date":     "COALESCE(d.deliverydate, p.dateadded) DESC NULLS LAST, p.id DESC",
+            "delivery_date_asc": "COALESCE(d.deliverydate, p.dateadded) ASC NULLS LAST, p.id ASC",
             "last_sold":      "last_sale.last_sale_date DESC NULLS LAST, p.id DESC",
             "price_desc":     "p.price DESC NULLS LAST",
             "price_asc":      "p.price ASC NULLS LAST",
@@ -710,6 +723,18 @@ def get_product_filters(db: Session) -> Dict[str, Any]:
                 "jp": fetch_sizes("sizejp"),
                 "cn": fetch_sizes("sizecn"),
             },
+            "size_letters": [r[0] for r in db.execute(text(
+                # Сортування за «розміром»: XS < S < M < L < XL < XXL < XXXL < ...
+                # CASE мусить бути у SELECT-листі, бо DISTINCT.
+                "SELECT size_letter FROM ("
+                "  SELECT DISTINCT size_letter, "
+                "    CASE size_letter "
+                "      WHEN 'XS' THEN 0 WHEN 'S' THEN 1 WHEN 'M' THEN 2 WHEN 'L' THEN 3 "
+                "      ELSE LENGTH(size_letter) + 3 END AS ord "
+                "  FROM products "
+                "  WHERE size_letter IS NOT NULL AND size_letter != '' "
+                ") s ORDER BY ord"
+            )).fetchall()],
         }
         logger.debug("Retrieved filters via raw SQL")
         return result

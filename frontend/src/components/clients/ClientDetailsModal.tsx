@@ -10,9 +10,11 @@ import {
   importClientAddressesFromOrders,
   ClientAddress,
   fetchClientRelations,
+  createClientRelation,
   updateClientRelation,
   deleteClientRelation,
   importClientRelationsFromOrders,
+  fetchClients,
   ClientRelation,
   RelationType,
   fetchClientAliases,
@@ -27,6 +29,8 @@ import {
 import ProductDetailsModal from '../products/ProductDetailsModal';
 import ProductNumberLink from '../products/ProductNumberLink';
 import { toast } from 'react-toastify';
+import { CopyOnClick, OrderStatusBadge, PaymentStatusBadge } from '../common/displayHelpers';
+import { DeliveryBadge } from '../common/DeliveryBadge';
 
 /* ── Типи ─────────────────────────────────────────────────────────────────── */
 interface RecentOrder {
@@ -165,6 +169,13 @@ const ClientDetailsModal: React.FC<Props> = ({ clientId, open, onClose }) => {
   const [relBusy, setRelBusy] = useState(false);
   const [relEditingId, setRelEditingId] = useState<number | null>(null);
   const [relDraft, setRelDraft] = useState<{ relation_type: RelationType; label: string }>({ relation_type: 'together', label: '' });
+  // Додавання нового звʼязку — autocomplete по клієнтах
+  const [showAddRel, setShowAddRel] = useState(false);
+  const [newRelQuery, setNewRelQuery] = useState('');
+  const [newRelResults, setNewRelResults] = useState<Array<{ id: number; full_name: string; phone_number?: string | null }>>([]);
+  const [newRelSelected, setNewRelSelected] = useState<{ id: number; full_name: string } | null>(null);
+  const [newRelDraft, setNewRelDraft] = useState<{ relation_type: RelationType; label: string; inverse_label: string }>({ relation_type: 'family', label: '', inverse_label: '' });
+  const [newRelSearching, setNewRelSearching] = useState(false);
   // Identity (Step 4)
   const [aliases, setAliases] = useState<ClientAlias[]>([]);
   const [flags, setFlags] = useState<ClientFlag[]>([]);
@@ -248,6 +259,62 @@ const ClientDetailsModal: React.FC<Props> = ({ clientId, open, onClose }) => {
       await deleteClientRelation(clientId, r.id, true);
       await reloadRelations();
       toast.success('Звʼязок видалено');
+    } catch (e: any) {
+      toast.error(`Помилка: ${e?.response?.data?.detail || e.message}`);
+    } finally { setRelBusy(false); }
+  };
+
+  // Debounced пошук клієнтів для autocomplete
+  useEffect(() => {
+    if (!showAddRel) return;
+    const q = newRelQuery.trim();
+    if (q.length < 2) { setNewRelResults([]); return; }
+    let cancelled = false;
+    setNewRelSearching(true);
+    const t = setTimeout(async () => {
+      try {
+        const data = await fetchClients(q, undefined, 1, 8);
+        if (cancelled) return;
+        // Виключаємо поточного клієнта та вже звʼязаних
+        const existing = new Set(relations.map(r => r.related_id));
+        const items = (data.items || [])
+          .filter((c: any) => c.id !== clientId && !existing.has(c.id))
+          .map((c: any) => ({
+            id: c.id,
+            full_name: [c.first_name, c.last_name].filter(Boolean).join(' ').trim() || c.nickname || `#${c.id}`,
+            phone_number: c.phone_number,
+          }));
+        setNewRelResults(items);
+      } catch (e) {
+        if (!cancelled) setNewRelResults([]);
+      } finally {
+        if (!cancelled) setNewRelSearching(false);
+      }
+    }, 250);
+    return () => { cancelled = true; clearTimeout(t); };
+  }, [newRelQuery, showAddRel, clientId, relations]);
+
+  const resetNewRel = () => {
+    setShowAddRel(false);
+    setNewRelQuery('');
+    setNewRelResults([]);
+    setNewRelSelected(null);
+    setNewRelDraft({ relation_type: 'family', label: '', inverse_label: '' });
+  };
+
+  const submitNewRel = async () => {
+    if (!clientId || !newRelSelected) return;
+    setRelBusy(true);
+    try {
+      await createClientRelation(clientId, {
+        related_id: newRelSelected.id,
+        relation_type: newRelDraft.relation_type,
+        label: newRelDraft.label || undefined,
+        inverse_label: newRelDraft.inverse_label || undefined,
+      });
+      await reloadRelations();
+      toast.success(`Звʼязок з "${newRelSelected.full_name}" створено`);
+      resetNewRel();
     } catch (e: any) {
       toast.error(`Помилка: ${e?.response?.data?.detail || e.message}`);
     } finally { setRelBusy(false); }
@@ -548,23 +615,30 @@ const ClientDetailsModal: React.FC<Props> = ({ clientId, open, onClose }) => {
             <div className="flex items-start justify-between px-6 pt-5 pb-3 border-b border-gray-100 dark:border-gray-700">
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-3">
-                  {/* Аватар-ініціали */}
-                  <div className={`shrink-0 w-12 h-12 rounded-full flex items-center justify-center text-white text-lg font-bold shadow-md ${c.nickname ? 'bg-gradient-to-br from-gray-500 to-gray-600' : 'bg-gradient-to-br from-blue-500 to-indigo-600'}`}>
-                    {c.nickname
-                      ? (c.nickname[0] || '?').toUpperCase()
-                      : `${(c.first_name?.[0] || '').toUpperCase()}${(c.last_name?.[0] || '').toUpperCase()}`}
-                  </div>
-                  <div className="min-w-0">
-                    <h2 className="text-xl font-bold text-gray-900 dark:text-gray-100 truncate">
-                      {c.nickname
-                        ? c.nickname
-                        : c.full_name?.trim() || 'Невідомий'}
-                    </h2>
-                    <div className="flex items-center gap-2 mt-0.5">
-                      <span className="text-xs text-gray-400 font-mono">ID: {c.id}</span>
-                      {c.nickname && (c.first_name || c.last_name) && (
-                        <span className="text-xs text-gray-400">({[c.first_name, c.last_name].filter(Boolean).join(' ')})</span>
-                      )}
+                  {/* Аватар-ініціали: реальне імʼя пріоритетне; nickname — fallback */}
+                  {(() => {
+                    const realName = [c.first_name, c.last_name].filter(Boolean).join(' ').trim();
+                    const hasReal = !!realName;
+                    const titleText = hasReal ? realName : (c.nickname || c.full_name?.trim() || 'Невідомий');
+                    const initials = hasReal
+                      ? `${(c.first_name?.[0] || '').toUpperCase()}${(c.last_name?.[0] || '').toUpperCase()}`
+                      : (c.nickname?.[0] || '?').toUpperCase();
+                    return (
+                      <>
+                        <div className={`shrink-0 w-12 h-12 rounded-full flex items-center justify-center text-white text-lg font-bold shadow-md ${hasReal ? 'bg-gradient-to-br from-blue-500 to-indigo-600' : 'bg-gradient-to-br from-gray-500 to-gray-600'}`}>
+                          {initials}
+                        </div>
+                        <div className="min-w-0">
+                          <h2 className="text-xl font-bold text-gray-900 dark:text-gray-100 truncate">
+                            {titleText}
+                          </h2>
+                          <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                            <span className="text-xs text-gray-400 font-mono">ID: <CopyOnClick value={c.id} /></span>
+                            {hasReal && c.nickname && (
+                              <span className="text-xs text-gray-400">
+                                нік: <span className="italic">«{c.nickname}»</span>
+                              </span>
+                            )}
                       {c.maiden_name && (
                         <span
                           className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-pink-50 text-pink-700 border border-pink-200 dark:bg-pink-900/30 dark:text-pink-300 dark:border-pink-800"
@@ -573,7 +647,7 @@ const ClientDetailsModal: React.FC<Props> = ({ clientId, open, onClose }) => {
                           👰 {c.maiden_name}
                         </span>
                       )}
-                      {c.nickname && (
+                      {!hasReal && c.nickname && (
                         <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-gray-100 text-gray-500 border border-gray-200 dark:bg-gray-700 dark:text-gray-400 dark:border-gray-600">нікнейм</span>
                       )}
                       {c.rating != null && (
@@ -581,8 +655,11 @@ const ClientDetailsModal: React.FC<Props> = ({ clientId, open, onClose }) => {
                           <span className={ratingColor(c.rating)}>★ {c.rating.toFixed(1)}</span>
                         </span>
                       )}
-                    </div>
-                  </div>
+                          </div>
+                        </div>
+                      </>
+                    );
+                  })()}
                 </div>
               </div>
               <div className="shrink-0 ml-4 flex items-center gap-2">
@@ -744,7 +821,7 @@ const ClientDetailsModal: React.FC<Props> = ({ clientId, open, onClose }) => {
                           </>
                         ) : (
                           <>
-                            <InfoRow label="📞 Телефон" value={c.phone_number} />
+                            <InfoRow label="📞 Телефон" value={c.phone_number ? <CopyOnClick value={c.phone_number} /> : null} />
                             <InfoRow label="✉️ Email" value={c.email} />
                             <InfoRow label="🏙️ Місто" value={c.city_of_residence} />
                             {(c.client_discount != null || c.bonus_account != null) && (
@@ -858,19 +935,130 @@ const ClientDetailsModal: React.FC<Props> = ({ clientId, open, onClose }) => {
 
                   {/* ── Звʼязки (родичі / друзі / разом замовляють) ── */}
                   <div>
-                    <div className="flex items-center justify-between mb-3">
-                      <h3 className="text-xs font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider">
+                    <div className="flex items-center justify-between mb-3 gap-2 flex-wrap">
+                      <h3 className="text-xs font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider flex items-center gap-2">
                         Звʼязки <span className="normal-case font-normal text-gray-400">— замовляють разом / родичі / друзі</span>
+                        {relations.filter(r => !r.confirmed).length > 0 && (
+                          <span
+                            className="normal-case text-[10px] px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 border border-amber-300 dark:bg-amber-900/40 dark:text-amber-300 dark:border-amber-700"
+                            title="Звʼязки, авто-знайдені парсером з нотаток. Підтвердьте або видаліть, якщо помилково."
+                          >
+                            {relations.filter(r => !r.confirmed).length} непідтверджених
+                          </span>
+                        )}
                       </h3>
-                      <button
-                        onClick={importRelations}
-                        disabled={relBusy}
-                        className="text-xs px-2 py-1 rounded border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-50"
-                        title="Зібрати звʼязки з нотаток типу 'разом з …'"
-                      >
-                        ↻ Імпорт з історії
-                      </button>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => setShowAddRel(s => !s)}
+                          disabled={relBusy}
+                          className="text-xs px-2 py-1 rounded border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-50"
+                        >
+                          {showAddRel ? '✕ Скасувати' : '+ Звʼязати з клієнтом'}
+                        </button>
+                        <button
+                          onClick={importRelations}
+                          disabled={relBusy}
+                          className="text-xs px-2 py-1 rounded border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-50"
+                          title="Зібрати звʼязки з нотаток типу 'разом з …'"
+                        >
+                          ↻ Імпорт з історії
+                        </button>
+                      </div>
                     </div>
+
+                    {showAddRel && (
+                      <div className="mb-3 p-3 rounded-lg border border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-700/40 space-y-2">
+                        {!newRelSelected ? (
+                          <>
+                            <input
+                              type="text"
+                              autoFocus
+                              placeholder="Імʼя, прізвище, нік, телефон…"
+                              value={newRelQuery}
+                              onChange={e => setNewRelQuery(e.target.value)}
+                              className="w-full px-3 py-1.5 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800"
+                            />
+                            {newRelQuery.trim().length < 2 ? (
+                              <div className="text-[11px] text-gray-400">Введіть мін. 2 символи для пошуку</div>
+                            ) : newRelSearching ? (
+                              <div className="text-[11px] text-gray-400">Пошук…</div>
+                            ) : newRelResults.length === 0 ? (
+                              <div className="text-[11px] text-gray-400">Нічого не знайдено</div>
+                            ) : (
+                              <ul className="max-h-48 overflow-y-auto rounded border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 divide-y divide-gray-100 dark:divide-gray-700">
+                                {newRelResults.map(r => (
+                                  <li key={r.id}>
+                                    <button
+                                      type="button"
+                                      onClick={() => setNewRelSelected({ id: r.id, full_name: r.full_name })}
+                                      className="w-full text-left px-3 py-1.5 text-sm hover:bg-gray-100 dark:hover:bg-gray-700"
+                                    >
+                                      <span className="font-medium">{r.full_name}</span>
+                                      <span className="text-[11px] text-gray-400 ml-2">#{r.id}</span>
+                                      {r.phone_number && <span className="text-[11px] text-gray-500 ml-2">📞 {r.phone_number}</span>}
+                                    </button>
+                                  </li>
+                                ))}
+                              </ul>
+                            )}
+                          </>
+                        ) : (
+                          <>
+                            <div className="text-sm flex items-center justify-between">
+                              <span>Звʼязати з: <strong>{newRelSelected.full_name}</strong> <span className="text-[11px] text-gray-400">#{newRelSelected.id}</span></span>
+                              <button type="button" onClick={() => setNewRelSelected(null)} className="text-[11px] text-gray-500 hover:text-gray-900 dark:hover:text-gray-200 underline">змінити</button>
+                            </div>
+                            <label className="block">
+                              <span className="text-[11px] text-gray-400">Тип звʼязку</span>
+                              <select
+                                value={newRelDraft.relation_type}
+                                onChange={e => setNewRelDraft(d => ({ ...d, relation_type: e.target.value as RelationType }))}
+                                className="w-full mt-0.5 px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800"
+                              >
+                                <option value="family">👨‍👩‍👧 Родичі</option>
+                                <option value="spouse">💍 Подружжя</option>
+                                <option value="friend">👯 Друзі</option>
+                                <option value="together">🤝 Разом замовляють</option>
+                                <option value="other">📌 Інше</option>
+                              </select>
+                            </label>
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                              <label className="block">
+                                <span className="text-[11px] text-gray-400">
+                                  Хто <strong>{newRelSelected.full_name.split(' ')[0]}</strong> для цього клієнта?
+                                </span>
+                                <input
+                                  type="text"
+                                  placeholder="напр. «син», «подруга»"
+                                  value={newRelDraft.label}
+                                  onChange={e => setNewRelDraft(d => ({ ...d, label: e.target.value }))}
+                                  className="w-full mt-0.5 px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800"
+                                />
+                              </label>
+                              <label className="block">
+                                <span className="text-[11px] text-gray-400">
+                                  …і навпаки, хто цей клієнт для <strong>{newRelSelected.full_name.split(' ')[0]}</strong>?
+                                </span>
+                                <input
+                                  type="text"
+                                  placeholder="напр. «мати», «друг»"
+                                  value={newRelDraft.inverse_label}
+                                  onChange={e => setNewRelDraft(d => ({ ...d, inverse_label: e.target.value }))}
+                                  className="w-full mt-0.5 px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800"
+                                />
+                              </label>
+                            </div>
+                            <div className="text-[10px] text-gray-400 italic">
+                              Ярлики асиметричні: «син» Людмили — це «мати» для Івана. Якщо лишите порожнім — дзеркальний бік буде без ярлика, його можна заповнити пізніше в картці партнера.
+                            </div>
+                            <div className="flex justify-end gap-2 pt-1">
+                              <button onClick={resetNewRel} disabled={relBusy} className="px-3 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700">Скасувати</button>
+                              <button onClick={submitNewRel} disabled={relBusy} className="px-3 py-1 text-sm rounded bg-gray-900 text-white hover:bg-black disabled:opacity-50">{relBusy ? '…' : 'Створити звʼязок'}</button>
+                            </div>
+                          </>
+                        )}
+                      </div>
+                    )}
 
                     {relations.length === 0 ? (
                       <div className="text-sm text-gray-400 italic bg-gray-50 dark:bg-gray-700/30 rounded-lg p-4">
@@ -1096,16 +1284,16 @@ const ClientDetailsModal: React.FC<Props> = ({ clientId, open, onClose }) => {
                     <div className="text-center py-12 text-gray-400">Замовлень не знайдено</div>
                   ) : (
                     <div className="overflow-x-auto rounded-lg border border-gray-200 dark:border-gray-700">
-                      <table className="w-full text-sm">
+                      <table className="w-full text-sm [&_th]:text-center [&_td]:text-center">
                         <thead className="bg-gray-50 dark:bg-gray-700 border-b border-gray-200 dark:border-gray-600">
                           <tr>
-                            <th className="px-3 py-2 text-left font-semibold text-gray-600 dark:text-gray-300">Дата</th>
-                            <th className="px-3 py-2 text-left font-semibold text-gray-600 dark:text-gray-300">Статус</th>
-                            <th className="px-3 py-2 text-left font-semibold text-gray-600 dark:text-gray-300">Товари</th>
-                            <th className="px-3 py-2 text-right font-semibold text-gray-600 dark:text-gray-300">Сума</th>
-                            <th className="px-3 py-2 text-left font-semibold text-gray-600 dark:text-gray-300">Оплата</th>
-                            <th className="px-3 py-2 text-left font-semibold text-gray-600 dark:text-gray-300">Доставка</th>
-                            <th className="px-3 py-2 text-left font-semibold text-gray-600 dark:text-gray-300">ТТН</th>
+                            <th className="px-3 py-2 font-semibold text-gray-600 dark:text-gray-300">Дата</th>
+                            <th className="px-3 py-2 font-semibold text-gray-600 dark:text-gray-300">Статус</th>
+                            <th className="px-3 py-2 font-semibold text-gray-600 dark:text-gray-300">Товари</th>
+                            <th className="px-3 py-2 font-semibold text-gray-600 dark:text-gray-300">Сума</th>
+                            <th className="px-3 py-2 font-semibold text-gray-600 dark:text-gray-300">Оплата</th>
+                            <th className="px-3 py-2 font-semibold text-gray-600 dark:text-gray-300">Доставка</th>
+                            <th className="px-3 py-2 font-semibold text-gray-600 dark:text-gray-300">ТТН</th>
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
@@ -1115,9 +1303,7 @@ const ClientDetailsModal: React.FC<Props> = ({ clientId, open, onClose }) => {
                                 {fmtDate(o.order_date)}
                               </td>
                               <td className="px-3 py-2">
-                                <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium ${orderStatusColor(o.order_status)}`}>
-                                  {o.order_status || '—'}
-                                </span>
+                                {o.order_status ? <OrderStatusBadge name={o.order_status} /> : <span className="text-gray-300">—</span>}
                               </td>
                               <td className="px-3 py-2 text-gray-700 dark:text-gray-300 max-w-[200px]">
                                 <span className="block truncate text-xs font-mono" title={o.product_numbers}>
@@ -1137,13 +1323,17 @@ const ClientDetailsModal: React.FC<Props> = ({ clientId, open, onClose }) => {
                                   <span className="text-[10px] text-gray-400">({o.item_count} шт.)</span>
                                 )}
                               </td>
-                              <td className="px-3 py-2 text-right font-semibold whitespace-nowrap text-gray-900 dark:text-gray-100">
-                                {fmtMoney(o.total_amount)}
+                              <td className="px-3 py-2 font-semibold whitespace-nowrap text-gray-900 dark:text-gray-100">
+                                {o.total_amount != null
+                                  ? <CopyOnClick value={String(o.total_amount)} display={<>{fmtMoney(o.total_amount)}</>} />
+                                  : <span className="text-gray-300">—</span>}
                               </td>
-                              <td className="px-3 py-2 text-xs text-gray-500 dark:text-gray-400">{o.payment_status || '—'}</td>
-                              <td className="px-3 py-2 text-xs text-gray-500 dark:text-gray-400">{o.delivery_method || '—'}</td>
-                              <td className="px-3 py-2 text-xs text-gray-500 dark:text-gray-400 font-mono max-w-[120px] truncate" title={o.tracking_number || ''}>
-                                {o.tracking_number || '—'}
+                              <td className="px-3 py-2 text-xs text-gray-500 dark:text-gray-400">
+                                <PaymentStatusBadge name={o.payment_status} />
+                              </td>
+                              <td className="px-3 py-2 text-xs text-gray-500 dark:text-gray-400"><DeliveryBadge name={o.delivery_method} height={18} /></td>
+                              <td className="px-3 py-2 text-xs text-gray-500 dark:text-gray-400 font-mono max-w-[140px]" title={o.tracking_number || ''}>
+                                {o.tracking_number ? <CopyOnClick value={o.tracking_number} groupDigits /> : '—'}
                               </td>
                             </tr>
                           ))}
@@ -1607,31 +1797,55 @@ const FlagBanner: React.FC<{
           <div className="text-xs opacity-80 mt-0.5">{flag.details}</div>
         )}
         {peers.length > 0 && (
-          <div className="mt-2 flex flex-wrap items-center gap-2">
+          <div className="mt-2 space-y-1.5">
             <span className="text-xs opacity-70">Перевір з:</span>
-            {peers.map(p => (
-              <div key={p.id} className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-white/60 dark:bg-gray-800/60 border border-current/20">
-                <button
-                  onClick={() => onOpenPeer(p.id)}
-                  className="text-xs font-medium hover:underline"
-                  title="Відкрити картку"
-                >
-                  {p.full_name || (p.nickname ? `«${p.nickname}»` : `#${p.id}`)}
-                </button>
-                {p.nickname && p.full_name && (
-                  <span className="text-[10px] opacity-70">({p.nickname})</span>
-                )}
-                {flag.flag_type !== 'merged_into' && (
-                  <button
-                    onClick={() => onMerge(p.id)}
-                    className="text-[10px] px-1.5 py-0.5 rounded bg-current/10 hover:bg-current/20"
-                    title="Об'єднати поточного клієнта в цього (поточний буде видалено)"
-                  >
-                    🔗 Об'єднати
-                  </button>
-                )}
-              </div>
-            ))}
+            <div className="flex flex-col gap-1.5">
+              {peers.map((p: any) => {
+                const channels: string[] = [];
+                if (p.phone) channels.push(`📞 ${p.phone}`);
+                if (p.facebook) channels.push(`FB: ${(p.facebook || '').replace(/^https?:\/\//,'').replace(/^www\./,'').replace('facebook.com/','').slice(0, 40)}`);
+                if (p.telegram) channels.push(`TG: ${p.telegram}`);
+                if (p.instagram) channels.push(`IG: ${(p.instagram || '').replace('instagram.com/','')}`);
+                if (p.email) channels.push(`✉️ ${p.email}`);
+                const fmt = (s: string | null | undefined) => s ? new Date(s).toLocaleDateString('uk-UA', { day: '2-digit', month: '2-digit', year: 'numeric' }) : '—';
+                const money = p.total_amount ? new Intl.NumberFormat('uk-UA', { style: 'currency', currency: 'UAH', maximumFractionDigits: 0 }).format(p.total_amount) : null;
+                return (
+                  <div key={p.id} className="rounded border border-current/20 bg-white/60 dark:bg-gray-800/60 p-2">
+                    <div className="flex items-start justify-between gap-2">
+                      <button
+                        onClick={() => onOpenPeer(p.id)}
+                        className="text-xs font-semibold hover:underline text-left"
+                        title="Відкрити картку"
+                      >
+                        {p.full_name || (p.nickname ? `«${p.nickname}»` : `#${p.id}`)}
+                        <span className="ml-1 opacity-60 font-normal">#{p.id}</span>
+                        {p.nickname && p.full_name && <span className="ml-1 opacity-70 font-normal">({p.nickname})</span>}
+                      </button>
+                      {flag.flag_type !== 'merged_into' && (
+                        <button
+                          onClick={() => onMerge(p.id)}
+                          className="shrink-0 text-[10px] px-1.5 py-0.5 rounded bg-current/10 hover:bg-current/20"
+                          title="Об'єднати поточного клієнта в цього (поточний буде видалено)"
+                        >
+                          🔗 Об'єднати
+                        </button>
+                      )}
+                    </div>
+                    {channels.length > 0 && (
+                      <div className="text-[10px] opacity-80 mt-0.5 flex flex-wrap gap-x-2 gap-y-0.5">
+                        {channels.map((c, i) => <span key={i}>{c}</span>)}
+                      </div>
+                    )}
+                    <div className="text-[10px] opacity-70 mt-0.5">
+                      <strong>{p.orders_count ?? 0}</strong> зам.
+                      {money && <> · {money}</>}
+                      {p.last_order_date && <> · ост. {fmt(p.last_order_date)}</>}
+                      {p.created_at && <> · створено {fmt(p.created_at)}</>}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
           </div>
         )}
       </div>

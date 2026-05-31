@@ -33,7 +33,7 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
   const [onlyRostovka, setOnlyRostovka] = useState<boolean>(false);
   const [selectedShipmentId, setSelectedShipmentId] = useState<number | undefined>(undefined);
   const [visibleOnly, setVisibleOnly] = useState<boolean>(false);
-  const [sortBy, setSortBy] = useState<string>('created_at');
+  const [sortBy, setSortBy] = useState<string>('delivery_date');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
   const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([]);
   const [searchInsights, setSearchInsights] = useState<any>(null);
@@ -118,6 +118,7 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
       if (selectedFilters.sizeeu && selectedFilters.sizeeu.length > 0) params['sizeeu'] = selectedFilters.sizeeu;
       if (selectedFilters.min_sizeeu !== undefined) params['min_sizeeu'] = selectedFilters.min_sizeeu;
       if (selectedFilters.max_sizeeu !== undefined) params['max_sizeeu'] = selectedFilters.max_sizeeu;
+      if ((selectedFilters as any).size_letter && (selectedFilters as any).size_letter.length > 0) params['size_letter'] = (selectedFilters as any).size_letter;
       if (selectedFilters.min_measurementscm !== undefined) params['min_measurementscm'] = selectedFilters.min_measurementscm;
       if (selectedFilters.max_measurementscm !== undefined) params['max_measurementscm'] = selectedFilters.max_measurementscm;
       const res = await productService.getProducts(params, controller.signal);
@@ -163,7 +164,7 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
       const params = new URLSearchParams(location.search);
       const pn = Number(params.get('page')) || 1;
       const ps = Number(params.get('per_page')) || 20;
-      const sb = params.get('sort_by') || 'created_at';
+      const sb = params.get('sort_by') || 'delivery_date';
       const sd = (params.get('sort_dir') as 'asc' | 'desc') || 'desc';
       const ou = params.has('only_unsold') ? params.get('only_unsold') === 'true' : true;
       const op = params.get('only_problematic') === 'true';
@@ -252,9 +253,10 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
             <select value={sortBy}
               onChange={e => { setSortBy(e.target.value); setSortDir('desc'); setPage(1); }}
               className="text-xs border border-gray-200 dark:border-gray-600 rounded px-2 py-1.5 bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-200 focus:outline-none focus:ring-1 focus:ring-blue-400">
-              <option value="created_at">Найновіші</option>
-              <option value="created_at_asc">Найстаріші</option>
-              <option value="delivery_date">По завозу</option>
+              <option value="delivery_date">За датою завозу</option>
+              <option value="delivery_date_asc">За датою завозу (спочатку старі)</option>
+              <option value="created_at">Найновіші (додані в базу)</option>
+              <option value="created_at_asc">Найстаріші (додані в базу)</option>
               <option value="last_sold">Останні продані</option>
               <option value="price_desc">Від найдорожчого</option>
               <option value="price_asc">Від найдешевшого</option>

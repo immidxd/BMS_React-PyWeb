@@ -3,7 +3,10 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import MainLayout from '../layouts/MainLayout';
 import Pagination from '../components/common/Pagination';
 import ProductDetailsModal from '../components/products/ProductDetailsModal';
+import ClientDetailsModal from '../components/clients/ClientDetailsModal';
 import BmsEmpty from '../components/common/BmsEmpty';
+import { CopyOnClick, OrderStatusBadge, PaymentStatusBadge, UnknownIf } from '../components/common/displayHelpers';
+import { DeliveryBadge } from '../components/common/DeliveryBadge';
 import { DatePicker } from 'antd';
 import dayjs from 'dayjs';
 import 'dayjs/locale/uk';
@@ -84,6 +87,8 @@ interface ActiveFilters {
   date_to?: string;
   sales_channels?: string[];
   only_problematic?: boolean;   // тільки підсвічені (проблемні) замовлення
+  product_id?: number;          // показати лише замовлення з цим товаром
+  product_label?: string;       // людинозрозуміла мітка товару для банера (не йде в API)
 }
 
 interface OrdersPageProps {
@@ -107,27 +112,6 @@ const PAYMENT_COLORS: Record<string, string> = {
   'Очікує оплати': '#6366f1',
   'Не оплачено': '#ef4444',
   'Відкладено': '#60a5fa',
-};
-
-const DELIVERY_COLORS: Record<string, string> = {
-  'Нова пошта':  'bg-red-100 text-red-700 border-red-200',
-  'НП':          'bg-red-100 text-red-700 border-red-200',
-  'Укрпошта':    'bg-yellow-100 text-yellow-700 border-yellow-200',
-  'УП':          'bg-yellow-100 text-yellow-700 border-yellow-200',
-  'самовивіз':   'bg-blue-100 text-blue-700 border-blue-200',
-  'Самовивіз':   'bg-blue-100 text-blue-700 border-blue-200',
-  'Локально':    'bg-violet-100 text-violet-700 border-violet-200',
-  'Магазин':     'bg-pink-100 text-pink-700 border-pink-200',
-  'Відкладено':  'bg-sky-100 text-sky-700 border-sky-200',
-};
-
-/** Normalize short delivery method names to full canonical form */
-const normalizeDelivery = (dm: string): string => {
-  const up = dm.trim().toUpperCase();
-  if (up === 'НП' || up === 'НОВА ПОШТА') return 'Нова пошта';
-  if (up === 'УП' || up === 'УКРПОШТА') return 'Укрпошта';
-  if (up === 'САМОВИВІЗ' || up === 'САМОВИВОЗ') return 'Самовивіз';
-  return dm.charAt(0).toUpperCase() + dm.slice(1);
 };
 
 const SORT_OPTIONS: { value: SortField; label: string; dir: 'asc' | 'desc' }[] = [
@@ -410,14 +394,20 @@ const OrdersPage: React.FC<OrdersPageProps> = ({ currentSearchTerm }) => {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [cardProductId, setCardProductId] = useState<number | null>(null);
+  const [cardClientId, setCardClientId] = useState<number | null>(null);
   const [filteredSum, setFilteredSum] = useState<number>(0);
   const [filterOpts, setFilterOpts] = useState<FilterOptions | null>(null);
-  const [filters, setFilters] = useState<ActiveFilters>({});
+  // Дефолтний фільтр: останній тиждень. Діє доки користувач сам не змінить
+  // фільтри (включно зі скиданням). Один раз на монтуванні.
+  const [filters, setFilters] = useState<ActiveFilters>(() => ({
+    date_from: dayjs().subtract(7, 'day').format('YYYY-MM-DD'),
+    date_to: dayjs().format('YYYY-MM-DD'),
+  }));
 
   /* ── Column visibility (right-click toggle, per-user persisted) ───────── */
   const ORDERS_COLUMNS_KEY = 'orders_table_columns_v1';
   const ordersColumnOrder: { id: string; title: string; optional: boolean }[] = [
-    { id: 'id',           title: '№',         optional: false },
+    { id: 'id',           title: 'Номер',     optional: false },
     { id: 'order_date',   title: 'Дата',      optional: true },
     { id: 'client_name',  title: 'Клієнт',    optional: false },
     { id: 'items_count',  title: 'Товари',    optional: true },
@@ -466,6 +456,37 @@ const OrdersPage: React.FC<OrdersPageProps> = ({ currentSearchTerm }) => {
     fetch('/api/orders/filters').then(r => r.json()).then(setFilterOpts).catch(() => {});
   }, []);
 
+  // Pending nav-фільтр з картки товару ("Показати в замовленнях").
+  // Перекриває дефолтний тижневий фільтр: товар може бути проданий давно,
+  // тож шукаємо по ВСІХ датах, лише за product_id.
+  const PENDING_ORDERS_FILTER_KEY = 'bms_orders_pending_filter';
+  const applyPendingFilter = useCallback(() => {
+    try {
+      const raw = localStorage.getItem(PENDING_ORDERS_FILTER_KEY);
+      if (!raw) return;
+      localStorage.removeItem(PENDING_ORDERS_FILTER_KEY);
+      const parsed = JSON.parse(raw);
+      if (parsed && parsed.product_id) {
+        setFilters({
+          product_id: Number(parsed.product_id),
+          product_label: parsed.product_label || undefined,
+          // явно без date_from/date_to — шукаємо по всій історії
+        });
+        setPage(1);
+        setSortBy('order_date');
+        setSortDir('desc');
+      }
+    } catch { /* ignore */ }
+  }, []);
+  // Один раз при монтуванні + щоразу коли вкладку знову активують
+  // (custom event з App при перемиканні таба).
+  useEffect(() => {
+    applyPendingFilter();
+    const onShow = () => applyPendingFilter();
+    window.addEventListener('bms:orders-show-product', onShow);
+    return () => window.removeEventListener('bms:orders-show-product', onShow);
+  }, [applyPendingFilter]);
+
   // Build query params from state
   const buildParams = useCallback(() => {
     const p = new URLSearchParams({
@@ -482,6 +503,7 @@ const OrdersPage: React.FC<OrdersPageProps> = ({ currentSearchTerm }) => {
     if (filters.date_to) p.set('date_to', filters.date_to);
     if (filters.sales_channels?.length) filters.sales_channels.forEach(ch => p.append('sales_channels', ch));
     if (filters.only_problematic) p.set('only_problematic', 'true');
+    if (filters.product_id) p.set('product_id', String(filters.product_id));
     return p;
   }, [page, perPage, sortBy, sortDir, currentSearchTerm, filters]);
 
@@ -583,6 +605,23 @@ const OrdersPage: React.FC<OrdersPageProps> = ({ currentSearchTerm }) => {
           </div>
         </div>
 
+        {/* Активний фільтр по товару (з картки товару → "Показати в замовленнях") */}
+        {filters.product_id && (
+          <div className="flex items-center justify-between gap-3 mb-3 px-3 py-2 rounded-lg border border-blue-200 bg-blue-50 dark:bg-blue-900/20 dark:border-blue-800">
+            <span className="text-sm text-blue-800 dark:text-blue-200">
+              Показано замовлення з товаром{filters.product_label ? <> <b>{filters.product_label}</b></> : <> ID {filters.product_id}</>}
+              <span className="text-blue-500 dark:text-blue-400"> · фільтр по даті знято</span>
+            </span>
+            <button
+              type="button"
+              onClick={() => handleResetFilters()}
+              className="text-xs px-2 py-1 rounded border border-blue-300 text-blue-700 hover:bg-blue-100 dark:text-blue-300 dark:border-blue-700 dark:hover:bg-blue-900/40 whitespace-nowrap"
+            >
+              ✕ Скинути
+            </button>
+          </div>
+        )}
+
         {/* Table */}
         {loading && orders.length === 0 ? (
           <div className="flex justify-center items-center h-48 text-gray-400">Завантаження...</div>
@@ -590,12 +629,12 @@ const OrdersPage: React.FC<OrdersPageProps> = ({ currentSearchTerm }) => {
           <div className="flex justify-center items-center h-48 text-red-500">{error}</div>
         ) : (
           <div className="overflow-x-auto rounded border border-gray-200 dark:border-gray-700" onContextMenu={handleColumnsContextMenu}>
-            <table className="w-full text-sm">
+            <table className="w-full text-sm [&_th]:text-center [&_td]:text-center">
               <thead className="bg-gray-50 dark:bg-gray-700 border-b border-gray-200 dark:border-gray-600">
                 <tr>
                   {colVis.id && (
                     <th className="px-3 py-3 text-left font-semibold text-gray-600 dark:text-gray-300 cursor-pointer whitespace-nowrap" onClick={() => handleSort('id')}>
-                      №<SortIcon field="id" />
+                      Номер<SortIcon field="id" />
                     </th>
                   )}
                   {colVis.order_date && (
@@ -618,7 +657,7 @@ const OrdersPage: React.FC<OrdersPageProps> = ({ currentSearchTerm }) => {
                   )}
                   {colVis.status &&    <th className="px-3 py-3 text-left font-semibold text-gray-600 dark:text-gray-300">Статус</th>}
                   {colVis.payment &&   <th className="px-3 py-3 text-left font-semibold text-gray-600 dark:text-gray-300">Оплата</th>}
-                  {colVis.delivery &&  <th className="px-3 py-3 text-left font-semibold text-gray-600 dark:text-gray-300">Доставка</th>}
+                  {colVis.delivery &&  <th className="px-1 py-3 text-left font-semibold text-gray-600 dark:text-gray-300 w-[64px]">Доставка</th>}
                   {colVis.tracking &&  <th className="px-3 py-3 text-left font-semibold text-gray-600 dark:text-gray-300">Трекінг</th>}
                   {colVis.channel &&   <th className="px-3 py-3 text-left font-semibold text-gray-600 dark:text-gray-300">Канал</th>}
                   {colVis.notes &&     <th className="px-3 py-3 text-left font-semibold text-gray-600 dark:text-gray-300">Нотатки</th>}
@@ -644,9 +683,14 @@ const OrdersPage: React.FC<OrdersPageProps> = ({ currentSearchTerm }) => {
                     >
                       {colVis.id && (
                         <td className="px-3 py-2 font-mono text-xs">
-                          <span className={hasConflict ? 'text-orange-600 dark:text-orange-400 font-bold' : 'text-gray-500 dark:text-gray-400'}>
-                            {order.id}{hasConflict && ' ⚠'}
-                          </span>
+                          <CopyOnClick
+                            value={order.id}
+                            display={
+                              <span className={hasConflict ? 'text-orange-600 dark:text-orange-400 font-bold' : 'text-gray-500 dark:text-gray-400'}>
+                                {order.id}{hasConflict && ' ⚠'}
+                              </span>
+                            }
+                          />
                         </td>
                       )}
                       {colVis.order_date && (
@@ -655,7 +699,14 @@ const OrdersPage: React.FC<OrdersPageProps> = ({ currentSearchTerm }) => {
                       {colVis.client_name && (
                         <td className="px-3 py-2 font-medium max-w-[160px] truncate">
                           {order.client_name
-                            ? <span className="text-gray-900 dark:text-gray-100">{order.client_name}</span>
+                            ? (order.client_id
+                                ? <button
+                                    type="button"
+                                    onClick={(e) => { e.stopPropagation(); setCardClientId(order.client_id); }}
+                                    className="text-gray-900 dark:text-gray-100 hover:text-blue-600 dark:hover:text-blue-400 hover:underline transition-colors"
+                                    title="Відкрити картку клієнта"
+                                  ><UnknownIf value={order.client_name} label="Анонімний" /></button>
+                                : <span className="text-gray-900 dark:text-gray-100"><UnknownIf value={order.client_name} label="Анонімний" /></span>)
                             : <span className="text-gray-400 dark:text-gray-500 italic">Анонімний</span>}
                         </td>
                       )}
@@ -667,42 +718,34 @@ const OrdersPage: React.FC<OrdersPageProps> = ({ currentSearchTerm }) => {
                         </td>
                       )}
                       {colVis.total_amount && (
-                        <td className="px-3 py-2 font-semibold whitespace-nowrap text-gray-900 dark:text-gray-100">{fmtMoney(order.total_amount)}</td>
+                        <td className="px-3 py-2 font-semibold whitespace-nowrap text-gray-900 dark:text-gray-100">
+                          {order.total_amount != null
+                            ? <CopyOnClick value={String(order.total_amount)} display={<>{fmtMoney(order.total_amount)}</>} />
+                            : '—'}
+                        </td>
                       )}
                       {colVis.status && (
                         <td className="px-3 py-2">
-                          {order.order_status_name ? (
-                            <span className="inline-block px-2 py-0.5 rounded-full text-xs font-medium text-white"
-                              style={{ background: STATUS_COLORS[order.order_status_name] || '#6b7280' }}>
-                              {order.order_status_name}
-                            </span>
-                          ) : <span className="text-gray-400 text-xs">—</span>}
+                          {order.order_status_name
+                            ? <OrderStatusBadge name={order.order_status_name} />
+                            : <span className="text-gray-400 text-xs">—</span>}
                         </td>
                       )}
                       {colVis.payment && (
                         <td className="px-3 py-2">
-                          {(order.payment_status || order.payment_status_name) ? (
-                            <span className="inline-block px-2 py-0.5 rounded-full text-xs font-medium text-white"
-                              style={{ background: PAYMENT_COLORS[order.payment_status || order.payment_status_name || ''] || '#6b7280' }}>
-                              {order.payment_status || order.payment_status_name}
-                            </span>
-                          ) : <span className="text-gray-400 text-xs">—</span>}
+                          <PaymentStatusBadge name={order.payment_status || order.payment_status_name} />
                         </td>
                       )}
                       {colVis.delivery && (
-                        <td className="px-3 py-2">
-                          {(() => {
-                            const dm = order.delivery_method_name;
-                            if (!dm) return <span className="text-gray-400 text-xs">—</span>;
-                            const dmNorm = normalizeDelivery(dm);
-                            const cls = DELIVERY_COLORS[dmNorm] || 'bg-gray-100 text-gray-600 border-gray-200';
-                            return <span className={`inline-flex px-1.5 py-0 rounded text-[10px] font-semibold border ${cls}`}>{dmNorm}</span>;
-                          })()}
+                        <td className="px-1 py-2 w-[64px]">
+                          <DeliveryBadge name={order.delivery_method_name} height={18} />
                         </td>
                       )}
                       {colVis.tracking && (
                         <td className="px-3 py-2 font-mono text-xs text-gray-500 dark:text-gray-400">
-                          {order.tracking_number || '—'}
+                          {order.tracking_number
+                            ? <CopyOnClick value={order.tracking_number} groupDigits />
+                            : '—'}
                         </td>
                       )}
                       {colVis.channel && (
@@ -713,7 +756,7 @@ const OrdersPage: React.FC<OrdersPageProps> = ({ currentSearchTerm }) => {
                             const isDeferred = (order.delivery_method_name || '').toLowerCase().includes('відкладен')
                               || (order.payment_status || order.payment_status_name || '').toLowerCase().includes('відкладен');
                             return (
-                              <div className="flex flex-col gap-0.5">
+                              <div className="flex flex-col gap-0.5 items-center">
                                 <span className={`inline-flex px-1.5 py-0 rounded text-[10px] font-semibold border ${cls}`}>{ch}</span>
                                 {isDeferred && (
                                   <span className="inline-flex items-center gap-0.5 px-1 py-0 rounded text-[9px] font-medium bg-orange-100 text-orange-700 border border-orange-200">
@@ -735,7 +778,7 @@ const OrdersPage: React.FC<OrdersPageProps> = ({ currentSearchTerm }) => {
                       <tr className="bg-blue-50 dark:bg-blue-900/20">
                         <td colSpan={visibleColCount} className="px-6 py-3">
                           <div className="text-xs font-semibold text-gray-500 dark:text-gray-400 mb-2">Позиції замовлення:</div>
-                          <table className="w-full text-xs">
+                          <table className="w-full text-xs [&_th]:text-center [&_td]:text-center">
                             <thead>
                               <tr className="text-gray-500 dark:text-gray-400">
                                 <th className="text-left pr-4 pb-1">Номер товару</th>
@@ -874,8 +917,8 @@ const OrdersPage: React.FC<OrdersPageProps> = ({ currentSearchTerm }) => {
 
         {/* Footer pagination */}
         <div className="fixed bottom-0 left-0 right-0 px-4 py-3 bg-white/95 dark:bg-gray-800/95 backdrop-blur border-t border-gray-100 dark:border-gray-700 z-20">
-          <div className="max-w-screen-2xl mx-auto flex items-center justify-between gap-4">
-            <div className="flex items-center gap-4">
+          <div className="w-full grid grid-cols-1 md:grid-cols-[1fr_auto_1fr] items-center gap-4 max-w-screen-2xl mx-auto px-2">
+            <div className="order-2 md:order-none justify-self-start flex items-center gap-4 flex-wrap">
               <span className="text-sm text-gray-500 dark:text-gray-400">
                 Всього: <strong>{total}</strong> замовлень
               </span>
@@ -886,15 +929,17 @@ const OrdersPage: React.FC<OrdersPageProps> = ({ currentSearchTerm }) => {
                 </span>
               )}
             </div>
-            <Pagination
-              currentPage={page}
-              totalPages={pages}
-              totalItems={total}
-              itemsPerPage={perPage}
-              onPageChange={setPage}
-              onPerPageChange={(n) => { setPerPage(n); setPage(1); }}
-            />
-            <span className="text-xs text-gray-400">
+            <div className="order-1 md:order-none justify-self-center flex justify-center">
+              <Pagination
+                currentPage={page}
+                totalPages={pages}
+                totalItems={total}
+                itemsPerPage={perPage}
+                onPageChange={setPage}
+                onPerPageChange={(n) => { setPerPage(n); setPage(1); }}
+              />
+            </div>
+            <span className="order-3 md:order-none justify-self-end text-xs text-gray-400">
               Стор. {page} з {pages}
             </span>
           </div>
@@ -905,6 +950,11 @@ const OrdersPage: React.FC<OrdersPageProps> = ({ currentSearchTerm }) => {
         productId={cardProductId}
         open={cardProductId !== null}
         onClose={() => setCardProductId(null)}
+      />
+      <ClientDetailsModal
+        clientId={cardClientId}
+        open={cardClientId !== null}
+        onClose={() => setCardClientId(null)}
       />
     </MainLayout>
   );

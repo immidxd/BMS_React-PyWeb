@@ -90,7 +90,7 @@ const DeliveriesTable: React.FC = () => {
       {/* Локальне поле пошуку видалено — використовуємо глобальний пошук у заголовку */}
 
       <div className="overflow-x-auto rounded shadow border border-gray-200 bg-white">
-        <table className="min-w-full text-sm">
+        <table className="min-w-full text-sm [&_th]:text-center [&_td]:text-center">
           <thead className="bg-gray-50 border-b border-gray-200">
             <tr>
               <th className="px-4 py-3 text-left font-semibold">ID</th>

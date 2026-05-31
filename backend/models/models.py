@@ -316,6 +316,7 @@ class Product(Base):
     dateadded = Column(Date, default=func.current_date())
     sizeeu = Column(String(20))
     sizeua = Column(String(20))
+    size_letter = Column(Text)            # canonical letter size: XS|S|M|L|XL|XXL|XXXL
     sizeusa = Column(String(20))
     sizeuk = Column(String(20))
     sizejp = Column(String(20))

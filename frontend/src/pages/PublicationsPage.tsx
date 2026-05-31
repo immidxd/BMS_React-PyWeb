@@ -1019,15 +1019,19 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
 
       {/* Pagination */}
       <div className="fixed bottom-0 left-0 right-0 px-4 py-3 bg-white/95 dark:bg-gray-800/95 backdrop-blur border-t border-gray-200 dark:border-gray-700 z-30">
-        <div className="flex items-center justify-between gap-4">
-          <Pagination
-            currentPage={page}
-            totalPages={pages}
-            totalItems={total}
-            itemsPerPage={perPage}
-            onPageChange={setPage}
-            onPerPageChange={(n) => { setPerPage(n); setPage(1); }}
-          />
+        <div className="w-full grid grid-cols-[1fr_auto_1fr] items-center gap-4 max-w-screen-2xl mx-auto px-2">
+          <span />
+          <div className="justify-self-center flex justify-center">
+            <Pagination
+              currentPage={page}
+              totalPages={pages}
+              totalItems={total}
+              itemsPerPage={perPage}
+              onPageChange={setPage}
+              onPerPageChange={(n) => { setPerPage(n); setPage(1); }}
+            />
+          </div>
+          <span />
         </div>
       </div>
 

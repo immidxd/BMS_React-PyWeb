@@ -73,11 +73,38 @@ def main():
         logger.error("Exiting due to backend unavailability")
         sys.exit(1)
     
-    # Get frontend URL (always use the backend's static file server in production)
-    frontend_url = "http://localhost:8000"
+    # Get frontend URL (always use the backend's static file server in production).
+    # Додаємо унікальний ?v=<час старту> — WKWebView не зможе віддати закешований
+    # index.html для нової (унікальної) URL, тож завжди вантажиться свіжий бандл.
+    # SPA на "/" віддає index.html незалежно від query, тож параметр безпечний.
+    frontend_url = f"http://localhost:8000/?v={int(time.time())}"
     logger.info(f"Connecting to frontend at {frontend_url}")
-    
-    # Очистити WebKit кеш щоб уникнути 404 після нового білду (змінені хеші JS-файлів)
+
+    # ── КРИТИЧНО: чистимо HTTP-кеш WKWebView на диску ДО старту вікна ──────────
+    # WKWebView евристично кешує index.html у ~/Library/Caches/org.python.python/WebKit
+    # і цей кеш переживає рестарти процесу. Через це новий білд «не застосовується»
+    # (старий index.html → старі JS-чанки → старий UI). caches.delete() (Cache
+    # Storage API) це НЕ чистить. Видаляємо HTTP-кеш на рівні файлів.
+    # localStorage (налаштування колонок) лежить в ІНШІЙ теці
+    # (~/Library/WebKit/org.python.python/.../LocalStorage) — її НЕ чіпаємо.
+    def clear_http_cache_on_disk():
+        import shutil
+        home = os.path.expanduser("~")
+        candidates = [
+            os.path.join(home, "Library/Caches/org.python.python/WebKit"),
+            os.path.join(home, "Library/Caches/com.apple.python/WebKit"),
+        ]
+        for path in candidates:
+            if os.path.isdir(path):
+                try:
+                    shutil.rmtree(path)
+                    logger.info(f"Cleared WKWebView HTTP cache: {path}")
+                except Exception as e:
+                    logger.warning(f"Could not clear cache {path}: {e}")
+
+    clear_http_cache_on_disk()
+
+    # Очистити Cache Storage API (доповнює дискову чистку вище)
     def clear_webview_cache(window):
         try:
             window.evaluate_js(

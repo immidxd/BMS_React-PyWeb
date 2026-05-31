@@ -304,6 +304,51 @@ def _apply_product_materials(
                 logger.warning(f"[materials] insert failed pid={product_id} pos={position} mid={mid}: {e}")
 
 
+# Canonical letter sizes. Includes 4XL as XXXXL though rarely used.
+_LETTER_SIZES_CANON = {"XS", "S", "M", "L", "XL", "XXL", "XXXL", "XXXXL", "XXXXXL", "XXXXXXL"}
+
+
+def _normalize_size_letter(val: str) -> str:
+    """Normalize letter size from the Sheet 'Буквений' column.
+
+    Examples:
+        'L'      → 'L'
+        'xl'     → 'XL'
+        '3XL'    → 'XXXL'   (3XL convention)
+        '4XL'    → 'XXXXL'
+        'М'      → 'M'      (Cyrillic М → Latin M)
+        'XS/S'   → 'XS'     (multi-value: take first canonical token)
+        'L (44)' → 'L'      (strip parenthetical numeric hints)
+        ''       → ''
+        '44'     → ''       (pure numeric → not a letter size)
+    """
+    if not val:
+        return ""
+    s = val.strip()
+    if not s:
+        return ""
+    # Cyrillic → Latin (single char shortcut)
+    s = s.replace("М", "M").replace("м", "m")
+    # Strip parenthetical hints: "L (44)" → "L"
+    s = re.sub(r"\s*\([^)]*\)", "", s).strip()
+    if not s:
+        return ""
+    upper = s.upper()
+    # 3XL → XXXL, 4XL → XXXXL
+    m = re.match(r"^([2-9])\s*XL$", upper)
+    if m:
+        n = int(m.group(1))
+        return "X" * n + "L"
+    # Multi-value separators — take first canonical token
+    if any(sep in upper for sep in ("/", ",", ";", " ")):
+        for tok in re.split(r"[\s,/;]+", upper):
+            cand = _normalize_size_letter(tok)
+            if cand:
+                return cand
+        return ""
+    return upper if upper in _LETTER_SIZES_CANON else ""
+
+
 def _normalize_size(val: str) -> str:
     """Normalize a size value from Google Sheets.
 
@@ -396,11 +441,24 @@ _EUROWINTER_TYPE_KW = (
     'ботинк', 'ботінк', 'напівсапог', 'напівботинк', 'сапог',
     'напівчоб', 'черевик', 'напівчеревик', 'ботильйон', 'чобот',
 )
+# Явна згадка єврозими в описі — додаємо мітку незалежно від типу
+_EUROWINTER_DESC_KW = ('єврозим', 'євро зим', 'еврозим', 'евро зим')
+
+
+# Canonical order in which seasons appear in the CSV string. Stable order makes
+# downstream comparison / dedup predictable across the app.
+SEASON_CANONICAL_ORDER = ('Зима', 'Єврозима', 'Демі', 'Літо', 'Всесезон')
 
 
 def _classify_season(type_val: str, subtype_val: str, style_val: str,
                      description: str) -> str:
-    """Auto-classify season when not explicitly set in Sheet."""
+    """Auto-classify season(s) when not explicitly set in Sheet.
+
+    Returns a comma-separated string of canonical seasons (e.g. 'Демі, Єврозима')
+    or '' if nothing matched. Sport-keywords still collapse to a single
+    'Всесезон'. Multiple distinct seasons can co-exist (description може
+    згадувати і "демі" і "єврозима" — обидва присвоюємо).
+    """
     desc = (description or '').lower()
     style = (style_val or '').lower()
     subtype = (subtype_val or '').lower()
@@ -408,25 +466,65 @@ def _classify_season(type_val: str, subtype_val: str, style_val: str,
     stsub_style = f'{subtype} {style}'
     all_text = f'{type_l} {subtype} {style} {desc}'
 
+    # Sport short-circuit: одне значення, не змішується з іншими.
     if any(kw in all_text for kw in _SPORT_KW):
         return 'Всесезон'
-    if any(kw in desc for kw in _WINTER_DESC_KW):
-        return 'Зима'
-    if any(kw in stsub_style or kw in type_l for kw in _WINTER_STSUB_KW):
-        return 'Зима'
-    if any(kw in desc for kw in _SUMMER_KW):
-        return 'Літо'
-    if any(kw in stsub_style for kw in _SUMMER_KW):
-        return 'Літо'
-    if any(kw in type_l for kw in _SUMMER_TYPE_KW):
-        return 'Літо'
-    if any(kw in desc for kw in _DEMI_KW):
-        return 'Демі'
-    if any(kw in stsub_style for kw in _DEMI_KW):
-        return 'Демі'
-    if any(kw in type_l for kw in _EUROWINTER_TYPE_KW):
-        return 'Єврозима'
-    return 'Всесезон'
+
+    # Маскуємо "єврозим"/"евро зим" перед winter-перевіркою, щоб підстрока 'зим'
+    # всередині 'єврозимі' не давала false-positive 'Зима'.
+    desc_for_winter = re.sub(r'євро\s*зим\w*|евро\s*зим\w*', ' ', desc)
+
+    detected: set[str] = set()
+    if any(kw in desc_for_winter for kw in _WINTER_DESC_KW):
+        detected.add('Зима')
+    if any(kw in stsub_style for kw in _WINTER_STSUB_KW) or \
+       any(kw in type_l for kw in _WINTER_STSUB_KW):
+        detected.add('Зима')
+    if any(kw in desc for kw in _SUMMER_KW) or \
+       any(kw in stsub_style for kw in _SUMMER_KW) or \
+       any(kw in type_l for kw in _SUMMER_TYPE_KW):
+        detected.add('Літо')
+    if any(kw in desc for kw in _DEMI_KW) or \
+       any(kw in stsub_style for kw in _DEMI_KW):
+        detected.add('Демі')
+    if any(kw in type_l for kw in _EUROWINTER_TYPE_KW) or \
+       any(kw in desc for kw in _EUROWINTER_DESC_KW) or \
+       any(kw in stsub_style for kw in _EUROWINTER_DESC_KW):
+        detected.add('Єврозима')
+
+    if not detected:
+        return 'Всесезон'
+
+    ordered = [s for s in SEASON_CANONICAL_ORDER if s in detected]
+    return ', '.join(ordered)
+
+
+def normalize_season_csv(value: str) -> str:
+    """Canonicalize a season value (from Sheet or DB): trim parts, dedupe,
+    apply canonical ordering. Unknown tokens are preserved as-is (after trim)
+    to avoid silently dropping legacy or custom values."""
+    if not value:
+        return ''
+    parts = [p.strip() for p in value.split(',') if p.strip()]
+    if not parts:
+        return ''
+    # Case-fold map for canonicals: 'літо' / 'ЛІТО' / 'Літо' → 'Літо'
+    canon_by_lower = {c.lower(): c for c in SEASON_CANONICAL_ORDER}
+    seen: set[str] = set()
+    known: list[str] = []
+    unknown: list[str] = []
+    for p in parts:
+        canon = canon_by_lower.get(p.lower())
+        key = canon or p
+        if key in seen:
+            continue
+        seen.add(key)
+        if canon:
+            known.append(canon)
+        else:
+            unknown.append(p)
+    ordered = [s for s in SEASON_CANONICAL_ORDER if s in known]
+    return ', '.join(ordered + unknown)
 
 
 def _normalize_gender(val: str) -> str:
@@ -480,6 +578,55 @@ def _auto_detect_gender(size_val: str, desc_val: str, extra_val: str) -> str:
                 return "Жіноча"
         except ValueError:
             pass
+
+    return ""
+
+
+# ── Style auto-detection from description ────────────────────────────────────
+# Звужений набір закінчень українських прикметників — щоб не захопити
+# випадкові іменники у конструкціях типу "одягу стиль".
+_STYLE_ADJ_SUFFIXES = (
+    "ський", "цький", "чний", "зний", "тний", "вний", "шний",
+    "жний", "льний", "рний", "мний", "нний", "овий", "евий",
+    "ий", "ій",
+)
+_STYLE_ADJ_RE = re.compile(
+    r"(?<![А-ЯҐЄІЇа-яґєії])"
+    r"([А-ЯҐЄІЇа-яґєії][а-яґєії’'\-]{3,20})"
+    r"\s+стил[ьюіея]\b",
+    re.IGNORECASE,
+)
+_STYLE_QUOTED_RE = re.compile(
+    r"стил[ьюіея]\s*[«\"„‘']\s*"
+    r"([А-ЯҐЄІЇа-яґєії][а-яґєії’'\-]{2,25})"
+    r"\s*[»\"”’']",
+    re.IGNORECASE,
+)
+
+
+def _auto_detect_style(desc_val: str) -> str:
+    """Витягнути стиль із опису, якщо в аркуші "Стиль" порожній.
+
+    Дві форми:
+      • прикметник + "стиль": "англійський стиль" → "Англійський"
+      • "стиль" + цитата:     'стиль "кантрі"'    → "Кантрі"
+    Прикметникова гілка обмежена українськими закінченнями (-ий, -ій,
+    -ський, -чний тощо), щоб не захопити випадковий іменник.
+    """
+    if not desc_val:
+        return ""
+    text = desc_val.strip()
+
+    for match in _STYLE_ADJ_RE.finditer(text):
+        word = match.group(1).lower().rstrip("'’-")
+        if any(word.endswith(suf) for suf in _STYLE_ADJ_SUFFIXES):
+            return word[:1].upper() + word[1:]
+
+    m = _STYLE_QUOTED_RE.search(text)
+    if m:
+        word = m.group(1).strip().lower().rstrip("'’-")
+        if len(word) >= 3:
+            return word[:1].upper() + word[1:]
 
     return ""
 
@@ -1206,6 +1353,9 @@ def _parse_products_sheet(
         if not pnum or pnum == "#":
             skipped += 1
             continue
+        # Canonicalize: leading #, uppercase known prefix, Latin homoglyphs
+        # (T642) folded to Cyrillic (Т642). Empty string if normalize() rejected.
+        pnum = _normalize_pnum(pnum) or pnum
 
         clones     = col(row, "Номера-клони")
         type_val   = col(row, "Вид")
@@ -1223,6 +1373,16 @@ def _parse_products_sheet(
         mfr_cntry  = col(row, "Країна-виробник")
         own_cntry  = col(row, "Країна-власник")
         size_val   = _normalize_size(col(row, "Розмір"))
+        # Letter size (XS/S/M/L/XL/...) — нова опційна колонка "Буквений" одразу після "Розмір".
+        # Старі аркуші без неї повертають "" → size_letter = NULL.
+        letter_val = _normalize_size_letter(col(row, "Буквений")) if "Буквений" in header else ""
+        # Safety: якщо Буквений порожній, але Розмір — чиста літера,
+        # маршрутизуємо літеру в size_letter і обнуляємо sizeeu (інакше "L" поллється у sizeeu).
+        if not letter_val and size_val:
+            _letter_from_size = _normalize_size_letter(size_val)
+            if _letter_from_size and not re.search(r"\d", size_val):
+                letter_val = _letter_from_size
+                size_val   = ""
         cm_val     = _normalize_size(col(row, "СМ"))
         price_val  = col(row, "Ціна")
         desc_val   = col(row, "Опис") if "Опис" in header else ""
@@ -1309,9 +1469,17 @@ def _parse_products_sheet(
             if st_part and not sub_val:
                 sub_val = st_part
 
-        # Auto-classify season if not explicitly set in Sheet
+        # Auto-detect style from description if Sheet "Стиль" is empty.
+        # Strict pattern (adjective + "стиль", or quoted form), щоб не зачепити сміття.
+        if not style_val and desc_val:
+            style_val = _auto_detect_style(desc_val)
+
+        # Auto-classify season if not explicitly set in Sheet.
+        # Якщо Sheet вже має — канонізуємо ('Літо, демі' → 'Демі, Літо').
         if not season_val:
             season_val = _classify_season(type_val, sub_val, style_val, desc_val)
+        else:
+            season_val = normalize_season_csv(season_val)
 
         brand_obj  = _get_or_create(session, Brand,  "brandname",  brand_val)  if brand_val  else None
         type_obj   = _get_or_create(session, Type,   "typename",   type_val)   if type_val   else None
@@ -1448,6 +1616,8 @@ def _parse_products_sheet(
                 full_match.genderid = gender_id
             if size_val and not full_match.sizeeu:
                 full_match.sizeeu = size_val
+            if letter_val and not full_match.size_letter:
+                full_match.size_letter = letter_val
             if sub_id and not full_match.subtypeid:
                 full_match.subtypeid = sub_id
             if cond_id and not full_match.conditionid:
@@ -1561,6 +1731,7 @@ def _parse_products_sheet(
                     description           = desc_val or None,
                     price                 = price_float,
                     sizeeu                = size_val or None,
+                    size_letter           = letter_val or None,
                     measurementscm        = cm_val or None,
                     measurementscm_min              = cm_min,
                     measurementscm_max              = cm_max,
@@ -1648,6 +1819,7 @@ def _parse_products_sheet(
                     description           = desc_val or None,
                     price                 = price_float,
                     sizeeu                = size_val or None,
+                    size_letter           = letter_val or None,
                     measurementscm        = cm_val or None,
                     measurementscm_min              = cm_min,
                     measurementscm_max              = cm_max,
@@ -1804,6 +1976,7 @@ def _parse_products_sheet(
                             description           = desc_val or None,
                             price                 = price_float,
                             sizeeu                = size_val or None,
+                            size_letter           = letter_val or None,
                             measurementscm        = cm_val or None,
                             measurements_length_min         = length_min,
                             measurements_length_max         = length_max,
@@ -1893,6 +2066,7 @@ def _parse_products_sheet(
                     if cond_id:   target.conditionid = cond_id
                     if color_id:  target.colorid     = color_id
                     if size_val:  target.sizeeu      = size_val
+                    if letter_val: target.size_letter = letter_val
                     if sub_id:    target.subtypeid   = sub_id
                     if gender_id: target.genderid    = gender_id
                     # Update data fields
@@ -1937,6 +2111,7 @@ def _parse_products_sheet(
                         description           = desc_val or None,
                         price                 = price_float,
                         sizeeu                = size_val or None,
+                        size_letter           = letter_val or None,
                         measurementscm        = cm_val or None,
                         measurements_length_min         = length_min,
                         measurements_length_max         = length_max,
@@ -2212,6 +2387,34 @@ def _find_or_create_client(session: Session, name: str, phone: str,
     olx      = _clean(olx)
     email    = _clean(email)
 
+    # ── Захист від сміття в соц-полях ────────────────────────────────────────
+    # У стовпцях аркуша (напр. "Olx") інколи трапляються чужі дані: ціни
+    # ("1250;"), голі числа, телефони. Вебсоц-хендл/URL ЗАВЖДИ містить літери
+    # або є посиланням — голе число туди потрапити не може. Тож відкидаємо
+    # значення без жодної літери й без http(s) для olx/facebook/instagram/telegram.
+    # Viber (телефон) та phone — НЕ чіпаємо.
+    def _is_garbage_social(val: str) -> bool:
+        v = (val or "").strip()
+        if not v:
+            return False
+        if v.startswith(("http://", "https://")):
+            return False
+        if re.search(r"[A-Za-zА-Яа-яҐЄІЇґєії]", v):
+            return False
+        return True  # лишилось тільки цифри/пунктуація → сміття
+
+    for _fld_name, _fld_val in (("olx", olx), ("facebook", facebook),
+                                ("instagram", instagram), ("telegram", telegram)):
+        if _is_garbage_social(_fld_val):
+            logger.warning(
+                f"[client parse] Відкинуто сміття в полі '{_fld_name}': "
+                f"'{_fld_val}' (клієнт='{raw_name}')"
+            )
+            if _fld_name == "olx":       olx = ""
+            elif _fld_name == "facebook": facebook = ""
+            elif _fld_name == "instagram": instagram = ""
+            elif _fld_name == "telegram":  telegram = ""
+
     # Якщо в phone_number стоїть URL — переносимо в відповідне поле
     if phone and phone.startswith(("http://", "https://")):
         if "facebook.com" in phone and not facebook:
@@ -2228,25 +2431,21 @@ def _find_or_create_client(session: Session, name: str, phone: str,
     nickname = parsed.nickname
     gender_id = parsed.gender_id if parsed.gender_id else None
 
-    # ── Stage 1: strong signal lookup ────────────────────────────────────
+    # ── Stage 1: strong signal lookup через client_contacts ──────────────
+    # Шукаємо по many-to-one таблиці контактів — людина може мати 2+ FB / 2+ phone,
+    # і будь-який з них резолвить у master (а не плодить клона).
+    from backend.utils.client_contacts import find_client_by_any_contact
     candidate = None
-    strong_signal_matched = None  # 'phone' | 'facebook' | 'telegram' | 'instagram'
-    if phone:
-        candidate = session.query(Client).filter(Client.phone_number == phone).first()
-        if candidate:
-            strong_signal_matched = "phone"
-    if not candidate and facebook and "facebook.com" in facebook:
-        candidate = session.query(Client).filter(Client.facebook == facebook).first()
-        if candidate:
-            strong_signal_matched = "facebook"
-    if not candidate and telegram:
-        candidate = session.query(Client).filter(Client.telegram == telegram).first()
-        if candidate:
-            strong_signal_matched = "telegram"
-    if not candidate and instagram and "instagram.com" in instagram:
-        candidate = session.query(Client).filter(Client.instagram == instagram).first()
-        if candidate:
-            strong_signal_matched = "instagram"
+    strong_signal_matched = None
+    match = find_client_by_any_contact(session, {
+        "phone":     phone,
+        "facebook":  facebook if facebook and "facebook.com" in facebook else "",
+        "telegram":  telegram,
+        "instagram": instagram if instagram and "instagram.com" in instagram else "",
+    })
+    if match:
+        cid_match, strong_signal_matched = match
+        candidate = session.query(Client).filter(Client.id == cid_match).first()
 
     # ── Stage 2: alias-based name lookup (тільки якщо нема strong match) ─
     ambiguous_peer_ids = []
@@ -2326,54 +2525,45 @@ def _find_or_create_client(session: Session, name: str, phone: str,
     norm_tg    = _n_tg(telegram) or ""
     norm_ig    = _n_ig(instagram) or ""
 
+    # ── Stage 3: more conflict checks SKIPPED for contact fields ──────────
+    # Раніше тут «різний phone/fb» у кандидата-за-іменем змушував створити
+    # клона. Тепер контакти many-to-one: розбіжний канал просто додається
+    # до існуючого клієнта в client_contacts (Stage 4), і петля мерджу зникає.
     create_new_due_to_conflict = False
     conflict_details = None
-    if candidate and not strong_signal_matched:
-        if norm_phone and candidate.phone_normalized and candidate.phone_normalized != norm_phone:
-            create_new_due_to_conflict = True
-            conflict_details = f"phone mismatch: row={norm_phone} vs candidate={candidate.phone_normalized}"
-        elif norm_fb and candidate.facebook_normalized and candidate.facebook_normalized != norm_fb:
-            create_new_due_to_conflict = True
-            conflict_details = f"facebook mismatch: row={norm_fb} vs candidate={candidate.facebook_normalized}"
-        elif norm_tg and candidate.telegram_normalized and candidate.telegram_normalized != norm_tg:
-            create_new_due_to_conflict = True
-            conflict_details = f"telegram mismatch: row={norm_tg} vs candidate={candidate.telegram_normalized}"
-        elif norm_ig and candidate.instagram_normalized and candidate.instagram_normalized != norm_ig:
-            create_new_due_to_conflict = True
-            conflict_details = f"instagram mismatch: row={norm_ig} vs candidate={candidate.instagram_normalized}"
 
     # ── Stage 4: enrich existing OR create new ────────────────────────────
     if candidate and not create_new_due_to_conflict:
+        from backend.utils.client_contacts import upsert_contact
+
         locked = _locked_fields(candidate)
         manual_lock_active = candidate.manually_edited_at is not None
 
-        def _can_set(field: str, current_value, new_value) -> bool:
-            """Парсер може записати поле тільки якщо: ще порожнє AND (не залочене вручну)."""
-            if not new_value:
-                return False
-            if current_value:
-                return False
-            if manual_lock_active and field in locked:
-                return False
-            return True
+        # Контакти: upsert у client_contacts. Primary не чіпаємо, якщо у клієнта
+        # вже є primary цього kind. Новий канал стає secondary — без конфлікту.
+        for kind, raw in (("phone", phone), ("facebook", facebook), ("viber", viber),
+                          ("telegram", telegram), ("instagram", instagram),
+                          ("olx", olx), ("email", email)):
+            if not raw:
+                continue
+            # Якщо primary цього kind ще нема — новий рядок стає primary.
+            has_primary = session.execute(text("""
+                SELECT 1 FROM client_contacts
+                 WHERE client_id = :cid AND kind = :k AND is_primary = TRUE LIMIT 1
+            """), {"cid": candidate.id, "k": kind}).first() is not None
+            make_primary = not has_primary
+            if manual_lock_active and kind in locked:
+                make_primary = False  # юзер залочив поле — не перетираємо primary
+            upsert_contact(session, candidate.id, kind, raw,
+                           source="parser", make_primary=make_primary)
 
-        if _can_set("phone_number", candidate.phone_number, phone): candidate.phone_number = phone.strip()
-        if _can_set("facebook", candidate.facebook, facebook):       candidate.facebook = facebook.strip()
-        if _can_set("viber", candidate.viber, viber):                candidate.viber = viber.strip()
-        if _can_set("telegram", candidate.telegram, telegram):       candidate.telegram = telegram.strip()
-        if _can_set("instagram", candidate.instagram, instagram):    candidate.instagram = instagram.strip()
-        if _can_set("olx", candidate.olx, olx):                      candidate.olx = olx.strip()
-        if _can_set("email", candidate.email, email):                candidate.email = email.strip()
         if gender_id and (not candidate.gender_id or candidate.gender_id == 0) and \
            not (manual_lock_active and "gender_id" in locked):
             candidate.gender_id = gender_id
-        # nickname: тільки якщо не залочений І ще порожній
         if nickname and not candidate.nickname and not (manual_lock_active and "nickname" in locked):
             candidate.nickname = nickname
 
         # КЛЮЧОВЕ: реєструємо alias ЗАВЖДИ — навіть для locked клієнта.
-        # Так "Льоша (Балу)" знов прийде з Sheets → знайде клієнта по alias
-        # навіть якщо в clients зараз "Льоша" з NULL nickname.
         _register_alias(session, candidate.id, first, last, nickname, raw_name, source="parser")
         session.flush()
         return candidate.id
@@ -2398,6 +2588,15 @@ def _find_or_create_client(session: Session, name: str, phone: str,
 
     # Реєструємо перший alias одразу
     _register_alias(session, client.id, first, last, nickname, raw_name, source="parser")
+
+    # Сінхронно прокидаємо primary-контакти у client_contacts (тригер створить
+    # дзеркала, але вони стартують з is_primary=FALSE; явний upsert дає primary).
+    from backend.utils.client_contacts import upsert_contact as _uc
+    for kind, raw in (("phone", phone), ("facebook", facebook), ("viber", viber),
+                      ("telegram", telegram), ("instagram", instagram),
+                      ("olx", olx), ("email", email)):
+        if raw:
+            _uc(session, client.id, kind, raw, source="parser", make_primary=True)
 
     # Якщо створили через ambiguity → flag на новому з peer_ids
     if ambiguous_peer_ids:
@@ -2547,11 +2746,13 @@ def _resolve_order_status(session: Session, raw: str) -> Optional[int]:
 
 
 def _normalize_pnum(pnum: str) -> str:
-    """Normalize product number to always have leading # (e.g. 'Ф3432' → '#Ф3432')."""
-    p = pnum.strip()
-    if p and not p.startswith("#"):
-        p = "#" + p
-    return p
+    """Canonical product number form: leading #, uppercase known prefix,
+    Latin homoglyphs (T642) folded to Cyrillic (Т642)."""
+    try:
+        from backend.utils.productnumber_normalizer import normalize as _canon
+    except ImportError:
+        from utils.productnumber_normalizer import normalize as _canon
+    return _canon(pnum) or ""
 
 
 def _resolve_order_product(session, pnum_clean: str, size_hints: dict):
@@ -3181,6 +3382,8 @@ def _parse_workspace_sheet(
             continue
 
         pnum       = col(row, "Номер").strip().rstrip(";").strip()
+        if pnum:
+            pnum = _normalize_pnum(pnum) or pnum
         clones_raw = col(row, "Номера-клони")
         type_val   = col(row, "Вид")
         sub_val    = col(row, "Підвид")
@@ -3196,6 +3399,12 @@ def _parse_workspace_sheet(
         mfr_cntry  = col(row, "Країна-виробник")
         own_cntry  = col(row, "Країна-власник")
         size_val   = _normalize_size(col(row, "Розмір"))
+        letter_val = _normalize_size_letter(col(row, "Буквений")) if "Буквений" in header else ""
+        if not letter_val and size_val:
+            _letter_from_size = _normalize_size_letter(size_val)
+            if _letter_from_size and not re.search(r"\d", size_val):
+                letter_val = _letter_from_size
+                size_val   = ""
         cm_val     = _normalize_size(col(row, "СМ"))
         price_val  = col(row, "Ціна")
         desc_val   = col(row, "Опис") or col(row, "Екстра примітка")
@@ -3214,9 +3423,15 @@ def _parse_workspace_sheet(
             if st_part and not sub_val:
                 sub_val = st_part
 
-        # Season: явне значення з аркуша > auto-classify
-        season_val = season_val_sheet.strip() if season_val_sheet else \
-            _classify_season(type_val, sub_val, style_val, desc_val)
+        # Auto-detect style from description if Sheet "Стиль" is empty.
+        if (not style_val or not style_val.strip()) and desc_val:
+            style_val = _auto_detect_style(desc_val)
+
+        # Season: явне значення з аркуша > auto-classify. Канонізуємо CSV.
+        if season_val_sheet and season_val_sheet.strip():
+            season_val = normalize_season_csv(season_val_sheet)
+        else:
+            season_val = _classify_season(type_val, sub_val, style_val, desc_val)
 
         brand_obj  = _get_or_create(session, Brand,  "brandname",  brand_val)  if brand_val  else None
         type_obj   = _get_or_create(session, Type,   "typename",   type_val)   if type_val   else None
@@ -3324,6 +3539,7 @@ def _parse_workspace_sheet(
                     description           = desc_val or None,
                     price                 = price_float,
                     sizeeu                = size_val or None,
+                    size_letter           = letter_val or None,
                     measurementscm        = cm_val or None,
                     season                = season_val or None,
                     dimensions            = dimensions_val or None,

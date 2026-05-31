@@ -62,6 +62,7 @@ async def get_products(
     sizeeu: Optional[List[str]] = Query(None),
     min_sizeeu: Optional[float] = Query(None),
     max_sizeeu: Optional[float] = Query(None),
+    size_letter: Optional[List[str]] = Query(None),
     # Measurements CM range
     min_measurementscm: Optional[float] = Query(None),
     max_measurementscm: Optional[float] = Query(None),
@@ -72,7 +73,7 @@ async def get_products(
     only_problematic: Optional[bool] = Query(None),
     only_rostovka: Optional[bool] = Query(None),
     shipment_id: Optional[int] = Query(None),
-    sort_by: str = Query("created_at", description="Sort mode: created_at, created_at_asc, delivery_date, last_sold, price_desc, price_asc, id, dateadded"),
+    sort_by: str = Query("delivery_date", description="Sort mode: delivery_date(=за датою завозу, дефолт), delivery_date_asc, created_at(=найновіші в базі), created_at_asc, last_sold, price_desc, price_asc, id"),
     sort_dir: str = Query("desc", description="Sort direction: asc|desc"),
     db: Session = Depends(get_db)
 ):
@@ -119,6 +120,7 @@ async def get_products(
             sizeeu=sizeeu,
             min_sizeeu=min_sizeeu,
             max_sizeeu=max_sizeeu,
+            size_letter=size_letter,
             min_measurementscm=min_measurementscm,
             max_measurementscm=max_measurementscm,
             is_visible=is_visible,

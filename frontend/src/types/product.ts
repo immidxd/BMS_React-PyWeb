@@ -38,6 +38,7 @@ export interface Product {
     sizeuk?: string;
     sizejp?: string;
     sizecn?: string;
+    size_letter?: string;          // літерний розмір (XS/S/M/L/XL/XXL/...)
     measurementscm?: string;       // legacy display string
     measurementscm_min?: number;   // numeric range (for filters)
     measurementscm_max?: number;
@@ -167,6 +168,7 @@ export interface ProductFilters {
         jp: string[];
         cn: string[];
     };
+    size_letters?: string[];   // canonical letter sizes (XS, S, M, L, XL, …)
 }
 
 export interface ProductFilter {
@@ -201,6 +203,7 @@ export interface ProductFilter {
     sizeeu?: string[];
     min_sizeeu?: number;
     max_sizeeu?: number;
+    size_letter?: string[];
     // Measurements CM range
     min_measurementscm?: number;
     max_measurementscm?: number;

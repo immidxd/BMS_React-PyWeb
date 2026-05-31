@@ -1,4 +1,4 @@
-import React, { useState, Suspense } from 'react';
+import React, { useState, useEffect, Suspense } from 'react';
 import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
 import { AppThemeProvider, useTheme } from './contexts/ThemeContext';
 import { FilterPanelProvider, useFilterPanel } from './contexts/FilterPanelContext';
@@ -91,9 +91,71 @@ const TABS: TabConfig[] = [
 const AppContent: React.FC = () => {
   const [activeTab, setActiveTab] = useState<TabKey>(TABS[0].key);
   const ActivePageComponent = TABS.find(tab => tab.key === activeTab)?.component;
+  const { toggleFilterPanel } = useFilterPanel();
 
   const [currentSearchTerm, setCurrentSearchTerm] = useState<string>('');
   const [parsingDialogOpen, setParsingDialogOpen] = useState(false);
+
+  // ── Гарячі клавіші (кросплатформно: ⌘ на macOS, Ctrl на Windows/Linux) ─────
+  //   ⌘/Ctrl + 1..9 — перемкнути вкладку
+  //   ⌘/Ctrl + B     — показати/сховати панель фільтрів
+  //   ⌘/Ctrl + K     — фокус у рядок пошуку
+  //   ⌘/Ctrl + ←/→   — попередня/наступна вкладка
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const mod = e.metaKey || e.ctrlKey;
+      if (!mod || e.altKey) return;
+
+      // Цифри 1..9 → конкретна вкладка
+      if (e.key >= '1' && e.key <= '9') {
+        const idx = parseInt(e.key, 10) - 1;
+        if (idx < TABS.length) {
+          e.preventDefault();
+          setActiveTab(TABS[idx].key);
+        }
+        return;
+      }
+      const k = e.key.toLowerCase();
+      if (k === 'b') {                      // фільтри
+        e.preventDefault();
+        toggleFilterPanel();
+      } else if (k === 'k') {               // пошук
+        e.preventDefault();
+        const el = document.querySelector(
+          'input[placeholder^="Пошук"], input[type="search"]'
+        ) as HTMLInputElement | null;
+        el?.focus();
+        el?.select();
+      } else if (e.key === 'ArrowRight') {  // наступна вкладка
+        e.preventDefault();
+        setActiveTab(prev => {
+          const i = TABS.findIndex(t => t.key === prev);
+          return TABS[(i + 1) % TABS.length].key;
+        });
+      } else if (e.key === 'ArrowLeft') {   // попередня вкладка
+        e.preventDefault();
+        setActiveTab(prev => {
+          const i = TABS.findIndex(t => t.key === prev);
+          return TABS[(i - 1 + TABS.length) % TABS.length].key;
+        });
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [toggleFilterPanel]);
+
+  // Крос-вкладкова навігація: картка товару → "Показати в замовленнях".
+  // ProductsTable кладе фільтр у localStorage і шле подію; ми перемикаємо таб,
+  // OrdersPage читає pending-фільтр при монтуванні (+ повторна подія для надійності).
+  useEffect(() => {
+    const onSwitchToOrders = () => {
+      setActiveTab('orders');
+      // дати OrdersPage змонтуватись, потім підштовхнути перечитати фільтр
+      setTimeout(() => window.dispatchEvent(new CustomEvent('bms:orders-show-product')), 50);
+    };
+    window.addEventListener('bms:switch-to-orders', onSwitchToOrders);
+    return () => window.removeEventListener('bms:switch-to-orders', onSwitchToOrders);
+  }, []);
   
   const handleGlobalSearch = (term: string) => {
     console.log('Global search triggered:', term);

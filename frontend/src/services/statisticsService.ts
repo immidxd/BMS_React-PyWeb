@@ -19,6 +19,7 @@ export interface ShipmentPeriodData {
   shipments: number;
   items: number;
   total_cost: number;
+  delivery_cost: number;
   avg_price: number;
   revenue: number;
   profit: number;
@@ -56,10 +57,18 @@ export interface SuppliersStatsResponse {
 
 export interface SummaryStats {
   total_products: number;
-  total_orders: number;
+  total_units: number;
   products_sold: number;
+  products_fully_sold: number;
+  products_partially_sold: number;
+  products_unsold: number;
+  total_orders: number;
+  confirmed_orders: number;
   total_revenue: number;
   total_purchase_cost: number;
+  total_delivery_cost: number;
+  net_profit: number;
+  unsold_inventory_cost: number;
   total_inventory_cost: number;
   total_suppliers: number;
   total_shipments: number;

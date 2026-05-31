@@ -7,6 +7,12 @@ interface RecentOrder {
   notes: string | null;
 }
 
+interface ContactRow {
+  kind: string;
+  value: string;
+  is_primary: boolean;
+}
+
 interface DupClient {
   id: number;
   full_name: string;
@@ -23,7 +29,14 @@ interface DupClient {
   recent_orders: RecentOrder[];
   created_at: string | null;
   is_suggested_master: boolean;
+  contacts: ContactRow[];
 }
+
+const KIND_ICONS: Record<string, string> = {
+  phone: '📞', viber: '📞', email: '✉️',
+  facebook: 'FB', telegram: 'TG', instagram: 'IG',
+  olx: 'OLX', tiktok: 'TT', messenger: 'M',
+};
 
 interface DupGroup {
   signal: string;
@@ -242,11 +255,24 @@ const DuplicatesCarousel: React.FC<Props> = ({ open, onClose, onMerged }) => {
                         <div className="text-xs text-pink-600 dark:text-pink-300">👰 {c.maiden_name}</div>
                       )}
                       <div className="space-y-0.5 mt-2 text-xs">
-                        {c.phone && <div title="Phone">📞 {c.phone}</div>}
-                        {c.email && <div>✉️ {c.email}</div>}
-                        {c.facebook && <div className="truncate" title={c.facebook}>FB: {c.facebook.replace('facebook.com/','')}</div>}
-                        {c.telegram && <div>TG: {c.telegram}</div>}
-                        {c.instagram && <div>IG: {c.instagram}</div>}
+                        {(c.contacts && c.contacts.length > 0 ? c.contacts : []).map((ct, i) => (
+                          <div key={`${ct.kind}-${i}`}
+                               className={`truncate ${ct.is_primary ? '' : 'text-gray-500 dark:text-gray-400'}`}
+                               title={`${ct.kind}${ct.is_primary ? ' (primary)' : ' (secondary)'}: ${ct.value}`}>
+                            <span className="inline-block w-7 text-[10px] font-mono">{KIND_ICONS[ct.kind] || ct.kind}</span>
+                            {ct.value.replace('https://','').replace('www.','').replace('facebook.com/','').replace('t.me/','').replace('instagram.com/','')}
+                            {!ct.is_primary && <span className="ml-1 text-[9px] text-gray-400">·alt</span>}
+                          </div>
+                        ))}
+                        {(!c.contacts || c.contacts.length === 0) && (
+                          <>
+                            {c.phone && <div title="Phone">📞 {c.phone}</div>}
+                            {c.email && <div>✉️ {c.email}</div>}
+                            {c.facebook && <div className="truncate" title={c.facebook}>FB: {c.facebook.replace('facebook.com/','')}</div>}
+                            {c.telegram && <div>TG: {c.telegram}</div>}
+                            {c.instagram && <div>IG: {c.instagram}</div>}
+                          </>
+                        )}
                         {c.city && <div>🏙 {c.city}</div>}
                       </div>
                       <div className="mt-2 pt-2 border-t border-gray-100 dark:border-gray-700">

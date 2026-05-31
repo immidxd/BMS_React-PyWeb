@@ -312,7 +312,7 @@ export const fetchClientRelations = async (clientId: number): Promise<ClientRela
 
 export const createClientRelation = async (
   clientId: number,
-  data: { related_id: number; relation_type?: RelationType; label?: string; notes?: string },
+  data: { related_id: number; relation_type?: RelationType; label?: string; inverse_label?: string; notes?: string },
 ): Promise<{ ok: boolean }> => {
   const r = await axios.post(`/api/clients/${clientId}/relations`, data);
   return r.data;

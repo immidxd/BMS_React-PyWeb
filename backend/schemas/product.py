@@ -52,6 +52,7 @@ class ProductBase(BaseModel):
     sizeuk: Optional[str] = Field(None, max_length=10, description="Розмір за британською шкалою")
     sizejp: Optional[str] = Field(None, max_length=10, description="Розмір за японською шкалою")
     sizecn: Optional[str] = Field(None, max_length=10, description="Розмір за китайською шкалою")
+    size_letter: Optional[str] = Field(None, max_length=10, description="Літерний розмір (XS/S/M/L/XL/XXL/XXXL)")
     measurementscm: Optional[str] = Field(None, max_length=50, description="Розміри виробу в сантиметрах (display, legacy)")
     measurementscm_min: Optional[float] = Field(None, description="СМ (min) — для числових range-фільтрів")
     measurementscm_max: Optional[float] = Field(None, description="СМ (max) — для числових range-фільтрів")
@@ -148,6 +149,7 @@ class ProductUpdate(BaseModel):
     sizeuk: Optional[str] = None
     sizejp: Optional[str] = None
     sizecn: Optional[str] = None
+    size_letter: Optional[str] = None
     measurementscm: Optional[str] = None
     measurementscm_min: Optional[float] = None
     measurementscm_max: Optional[float] = None
@@ -265,6 +267,7 @@ class ProductList(BaseModel):
     sizeuk: Optional[str] = None
     sizejp: Optional[str] = None
     sizecn: Optional[str] = None
+    size_letter: Optional[str] = None
     measurementscm: Optional[str] = None
     measurementscm_min: Optional[float] = None
     measurementscm_max: Optional[float] = None
@@ -376,6 +379,7 @@ class ProductFilter(BaseModel):
     sizeeu: Optional[List[str]] = None
     min_sizeeu: Optional[float] = None   # range filter: from
     max_sizeeu: Optional[float] = None   # range filter: to
+    size_letter: Optional[List[str]] = None  # multi-select XS/S/M/L/XL/XXL/...
     # Measurements CM range filter
     min_measurementscm: Optional[float] = None
     max_measurementscm: Optional[float] = None
@@ -404,6 +408,7 @@ class FilterOptions(BaseModel):
     shipments: List[Dict[str, Any]] = []
     price_range: Dict[str, float] = {"min_price": 0, "max_price": 0}
     size_ranges: Dict[str, List[str]] = {}
+    size_letters: List[str] = []
 
 # Schema for Product filters
 class ProductFilters(BaseModel):
