@@ -139,6 +139,18 @@ const ProductForm: React.FC<ProductFormProps> = ({
                             </Form.Item>
                         </Col>
                     </Row>
+
+                    <Row gutter={16}>
+                        <Col span={8}>
+                            <Form.Item
+                                name="official_photos_from"
+                                label="Офіційні фото з товару"
+                                tooltip="Якщо це ростовка-близнюк з ІНШИМ номером (наприклад Ф3884, де офіційні зйомки робились до Ф3883) — впиши сюди productnumber донора. Тягнуться ТІЛЬКИ студійні фото; реальні (_001) лишаються власними."
+                            >
+                                <Input placeholder="напр. Ф3883" disabled={loading || submitting} />
+                            </Form.Item>
+                        </Col>
+                    </Row>
                     
                     <Row gutter={16}>
                         <Col span={8}>

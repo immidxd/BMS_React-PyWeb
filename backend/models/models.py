@@ -59,7 +59,11 @@ class Subtype(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     subtypename = Column(String(100), unique=True, nullable=False)
-    type_id = Column(Integer, ForeignKey("types.id"), nullable=True)
+    # Реальна колонка в БД зветься "typeid" (не "type_id"). Без явного мапінгу
+    # ORM генерував SELECT subtypes.type_id → 500 (UndefinedColumn) при будь-якому
+    # db.refresh(product) / серіалізації relationship. Тримаємо Python-атрибут
+    # type_id, але прив'язуємо до фактичної колонки typeid.
+    type_id = Column("typeid", Integer, ForeignKey("types.id"), nullable=True)
 
 class Style(Base):
     __tablename__ = "styles"
@@ -306,6 +310,11 @@ class Product(Base):
     id = Column(Integer, primary_key=True, index=True)
     productnumber = Column(String(50), unique=True, index=True, nullable=False)
     clonednumbers = Column(Text)
+    # Якщо заповнено — список фото official тягнеться з товару з цим productnumber
+    # (донор). real/defect/власні official лишаються від ВЛАСНОГО productnumber.
+    # Один хоп; рекурсію логіка route ігнорує. Кейс: Ф3884 ← Ф3883 (ростовка
+    # з різними номерами, ділять студійні зйомки, але мають окремі реальні).
+    official_photos_from = Column(String(64), nullable=True)
     model = Column(String(100))
     marking = Column(String(100))
     year = Column(Integer)

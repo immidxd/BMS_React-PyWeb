@@ -188,9 +188,29 @@ async def get_product_images(
         raise HTTPException(status_code=404, detail=f"Товар з ID {product_id} не знайдено")
 
     productnumber = product.productnumber or ""
-    images = list_images(productnumber)
+    own_images = list_images(productnumber)
+    borrowed_from = (getattr(product, "official_photos_from", None) or "").strip()
+
+    # Якщо заповнено official_photos_from — викидаємо власні official
+    # (зазвичай їх нема, але про всяк) і додаємо official від донора.
+    # Захист від циклу: НЕ дивимось у donor.official_photos_from — один хоп.
+    if borrowed_from and borrowed_from.lstrip("#").lower() != productnumber.lstrip("#").lower():
+        own_images = [e for e in own_images if e.kind != "official"]
+        donor_all = list_images(borrowed_from)
+        donor_official = [e for e in donor_all if e.kind == "official"]
+        merged = own_images + donor_official
+        # Перетасовуємо у єдину стрічку: спершу official, потім real, потім defect
+        kind_order = {"official": 0, "real": 1, "defect": 2}
+        merged.sort(key=lambda e: (kind_order.get(e.kind, 9), e.filename.lower()))
+        # Переіндексувати 0..N
+        from dataclasses import replace
+        images = [replace(e, index=i) for i, e in enumerate(merged)]
+    else:
+        images = own_images
+
     return {
         "productnumber": productnumber,
+        "official_photos_from": borrowed_from or None,
         "count": len(images),
         "defect_count": sum(1 for img in images if img.is_defect),
         "official_count": sum(1 for img in images if img.kind == "official"),

@@ -392,9 +392,9 @@ async def bulk_update_orders(
     # Нормалізуємо ТТН на льоту: Укрпошта 12 цифр з '5' → дописуємо '0'.
     if "tracking_number" in filtered and filtered["tracking_number"]:
         try:
-            from backend.scripts.orders_pars import normalize_tracking_number
+            from backend.utils.tracking_normalizer import normalize_tracking_number
         except ImportError:
-            from scripts.orders_pars import normalize_tracking_number
+            from utils.tracking_normalizer import normalize_tracking_number
         filtered["tracking_number"] = normalize_tracking_number(filtered["tracking_number"])
     if not filtered:
         raise HTTPException(status_code=400, detail="Немає валідних полів для оновлення")

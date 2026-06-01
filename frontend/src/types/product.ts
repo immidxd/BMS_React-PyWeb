@@ -24,6 +24,7 @@ export interface Product {
     id: number;
     productnumber: string;
     clonednumbers?: string;
+    official_photos_from?: string | null;
     model?: string;
     marking?: string;
     year?: number;

@@ -51,6 +51,23 @@ const MainLayout: React.FC<MainLayoutProps> = ({
     return () => { isMounted = false; clearInterval(id); };
   }, []);
 
+  // ⌘/Ctrl+R — скинути фільтри активної сторінки.
+  // ВАЖЛИВО: слухаємо e.code === 'KeyR' (фізична клавіша), бо e.key на
+  // кириличній розкладці повертає 'к' і умова `=== 'r'` ніколи не спрацьовувала.
+  // MainLayout тримає `onResetFilters` від поточної сторінки і викликає його.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const mod = e.metaKey || e.ctrlKey;
+      if (!mod || e.altKey) return;
+      if (e.code !== 'KeyR') return;
+      e.preventDefault();   // блокуємо стандартне перезавантаження
+      onResetFilters();
+      toast.info('Фільтри скинуто', { autoClose: 1200, hideProgressBar: true });
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onResetFilters]);
+
   const handleStartParsing = async (mode: string, params: any) => {
     try {
       // ПРИМІТКА: показуємо віджет одразу у стані "з’єднання..." через тимчасовий jobId=-1,
@@ -67,7 +84,6 @@ const MainLayout: React.FC<MainLayoutProps> = ({
       
       if (!res.ok || !data?.jobId) throw new Error('run failed');
       setCurrentJobId(data.jobId);
-      toast.info(`JobId: ${data.jobId}`);
       // Закриваємо меню вибору відразу після старту
       setParsingDialogOpen(false);
     } catch (e) {
@@ -82,7 +98,6 @@ const MainLayout: React.FC<MainLayoutProps> = ({
           console.log('[MainLayout] fallback test jobId:', data2.jobId);
           setCurrentJobId(data2.jobId);
           setParsingDialogOpen(false);
-          toast.warn(`Fallback jobId: ${data2.jobId}`);
           return;
         }
         throw new Error('fallback test failed');

@@ -87,6 +87,19 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
     const [visibilityLoading, setVisibilityLoading] = useState<Record<number, boolean>>({});
     const [detailsId, setDetailsId] = useState<number | null>(null);
     const [detailsOpen, setDetailsOpen] = useState<boolean>(false);
+    // Відкладене відкриття картки після крос-сторінкового переходу:
+    // 'first' → відкрити першу картку нової сторінки, 'last' → останню.
+    const pendingNavRef = useRef<null | 'first' | 'last'>(null);
+    // Після того як батько підвантажив нову сторінку (products.items змінився) —
+    // відкриваємо відповідну картку. Спрацьовує лише після крос-сторінкової навігації.
+    useEffect(() => {
+        if (!pendingNavRef.current) return;
+        const items = products.items || [];
+        if (items.length === 0) return;
+        const target = pendingNavRef.current === 'first' ? items[0] : items[items.length - 1];
+        pendingNavRef.current = null;
+        if (target) setDetailsId(target.id);
+    }, [products.items]);
     const [mergeId, setMergeId] = useState<number | null>(null);
     const [mergeOpen, setMergeOpen] = useState<boolean>(false);
     // Контекстне меню керування колонками (тільки на шапці таблиці)
@@ -527,9 +540,48 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
         onChange: (keys: React.Key[]) => onSelectedRowKeysChange(keys),
     };
 
+    // Циклічна навігація між картками в межах поточного списку (всі активні
+    // фільтри — завіз/тип/пошук — уже застосовані до products). На межі сторінки
+    // автоматично підвантажується наступна/попередня; на самому краю всього
+    // діапазону — закільцьовується (остання сторінка → перша і навпаки).
+    const totalPages = Math.max(1, Math.ceil((products.total || 0) / (products.per_page || 20)));
+    const navigateDetails = (dir: 1 | -1) => {
+        const items = products.items || [];
+        if (items.length === 0 || detailsId == null) return;
+        const idx = items.findIndex((it) => it.id === detailsId);
+        if (idx === -1) return;
+        const nextIdx = idx + dir;
+        // У межах поточної сторінки
+        if (nextIdx >= 0 && nextIdx < items.length) {
+            setDetailsId(items[nextIdx].id);
+            return;
+        }
+        // Одна сторінка → просте закільцьовування
+        if (totalPages <= 1) {
+            setDetailsId(items[(idx + dir + items.length) % items.length].id);
+            return;
+        }
+        // Перехід через межу сторінки (з закільцьовуванням усього діапазону)
+        const curPage = products.page || 1;
+        if (dir === 1) {
+            pendingNavRef.current = 'first';
+            onPageChange(curPage >= totalPages ? 1 : curPage + 1);
+        } else {
+            pendingNavRef.current = 'last';
+            onPageChange(curPage <= 1 ? totalPages : curPage - 1);
+        }
+    };
+    const canNavigate = detailsId != null && ((products.items?.length ?? 0) > 1 || totalPages > 1);
+
     return (
         <TableContainer className="max-h-[calc(100vh-220px)]">
-            <ProductDetailsModal productId={detailsId} open={detailsOpen} onClose={() => setDetailsOpen(false)} />
+            <ProductDetailsModal
+                productId={detailsId}
+                open={detailsOpen}
+                onClose={() => setDetailsOpen(false)}
+                onPrev={canNavigate ? () => navigateDetails(-1) : undefined}
+                onNext={canNavigate ? () => navigateDetails(1) : undefined}
+            />
             <MergeCandidatesModal
                 productId={mergeId}
                 open={mergeOpen}

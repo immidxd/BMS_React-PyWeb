@@ -507,6 +507,7 @@ def get_products(
                 'id': m.get('id'),
                 'productnumber': m.get('productnumber'),
                 'clonednumbers': m.get('clonednumbers'),
+                'official_photos_from': m.get('official_photos_from'),
                 'model': m.get('model'),
                 'marking': m.get('marking'),
                 'year': m.get('year'),

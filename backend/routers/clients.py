@@ -170,12 +170,16 @@ async def get_clients(
     total = db.execute(text(count_sql), params).scalar() or 0
 
     # Allowed sort columns (prevent SQL injection)
+    # ВАЖЛИВО: c.order_count і c.total_order_amount — denormalized snapshot, який
+    # не оновлюється поточним парсером (на 2026-05 у ВСІХ 2953 клієнтів = 0,
+    # хоча 2725 з них мають реальні замовлення). Сортуємо/повертаємо live-агрегати
+    # з LATERAL stats; денормалізовані колонки клієнтської таблиці навмисно ігноруємо.
     allowed_sorts = {
         "id": "c.id",
         "last_name": "c.last_name",
         "first_name": "c.first_name",
-        "order_count": "c.order_count",
-        "total_order_amount": "c.total_order_amount",
+        "order_count": "confirmed_orders",
+        "total_order_amount": "confirmed_total_amount",
         "confirmed_orders": "confirmed_orders",
         "cancelled_count": "cancelled_count",
         "ignored_count": "ignored_count",
@@ -199,6 +203,7 @@ async def get_clients(
             COALESCE(c.last_name, '') AS last_name,
             COALESCE(c.first_name, '') || ' ' || COALESCE(c.last_name, '') AS full_name,
             COALESCE(stats.confirmed_orders, 0) AS confirmed_orders,
+            COALESCE(stats.confirmed_total_amount, 0) AS confirmed_total_amount,
             COALESCE(stats.cancelled_count, 0) AS cancelled_count,
             COALESCE(stats.ignored_count, 0) AS ignored_count,
             COALESCE(stats.return_exchange_count, 0) AS return_exchange_count,
@@ -220,6 +225,7 @@ async def get_clients(
                 -- Див. get_client(): «Підтверджено» = строго status=1 (виручка),
                 -- подарунки/повернення/скасування/pending — НЕ підтверджено.
                 COUNT(*) FILTER (WHERE o.order_status_id = 1) AS confirmed_orders,
+                COALESCE(SUM(o.total_amount) FILTER (WHERE o.order_status_id = 1), 0) AS confirmed_total_amount,
                 COUNT(*) FILTER (WHERE o.order_status_id = 5) AS cancelled_count,
                 COUNT(*) FILTER (WHERE o.order_status_id = 6) AS ignored_count,
                 COUNT(*) FILTER (WHERE o.order_status_id IN (9, 10)) AS return_exchange_count,
@@ -242,7 +248,15 @@ async def get_clients(
     """
 
     rows = db.execute(text(main_sql), params).mappings().all()
-    client_list = [dict(row) for row in rows]
+    client_list = []
+    for row in rows:
+        d = dict(row)
+        # Перекриваємо stale denorm-колонки clients.order_count / total_order_amount
+        # живими агрегатами з LATERAL stats (status=1 ⇒ confirmed).
+        # Див. feedback_client_stats_strict_confirmed.md.
+        d["order_count"] = d.get("confirmed_orders") or 0
+        d["total_order_amount"] = float(d.get("confirmed_total_amount") or 0)
+        client_list.append(d)
 
     pages = (total + per_page - 1) // per_page if total > 0 else 1
     logger.info(f"Returning {len(client_list)} clients (total={total})")

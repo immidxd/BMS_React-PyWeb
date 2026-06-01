@@ -138,8 +138,10 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
 
   const handleResetFilters = () => {
     setSelectedFilters({});
-    setOnlyUnsold(false);
+    // «Тільки непродані» — дефолтний фільтр; навмисно НЕ скидаємо при reset (⌘R),
+    // бо це базовий режим перегляду, а не накладений користувачем фільтр.
     setOnlyProblematic(false);
+    setOnlyRostovka(false);
     setSelectedShipmentId(undefined);
     setVisibleOnly(false);
     setPage(1);
@@ -164,7 +166,20 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
       const params = new URLSearchParams(location.search);
       const pn = Number(params.get('page')) || 1;
       const ps = Number(params.get('per_page')) || 20;
-      const sb = params.get('sort_by') || 'delivery_date';
+      // ВАЖЛИВО: вкладки (Товари / Клієнти / Поставки / ...) живуть у тому ж
+      // URL і кожна перезаписує `?sort_by=...`. Після візиту в «Клієнти»
+      // (sort_by=last_name) повернення в «Товари» дає невідомий бекенду ключ,
+      // що мовчки падає у fallback `ORDER BY created_at DESC`, а дропдаун
+      // продовжує показувати «За датою завозу» (перший option) — користувач
+      // не розуміє, чому сортування «стрибає». Фільтруємо чужі значення.
+      const ALLOWED_SORT_BY = new Set([
+        'delivery_date', 'delivery_date_asc',
+        'created_at', 'created_at_asc',
+        'last_sold', 'price_desc', 'price_asc',
+        'id', 'price', 'quantity', // AntD column-header sorts
+      ]);
+      const rawSb = params.get('sort_by');
+      const sb = rawSb && ALLOWED_SORT_BY.has(rawSb) ? rawSb : 'delivery_date';
       const sd = (params.get('sort_dir') as 'asc' | 'desc') || 'desc';
       const ou = params.has('only_unsold') ? params.get('only_unsold') === 'true' : true;
       const op = params.get('only_problematic') === 'true';

@@ -1385,6 +1385,7 @@ def _parse_products_sheet(
                 size_val   = ""
         cm_val     = _normalize_size(col(row, "СМ"))
         price_val  = col(row, "Ціна")
+        oldprice_val = col(row, "Стара ціна") if "Стара ціна" in header else ""
         desc_val   = col(row, "Опис") if "Опис" in header else ""
         # Опційні розширені колонки (старі аркуші можуть їх не мати)
         season_val       = col(row, "Сезон").strip() if "Сезон" in header else ""
@@ -1543,6 +1544,13 @@ def _parse_products_sheet(
             except ValueError:
                 pass
 
+        oldprice_float = None
+        if oldprice_val and oldprice_val.strip():
+            try:
+                oldprice_float = float(oldprice_val.replace(",", "."))
+            except ValueError:
+                oldprice_float = None
+
         # ── Identity fields for duplicate detection ────────────────────────
         # These five fields together define "is this the same physical item?"
         def id_match(p: "Product") -> bool:
@@ -1646,16 +1654,20 @@ def _parse_products_sheet(
                 full_match.year = year_int
             if desc_val:
                 full_match.description = desc_val
-            if clones:
-                full_match.clonednumbers = clones
+            # clonednumbers: аркуш (колонка "Номера-клони") — ЄДИНЕ джерело істини.
+            # Раніше було `if clones: set` (NULL-only update) — коли клітинку в
+            # аркуші спорожнювали, привидні клони лишались у БД назавжди
+            # (напр. Ф3883 тримав 'В49; X3; В48', яких в аркуші немає).
+            # Тепер порожня клітинка → NULL. Іншого джерела clonednumbers нема
+            # (_append_clone — мертвий код), тож це безпечно.
+            full_match.clonednumbers = clones or None
             if cm_val:
                 full_match.measurementscm = cm_val
-            # Логіка oldprice: якщо ціна з журналу відрізняється — зберегти стару
-            if price_float and full_match.price and price_float != full_match.price:
-                full_match.oldprice = full_match.price
+            # Ціна синкається з аркуша. oldprice — строго з колонки "Стара ціна"
+            # (порожня клітинка = NULL); ніякої авто-деривації з попередньої ціни.
+            if price_float:
                 full_match.price = price_float
-            elif price_float and not full_match.price:
-                full_match.price = price_float
+            full_match.oldprice = oldprice_float
             full_match.updated_at = datetime.utcnow()
             if shipment_id and not full_match.deliveryid:
                 full_match.deliveryid = shipment_id
@@ -1730,6 +1742,7 @@ def _parse_products_sheet(
                     year                  = year_int,
                     description           = desc_val or None,
                     price                 = price_float,
+                    oldprice              = oldprice_float,
                     sizeeu                = size_val or None,
                     size_letter           = letter_val or None,
                     measurementscm        = cm_val or None,
@@ -1818,6 +1831,7 @@ def _parse_products_sheet(
                     year                  = year_int,
                     description           = desc_val or None,
                     price                 = price_float,
+                    oldprice              = oldprice_float,
                     sizeeu                = size_val or None,
                     size_letter           = letter_val or None,
                     measurementscm        = cm_val or None,
@@ -1975,6 +1989,7 @@ def _parse_products_sheet(
                             year                  = year_int,
                             description           = desc_val or None,
                             price                 = price_float,
+                            oldprice              = oldprice_float,
                             sizeeu                = size_val or None,
                             size_letter           = letter_val or None,
                             measurementscm        = cm_val or None,
@@ -2075,11 +2090,9 @@ def _parse_products_sheet(
                     if desc_val:  target.description = desc_val
                     if cm_val:    target.measurementscm = cm_val
                     if year_int is not None: target.year = year_int
-                    if price_float and target.price and price_float != target.price:
-                        target.oldprice = target.price
-                        target.price    = price_float
-                    elif price_float and not target.price:
+                    if price_float:
                         target.price = price_float
+                    target.oldprice = oldprice_float
                     if cnt == 1:
                         target.statusid = status_id
                     elif status_id == sold_status_id:
@@ -2110,6 +2123,7 @@ def _parse_products_sheet(
                         year                  = year_int,
                         description           = desc_val or None,
                         price                 = price_float,
+                        oldprice              = oldprice_float,
                         sizeeu                = size_val or None,
                         size_letter           = letter_val or None,
                         measurementscm        = cm_val or None,
@@ -3220,13 +3234,10 @@ def _parse_orders_sheet(
             # ── Sync product price from order ──────────────────────────────
             # Пріоритет ціни: Замовлення > Журнал.
             # Якщо ціна в товарі NULL — записуємо ціну з замовлення.
-            # Якщо ціна в товарі є і відрізняється — зберігаємо стару як oldprice.
+            # oldprice НЕ деривуємо тут — це поле належить тільки колонці
+            # "Стара ціна" з аркуша журналу товарів.
             if price and price > 0:
-                if not product.price:
-                    product.price = price
-                    product.updated_at = datetime.utcnow()
-                elif price != product.price:
-                    product.oldprice = product.price
+                if not product.price or price != product.price:
                     product.price = price
                     product.updated_at = datetime.utcnow()
 
@@ -3407,6 +3418,7 @@ def _parse_workspace_sheet(
                 size_val   = ""
         cm_val     = _normalize_size(col(row, "СМ"))
         price_val  = col(row, "Ціна")
+        oldprice_val = col(row, "Стара ціна") if "Стара ціна" in header else ""
         desc_val   = col(row, "Опис") or col(row, "Екстра примітка")
         # Нові колонки (опційні — старі версії аркуша повернуть "")
         season_val_sheet = col(row, "Сезон") if "Сезон" in header else ""
@@ -3475,6 +3487,13 @@ def _parse_workspace_sheet(
             except ValueError:
                 pass
 
+        oldprice_float = None
+        if oldprice_val and oldprice_val.strip():
+            try:
+                oldprice_float = float(oldprice_val.replace(",", "."))
+            except ValueError:
+                oldprice_float = None
+
         # ── At least one meaningful field must exist to bother searching ──
         has_any_attr = any([brand_id, color_id, size_val, marking, model_val])
         if not has_any_attr:
@@ -3538,6 +3557,7 @@ def _parse_workspace_sheet(
                     year                  = year_int,
                     description           = desc_val or None,
                     price                 = price_float,
+                    oldprice              = oldprice_float,
                     sizeeu                = size_val or None,
                     size_letter           = letter_val or None,
                     measurementscm        = cm_val or None,

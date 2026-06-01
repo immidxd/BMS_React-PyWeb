@@ -104,17 +104,20 @@ export const CopyOnClick: React.FC<CopyOnClickProps> = ({
             onClick={handleCopy}
             onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleCopy(e); } }}
             title={title}
-            className={`group relative inline-flex items-center gap-1 cursor-pointer
+            className={`group relative inline-flex items-center cursor-pointer
                 px-1 py-0.5 rounded transition-colors
                 outline-none focus:outline-none focus-visible:ring-1 focus-visible:ring-blue-300
                 hover:bg-blue-50/70 dark:hover:bg-blue-900/30
                 ${className}`}
         >
             <span className="select-none">{shown}</span>
-            {/* Іконка clipboard з'являється на hover. На клік вона ж стає галочкою. */}
+            {/* Іконка clipboard. ВАЖЛИВО: absolute (поза потоком) — щоб поява на
+                hover НЕ зсувала текст/таблицю. left-full = одразу праворуч від
+                значення, у вільному просторі клітинки. На клік стає галочкою. */}
             <span
                 aria-hidden
-                className={`inline-flex items-center justify-center w-3.5 h-3.5 rounded transition-opacity
+                className={`absolute left-full ml-1 top-1/2 -translate-y-1/2
+                    inline-flex items-center justify-center w-3.5 h-3.5 rounded transition-opacity
                     ${copied
                         ? 'opacity-100 text-green-600 dark:text-green-400'
                         : 'opacity-0 group-hover:opacity-100 text-gray-500 dark:text-gray-300'}`}

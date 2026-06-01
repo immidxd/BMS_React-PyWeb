@@ -9,6 +9,10 @@ interface Props {
   productId: number | null;
   open: boolean;
   onClose: () => void;
+  /** Перехід до попередньої/наступної картки (циклічно, в межах поточного списку).
+   *  Якщо не передано — крайові стрілки навігації не показуються. */
+  onPrev?: () => void;
+  onNext?: () => void;
 }
 
 type GalleryKind = 'official' | 'real' | 'defect';
@@ -21,7 +25,7 @@ interface GalleryImage {
   kind?: GalleryKind;
 }
 
-const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose }) => {
+const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev, onNext }) => {
   const [loading, setLoading] = useState(false);
   const [product, setProduct] = useState<Product | null>(null);
   const [allImages, setAllImages] = useState<GalleryImage[]>([]);
@@ -29,6 +33,10 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose }) => {
   const [activeKind, setActiveKind] = useState<'official' | 'real'>('official');
   const [activeIdx, setActiveIdx] = useState(0);
   const [previewVisible, setPreviewVisible] = useState(false);
+  // Inline-редагування «студійні фото з іншого товару» (ростовка-близнюк)
+  const [editingPhotoSrc, setEditingPhotoSrc] = useState(false);
+  const [photoSrcDraft, setPhotoSrcDraft] = useState('');
+  const [savingPhotoSrc, setSavingPhotoSrc] = useState(false);
 
   const officialCount = useMemo(() => allImages.filter((i) => (i.kind ?? 'official') === 'official').length, [allImages]);
   const realCount = useMemo(() => allImages.filter((i) => i.kind === 'real').length, [allImages]);
@@ -46,24 +54,46 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose }) => {
   }, [allImages, showDefects, activeKind]);
   const defectCount = useMemo(() => allImages.filter((i) => i.is_defect).length, [allImages]);
 
+  // Перезавантаження товару + фото (викликається при відкритті та після збереження)
+  const reloadProductAndImages = React.useCallback(async (withSpinner = true) => {
+    if (!productId) return;
+    if (withSpinner) setLoading(true);
+    const [prodRes, imgRes] = await Promise.allSettled([
+      productService.getProduct(productId),
+      productService.getProductImages(productId),
+    ]);
+    if (prodRes.status === 'fulfilled') setProduct(prodRes.value);
+    if (imgRes.status === 'fulfilled') setAllImages(imgRes.value.images || []);
+    if (withSpinner) setLoading(false);
+  }, [productId]);
+
   useEffect(() => {
     if (!open || !productId) return;
-    setLoading(true);
     setProduct(null);
     setAllImages([]);
     setShowDefects(false);
     setActiveKind('official');
     setActiveIdx(0);
-    Promise.allSettled([
-      productService.getProduct(productId),
-      productService.getProductImages(productId),
-    ])
-      .then(([prodRes, imgRes]) => {
-        if (prodRes.status === 'fulfilled') setProduct(prodRes.value);
-        if (imgRes.status === 'fulfilled') setAllImages(imgRes.value.images || []);
-      })
-      .finally(() => setLoading(false));
-  }, [open, productId]);
+    setEditingPhotoSrc(false);
+    reloadProductAndImages(true);
+  }, [open, productId, reloadProductAndImages]);
+
+  // Зберегти official_photos_from і одразу перепідтягнути фото
+  const savePhotoSrc = async () => {
+    if (!productId) return;
+    setSavingPhotoSrc(true);
+    try {
+      const val = photoSrcDraft.trim();
+      await productService.updateProduct(productId, { official_photos_from: val || null });
+      setEditingPhotoSrc(false);
+      await reloadProductAndImages(false);
+      setActiveIdx(0);
+    } catch (e) {
+      console.error('Failed to save official_photos_from', e);
+    } finally {
+      setSavingPhotoSrc(false);
+    }
+  };
 
   // Якщо офіційних нема, а реальні є — стартуємо з «Реальні»
   useEffect(() => {
@@ -93,13 +123,23 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose }) => {
     return () => { preloaded.length = 0; };
   }, [allImages]);
 
-  // Keyboard: Esc closes, ←/→ navigate gallery
+  // Keyboard: Esc closes, ←/→ navigate gallery, < > navigate between product cards.
+  // < > слухаємо через e.code (Comma/Period) — фізичні клавіші, незалежно від
+  // розкладки (кирилиця дала б 'б'/'ю' у e.key). Не спрацьовує у полях вводу.
   useEffect(() => {
     if (!open) return;
     const handleKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         if (previewVisible) return;
         onClose();
+        return;
+      }
+      // Card navigation: < (Comma) / > (Period). Ігноруємо, якщо фокус в інпуті.
+      const tag = (e.target as HTMLElement)?.tagName;
+      const inField = tag === 'INPUT' || tag === 'TEXTAREA' || (e.target as HTMLElement)?.isContentEditable;
+      if (!inField && !previewVisible && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        if (e.code === 'Comma' && onPrev) { e.preventDefault(); onPrev(); return; }
+        if (e.code === 'Period' && onNext) { e.preventDefault(); onNext(); return; }
       }
       if (images.length > 1 && !previewVisible) {
         if (e.key === 'ArrowLeft') setActiveIdx((i) => (i - 1 + images.length) % images.length);
@@ -108,7 +148,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose }) => {
     };
     window.addEventListener('keydown', handleKey);
     return () => window.removeEventListener('keydown', handleKey);
-  }, [open, onClose, images.length, previewVisible]);
+  }, [open, onClose, images.length, previewVisible, onPrev, onNext]);
 
   const p = product;
 
@@ -138,13 +178,16 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose }) => {
 
   if (!open) return null;
 
-  const InfoRow: React.FC<{ label: string; value?: React.ReactNode; copyable?: boolean }> = ({ label, value, copyable }) => {
+  const InfoRow: React.FC<{ label: string; value?: React.ReactNode; copyable?: boolean }> = ({ label, value }) => {
     if (value === null || value === undefined || value === '') return null;
+    // Усі прості значення (string/number) загортаємо у CopyOnClick для єдиного
+    // вирівнювання — без винятків. CopyOnClick додає px-1, і коли частина
+    // рядків була без нього, текст «гуляв» на ~4px ліворуч.
     return (
       <div className="flex items-baseline gap-3 py-1.5">
         <span className="text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500 w-[128px] shrink-0 font-medium">{label}</span>
         <span className="text-sm text-gray-800 dark:text-gray-200 break-words">
-          {copyable && (typeof value === 'string' || typeof value === 'number')
+          {(typeof value === 'string' || typeof value === 'number')
             ? <CopyOnClick value={value as string | number} />
             : value}
         </span>
@@ -171,6 +214,40 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose }) => {
       `}</style>
       {/* Backdrop */}
       <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
+
+      {/* Крайові стрілки навігації між картками (поза карткою, біля країв програми).
+          Мінімалістичні: невидимі без курсору, проявляються при наведенні на крайову зону.
+          Циклічна навігація в межах поточного списку — логіка в батьку (onPrev/onNext). */}
+      {onPrev && (
+        <div
+          className="group/nav absolute left-0 top-0 bottom-0 w-14 sm:w-16 z-[60] flex items-center justify-start cursor-pointer"
+          onClick={(e) => { e.stopPropagation(); onPrev(); }}
+          title="Попередній товар  ( < )"
+        >
+          <button
+            type="button"
+            aria-label="Попередній товар"
+            className="flex items-center justify-center w-7 h-[20vh] rounded-r-2xl bg-white/15 dark:bg-white/5 backdrop-blur-md text-white/70 ring-1 ring-white/15 opacity-0 group-hover/nav:opacity-100 transition-all duration-300 hover:bg-white/25 hover:text-white"
+          >
+            <LeftOutlined style={{ fontSize: 16 }} />
+          </button>
+        </div>
+      )}
+      {onNext && (
+        <div
+          className="group/nav absolute right-0 top-0 bottom-0 w-14 sm:w-16 z-[60] flex items-center justify-end cursor-pointer"
+          onClick={(e) => { e.stopPropagation(); onNext(); }}
+          title="Наступний товар  ( > )"
+        >
+          <button
+            type="button"
+            aria-label="Наступний товар"
+            className="flex items-center justify-center w-7 h-[20vh] rounded-l-2xl bg-white/15 dark:bg-white/5 backdrop-blur-md text-white/70 ring-1 ring-white/15 opacity-0 group-hover/nav:opacity-100 transition-all duration-300 hover:bg-white/25 hover:text-white"
+          >
+            <RightOutlined style={{ fontSize: 16 }} />
+          </button>
+        </div>
+      )}
 
       {/* Modal */}
       <div className="relative bg-white dark:bg-gray-900 rounded-2xl shadow-2xl w-full max-w-6xl mx-4 max-h-[92vh] overflow-hidden flex flex-col">
@@ -304,10 +381,46 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose }) => {
                         )}
                       </>
                     ) : (
-                      <div className="flex flex-col items-center justify-center text-gray-300 dark:text-gray-600">
+                      <div className="flex flex-col items-center justify-center text-gray-300 dark:text-gray-600 px-6 w-full">
                         <PictureOutlined style={{ fontSize: 64 }} />
                         <span className="text-sm mt-3">Фото відсутнє</span>
                         <span className="text-[11px] text-gray-400 dark:text-gray-500 mt-1">додайте файли з префіксом {(p.productnumber || '').replace(/^#/, '') || 'номер'}_</span>
+
+                        {/* Підтягнути студійні фото з товару-близнюка (ростовка з іншим номером) */}
+                        <div className="mt-5 w-full max-w-xs">
+                          {!editingPhotoSrc ? (
+                            <button
+                              type="button"
+                              onClick={() => { setPhotoSrcDraft((p as any).official_photos_from || ''); setEditingPhotoSrc(true); }}
+                              className="text-[12px] text-blue-600 dark:text-blue-400 hover:underline"
+                            >
+                              📷 Підтягнути студійні фото з іншого товару…
+                            </button>
+                          ) : (
+                            <div className="flex flex-col gap-2">
+                              <span className="text-[11px] text-gray-500 dark:text-gray-400 text-left">
+                                Номер товару-донора студійних фото (напр. Ф3883):
+                              </span>
+                              <input
+                                autoFocus
+                                value={photoSrcDraft}
+                                onChange={(e) => setPhotoSrcDraft(e.target.value)}
+                                onKeyDown={(e) => { if (e.key === 'Enter') savePhotoSrc(); if (e.key === 'Escape') setEditingPhotoSrc(false); }}
+                                placeholder="Ф3883"
+                                disabled={savingPhotoSrc}
+                                className="w-full px-2 py-1.5 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-100 focus:outline-none focus:ring-1 focus:ring-blue-400"
+                              />
+                              <div className="flex items-center gap-2 justify-end">
+                                <button type="button" onClick={() => setEditingPhotoSrc(false)} disabled={savingPhotoSrc}
+                                  className="text-[12px] px-2 py-1 rounded text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-700">Скасувати</button>
+                                <button type="button" onClick={savePhotoSrc} disabled={savingPhotoSrc}
+                                  className="text-[12px] px-3 py-1 rounded bg-blue-600 hover:bg-blue-700 text-white disabled:opacity-50">
+                                  {savingPhotoSrc ? 'Збереження…' : 'Зберегти'}
+                                </button>
+                              </div>
+                            </div>
+                          )}
+                        </div>
                       </div>
                     )}
                   </div>
@@ -339,6 +452,44 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose }) => {
                       >
                         Реальні
                       </button>
+                    </div>
+                  )}
+
+                  {/* Бейдж джерела студійних фото (коли фото є і вони запозичені) */}
+                  {images.length > 0 && (p as any).official_photos_from && (
+                    <button
+                      type="button"
+                      onClick={() => { setPhotoSrcDraft((p as any).official_photos_from || ''); setEditingPhotoSrc(true); }}
+                      className="self-start inline-flex items-center gap-1.5 px-2 py-1 rounded-full text-[11px] bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 hover:bg-blue-100 dark:hover:bg-blue-900/50 transition-colors"
+                      title="Змінити джерело студійних фото"
+                    >
+                      📷 студійні з {String((p as any).official_photos_from).replace(/^#/, '')}
+                    </button>
+                  )}
+
+                  {/* Inline-редактор джерела, коли фото Є (визивається з бейджа) */}
+                  {images.length > 0 && editingPhotoSrc && (
+                    <div className="self-start flex flex-col gap-2 w-full max-w-xs p-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50">
+                      <span className="text-[11px] text-gray-500 dark:text-gray-400">
+                        Номер товару-донора студійних фото (порожньо = власні):
+                      </span>
+                      <input
+                        autoFocus
+                        value={photoSrcDraft}
+                        onChange={(e) => setPhotoSrcDraft(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === 'Enter') savePhotoSrc(); if (e.key === 'Escape') setEditingPhotoSrc(false); }}
+                        placeholder="Ф3883"
+                        disabled={savingPhotoSrc}
+                        className="w-full px-2 py-1.5 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-100 focus:outline-none focus:ring-1 focus:ring-blue-400"
+                      />
+                      <div className="flex items-center gap-2 justify-end">
+                        <button type="button" onClick={() => setEditingPhotoSrc(false)} disabled={savingPhotoSrc}
+                          className="text-[12px] px-2 py-1 rounded text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-700">Скасувати</button>
+                        <button type="button" onClick={savePhotoSrc} disabled={savingPhotoSrc}
+                          className="text-[12px] px-3 py-1 rounded bg-blue-600 hover:bg-blue-700 text-white disabled:opacity-50">
+                          {savingPhotoSrc ? 'Збереження…' : 'Зберегти'}
+                        </button>
+                      </div>
                     </div>
                   )}
 

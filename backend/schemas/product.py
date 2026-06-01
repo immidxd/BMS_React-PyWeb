@@ -39,6 +39,7 @@ _MEASUREMENT_FIELDS = {
 class ProductBase(BaseModel):
     productnumber: str = Field(..., min_length=1, max_length=50, description="Унікальний номер товару")
     clonednumbers: Optional[str] = Field(None, description="Номери клонів, розділені комою")
+    official_photos_from: Optional[str] = Field(None, max_length=64, description="productnumber товару-донора студійних фото (для ростовки з різними номерами)")
     model: Optional[str] = Field(None, max_length=500, description="Назва моделі товару")
     marking: Optional[str] = Field(None, max_length=500, description="Маркування товару")
     year: Optional[int] = Field(None, description="Рік випуску")
@@ -136,6 +137,7 @@ class ProductCreate(ProductBase):
 class ProductUpdate(BaseModel):
     productnumber: Optional[str] = Field(None, min_length=1, max_length=50)
     clonednumbers: Optional[str] = None
+    official_photos_from: Optional[str] = Field(None, max_length=64)
     model: Optional[str] = None
     marking: Optional[str] = None
     year: Optional[int] = None
@@ -253,6 +255,7 @@ class ProductList(BaseModel):
     id: int
     productnumber: str
     clonednumbers: Optional[str] = None
+    official_photos_from: Optional[str] = None
     model: Optional[str] = None
     marking: Optional[str] = None
     year: Optional[int] = None

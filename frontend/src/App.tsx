@@ -190,7 +190,6 @@ const AppContent: React.FC = () => {
         setCurrentJobId(data.jobId);
         console.log('[App.tsx] JobId set:', data.jobId);
         toast.success('Парсинг запущено');
-        toast.info(`JobId: ${data.jobId}`);
       } else {
         // Fallback: створюємо job без запуску
         const res2 = await fetch(`/api/parsing/test?mode=${encodeURIComponent(mode)}`, {
@@ -204,10 +203,9 @@ const AppContent: React.FC = () => {
         if (res2.ok && data2.jobId) {
           setCurrentJobId(data2.jobId);
           console.log('[App.tsx] Fallback JobId set:', data2.jobId);
-          toast.warn(`Fallback JobId: ${data2.jobId}`);
         } else {
           console.error('[App.tsx] No jobId in response!', data);
-          toast.error('ПОМИЛКА: Немає jobId в відповіді!');
+          toast.error('Не вдалося запустити парсинг');
         }
       }
       
