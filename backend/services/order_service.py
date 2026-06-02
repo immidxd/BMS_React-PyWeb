@@ -84,14 +84,18 @@ class OrderDAO:
         if not order:
             return None
         
-        # Update order fields
+        # Update order fields. Lock ONLY fields that actually CHANGED — the edit
+        # modal sends the whole form, so locking every sent lockable field would
+        # over-lock (freeze status/payment from the parser even if untouched).
+        newly_locked = set()
         for key, value in order_data.items():
             if hasattr(order, key):
+                if key in LOCKABLE_ORDER_FIELDS and value != getattr(order, key):
+                    newly_locked.add(key)
                 setattr(order, key, value)
 
-        # Lock edited lockable fields so the orders parser won't overwrite them
-        # on reparse (snapshot-restore). Mirrors products.manually_edited_*.
-        newly_locked = {k for k in order_data.keys() if k in LOCKABLE_ORDER_FIELDS}
+        # Record locks so the orders parser won't overwrite them on reparse
+        # (snapshot-restore). Mirrors products.manually_edited_*.
         if newly_locked:
             existing = set()
             if order.manually_edited_fields:

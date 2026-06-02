@@ -66,6 +66,7 @@ class OrderUpdate(BaseModel):
     tracking_number: Optional[str] = None
     delivery_status_id: Optional[int] = None
     notes: Optional[str] = None
+    sales_channel: Optional[str] = None
     deferred_until: Optional[date] = None
     priority: Optional[int] = None
     broadcast_id: Optional[int] = None

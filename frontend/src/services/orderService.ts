@@ -119,6 +119,7 @@ export interface OrderCreate {
   tracking_number?: string | null;
   delivery_status_id?: number | null;
   notes?: string | null;
+  sales_channel?: string | null;
   deferred_until?: string | null;
   priority?: number;
   broadcast_id?: number | null;
@@ -138,6 +139,7 @@ export interface OrderUpdate {
   tracking_number?: string | null;
   delivery_status_id?: number | null;
   notes?: string | null;
+  sales_channel?: string | null;
   deferred_until?: string | null;
   priority?: number;
   broadcast_id?: number | null;

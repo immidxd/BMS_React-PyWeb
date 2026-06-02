@@ -29,6 +29,7 @@ const OrderDetailsModal: React.FC<Props> = ({ orderId, open, onClose, filterOpti
         delivery_status_id: o.delivery_status_id || undefined,
         tracking_number: o.tracking_number || undefined,
         notes: o.notes || undefined,
+        sales_channel: (o as any).sales_channel || undefined,
       }); })
       .finally(() => setLoading(false));
   }, [open, orderId]);
@@ -54,6 +55,7 @@ const OrderDetailsModal: React.FC<Props> = ({ orderId, open, onClose, filterOpti
                   delivery_status_id: edit.delivery_status_id ?? null,
                   tracking_number: edit.tracking_number ?? null,
                   notes: edit.notes ?? null,
+                  sales_channel: (edit as any).sales_channel ?? null,
                 });
                 if (onSaved) onSaved();
               } finally { setSaving(false); }
@@ -123,6 +125,10 @@ const OrderDetailsModal: React.FC<Props> = ({ orderId, open, onClose, filterOpti
               <div className="col-span-2 flex items-center gap-2">
                 <span className="text-gray-500">Примітки:</span>
                 <input value={edit.notes ?? ''} onChange={(e) => setEdit({ ...edit, notes: e.target.value || undefined })} className="border rounded px-2 py-1 flex-1" />
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-gray-500">Канал:</span>
+                <input value={(edit as any).sales_channel ?? ''} onChange={(e) => setEdit({ ...edit, sales_channel: e.target.value || undefined } as any)} className="border rounded px-2 py-1 flex-1" placeholder="Ефір / Telegram / ..." />
               </div>
             </div>
             <div className="overflow-x-auto border rounded">
