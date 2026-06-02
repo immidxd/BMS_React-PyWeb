@@ -721,8 +721,8 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                     <InfoRow label="Колір" value={(p as any).color_name} />
                     <InfoRow label="Габарити" value={p.dimensions} />
                     <InfoRow label="Ширина" value={p.width} />
-                    <InfoRow label="Поточний стан" value={(p as any).current_condition_name} />
-                    <InfoRow label="Маркування" value={p.marking} copyable />
+                    <InfoRow label="Стан" value={(p as any).current_condition_name} />
+                    <EditableRow field="marking" label="Маркування" value={p.marking} />
                     <InfoRow label="Рік" value={p.year} />
                     <InfoRow label="Клони" value={p.clonednumbers} />
                     <InfoRow label="Завіз" value={p.dateadded} />

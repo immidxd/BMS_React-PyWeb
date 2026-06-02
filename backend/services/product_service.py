@@ -605,7 +605,7 @@ def create_product(db: Session, product: schemas.ProductCreate) -> models.Produc
 # Phase 2a: fields that, when edited in the app, get locked against parser
 # overwrite (the parser restores the user's value after a reparse). Keep in sync
 # with the frontend inline-edit set and PRODUCT_LOCK_FIELDS in sheets_parser.
-LOCKABLE_PRODUCT_FIELDS = {"price", "oldprice", "model", "description", "extranote", "season"}
+LOCKABLE_PRODUCT_FIELDS = {"price", "oldprice", "model", "marking", "description", "extranote", "season"}
 
 
 def _merge_lock(prod, fields: set) -> None:

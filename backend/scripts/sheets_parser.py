@@ -79,7 +79,7 @@ FILE_GATE_ENABLED = os.getenv("PARSER_FILE_GATE", "1") != "0"
 # Keep in sync with LOCKABLE_PRODUCT_FIELDS in product_service.
 PRODUCT_LOCKS_ENABLED = os.getenv("PRODUCT_LOCKS", "1") != "0"
 # oldprice included so the auto-markdown ("Стара ціна") survives reparse too.
-PRODUCT_LOCK_FIELDS = {"price", "oldprice", "model", "description", "extranote", "season"}
+PRODUCT_LOCK_FIELDS = {"price", "oldprice", "model", "marking", "description", "extranote", "season"}
 
 
 def _snapshot_product_locks(session: Session) -> dict:
@@ -141,11 +141,12 @@ WRITEBACK_FIELD_HEADERS = {
     "model":       "Модель",
     "description": "Опис",
     "season":      "Сезон",
+    "marking":     "Маркування",
     "extranote":   "Екстра примітка",
 }
 # Text fields written RAW (literal, no formula interpretation); numeric fields
 # USER_ENTERED so the sheet stores a real number.
-WRITEBACK_TEXT_FIELDS = {"model", "description", "season", "extranote"}
+WRITEBACK_TEXT_FIELDS = {"model", "marking", "description", "season", "extranote"}
 WRITEBACK_ENABLED = os.getenv("PARSER_WRITEBACK", "1") != "0"
 _WRITEBACK_BACKUP_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "writeback_backups")
 
