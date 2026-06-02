@@ -62,6 +62,61 @@ BATCH_CHUNK = int(os.getenv("PARSER_BATCH_CHUNK", "50"))  # sheets per batch rea
 PARSER_VERSION = 1
 HASH_SKIP_ENABLED = os.getenv("PARSER_HASH_SKIP", "1") != "0"
 
+# ── Layer C: whole-file change gate ───────────────────────────────────────────
+# If the spreadsheet's Drive lastUpdateTime is unchanged since the last
+# successful parse of the same (spreadsheet, mode), skip the entire run — no
+# cell changed, so re-parsing is a no-op. Safe even for products: an unchanged
+# file means quantity would recompute identically. Keyed by mode so a 'full'
+# request is never short-circuited by a prior partial 'quick'.
+# Rollback: env PARSER_FILE_GATE=0 or DROP TABLE spreadsheet_sync_state.
+FILE_GATE_ENABLED = os.getenv("PARSER_FILE_GATE", "1") != "0"
+
+
+def _file_unchanged(session: Session, spreadsheet_id: str, mode: str, last_update_time: str) -> bool:
+    """True if the whole file's lastUpdateTime + parser_version match the last
+    successful run of this (spreadsheet, mode)."""
+    row = session.execute(
+        text(
+            "SELECT last_update_time, parser_version FROM spreadsheet_sync_state "
+            "WHERE spreadsheet_id = :s AND mode = :m"
+        ),
+        {"s": spreadsheet_id, "m": mode},
+    ).fetchone()
+    return bool(row and row[0] == last_update_time and row[1] == PARSER_VERSION)
+
+
+def _record_file_state(session: Session, spreadsheet_id: str, mode: str, last_update_time: str) -> None:
+    """Upsert the whole-file sync marker after a successful run."""
+    session.execute(
+        text(
+            "INSERT INTO spreadsheet_sync_state "
+            "(spreadsheet_id, mode, last_update_time, parser_version, checked_at) "
+            "VALUES (:s, :m, :t, :ver, now()) "
+            "ON CONFLICT (spreadsheet_id, mode) DO UPDATE SET "
+            "last_update_time = EXCLUDED.last_update_time, "
+            "parser_version = EXCLUDED.parser_version, "
+            "checked_at = now()"
+        ),
+        {"s": spreadsheet_id, "m": mode, "t": last_update_time, "ver": PARSER_VERSION},
+    )
+
+
+def _file_gate_check(session: Session, sh, spreadsheet_id: str, mode: str):
+    """Returns (gated: bool, last_update_time: Optional[str]).
+    gated=True → whole file unchanged, caller should skip the run.
+    last_update_time is the value to record after a successful run (None if the
+    gate is disabled or the lookup failed → don't record/skip)."""
+    if not FILE_GATE_ENABLED:
+        return False, None
+    try:
+        lut = sh.lastUpdateTime
+    except Exception as e:
+        logger.warning(f"[file-gate] lastUpdateTime fetch failed ({e}); proceeding without gate")
+        return False, None
+    if lut and _file_unchanged(session, spreadsheet_id, mode, lut):
+        return True, lut
+    return False, lut
+
 
 def _compute_sheet_hash(rows: list) -> str:
     """Stable content hash of a sheet's values (order-sensitive)."""
@@ -3894,6 +3949,16 @@ def run_products_parsing(
     """
     gc = get_gc()
     sh = gc.open_by_key(JOURNAL_ID)
+
+    # Layer C: skip the whole run if the file is unchanged since last products parse
+    gated, file_lut = _file_gate_check(session, sh, JOURNAL_ID, f"products_{mode}")
+    if gated:
+        logger.info(f"[products] Журнал без змін з останнього {mode}-парсингу — пропуск")
+        if progress_cb:
+            progress_cb(100, "Журнал без змін — пропуск")
+        return {"mode": mode, "sheets": 0, "added": 0, "updated": 0,
+                "skipped": 0, "file_unchanged": True, "seen_product_ids": set()}
+
     all_sheets = sh.worksheets()
 
     batch_sheets = [ws for ws in all_sheets if not is_skip_sheet(ws.title)]
@@ -3942,6 +4007,11 @@ def run_products_parsing(
     if shipment_ids:
         session.commit()
 
+    # Layer C: record file marker only after a full successful run
+    if file_lut is not None:
+        _record_file_state(session, JOURNAL_ID, f"products_{mode}", file_lut)
+        session.commit()
+
     return {
         "mode":    mode,
         "sheets":  total_sheets,
@@ -3964,6 +4034,17 @@ def run_orders_parsing(
     """
     gc = get_gc()
     sh = gc.open_by_key(ORDERS_ID)
+
+    # Layer C: skip the whole run if the file is unchanged since last orders parse
+    gated, file_lut = _file_gate_check(session, sh, ORDERS_ID, f"orders_{mode}")
+    if gated:
+        logger.info(f"[orders] Замовлення без змін з останнього {mode}-парсингу — пропуск")
+        if progress_cb:
+            progress_cb(100, "Замовлення без змін — пропуск")
+        return {"mode": mode, "sheets": 0, "orders": 0, "items": 0,
+                "updated": 0, "skipped": 0, "file_unchanged": True,
+                "sheets_skipped_unchanged": 0}
+
     all_sheets = sh.worksheets()
 
     order_sheets = [ws for ws in all_sheets if not is_skip_sheet(ws.title)]
@@ -4018,6 +4099,11 @@ def run_orders_parsing(
         if use_hash_skip and content_hash is not None:
             _record_sheet_state(session, ORDERS_ID, ws.id, ws.title, content_hash)
             session.commit()
+
+    # Layer C: record file marker only after a full successful run
+    if file_lut is not None:
+        _record_file_state(session, ORDERS_ID, f"orders_{mode}", file_lut)
+        session.commit()
 
     return {
         "mode":    mode,
