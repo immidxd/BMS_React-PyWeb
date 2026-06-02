@@ -15,6 +15,15 @@ from schemas.order import OrderCreate, OrderUpdate, OrderFilters
 
 logger = logging.getLogger(__name__)
 
+# Order fields that, when edited in the app, get locked against parser overwrite
+# (orders parser restores them on reparse). Keep in sync with ORDER_LOCK_FIELDS
+# in sheets_parser and the order edit UI.
+LOCKABLE_ORDER_FIELDS = {
+    "notes", "tracking_number", "sales_channel",
+    "order_status_id", "payment_status_id", "delivery_method_id",
+}
+
+
 class OrderDAO:
     """Data Access Object for Orders"""
     
@@ -79,7 +88,17 @@ class OrderDAO:
         for key, value in order_data.items():
             if hasattr(order, key):
                 setattr(order, key, value)
-        
+
+        # Lock edited lockable fields so the orders parser won't overwrite them
+        # on reparse (snapshot-restore). Mirrors products.manually_edited_*.
+        newly_locked = {k for k in order_data.keys() if k in LOCKABLE_ORDER_FIELDS}
+        if newly_locked:
+            existing = set()
+            if order.manually_edited_fields:
+                existing = {x.strip() for x in order.manually_edited_fields.split(",") if x.strip()}
+            order.manually_edited_fields = ",".join(sorted(existing | newly_locked))
+            order.manually_edited_at = datetime.utcnow()
+
         # Update order items if provided
         if order_items_data is not None:
             # Delete existing items

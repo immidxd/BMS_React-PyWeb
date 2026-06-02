@@ -80,6 +80,11 @@ FILE_GATE_ENABLED = os.getenv("PARSER_FILE_GATE", "1") != "0"
 PRODUCT_LOCKS_ENABLED = os.getenv("PRODUCT_LOCKS", "1") != "0"
 # oldprice included so the auto-markdown ("Стара ціна") survives reparse too.
 PRODUCT_LOCK_FIELDS = {"price", "oldprice", "model", "marking", "description", "extranote", "season"}
+# Order fields protected from parser overwrite (Order editing Phase A). Keep in
+# sync with LOCKABLE_ORDER_FIELDS in order_service.
+ORDER_LOCKS_ENABLED = os.getenv("ORDER_LOCKS", "1") != "0"
+ORDER_LOCK_FIELDS = {"notes", "tracking_number", "sales_channel",
+                     "order_status_id", "payment_status_id", "delivery_method_id"}
 
 
 def _snapshot_product_locks(session: Session) -> dict:
@@ -126,6 +131,53 @@ def _restore_product_locks(session: Session, snapshot: dict) -> int:
         for f, v in fieldvals.items():
             if getattr(prod, f) != v:
                 setattr(prod, f, v)
+                restored += 1
+    if restored:
+        session.commit()
+    return restored
+
+
+def _snapshot_order_locks(session: Session) -> dict:
+    """{order_id: {field: value}} for orders with active in-app locks."""
+    if not ORDER_LOCKS_ENABLED:
+        return {}
+    try:
+        from backend.models.models import Order
+    except ImportError:
+        from models.models import Order
+    rows = session.execute(text(
+        "SELECT id, manually_edited_fields FROM orders "
+        "WHERE manually_edited_at IS NOT NULL "
+        "AND manually_edited_fields IS NOT NULL AND btrim(manually_edited_fields) <> ''"
+    )).fetchall()
+    snap: dict = {}
+    for oid, csv in rows:
+        flds = [f.strip() for f in csv.split(",") if f.strip() in ORDER_LOCK_FIELDS]
+        if not flds:
+            continue
+        o = session.get(Order, oid)
+        if o is None:
+            continue
+        snap[oid] = {f: getattr(o, f) for f in flds}
+    return snap
+
+
+def _restore_order_locks(session: Session, snapshot: dict) -> int:
+    """Re-apply locked order field values the parser may have overwritten."""
+    if not snapshot:
+        return 0
+    try:
+        from backend.models.models import Order
+    except ImportError:
+        from models.models import Order
+    restored = 0
+    for oid, fieldvals in snapshot.items():
+        o = session.get(Order, oid)
+        if o is None:
+            continue
+        for f, v in fieldvals.items():
+            if getattr(o, f) != v:
+                setattr(o, f, v)
                 restored += 1
     if restored:
         session.commit()
@@ -4299,6 +4351,10 @@ def run_orders_parsing(
     # Hash-skip only in 'quick' mode (see PARSER_VERSION / HASH_SKIP_ENABLED notes).
     use_hash_skip = HASH_SKIP_ENABLED and mode == "quick"
 
+    # Order editing Phase A: snapshot user-locked order fields before the parser
+    # may overwrite them; restored after the run so in-app edits survive reparse.
+    order_locks_snapshot = _snapshot_order_locks(session)
+
     # Обчислюємо дати кожної вкладки (вкладки йдуть найновіша → найстаріша)
     sheet_dates = [
         parse_date_from_sheet_title(ws.title) or date.today()
@@ -4342,6 +4398,11 @@ def run_orders_parsing(
             _record_sheet_state(session, ORDERS_ID, ws.id, ws.title, content_hash)
             session.commit()
 
+    # Order editing Phase A: restore user-locked order fields the parser overwrote
+    orders_locks_restored = _restore_order_locks(session, order_locks_snapshot)
+    if orders_locks_restored:
+        logger.info(f"[orders] Restored {orders_locks_restored} user-locked order field(s) after reparse")
+
     # Layer C: record file marker only after a full successful run
     if file_lut is not None:
         _record_file_state(session, ORDERS_ID, f"orders_{mode}", file_lut)
@@ -4355,6 +4416,7 @@ def run_orders_parsing(
         "updated": total_updated,
         "skipped": total_skipped,
         "sheets_skipped_unchanged": sheets_skipped_unchanged,
+        "order_locks_restored": orders_locks_restored,
     }
 
 

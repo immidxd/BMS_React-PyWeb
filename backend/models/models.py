@@ -240,9 +240,12 @@ class Order(Base):
     broadcast_id = Column(Integer, ForeignKey("broadcasts.id"))
     sales_channel = Column(String(50), default='Ефір', nullable=True)
     source_fingerprint = Column(String(64), index=True, nullable=True)
+    # In-app edit locks (Order editing Phase A) — parser restores these on reparse
+    manually_edited_fields = Column(Text, nullable=True)   # CSV: 'notes,tracking_number,...'
+    manually_edited_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-    
+
     # Relationships
     client = relationship("Client", back_populates="orders")
     order_status = relationship("OrderStatus", back_populates="orders")
