@@ -21,6 +21,7 @@ const StatisticsPage = React.lazy(() => import('./pages/StatisticsPage'));
 const BrandsPage = React.lazy(() => import('./pages/BrandsPage'));
 const PublicationsPage = React.lazy(() => import('./pages/PublicationsPage'));
 const WarehousePage = React.lazy(() => import('./pages/WarehousePage'));
+const MergeQueuePage = React.lazy(() => import('./pages/MergeQueuePage'));
 
 // Logo — мінімалістичний BMS-знак (3 риски + текст), у дусі дизайн-системи
 const AppLogo: React.FC = () => {
@@ -68,7 +69,7 @@ const FilterToggleButton: React.FC = () => {
   );
 };
 
-type TabKey = 'products' | 'orders' | 'clients' | 'suppliers' | 'deliveries' | 'brands' | 'publications' | 'warehouse' | 'statistics';
+type TabKey = 'products' | 'orders' | 'clients' | 'suppliers' | 'deliveries' | 'brands' | 'publications' | 'warehouse' | 'statistics' | 'merge';
 
 interface TabConfig {
   key: TabKey;
@@ -86,6 +87,7 @@ const TABS: TabConfig[] = [
   { key: 'publications', label: 'Публікації', component: PublicationsPage },
   { key: 'warehouse', label: 'Склад', component: WarehousePage },
   { key: 'statistics', label: 'Статистика', component: StatisticsPage },
+  { key: 'merge', label: 'Збіги', component: MergeQueuePage },
 ];
 
 const AppContent: React.FC = () => {
@@ -95,6 +97,17 @@ const AppContent: React.FC = () => {
 
   const [currentSearchTerm, setCurrentSearchTerm] = useState<string>('');
   const [parsingDialogOpen, setParsingDialogOpen] = useState(false);
+  const [mergePendingCount, setMergePendingCount] = useState<number>(0);
+
+  // Лічильник pending-збігів на вкладці «Збіги» (оновлюємо при перемиканні табів)
+  useEffect(() => {
+    let alive = true;
+    fetch('/api/merge-candidates/pending-count')
+      .then(r => (r.ok ? r.json() : { count: 0 }))
+      .then(d => { if (alive) setMergePendingCount(d?.count ?? 0); })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, [activeTab]);
 
   // ── Гарячі клавіші (кросплатформно: ⌘ на macOS, Ctrl на Windows/Linux) ─────
   //   ⌘/Ctrl + 1..9 — перемкнути вкладку
@@ -227,6 +240,11 @@ const AppContent: React.FC = () => {
             className={`bms-tab ${activeTab === tab.key ? 'is-active' : ''}`}
           >
             {tab.label}
+            {tab.key === 'merge' && mergePendingCount > 0 && (
+              <span className="ml-1.5 inline-flex items-center justify-center text-[10px] leading-none font-semibold rounded-full px-1.5 py-0.5 bg-amber-500 text-white">
+                {mergePendingCount}
+              </span>
+            )}
           </button>
         ))}
       </nav>

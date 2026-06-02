@@ -46,3 +46,6 @@ backend/unknown_errors.txt
 .claude/
 OPUS_PROMPTS.md
 TASKS_ROADMAP.md
+
+# Локальні бекапи аркушів (бізнес-дані) — не комітити
+workspace_backup_*.json

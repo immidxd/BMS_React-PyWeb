@@ -181,6 +181,20 @@ def init_db():
                 )
             """))
             # Migrate existing tables (add new columns if missing)
+            # «Загублені» товари (Воркспейс/Старі) — кандидати на пошук оригіналу (Фаза 3)
+            conn.execute(text("ALTER TABLE IF EXISTS products ADD COLUMN IF NOT EXISTS is_lost BOOLEAN DEFAULT false"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS idx_products_is_lost ON products(is_lost) WHERE is_lost = true"))
+            # Persistent merge-рішення зі СТАБІЛЬНИМ ключем (переживають ре-парс/зміну product.id)
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS merge_decisions (
+                    id SERIAL PRIMARY KEY,
+                    lost_key TEXT NOT NULL,
+                    original_key TEXT NOT NULL,
+                    decision TEXT NOT NULL,
+                    created_at TIMESTAMPTZ DEFAULT NOW()
+                )
+            """))
+            conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_merge_decisions ON merge_decisions(lost_key, original_key)"))
             conn.execute(text("ALTER TABLE IF EXISTS telegram_posts ADD COLUMN IF NOT EXISTS sizes_in_post TEXT"))
             conn.execute(text("ALTER TABLE IF EXISTS telegram_posts ADD COLUMN IF NOT EXISTS is_multi_size BOOLEAN DEFAULT false"))
             conn.execute(text("ALTER TABLE IF EXISTS telegram_posts ADD COLUMN IF NOT EXISTS grouped_id BIGINT"))

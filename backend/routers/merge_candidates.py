@@ -16,8 +16,89 @@ try:
 except ImportError:
     from backend.models.database import get_db
 
+try:
+    from services.match_finder import scan_lost_products, record_decision, DEFAULT_MIN_SCORE, DEFAULT_TOP_N
+    from models.models import Product
+except ImportError:
+    from backend.services.match_finder import scan_lost_products, record_decision, DEFAULT_MIN_SCORE, DEFAULT_TOP_N
+    from backend.models.models import Product
+
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+# Поля, які при merge переносимо з загубленого в оригінал ЛИШЕ якщо в оригіналі
+# вони порожні/відсутні. Наявні (непорожні) значення оригіналу НІКОЛИ не чіпаються.
+# Свідомо НЕ включені: productnumber, clonednumbers (обробляються окремо),
+# is_lost, deliveryid, quantity, dateadded, id — ідентичність/стан оригіналу.
+_FILL_EMPTY_FIELDS = [
+    "model", "marking", "description", "extranote", "year",
+    "season", "dimensions", "width",
+    "sizeeu", "size_letter", "sizeua", "sizeusa", "sizeuk", "sizejp", "sizecn",
+    "measurementscm", "oldprice",
+    "measurementscm_min", "measurementscm_max",
+    "measurements_length_min", "measurements_length_max",
+    "measurements_pog_min", "measurements_pog_max",
+    "measurements_pob_min", "measurements_pob_max",
+    "measurements_pot_min", "measurements_pot_max",
+    "measurements_sleeve_min", "measurements_sleeve_max",
+    "measurements_height_min", "measurements_height_max",
+    "measurements_sole_thickness_min", "measurements_sole_thickness_max",
+    "measurements_heel_min", "measurements_heel_max",
+    "brandid", "typeid", "subtypeid", "colorid", "genderid", "styleid",
+    "conditionid", "current_conditionid",
+    "manufacturercountryid", "ownercountryid",
+    "soletypeid", "toeshapeid", "fasteningtypeid", "liningid",
+]
+
+
+def _is_blank(v) -> bool:
+    """Порожнє = None або рядок з самих пробілів. (0 для FK НЕ вважаємо порожнім.)"""
+    if v is None:
+        return True
+    if isinstance(v, str) and v.strip() == "":
+        return True
+    return False
+
+
+def _fill_empty_from(target, source) -> list:
+    """Заповнити порожні поля `target` (оригінал) значеннями з `source` (загублений).
+    Непорожні поля оригіналу не змінюються. Повертає список заповнених полів."""
+    filled = []
+    for f in _FILL_EMPTY_FIELDS:
+        if _is_blank(getattr(target, f, None)) and not _is_blank(getattr(source, f, None)):
+            setattr(target, f, getattr(source, f))
+            filled.append(f)
+    # price: 0/None у оригіналі вважаємо «не вказано» → беремо з загубленого, якщо >0
+    tp = getattr(target, "price", None)
+    spr = getattr(source, "price", None)
+    if (tp is None or tp == 0) and spr and spr > 0:
+        target.price = spr
+        filled.append("price")
+    return filled
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SCAN: знайти можливі оригінали для загублених товарів (Фаза 3, зважений скоринг)
+# ─────────────────────────────────────────────────────────────────────────────
+@router.post("/api/merge-candidates/scan")
+async def scan_merge_candidates(
+    product_id: Optional[int] = Query(None, description="Сканувати лише один загублений товар"),
+    min_score: int = Query(DEFAULT_MIN_SCORE, ge=0, le=100, description="Поріг впевненості 0–100"),
+    top_n: int = Query(DEFAULT_TOP_N, ge=1, le=20, description="Скільки кандидатів на товар"),
+    reset: bool = Query(False, description="Спершу видалити pending-кандидати сканованих товарів"),
+    db: Session = Depends(get_db),
+) -> Dict[str, Any]:
+    """Запустити пошук оригіналів для is_lost / '???' товарів. Наповнює pending."""
+    try:
+        result = scan_lost_products(
+            db, product_id=product_id, min_score=min_score, top_n=top_n, reset=reset,
+        )
+        return {"ok": True, **result}
+    except Exception as e:
+        db.rollback()
+        logger.error(f"scan_merge_candidates: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -37,20 +118,28 @@ async def list_merge_candidates(
                 np.productnumber AS np_pnum, np.clonednumbers AS np_clones,
                 np_b.brandname AS np_brand, np_t.typename AS np_type,
                 np.model AS np_model, np.sizeeu AS np_size, np.marking AS np_marking,
-                np_c.colorname AS np_color,
+                np_c.colorname AS np_color, np.description AS np_desc,
+                np_d.deliveryname AS np_delivery, np_d.deliverydate AS np_delivery_date,
+                (SELECT count(*) FROM order_items oi JOIN orders o ON o.id = oi.order_id
+                   WHERE oi.product_id = np.id AND o.order_status_id IN (1, 7)) AS np_sold,
                 sp.productnumber AS sp_pnum, sp.clonednumbers AS sp_clones,
                 sp_b.brandname AS sp_brand, sp_t.typename AS sp_type,
                 sp.model AS sp_model, sp.sizeeu AS sp_size, sp.marking AS sp_marking,
-                sp_c.colorname AS sp_color
+                sp_c.colorname AS sp_color, sp.description AS sp_desc,
+                sp_d.deliveryname AS sp_delivery, sp_d.deliverydate AS sp_delivery_date,
+                (SELECT count(*) FROM order_items oi JOIN orders o ON o.id = oi.order_id
+                   WHERE oi.product_id = sp.id AND o.order_status_id IN (1, 7)) AS sp_sold
             FROM merge_candidates mc
             JOIN products np ON np.id = mc.new_product_id
             JOIN products sp ON sp.id = mc.suggested_id
             LEFT JOIN brands np_b ON np_b.id = np.brandid
             LEFT JOIN types  np_t ON np_t.id = np.typeid
             LEFT JOIN colors np_c ON np_c.id = np.colorid
+            LEFT JOIN deliveries np_d ON np_d.id = np.deliveryid
             LEFT JOIN brands sp_b ON sp_b.id = sp.brandid
             LEFT JOIN types  sp_t ON sp_t.id = sp.typeid
             LEFT JOIN colors sp_c ON sp_c.id = sp.colorid
+            LEFT JOIN deliveries sp_d ON sp_d.id = sp.deliveryid
             WHERE mc.status = 'pending'
         """
         params: Dict[str, Any] = {}
@@ -104,6 +193,10 @@ async def accept_merge_candidate(
 
         new_pid, sug_pid = cand[1], cand[2]
 
+        # ORM-обʼєкти для стабільного ключа рішення (рахуємо ДО видалення NEW)
+        np_obj = db.get(Product, new_pid)
+        sp_obj = db.get(Product, sug_pid)
+
         # Зчитуємо обидва товари
         np_row = db.execute(
             text("SELECT productnumber, clonednumbers FROM products WHERE id = :id"),
@@ -144,6 +237,14 @@ async def accept_merge_candidate(
             {"c": new_clones_str, "id": sug_pid},
         )
 
+        # Fill-empty: переносимо в оригінал лише ПОРОЖНІ його поля із загубленого
+        # (наявні значення оригіналу не чіпаємо). Flush до видалення NEW.
+        filled_fields: List[str] = []
+        if np_obj is not None and sp_obj is not None:
+            filled_fields = _fill_empty_from(sp_obj, np_obj)
+            if filled_fields:
+                db.flush()
+
         # Перепривʼязуємо FK-залежні рядки з NEW на SUGGESTED, щоб історія
         # продажів/пости/etc. не загубились
         db.execute(
@@ -154,6 +255,15 @@ async def accept_merge_candidate(
             text("UPDATE telegram_posts SET product_id = :sg WHERE product_id = :np"),
             {"sg": sug_pid, "np": new_pid},
         )
+
+        # Persistent рішення (стабільний ключ) — щоб після ре-парсу не пропонувати знову
+        if np_obj is not None and sp_obj is not None:
+            record_decision(db, np_obj, sp_obj, "accepted")
+
+        # Від'єднуємо NEW від ORM-сесії (значення вже скопійовані) — щоб raw DELETE
+        # нижче не конфліктував з ORM-tracking видаленого рядка.
+        if np_obj is not None:
+            db.expunge(np_obj)
 
         # Видаляємо NEW product (CASCADE прибере інші pending кандидати для нього)
         db.execute(text("DELETE FROM products WHERE id = :id"), {"id": new_pid})
@@ -171,12 +281,13 @@ async def accept_merge_candidate(
         db.commit()
         logger.info(
             f"[merge-candidates] ACCEPT #{candidate_id}: merged new={new_pid} → suggested={sug_pid}, "
-            f"clones now: {new_clones_str!r}"
+            f"clones now: {new_clones_str!r}, filled empty fields: {filled_fields}"
         )
         return {
             "ok": True,
             "suggested_id": sug_pid,
             "merged_clones": new_clones_str,
+            "filled_fields": filled_fields,
         }
     except HTTPException:
         raise
@@ -204,6 +315,11 @@ async def decline_merge_candidate(
         ).fetchone()
         if not res:
             raise HTTPException(status_code=404, detail="Candidate not found or already decided")
+        # Persistent рішення (стабільний ключ) — переживає ре-парс/зміну id
+        np_obj = db.get(Product, res[1])
+        sp_obj = db.get(Product, res[2])
+        if np_obj is not None and sp_obj is not None:
+            record_decision(db, np_obj, sp_obj, "declined")
         db.commit()
         logger.info(f"[merge-candidates] DECLINE #{candidate_id}")
         return {"ok": True, "candidate_id": res[0]}

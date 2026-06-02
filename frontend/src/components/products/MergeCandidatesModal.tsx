@@ -18,6 +18,10 @@ interface MergeCandidate {
     np_size: string | null;
     np_marking: string | null;
     np_color: string | null;
+    np_desc: string | null;
+    np_delivery: string | null;
+    np_delivery_date: string | null;
+    np_sold: number;
     sp_pnum: string;
     sp_clones: string | null;
     sp_brand: string | null;
@@ -26,6 +30,10 @@ interface MergeCandidate {
     sp_size: string | null;
     sp_marking: string | null;
     sp_color: string | null;
+    sp_desc: string | null;
+    sp_delivery: string | null;
+    sp_delivery_date: string | null;
+    sp_sold: number;
 }
 
 interface Props {
@@ -72,8 +80,9 @@ const MergeCandidatesModal: React.FC<Props> = ({ productId, open, onClose, onMer
     const handleAccept = async (c: MergeCandidate) => {
         setActing(c.id);
         try {
-            await axios.post(`/api/merge-candidates/${c.id}/accept`);
-            message.success(`Об'єднано з #${c.sp_pnum.replace(/^#/, '')}`);
+            const res = await axios.post(`/api/merge-candidates/${c.id}/accept`);
+            const nFilled = res.data?.filled_fields?.length ?? 0;
+            message.success(`Об'єднано з #${c.sp_pnum.replace(/^#/, '')}${nFilled ? ` · заповнено ${nFilled} порожніх полів` : ''}`);
             onMerged?.();
             onClose();
         } catch (e: any) {
@@ -116,7 +125,7 @@ const MergeCandidatesModal: React.FC<Props> = ({ productId, open, onClose, onMer
                         <div key={c.id} className="border border-gray-200 dark:border-gray-700 rounded-lg p-4 bg-white dark:bg-gray-800">
                             <div className="flex items-center justify-between mb-3">
                                 <div className="flex items-center gap-2">
-                                    <Tag color="blue">Score {c.score}/5</Tag>
+                                    <Tag color={c.score >= 70 ? 'green' : c.score >= 50 ? 'gold' : 'default'}>Збіг {c.score}%</Tag>
                                     {c.reason && <span className="text-xs text-gray-500">{c.reason}</span>}
                                 </div>
                                 <div className="text-xs text-gray-400">
@@ -142,6 +151,9 @@ const MergeCandidatesModal: React.FC<Props> = ({ productId, open, onClose, onMer
                             <Row label="Маркування" np={c.np_marking} sp={c.sp_marking} />
                             <Row label="Розмір"     np={c.np_size}    sp={c.sp_size} />
                             <Row label="Колір"      np={c.np_color}   sp={c.sp_color} />
+                            <Row label="Завіз"      np={c.np_delivery} sp={c.sp_delivery} />
+                            <Row label="Продано"    np={c.np_sold}    sp={c.sp_sold} />
+                            <Row label="Опис"       np={c.np_desc}    sp={c.sp_desc} />
 
                             <div className="flex justify-end gap-2 mt-4 pt-3 border-t border-gray-200 dark:border-gray-700">
                                 <Button

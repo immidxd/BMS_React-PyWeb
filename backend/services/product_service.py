@@ -473,8 +473,11 @@ def get_products(
             # d.deliverydate з аркуша журналу (назва = дата завозу); якщо товар
             # ще не прив'язаний до delivery — fallback p.dateadded, інакше через
             # NULLS LAST він провалився б у кінець.
-            "delivery_date":     "COALESCE(d.deliverydate, p.dateadded) DESC NULLS LAST, p.id DESC",
-            "delivery_date_asc": "COALESCE(d.deliverydate, p.dateadded) ASC NULLS LAST, p.id ASC",
+            # ВИНЯТОК: загублені (is_lost, Воркспейс/Старі) НЕ мають реального завозу,
+            # а dateadded=date.today() → інакше вони фейково вискакували б нагору.
+            # Тож для них дату завозу лишаємо NULL → NULLS LAST → донизу.
+            "delivery_date":     "COALESCE(d.deliverydate, CASE WHEN p.is_lost THEN NULL ELSE p.dateadded END) DESC NULLS LAST, p.id DESC",
+            "delivery_date_asc": "COALESCE(d.deliverydate, CASE WHEN p.is_lost THEN NULL ELSE p.dateadded END) ASC NULLS LAST, p.id ASC",
             "last_sold":      "last_sale.last_sale_date DESC NULLS LAST, p.id DESC",
             "price_desc":     "p.price DESC NULLS LAST",
             "price_asc":      "p.price ASC NULLS LAST",

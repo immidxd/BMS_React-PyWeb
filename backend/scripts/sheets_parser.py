@@ -3344,6 +3344,30 @@ def _append_clone(existing_clones: Optional[str], new_num: str) -> str:
     return "; ".join(parts)
 
 
+def _is_already_clone(session: Session, pnum: str) -> bool:
+    """
+    True, якщо `pnum` уже фігурує як КЛОН якогось товару (тобто загублений товар
+    з цим номером був раніше змерджений в оригінал через accept). Тоді воркспейс-
+    парсер НЕ відтворює його заново. Порівняння delimiter-safe (точний токен),
+    з нормалізацією '#' (клони зберігаються без '#').
+    """
+    if not pnum:
+        return False
+    bare = pnum.lstrip("#").strip()
+    if not bare:
+        return False
+    from backend.models.models import Product
+    # LIKE — лише префільтр; точну належність токена перевіряємо в Python
+    rows = session.query(Product.clonednumbers).filter(
+        Product.clonednumbers.like(f"%{bare}%")
+    ).all()
+    for (clones,) in rows:
+        toks = {c.strip().lstrip("#") for c in (clones or "").split(";") if c.strip()}
+        if bare in toks:
+            return True
+    return False
+
+
 def _parse_workspace_sheet(
     ws: gspread.Worksheet,
     session: Session,
@@ -3426,6 +3450,62 @@ def _parse_workspace_sheet(
         style_val        = col(row, "Стиль") if "Стиль" in header else ""
         current_cond_val = col(row, "Поточний стан") if "Поточний стан" in header else ""
         width_val        = col(row, "Ширина") if "Ширина" in header else ""
+
+        # ── Нові поля (виміри/взуття/матеріали) — дзеркало Журнал-парсера ──
+        # Виміри: парсимо діапазони (single value → min==max).
+        cm_min, cm_max                 = _parse_measurement_range(cm_val)
+        length_min, length_max         = _parse_measurement_range(col(row, "Довжина")         if "Довжина" in header else "")
+        pog_min, pog_max               = _parse_measurement_range(col(row, "Груди (н/о)")     if "Груди (н/о)" in header else "")
+        pob_min, pob_max               = _parse_measurement_range(col(row, "Бедра (н/о)")     if "Бедра (н/о)" in header else "")
+        pot_min, pot_max               = _parse_measurement_range(col(row, "Талія (н/о)")     if "Талія (н/о)" in header else "")
+        sleeve_min, sleeve_max         = _parse_measurement_range(col(row, "Рукав")           if "Рукав" in header else "")
+        height_min, height_max         = _parse_measurement_range(col(row, "Висота")          if "Висота" in header else "")
+        sole_thickness_min, sole_thickness_max = _parse_measurement_range(col(row, "Товщина підошви") if "Товщина підошви" in header else "")
+        heel_min, heel_max             = _parse_measurement_range(col(row, "Підбор")          if "Підбор" in header else "")
+
+        # Взуттєві lookup (single FK each). Невідоме → unmapped log, FK = NULL.
+        sole_type_id = toe_shape_id = fastening_type_id = lining_id = None
+        for sheet_col, (tbl, name_col, fk_col) in SHOE_LOOKUP_COLUMNS.items():
+            if sheet_col not in header:
+                continue
+            raw_val = col(row, sheet_col).strip()
+            if not raw_val:
+                continue
+            rid = _resolve_shoe_lookup_id(session, tbl, name_col, raw_val)
+            if rid is None:
+                _log_unmapped_material(session, raw_val, f"_{fk_col}", None, ws.title)
+                continue
+            if fk_col == "soletypeid":        sole_type_id = rid
+            elif fk_col == "toeshapeid":      toe_shape_id = rid
+            elif fk_col == "fasteningtypeid": fastening_type_id = rid
+            elif fk_col == "liningid":        lining_id = rid
+
+        parsed_new_fields = {
+            "measurementscm_min":      cm_min,             "measurementscm_max":      cm_max,
+            "measurements_length_min": length_min,         "measurements_length_max": length_max,
+            "measurements_pog_min":    pog_min,            "measurements_pog_max":    pog_max,
+            "measurements_pob_min":    pob_min,            "measurements_pob_max":    pob_max,
+            "measurements_pot_min":    pot_min,            "measurements_pot_max":    pot_max,
+            "measurements_sleeve_min": sleeve_min,         "measurements_sleeve_max": sleeve_max,
+            "measurements_height_min": height_min,         "measurements_height_max": height_max,
+            "measurements_sole_thickness_min": sole_thickness_min,
+            "measurements_sole_thickness_max": sole_thickness_max,
+            "measurements_heel_min":   heel_min,           "measurements_heel_max":   heel_max,
+            "soletypeid":              sole_type_id,
+            "toeshapeid":              toe_shape_id,
+            "fasteningtypeid":         fastening_type_id,
+            "liningid":                lining_id,
+        }
+
+        # Матеріали за позиціями. Порожня клітинка = не чіпати існуюче в БД.
+        materials_parsed: dict[str, list[str]] = {}
+        for sheet_col, position in MATERIAL_POSITIONS.items():
+            if sheet_col in header:
+                raw_mat = col(row, sheet_col).strip()
+                if raw_mat:
+                    parts = _split_materials_cell(raw_mat)
+                    if parts:
+                        materials_parsed[position] = parts
 
         # Resolve FK refs
         # Guard: split combined types ("Туфлі/кросівки", "Ботинки-челсі") → Type + Subtype
@@ -3541,12 +3621,31 @@ def _parse_workspace_sheet(
                     Product.productnumber == pnum
                 ).first()
                 if product:
+                    # is_lost ставимо ЛИШЕ якщо існуючий товар не має deliveryid
+                    # (тобто це не реальний журнальний товар, а воркспейс-орфан).
+                    # Реальний журнальний товар (має deliveryid) НЕ стає «загубленим»
+                    # лише через збіг номера з аркушем Воркспейс.
                     skipped += 1
                     touched_product_ids.add(product.id)
+                    if product.deliveryid is None:
+                        product.is_lost = True
+                    _apply_new_fields_and_materials(
+                        session, product,
+                        new_fields=parsed_new_fields,
+                        materials_parsed=materials_parsed,
+                        source=ws.title,
+                    )
                     logger.info(
                         "[workspace] REUSED existing product pnum=%s id=%s",
                         pnum, product.id,
                     )
+
+            # Фікс 1: якщо номер уже КЛОН існуючого товару (раніше змерджений) —
+            # не відтворювати загублений запис.
+            if product is None and pnum and _is_already_clone(session, pnum):
+                skipped += 1
+                logger.info("[workspace] SKIP recreate merged-away pnum=%s", pnum)
+                continue
 
             if product is None:
                 product = Product(
@@ -3561,6 +3660,28 @@ def _parse_workspace_sheet(
                     sizeeu                = size_val or None,
                     size_letter           = letter_val or None,
                     measurementscm        = cm_val or None,
+                    measurementscm_min              = cm_min,
+                    measurementscm_max              = cm_max,
+                    measurements_length_min         = length_min,
+                    measurements_length_max         = length_max,
+                    measurements_pog_min            = pog_min,
+                    measurements_pog_max            = pog_max,
+                    measurements_pob_min            = pob_min,
+                    measurements_pob_max            = pob_max,
+                    measurements_pot_min            = pot_min,
+                    measurements_pot_max            = pot_max,
+                    measurements_sleeve_min         = sleeve_min,
+                    measurements_sleeve_max         = sleeve_max,
+                    measurements_height_min         = height_min,
+                    measurements_height_max         = height_max,
+                    measurements_sole_thickness_min = sole_thickness_min,
+                    measurements_sole_thickness_max = sole_thickness_max,
+                    measurements_heel_min           = heel_min,
+                    measurements_heel_max           = heel_max,
+                    soletypeid                      = sole_type_id,
+                    toeshapeid                      = toe_shape_id,
+                    fasteningtypeid                 = fastening_type_id,
+                    liningid                        = lining_id,
                     season                = season_val or None,
                     dimensions            = dimensions_val or None,
                     width                 = width_val or None,
@@ -3576,10 +3697,12 @@ def _parse_workspace_sheet(
                     current_conditionid   = current_cond_id,
                     manufacturercountryid = mfr_id,
                     ownercountryid        = own_id,
+                    is_lost               = True,  # Воркспейс/Старі = загублені (Фаза 3: пошук оригіналу)
                 )
                 session.add(product)
                 try:
                     session.flush()
+                    _apply_product_materials(session, product.id, materials_parsed, ws.title)
                     added += 1
                     touched_product_ids.add(product.id)
                     logger.info(

@@ -320,6 +320,7 @@ class Product(Base):
     year = Column(Integer)
     description = Column(Text)
     extranote = Column(Text)
+    is_lost = Column(Boolean, default=False)  # «Загублені»: товар з Воркспейс/Старі, кандидат на пошук оригіналу
     price = Column(Float, default=0.0)
     oldprice = Column(Float)
     dateadded = Column(Date, default=func.current_date())
