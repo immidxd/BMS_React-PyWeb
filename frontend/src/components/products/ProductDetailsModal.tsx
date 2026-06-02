@@ -284,14 +284,16 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                 className="text-gray-400 hover:text-gray-600 text-sm px-1" title="Скасувати">✕</button>
             </span>
           ) : (
-            <span className="inline-flex items-center gap-1.5">
-              {(value === null || value === undefined || value === '')
-                ? <span className="text-gray-300 dark:text-gray-600 italic">{placeholder || '—'}</span>
-                : <CopyOnClick value={value as string | number} />}
+            <span className="flex items-center gap-1.5 w-full">
+              <span className="inline-flex items-center gap-1.5 min-w-0">
+                {(value === null || value === undefined || value === '')
+                  ? <span className="text-gray-300 dark:text-gray-600 italic">{placeholder || '—'}</span>
+                  : <CopyOnClick value={value as string | number} />}
+                <LockBadge field={field} />
+              </span>
               <button onClick={() => startEdit(field, value ?? '')}
-                className="opacity-0 group-hover:opacity-100 text-[11px] text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition-opacity"
+                className="ml-auto shrink-0 opacity-40 group-hover:opacity-100 text-xs text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition-opacity"
                 title="Редагувати">✎</button>
-              <LockBadge field={field} />
             </span>
           )}
         </span>
@@ -659,7 +661,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                           <span className="text-base text-gray-400 line-through">{Number(p.oldprice).toFixed(0)} ₴</span>
                         )}
                         <button onClick={() => startEdit('price', p.price ?? '')}
-                          className="opacity-0 group-hover:opacity-100 text-sm text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition-opacity self-center"
+                          className="ml-5 self-center opacity-40 group-hover:opacity-100 text-base text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition-opacity"
                           title="Редагувати ціну">✎</button>
                         <LockBadge field="price" />
                       </>
