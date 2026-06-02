@@ -436,23 +436,27 @@ def writeback_order_to_journal(session: Session, order_id: int, dry_run: bool = 
         return (row[i] if 0 <= i < len(row) else ""), i
 
     planned = []  # {field, header, a1, old, new}
-    # tracking + notes (raw)
-    for field, hdr in ORDER_WRITEBACK_HEADERS.items():
-        if field not in locked or hdr not in header:
-            continue
-        old, idx = cell(hdr)
-        new = "" if getattr(o, field) is None else str(getattr(o, field))
+    # tracking → "Номер накладної" (raw)
+    if "tracking_number" in locked and "Номер накладної" in header:
+        old, idx = cell("Номер накладної")
+        new = "" if o.tracking_number is None else str(o.tracking_number)
         if old != new:
-            planned.append({"field": field, "header": hdr,
+            planned.append({"field": "tracking_number", "header": "Номер накладної",
                             "a1": _gspread_a1(r_i, idx + 1), "old": old, "new": new})
-    # sales_channel → token in Уточнення (append if missing)
-    if "sales_channel" in locked and "Уточнення" in header:
-        tok = CHANNEL_TOKENS.get(o.sales_channel or "")
-        old, idx = cell("Уточнення")
-        if tok and not re.search(rf"\b{re.escape(tok)}\b", old, re.IGNORECASE):
-            new = f"{old.rstrip(' ;')}; {tok}".lstrip("; ").strip() if old.strip() else tok
-            planned.append({"field": "sales_channel", "header": "Уточнення",
-                            "a1": _gspread_a1(r_i, idx + 1), "old": old, "new": new})
+
+    # notes AND sales_channel both live in "Коментарі" (parser: notes ← Коментарі;
+    # channel is derived from its text). Combine into ONE target value so they
+    # don't clobber each other. "Уточнення" is for per-product clarifications — NOT touched.
+    if ("notes" in locked or "sales_channel" in locked) and "Коментарі" in header:
+        old, idx = cell("Коментарі")
+        final = ("" if o.notes is None else str(o.notes)) if "notes" in locked else old
+        if "sales_channel" in locked:
+            tok = CHANNEL_TOKENS.get(o.sales_channel or "")
+            if tok and not re.search(rf"\b{re.escape(tok)}\b", final, re.IGNORECASE):
+                final = f"{final.rstrip(' ;')}; {tok}".lstrip("; ").strip() if final.strip() else tok
+        if final != old:
+            planned.append({"field": "notes/channel", "header": "Коментарі",
+                            "a1": _gspread_a1(r_i, idx + 1), "old": old, "new": final})
 
     result = {"ok": True, "tab": target_ws.title, "row": r_i, "client": client_name,
               "dry_run": dry_run, "planned": planned}
