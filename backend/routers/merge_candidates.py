@@ -5,6 +5,7 @@ Workspace-парсер створює пропозиції в `merge_candidates`
 """
 
 import logging
+import threading
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -283,6 +284,23 @@ async def accept_merge_candidate(
             f"[merge-candidates] ACCEPT #{candidate_id}: merged new={new_pid} → suggested={sug_pid}, "
             f"clones now: {new_clones_str!r}, filled empty fields: {filled_fields}"
         )
+
+        # Позначити рядок загубленого у Воркспейс як обʼєднаний (у ФОНІ, не
+        # блокує відповідь; рядок НЕ видаляється — лише позначка, а парсер
+        # Воркспейс надалі його пропускає, тож товар не відродиться).
+        def _mark_merged_bg(lost_pnum=np_pnum, orig_pnum=sp_pnum):
+            try:
+                from backend.scripts import sheets_parser as _sp
+            except ImportError:
+                from scripts import sheets_parser as _sp
+            try:
+                res = _sp.mark_workspace_row_merged(lost_pnum, orig_pnum)
+                if not res.get("ok"):
+                    logger.warning(f"[merge-mark] skipped: {res.get('reason')}")
+            except Exception as me:
+                logger.error(f"[merge-mark] failed: {me}")
+
+        threading.Thread(target=_mark_merged_bg, daemon=True).start()
         return {
             "ok": True,
             "suggested_id": sug_pid,

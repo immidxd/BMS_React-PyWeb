@@ -149,6 +149,11 @@ WRITEBACK_TEXT_FIELDS = {"model", "description", "season", "extranote"}
 WRITEBACK_ENABLED = os.getenv("PARSER_WRITEBACK", "1") != "0"
 _WRITEBACK_BACKUP_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "writeback_backups")
 
+# Marker written into a merged lost product's Воркспейс row ("Екстра примітка").
+# The workspace parser skips rows carrying it, so a merged item is not re-created
+# as is_lost after the source row stays in the sheet.
+MERGE_MARKER_PREFIX = "[BMS:обʼєднано"
+
 
 def _canon_pnum_for_match(s: str) -> str:
     """Canonical productnumber for sheet matching: strip #, trailing ;, spaces."""
@@ -237,6 +242,60 @@ def writeback_field_to_journal(sheet_title: str, productnumber: str, field: str,
     ws.batch_update(updates, value_input_option=value_input)
     logger.info(f"[writeback] {field} → '{sheet_title}' {productnumber}: {len(updates)} row(s), backup={backup_path}")
     return {"ok": True, "rows_updated": len(updates), "header": header_name, "backup": backup_path}
+
+
+def mark_workspace_row_merged(lost_pnum: str, orig_pnum: str) -> dict:
+    """Mark the merged lost product's row(s) in the Воркспейс sheet with a
+    non-destructive note ("Екстра примітка") instead of deleting the row.
+    The workspace parser then skips these rows, so the item is not re-created.
+
+    Matched by the "Номер" column (canonical). Backs up old cell values first.
+    Returns {ok, rows_marked, ...} or {ok: False, reason}.
+    """
+    if not WRITEBACK_ENABLED:
+        return {"ok": False, "reason": "writeback disabled"}
+    lost = _canon_pnum_for_match(lost_pnum)
+    if not lost or lost == "???":
+        return {"ok": False, "reason": "lost product has no resolvable number (cannot locate row)"}
+
+    import gspread as _gspread
+    gc = get_gc()
+    sh = gc.open_by_key(WORKSPACE_ID)
+    try:
+        ws = sh.worksheet(WORKSPACE_SHEET)
+    except Exception:
+        return {"ok": False, "reason": f"workspace sheet '{WORKSPACE_SHEET}' not found"}
+
+    all_values = ws.get_all_values()
+    if not all_values:
+        return {"ok": False, "reason": "empty workspace sheet"}
+    header = [h.strip() for h in all_values[0]]
+    if "Номер" not in header or "Екстра примітка" not in header:
+        return {"ok": False, "reason": "column 'Номер' or 'Екстра примітка' missing"}
+    num_idx = header.index("Номер")
+    note_idx = header.index("Екстра примітка")
+
+    marker = f"{MERGE_MARKER_PREFIX}→#{_canon_pnum_for_match(orig_pnum)}]"
+    updates, backups = [], []
+    for r_i, row in enumerate(all_values[1:], start=2):
+        cell_num = row[num_idx] if num_idx < len(row) else ""
+        if _canon_pnum_for_match(cell_num) != lost:
+            continue
+        old_note = row[note_idx] if note_idx < len(row) else ""
+        if MERGE_MARKER_PREFIX in old_note:
+            continue  # already marked
+        new_note = f"{marker} {old_note}".strip()
+        a1 = _gspread.utils.rowcol_to_a1(r_i, note_idx + 1)
+        updates.append({"range": a1, "values": [[new_note]]})
+        backups.append({"a1": a1, "row": r_i, "old": old_note, "new": new_note})
+
+    if not updates:
+        return {"ok": True, "rows_marked": 0, "note": "no matching/unmarked rows"}
+
+    backup_path = _save_writeback_backup(WORKSPACE_SHEET, lost_pnum, "merge_marker", backups)
+    ws.batch_update(updates, value_input_option="RAW")
+    logger.info(f"[merge-mark] {lost_pnum} → {orig_pnum}: marked {len(updates)} workspace row(s), backup={backup_path}")
+    return {"ok": True, "rows_marked": len(updates), "backup": backup_path}
 
 
 def _file_unchanged(session: Session, spreadsheet_id: str, mode: str, last_update_time: str) -> bool:
@@ -3756,6 +3815,11 @@ def _parse_workspace_sheet(
 
         # Skip truly empty rows
         if not any(c.strip() for c in row):
+            skipped += 1
+            continue
+
+        # Skip rows already merged in BMS (marked) — don't re-create the lost item
+        if MERGE_MARKER_PREFIX in col(row, "Екстра примітка"):
             skipped += 1
             continue
 
