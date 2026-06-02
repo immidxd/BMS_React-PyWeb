@@ -4426,9 +4426,15 @@ def run_full_parsing(
     workspace_result = run_workspace_parsing(session, progress_cb=workspace_cb)
 
     # ── Mark & Sweep: delete orphan products after full parse ────────────
+    # ⚠️ DISABLED BY DEFAULT (2026-06-02): this deleted ALL products not "seen"
+    # this run, using the same unreliable touched-heuristic the prune dry-run
+    # proved produces false positives (legit rostovka variants not touched).
+    # It silently removed ~2400 real-delivery products. Enable only with
+    # PARSER_SWEEP=1 after the heuristic is made reliable / replaced by the
+    # manual review tool. Sold products were protected (NOT EXISTS order_items).
     from sqlalchemy import text
     sweep_deleted = 0
-    if mode == "full":
+    if mode == "full" and os.getenv("PARSER_SWEEP", "0") != "0":
         keep_ids = products_result.get("seen_product_ids", set()) | workspace_result.get("touched_product_ids", set())
         if keep_ids:
             all_ids = {r[0] for r in session.execute(text("SELECT id FROM products")).fetchall()}
