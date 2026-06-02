@@ -4,6 +4,7 @@ import MainLayout from '../layouts/MainLayout';
 import Pagination from '../components/common/Pagination';
 import ProductDetailsModal from '../components/products/ProductDetailsModal';
 import ClientDetailsModal from '../components/clients/ClientDetailsModal';
+import OrderDetailsModal from '../components/orders/OrderDetailsModal';
 import BmsEmpty from '../components/common/BmsEmpty';
 import { CopyOnClick, OrderStatusBadge, PaymentStatusBadge, UnknownIf } from '../components/common/displayHelpers';
 import { DeliveryBadge } from '../components/common/DeliveryBadge';
@@ -395,6 +396,7 @@ const OrdersPage: React.FC<OrdersPageProps> = ({ currentSearchTerm }) => {
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [cardProductId, setCardProductId] = useState<number | null>(null);
   const [cardClientId, setCardClientId] = useState<number | null>(null);
+  const [editOrderId, setEditOrderId] = useState<number | null>(null);
   const [filteredSum, setFilteredSum] = useState<number>(0);
   const [filterOpts, setFilterOpts] = useState<FilterOptions | null>(null);
   // Дефолтний фільтр: останній тиждень. Діє доки користувач сам не змінить
@@ -777,7 +779,15 @@ const OrdersPage: React.FC<OrdersPageProps> = ({ currentSearchTerm }) => {
                     {expandedId === order.id && order.order_items?.length > 0 && (
                       <tr className="bg-blue-50 dark:bg-blue-900/20">
                         <td colSpan={visibleColCount} className="px-6 py-3">
-                          <div className="text-xs font-semibold text-gray-500 dark:text-gray-400 mb-2">Позиції замовлення:</div>
+                          <div className="flex items-center justify-between mb-2">
+                            <div className="text-xs font-semibold text-gray-500 dark:text-gray-400">Позиції замовлення:</div>
+                            <button
+                              onClick={(e) => { e.stopPropagation(); setEditOrderId(order.id); }}
+                              className="inline-flex items-center gap-1.5 text-xs px-3 py-1 rounded-md border border-gray-300 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-200"
+                              title="Редагувати статус / оплату / доставку / трекінг / нотатки / канал">
+                              ✎ Редагувати замовлення
+                            </button>
+                          </div>
                           <table className="w-full text-xs [&_th]:text-center [&_td]:text-center">
                             <thead>
                               <tr className="text-gray-500 dark:text-gray-400">
@@ -955,6 +965,13 @@ const OrdersPage: React.FC<OrdersPageProps> = ({ currentSearchTerm }) => {
         clientId={cardClientId}
         open={cardClientId !== null}
         onClose={() => setCardClientId(null)}
+      />
+      <OrderDetailsModal
+        orderId={editOrderId}
+        open={editOrderId !== null}
+        filterOptions={filterOpts as any}
+        onClose={() => setEditOrderId(null)}
+        onSaved={() => { setEditOrderId(null); fetchOrders(); }}
       />
     </MainLayout>
   );
