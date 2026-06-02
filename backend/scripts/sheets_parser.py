@@ -351,6 +351,128 @@ def mark_workspace_row_merged(lost_pnum: str, orig_pnum: str) -> dict:
     return {"ok": True, "rows_marked": len(updates), "backup": backup_path}
 
 
+# ── Order editing Phase B: write-back to the «Замовлення» sheet ───────────────
+# Raw-text columns only (B1): tracking → "Номер накладної", notes → "Коментарі",
+# sales_channel → token appended into "Уточнення" (the same text the parser reads
+# the channel from). Status/payment/delivery (id→text) are a later step (B2).
+ORDER_WRITEBACK_HEADERS = {"tracking_number": "Номер накладної", "notes": "Коментарі"}
+ORDER_WB_SEARCH_TABS = int(os.getenv("ORDER_WB_SEARCH_TABS", "6"))  # newest tabs to search for an order's row
+# Canonical channel → token written into "Уточнення" (matches _SALES_CHANNEL_PATTERNS).
+CHANNEL_TOKENS = {"Telegram": "TG", "Viber": "Viber", "Instagram": "IG",
+                  "TikTok": "TT", "OLX": "OLX", "Grailed": "Grailed", "Shafa": "Shafa"}
+
+
+def _norm_pnum_set(raw: str) -> set:
+    """Normalized set of product numbers from a 'Номера товарів' cell."""
+    out = set()
+    for tok in re.split(r"[;,]", raw or ""):
+        t = _canon_pnum_for_match(tok)
+        if t:
+            out.add(t.lower())
+    return out
+
+
+def writeback_order_to_journal(session: Session, order_id: int, dry_run: bool = True) -> dict:
+    """Write an order's locked raw-text fields back to its «Замовлення» row.
+
+    Locates the row in the order_date tab by client name + product-number set
+    (requires EXACTLY one match — aborts on 0 or >1 to avoid touching the wrong
+    sale). dry_run=True returns the planned changes without writing.
+    """
+    if not WRITEBACK_ENABLED:
+        return {"ok": False, "reason": "writeback disabled"}
+    try:
+        from backend.models.models import Order, OrderItem, Product, Client
+    except ImportError:
+        from models.models import Order, OrderItem, Product, Client
+
+    o = session.get(Order, order_id)
+    if not o:
+        return {"ok": False, "reason": "order not found"}
+    if not o.order_date:
+        return {"ok": False, "reason": "order has no date (cannot find tab)"}
+    locked = {x.strip() for x in (o.manually_edited_fields or "").split(",") if x.strip()}
+
+    cl = session.get(Client, o.client_id) if o.client_id else None
+    client_name = f"{(cl.first_name or '') if cl else ''} {(cl.last_name or '') if cl else ''}".strip()
+    pnums = {(_canon_pnum_for_match(r[0]) or "").lower()
+             for r in session.execute(text(
+                 "SELECT p.productnumber FROM order_items oi JOIN products p ON p.id=oi.product_id "
+                 "WHERE oi.order_id=:oid"), {"oid": order_id}).fetchall() if r[0]}
+
+    if not pnums:
+        return {"ok": False, "reason": "order has no product numbers to match a row"}
+
+    gc = get_gc()
+    sh = gc.open_by_key(ORDERS_ID)
+    # Orders live in the current batch tab(s), NOT a tab named by order_date, so
+    # search non-skip tabs newest→oldest for a UNIQUE client+products row. Limit
+    # to the newest ORDER_WB_SEARCH_TABS tabs (active orders are recent).
+    search_tabs = [w for w in sh.worksheets() if not is_skip_sheet(w.title)][:ORDER_WB_SEARCH_TABS]
+    matches = []  # (ws, header, r_i, row)
+    for w in search_tabs:
+        rows = w.get_all_values()
+        if not rows:
+            continue
+        header = [h.strip() for h in rows[0]]
+        if "Клієнт" not in header or "Номера товарів" not in header:
+            continue
+        ci, ni = header.index("Клієнт"), header.index("Номера товарів")
+        for r_i, row in enumerate(rows[1:], start=2):
+            rc = (row[ci] if ci < len(row) else "").strip()
+            if rc.lower() != client_name.lower():
+                continue
+            if _norm_pnum_set(row[ni] if ni < len(row) else "") == pnums:
+                matches.append((w, header, r_i, row))
+        if matches:
+            break  # stop at the newest tab that has a match (current order home)
+    if len(matches) != 1:
+        return {"ok": False, "reason": f"ambiguous row match ({len(matches)} found) — not writing",
+                "client": client_name, "pnums": sorted(pnums)}
+    target_ws, header, r_i, row = matches[0]
+
+    def cell(name):
+        i = header.index(name) if name in header else -1
+        return (row[i] if 0 <= i < len(row) else ""), i
+
+    planned = []  # {field, header, a1, old, new}
+    # tracking + notes (raw)
+    for field, hdr in ORDER_WRITEBACK_HEADERS.items():
+        if field not in locked or hdr not in header:
+            continue
+        old, idx = cell(hdr)
+        new = "" if getattr(o, field) is None else str(getattr(o, field))
+        if old != new:
+            planned.append({"field": field, "header": hdr,
+                            "a1": _gspread_a1(r_i, idx + 1), "old": old, "new": new})
+    # sales_channel → token in Уточнення (append if missing)
+    if "sales_channel" in locked and "Уточнення" in header:
+        tok = CHANNEL_TOKENS.get(o.sales_channel or "")
+        old, idx = cell("Уточнення")
+        if tok and not re.search(rf"\b{re.escape(tok)}\b", old, re.IGNORECASE):
+            new = f"{old.rstrip(' ;')}; {tok}".lstrip("; ").strip() if old.strip() else tok
+            planned.append({"field": "sales_channel", "header": "Уточнення",
+                            "a1": _gspread_a1(r_i, idx + 1), "old": old, "new": new})
+
+    result = {"ok": True, "tab": target_ws.title, "row": r_i, "client": client_name,
+              "dry_run": dry_run, "planned": planned}
+    if not planned:
+        result["note"] = "nothing to write (already current or no locked raw fields)"
+        return result
+    if dry_run:
+        return result
+    _save_writeback_backup(target_ws.title, f"order{order_id}", "order_fields", planned)
+    target_ws.batch_update([{"range": p["a1"], "values": [[p["new"]]]} for p in planned],
+                           value_input_option="RAW")
+    logger.info(f"[order-writeback] order {order_id} → '{target_ws.title}' row {r_i}: {len(planned)} cell(s)")
+    return result
+
+
+def _gspread_a1(r: int, c: int) -> str:
+    import gspread as _g
+    return _g.utils.rowcol_to_a1(r, c)
+
+
 def _file_unchanged(session: Session, spreadsheet_id: str, mode: str, last_update_time: str) -> bool:
     """True if the whole file's lastUpdateTime + parser_version match the last
     successful run of this (spreadsheet, mode)."""

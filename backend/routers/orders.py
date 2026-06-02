@@ -3,8 +3,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Path, Body
 from sqlalchemy.orm import Session
 from datetime import date, datetime
 import logging
+import threading
 
-from backend.models.database import get_db
+from backend.models.database import get_db, SessionLocal
 from backend.models.models import Order, OrderItem, Client, Product, PaymentStatus, OrderStatus
 from backend.services.order_service import OrderDAO
 
@@ -584,10 +585,30 @@ async def update_order(
     else:
         _apply_paid_auto_confirm(db, update_data)
     updated_order = order_dao.update_order(order_id, update_data)
-    
+
     # Recalculate order total
     order_dao.recalculate_order_total(order_id)
-    
+
+    # Phase B (B1): write-back raw-text edits (tracking/notes/sales_channel) to the
+    # «Замовлення» sheet — in a BACKGROUND thread (Sheets I/O must not block PUT).
+    # Only if such a field changed; the lock preserves the edit if write-back lags.
+    if any(f in update_data for f in ("tracking_number", "notes", "sales_channel")):
+        def _order_writeback_bg(oid=order_id):
+            try:
+                from backend.scripts import sheets_parser as _sp
+            except ImportError:
+                from scripts import sheets_parser as _sp
+            s = SessionLocal()
+            try:
+                res = _sp.writeback_order_to_journal(s, oid, dry_run=False)
+                if not res.get("ok"):
+                    logger.warning(f"[order-writeback] order {oid} skipped: {res.get('reason')}")
+            except Exception as we:
+                logger.error(f"[order-writeback] order {oid} failed: {we}")
+            finally:
+                s.close()
+        threading.Thread(target=_order_writeback_bg, daemon=True).start()
+
     # Get complete order with details
     return await get_order(order_id, db)
 
