@@ -4376,12 +4376,30 @@ def run_workspace_parsing(
             progress_cb(pct, f"{WORKSPACE_SHEET}: {done}/{total}")
 
     result = _parse_workspace_sheet(ws, session, _cb)
+
+    # Уніфікація лічильника «Збіги»: парсинг вставляє кандидатів СТРОГИМ скорером,
+    # а кнопка «Сканувати» — ЗВАЖЕНИМ. Через це число стрибало після кожного
+    # парсингу. Тому одразу після парсингу перезапускаємо ЗВАЖЕНИЙ скан з
+    # reset=True — він видаляє всі pending-кандидати й перезаписує єдиним
+    # детермінованим скорером. Тепер: та сама БД → те саме число (і після рестарту).
+    scan_summary = None
+    try:
+        from services.match_finder import scan_lost_products as _scan
+    except ImportError:
+        from backend.services.match_finder import scan_lost_products as _scan
+    try:
+        scan_summary = _scan(session, reset=True)
+        logger.info(f"[workspace] auto-scan (weighted, unified count): {scan_summary}")
+    except Exception as e:
+        logger.warning(f"[workspace] auto-scan failed: {e}")
+
     return {
         "sheet":  WORKSPACE_SHEET,
         "merged": result["merged"],
         "added":  result["added"],
         "skipped":result["skipped"],
         "touched_product_ids": result["touched_product_ids"],
+        "scan": scan_summary,
     }
 
 

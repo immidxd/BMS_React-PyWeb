@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Box, Paper, Typography, LinearProgress, IconButton, Collapse, Chip, Button, Alert } from '@mui/material';
+import { Box, Paper, Typography, LinearProgress, IconButton, Collapse, Chip, Button, Alert, Fade } from '@mui/material';
 import { ExpandLess, ExpandMore, Cancel } from '@mui/icons-material';
 import axios from 'axios';
 
@@ -119,14 +119,10 @@ export const ParsingStatus: React.FC<ParsingStatusProps> = ({ jobId = null, onCo
   const showLegacy = Boolean(!jobId && legacy && (legacy.is_running || (legacy.total ?? 0) > 0));
   const showPendingJob = Boolean(jobId && !job); // показувати скелет поки не прийшов перший пакет
   
-  console.log('[ParsingStatus] showJob:', showJob, 'showLegacy:', showLegacy, 'jobId:', jobId, 'job:', job, 'legacy:', legacy);
-  
-  if (!showJob && !showLegacy && !showPendingJob) {
-    return null;
-  }
+  const visible = showJob || showLegacy || showPendingJob;
 
   const percent = showJob
-    ? (Number(job.percent ?? (job.total_items ? Math.round((job.processed_items / job.total_items) * 100) : 0)))
+    ? (Number(job?.percent ?? (job?.total_items ? Math.round((job.processed_items / job.total_items) * 100) : 0)))
     : (legacy && legacy.total > 0 ? Math.round((legacy.current / legacy.total) * 100) : 0);
 
   const title = showJob ? `Парсинг (${job.mode || '...'})` : 'Парсинг даних';
@@ -137,7 +133,8 @@ export const ParsingStatus: React.FC<ParsingStatusProps> = ({ jobId = null, onCo
   const statusLine = showJob ? `Статус: ${job.status}` : (showPendingJob ? 'З’єднання...' : (legacy?.task || ''));
 
   return (
-    <Box sx={{ position: 'fixed', bottom: 16, right: 16, zIndex: 2000, minWidth: 300, maxWidth: 420 }}>
+    <Fade in={visible} unmountOnExit timeout={250}>
+    <Box sx={{ position: 'fixed', bottom: 16, right: 16, zIndex: 2000, width: 380 }}>
       <Paper elevation={6} sx={{ overflow: 'hidden' }}>
         <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', p: 1, bgcolor: '#111', color: '#fff', cursor: 'pointer' }} onClick={() => setExpanded(!expanded)}>
           <Typography variant="subtitle2" sx={{ fontWeight: 'bold' }}>{subtitle || title}</Typography>
@@ -147,14 +144,14 @@ export const ParsingStatus: React.FC<ParsingStatusProps> = ({ jobId = null, onCo
         <Collapse in={expanded}>
           <Box sx={{ p: 2 }}>
             <Typography variant="body2" gutterBottom>{statusLine}</Typography>
-            <Box display="flex" alignItems="center" gap={1} mb={1}>
+            <Box display="flex" alignItems="center" gap={1} mb={1} sx={{ flexWrap: 'nowrap', minWidth: 0, '& .MuiChip-root': { flexShrink: 0 } }}>
               <Chip label={`${Number.isFinite(percent) ? percent : 0}%`} size="small" sx={{ bgcolor: '#111', color: '#fff' }} />
               {(showJob || showPendingJob) && (
                 <>
                   <Chip label={`${job?.processed_items ?? 0} / ${job?.total_items ?? '...'}`} size="small" />
                   <Chip label={`Rate: ${job?.items_per_sec ?? 0}/s`} size="small" />
                   <Chip label={`ETA: ${job?.eta_seconds ?? '...'}s`} size="small" />
-                  <Typography variant="caption" color="text.secondary">Крок: {job?.current_step || '...'}</Typography>
+                  <Typography variant="caption" color="text.secondary" noWrap sx={{ minWidth: 0, flexShrink: 1, overflow: 'hidden', textOverflow: 'ellipsis' }}>Крок: {job?.current_step || '...'}</Typography>
                 </>
               )}
               {!showJob && legacy && legacy.total > 0 && (
@@ -218,5 +215,6 @@ export const ParsingStatus: React.FC<ParsingStatusProps> = ({ jobId = null, onCo
         </Collapse>
       </Paper>
     </Box>
+    </Fade>
   );
 }; 
