@@ -606,6 +606,12 @@ def create_product(db: Session, product: schemas.ProductCreate) -> models.Produc
 # overwrite (the parser restores the user's value after a reparse). Keep in sync
 # with the frontend inline-edit set and PRODUCT_LOCK_FIELDS in sheets_parser.
 LOCKABLE_PRODUCT_FIELDS = {"price", "oldprice", "model", "marking", "description", "extranote", "season"}
+# Propagation policy across rostovka siblings (same productnumber):
+#   PER_ITEM_FIELDS — unique per pair, NEVER propagated (e.g. condition/стан).
+#   PRICE_FIELDS    — propagated only to same-condition siblings without their own locked price.
+#   (anything else lockable) — per-model: propagated to all siblings.
+PER_ITEM_FIELDS = {"current_conditionid", "conditionid"}
+PRICE_FIELDS = {"price", "oldprice"}
 
 
 def _merge_lock(prod, fields: set) -> None:
@@ -658,17 +664,33 @@ def update_product(db: Session, product_id: int, product: schemas.ProductUpdate)
             if newly_locked:
                 _merge_lock(db_product, newly_locked)
 
-                # Per-model: a shared field applies to ALL sizes of this number.
-                # Propagate values + lock to siblings so the rostovka stays
-                # consistent in the DB (write-back covers all sheet rows).
+                # Per-field propagation policy across rostovka siblings (same number):
+                #   • PER_ITEM (стан) — NEVER propagate (unique per pair).
+                #   • price/oldprice — only to siblings with the SAME current_conditionid
+                #     AND no own manually-locked price (a diverged pair keeps its price).
+                #   • everything else (model/marking/description/season/...) — per-model
+                #     (propagate to all siblings) so the rostovka stays consistent.
                 siblings = db.query(models.Product).filter(
                     models.Product.productnumber == db_product.productnumber,
                     models.Product.id != db_product.id,
                 ).all()
                 for sib in siblings:
+                    sib_locked = set()
+                    if sib.manually_edited_fields:
+                        sib_locked = {x.strip() for x in sib.manually_edited_fields.split(",") if x.strip()}
+                    same_condition = sib.current_conditionid == db_product.current_conditionid
+                    propagate_price = same_condition and ("price" not in sib_locked)
+
+                    applied = set()
                     for f in newly_locked:
+                        if f in PER_ITEM_FIELDS:
+                            continue  # стан — унікальний на пару
+                        if f in PRICE_FIELDS and not propagate_price:
+                            continue  # diverged pair keeps its own price
                         setattr(sib, f, getattr(db_product, f))
-                    _merge_lock(sib, newly_locked)
+                        applied.add(f)
+                    if applied:
+                        _merge_lock(sib, applied)
 
             db.commit()
             db.refresh(db_product)
