@@ -59,7 +59,7 @@ BATCH_CHUNK = int(os.getenv("PARSER_BATCH_CHUNK", "50"))  # sheets per batch rea
 #
 # Bump PARSER_VERSION whenever the orders parsing logic changes in a way that
 # would produce different output for the same input → forces a full reparse.
-PARSER_VERSION = 1
+PARSER_VERSION = 2  # v2: МІСЦЕВ* → "Місцевий" (was wrongly → "Самовивіз")
 HASH_SKIP_ENABLED = os.getenv("PARSER_HASH_SKIP", "1") != "0"
 
 # ── Layer C: whole-file change gate ───────────────────────────────────────────
@@ -458,8 +458,68 @@ def writeback_order_to_journal(session: Session, order_id: int, dry_run: bool = 
             planned.append({"field": "notes/channel", "header": "Коментарі",
                             "a1": _gspread_a1(r_i, idx + 1), "old": old, "new": final})
 
+    # ── B2: status / payment / delivery (FK → sheet text) ──────────────────
+    # id→text is derived from the column's OWN existing values (a value already
+    # present is a valid dropdown option the parser re-reads to the same id).
+    # Read-only resolution (never creates a DeliveryMethod).
+    try:
+        from backend.models.models import DeliveryMethod
+    except ImportError:
+        from models.models import DeliveryMethod
+
+    def _ro_resolve(field, v):
+        if not v or not v.strip():
+            return None
+        if field == "order_status_id":
+            return _resolve_order_status(session, v)
+        if field == "payment_status_id":
+            return _resolve_payment_status(session, v)
+        # delivery — read-only (do NOT create)
+        up = v.strip().upper()
+        name = _DELIVERY_MAP.get(up) or next((val for k, val in _DELIVERY_MAP.items() if k in up), None)
+        if not name:
+            name = v.strip()
+        dm = next((d for d in session.query(DeliveryMethod).all()
+                   if d.method_name and d.method_name.strip().lower() == name.lower()), None)
+        return dm.id if dm else None
+
+    fk_skipped = []
+    for field, hdr in [("order_status_id", "Статус відповіді"),
+                       ("payment_status_id", "Статус оплати"),
+                       ("delivery_method_id", "Доставка")]:
+        if field not in locked or hdr not in header:
+            continue
+        col_idx = header.index(hdr)
+        old = row[col_idx] if col_idx < len(row) else ""
+        tid = getattr(o, field)
+        if tid is None:
+            if old.strip():
+                planned.append({"field": field, "header": hdr,
+                                "a1": _gspread_a1(r_i, col_idx + 1), "old": old, "new": ""})
+            continue
+        # build id→text from this column's existing values
+        id2text = {}
+        for rr in rows[1:]:
+            cv = (rr[col_idx] if col_idx < len(rr) else "").strip()
+            if not cv:
+                continue
+            rid = _ro_resolve(field, cv)
+            if rid is not None and rid not in id2text:
+                id2text[rid] = cv
+        # If the cell ALREADY resolves to the target id, leave it — don't rewrite
+        # a valid synonym (e.g. cell text differs but means the same method).
+        if _ro_resolve(field, old) == tid:
+            continue
+        new = id2text.get(tid)
+        if new is None:
+            fk_skipped.append(f"{field}=id{tid}: no existing sheet value to copy (won't guess)")
+            continue
+        if old.strip() != new.strip():
+            planned.append({"field": field, "header": hdr,
+                            "a1": _gspread_a1(r_i, col_idx + 1), "old": old, "new": new})
+
     result = {"ok": True, "tab": target_ws.title, "row": r_i, "client": client_name,
-              "dry_run": dry_run, "planned": planned}
+              "dry_run": dry_run, "planned": planned, "fk_skipped": fk_skipped}
     if not planned:
         result["note"] = "nothing to write (already current or no locked raw fields)"
         return result
@@ -3238,9 +3298,10 @@ _DELIVERY_MAP = {
     "НОВА": "Нова пошта",
     # Укрпошта
     "УП": "Укрпошта", "УКРПОШТА": "Укрпошта", "УКР ПОШТА": "Укрпошта",
-    # Самовивіз
+    # Самовивіз — клієнт сам забирає
     "САМОВИВІЗ": "Самовивіз", "САМОВИВОЗ": "Самовивіз",
-    "МІСЦЕВИЙ": "Самовивіз", "МІСЦЕВ": "Самовивіз", "МІСТ": "Самовивіз",
+    # Місцевий — ми самі веземо (кур'єром); ОКРЕМИЙ метод, НЕ Самовивіз
+    "МІСЦЕВИЙ": "Місцевий", "МІСЦЕВА": "Місцевий", "МІСЦЕВ": "Місцевий", "МІСТ": "Місцевий",
     # Магазин
     "МАГАЗИН": "Магазин", "МАГ": "Магазин",
     # Відкладено

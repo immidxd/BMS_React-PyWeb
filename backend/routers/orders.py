@@ -592,7 +592,8 @@ async def update_order(
     # Phase B (B1): write-back raw-text edits (tracking/notes/sales_channel) to the
     # «Замовлення» sheet — in a BACKGROUND thread (Sheets I/O must not block PUT).
     # Only if such a field changed; the lock preserves the edit if write-back lags.
-    if any(f in update_data for f in ("tracking_number", "notes", "sales_channel")):
+    if any(f in update_data for f in ("tracking_number", "notes", "sales_channel",
+                                      "order_status_id", "payment_status_id", "delivery_method_id")):
         def _order_writeback_bg(oid=order_id):
             try:
                 from backend.scripts import sheets_parser as _sp
