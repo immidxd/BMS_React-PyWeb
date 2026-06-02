@@ -71,6 +71,65 @@ HASH_SKIP_ENABLED = os.getenv("PARSER_HASH_SKIP", "1") != "0"
 # Rollback: env PARSER_FILE_GATE=0 or DROP TABLE spreadsheet_sync_state.
 FILE_GATE_ENABLED = os.getenv("PARSER_FILE_GATE", "1") != "0"
 
+# ── Phase 2a: in-app edit locks ───────────────────────────────────────────────
+# Fields a user can edit in the app; once edited (products.manually_edited_at set)
+# the parser must not overwrite them. Implemented as snapshot-restore at run
+# level: capture locked values before parsing, restore after — leaves the ~40
+# scattered field-set sites in _parse_products_sheet untouched.
+# Keep in sync with LOCKABLE_PRODUCT_FIELDS in product_service.
+PRODUCT_LOCKS_ENABLED = os.getenv("PRODUCT_LOCKS", "1") != "0"
+PRODUCT_LOCK_FIELDS = {"price", "model", "description", "extranote", "season"}
+
+
+def _snapshot_product_locks(session: Session) -> dict:
+    """Return {product_id: {field: value}} for products with active in-app
+    locks, capturing the user's current (edited) values before a reparse."""
+    if not PRODUCT_LOCKS_ENABLED:
+        return {}
+    try:
+        from backend.models.models import Product
+    except ImportError:
+        from models.models import Product
+    rows = session.execute(text(
+        "SELECT id, manually_edited_fields FROM products "
+        "WHERE manually_edited_at IS NOT NULL "
+        "AND manually_edited_fields IS NOT NULL AND btrim(manually_edited_fields) <> ''"
+    )).fetchall()
+    snapshot: dict = {}
+    for pid, fields_csv in rows:
+        flds = [f.strip() for f in fields_csv.split(",")
+                if f.strip() in PRODUCT_LOCK_FIELDS]
+        if not flds:
+            continue
+        prod = session.get(Product, pid)
+        if prod is None:
+            continue
+        snapshot[pid] = {f: getattr(prod, f) for f in flds}
+    return snapshot
+
+
+def _restore_product_locks(session: Session, snapshot: dict) -> int:
+    """Re-apply locked field values the parser may have overwritten. Returns the
+    number of fields restored."""
+    if not snapshot:
+        return 0
+    try:
+        from backend.models.models import Product
+    except ImportError:
+        from models.models import Product
+    restored = 0
+    for pid, fieldvals in snapshot.items():
+        prod = session.get(Product, pid)
+        if prod is None:  # product merged/removed during parse — skip
+            continue
+        for f, v in fieldvals.items():
+            if getattr(prod, f) != v:
+                setattr(prod, f, v)
+                restored += 1
+    if restored:
+        session.commit()
+    return restored
+
 
 def _file_unchanged(session: Session, spreadsheet_id: str, mode: str, last_update_time: str) -> bool:
     """True if the whole file's lastUpdateTime + parser_version match the last
@@ -3959,6 +4018,10 @@ def run_products_parsing(
         return {"mode": mode, "sheets": 0, "added": 0, "updated": 0,
                 "skipped": 0, "file_unchanged": True, "seen_product_ids": set()}
 
+    # Phase 2a: snapshot user-locked field values before the parser may
+    # overwrite them; restored after the run so in-app edits survive reparse.
+    locked_snapshot = _snapshot_product_locks(session)
+
     all_sheets = sh.worksheets()
 
     batch_sheets = [ws for ws in all_sheets if not is_skip_sheet(ws.title)]
@@ -4007,6 +4070,11 @@ def run_products_parsing(
     if shipment_ids:
         session.commit()
 
+    # Phase 2a: restore user-locked fields the parser may have overwritten
+    restored = _restore_product_locks(session, locked_snapshot)
+    if restored:
+        logger.info(f"[products] Restored {restored} user-locked field(s) after reparse")
+
     # Layer C: record file marker only after a full successful run
     if file_lut is not None:
         _record_file_state(session, JOURNAL_ID, f"products_{mode}", file_lut)
@@ -4018,6 +4086,7 @@ def run_products_parsing(
         "added":   total_added,
         "updated": total_updated,
         "skipped": total_skipped,
+        "locks_restored": restored,
         "seen_product_ids": set(seen_in_run.keys()),
     }
 

@@ -356,9 +356,13 @@ class Product(Base):
     measurements_heel_max           = Column(Float)
     quantity = Column(Integer, default=1)
     mainimage = Column(String(255))
+    # In-app edit locks (Phase 2a) — fields the user edited in the app; parser
+    # restores these to the user's value after reparse (mirrors clients.*).
+    manually_edited_fields = Column(Text, nullable=True)   # CSV: 'price,model,description'
+    manually_edited_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-    
+
     # Foreign Keys
     typeid = Column(Integer, ForeignKey("types.id"), nullable=True)
     subtypeid = Column(Integer, ForeignKey("subtypes.id"), nullable=True)

@@ -602,14 +602,34 @@ def create_product(db: Session, product: schemas.ProductCreate) -> models.Produc
         logger.error(f"Error creating product: {str(e)}")
         raise
 
+# Phase 2a: fields that, when edited in the app, get locked against parser
+# overwrite (the parser restores the user's value after a reparse). Keep in sync
+# with the frontend inline-edit set and PRODUCT_LOCK_FIELDS in sheets_parser.
+LOCKABLE_PRODUCT_FIELDS = {"price", "model", "description", "extranote", "season"}
+
+
 def update_product(db: Session, product_id: int, product: schemas.ProductUpdate) -> Optional[models.Product]:
-    """Update an existing product"""
+    """Update an existing product.
+
+    Edited fields in LOCKABLE_PRODUCT_FIELDS get recorded in
+    manually_edited_fields so the parser won't overwrite them on reparse.
+    """
     try:
         db_product = db.query(models.Product).filter(models.Product.id == product_id).first()
         if db_product:
             update_data = product.dict(exclude_unset=True)
             for key, value in update_data.items():
                 setattr(db_product, key, value)
+
+            # Lock the lockable fields the user just edited (merge with existing).
+            newly_locked = {k for k in update_data.keys() if k in LOCKABLE_PRODUCT_FIELDS}
+            if newly_locked:
+                existing = set()
+                if db_product.manually_edited_fields:
+                    existing = {x.strip() for x in db_product.manually_edited_fields.split(",") if x.strip()}
+                db_product.manually_edited_fields = ",".join(sorted(existing | newly_locked))
+                db_product.manually_edited_at = datetime.utcnow()
+
             db.commit()
             db.refresh(db_product)
             logger.debug(f"Updated product: {db_product}")

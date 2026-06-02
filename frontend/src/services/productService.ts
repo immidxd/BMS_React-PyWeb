@@ -141,6 +141,20 @@ export const productService = {
     },
     
     /**
+     * Зняти in-app лок з полів товару («скинути до аркуша»).
+     * fields порожній/відсутній → розблокувати всі.
+     */
+    async unlockProductFields(id: number, fields?: string[]): Promise<{ success: boolean; remaining_locked: string[]; message: string }> {
+        try {
+            const response = await axios.patch(`${API_URL}/${id}/unlock`, { fields: fields ?? null });
+            return response.data;
+        } catch (error) {
+            console.error(`Error unlocking product ${id}:`, error);
+            throw error;
+        }
+    },
+
+    /**
      * Видалити товар
      */
     async deleteProduct(id: number): Promise<{ success: boolean; message: string }> {

@@ -227,7 +227,10 @@ class Product(ProductBase):
     dateadded: Optional[datetime] = Field(default_factory=datetime.now)
     created_at: datetime
     updated_at: datetime
-    
+    # In-app edit locks (Phase 2a) — exposed so the UI can show a "✎ edited" badge
+    manually_edited_fields: Optional[str] = None
+    manually_edited_at: Optional[datetime] = None
+
     # Додаткові поля з пов'язаних таблиць
     type_name: Optional[str] = None
     subtype_name: Optional[str] = None

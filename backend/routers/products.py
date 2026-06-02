@@ -385,6 +385,49 @@ async def update_product_visibility(
         logger.error(f"Error updating product visibility {product_id}: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Помилка при оновленні видимості товару: {str(e)}")
 
+@router.patch("/api/products/{product_id}/unlock", response_model=Dict[str, Any])
+async def unlock_product_fields(
+    product_id: int = Path(..., ge=1, description="ID товару"),
+    fields: Optional[List[str]] = Body(None, embed=True,
+        description="Поля для розблокування; порожньо/null = розблокувати всі"),
+    db: Session = Depends(get_db)
+):
+    """
+    Зняти in-app лок з полів товару («скинути до аркуша»). Розблоковані поля
+    буде відновлено зі значення аркуша при наступному парсингу.
+    """
+    try:
+        product = product_service.get_product(db, product_id)
+        if not product:
+            raise HTTPException(status_code=404, detail=f"Товар з ID {product_id} не знайдено")
+
+        current = set()
+        if product.manually_edited_fields:
+            current = {x.strip() for x in product.manually_edited_fields.split(",") if x.strip()}
+
+        if fields:
+            remaining = current - {f.strip() for f in fields}
+        else:
+            remaining = set()  # unlock all
+
+        product.manually_edited_fields = ",".join(sorted(remaining)) if remaining else None
+        if not remaining:
+            product.manually_edited_at = None
+        db.commit()
+        return {
+            "success": True,
+            "product_id": product_id,
+            "remaining_locked": sorted(remaining),
+            "message": "Лок знято — значення відновляться з аркуша при наступному парсингу",
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error unlocking product {product_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Помилка при розблокуванні товару: {str(e)}")
+
+
 @router.post("/api/products/bulk-update", response_model=Dict[str, Any])
 async def bulk_update_products(
     product_ids: List[int] = Body(..., min_items=1),

@@ -37,6 +37,10 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
   const [editingPhotoSrc, setEditingPhotoSrc] = useState(false);
   const [photoSrcDraft, setPhotoSrcDraft] = useState('');
   const [savingPhotoSrc, setSavingPhotoSrc] = useState(false);
+  // Inline-редагування полів товару (Phase 2a): ціна, модель, опис, примітка, сезон
+  const [editingField, setEditingField] = useState<string | null>(null);
+  const [fieldDraft, setFieldDraft] = useState('');
+  const [savingField, setSavingField] = useState(false);
 
   const officialCount = useMemo(() => allImages.filter((i) => (i.kind ?? 'official') === 'official').length, [allImages]);
   const realCount = useMemo(() => allImages.filter((i) => i.kind === 'real').length, [allImages]);
@@ -75,6 +79,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     setActiveKind('official');
     setActiveIdx(0);
     setEditingPhotoSrc(false);
+    setEditingField(null);
     reloadProductAndImages(true);
   }, [open, productId, reloadProductAndImages]);
 
@@ -93,6 +98,44 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     } finally {
       setSavingPhotoSrc(false);
     }
+  };
+
+  // Зберегти редаговане поле товару (Phase 2a) → лок ставиться на бекенді
+  const saveField = async (field: string) => {
+    if (!productId) return;
+    setSavingField(true);
+    try {
+      let val: any = fieldDraft.trim();
+      if (field === 'price') {
+        val = val === '' ? null : Number(val);
+        if (val !== null && (isNaN(val) || val < 0)) { setSavingField(false); return; }
+      } else if (val === '') {
+        val = null;
+      }
+      await productService.updateProduct(productId, { [field]: val } as any);
+      setEditingField(null);
+      await reloadProductAndImages(false);
+    } catch (e) {
+      console.error('Failed to save field', field, e);
+    } finally {
+      setSavingField(false);
+    }
+  };
+
+  // Зняти лок з поля («скинути до аркуша») → відновиться при наступному парсингу
+  const unlockField = async (field: string) => {
+    if (!productId) return;
+    try {
+      await productService.unlockProductFields(productId, [field]);
+      await reloadProductAndImages(false);
+    } catch (e) {
+      console.error('Failed to unlock field', field, e);
+    }
+  };
+
+  const startEdit = (field: string, raw: string | number | null | undefined) => {
+    setEditingField(field);
+    setFieldDraft(raw == null ? '' : String(raw));
   };
 
   // Якщо офіційних нема, а реальні є — стартуємо з «Реальні»
@@ -176,6 +219,12 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     return parts.filter((x) => x.val);
   }, [p]);
 
+  // Поля, залочені в програмі (Phase 2a) — парсер їх не перезатирає
+  const lockedFields = useMemo(() => {
+    const raw = (p?.manually_edited_fields || '').trim();
+    return new Set(raw ? raw.split(',').map((s) => s.trim()).filter(Boolean) : []);
+  }, [p]);
+
   if (!open) return null;
 
   const InfoRow: React.FC<{ label: string; value?: React.ReactNode; copyable?: boolean }> = ({ label, value }) => {
@@ -190,6 +239,61 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
           {(typeof value === 'string' || typeof value === 'number')
             ? <CopyOnClick value={value as string | number} />
             : value}
+        </span>
+      </div>
+    );
+  };
+
+  // Бейдж «змінено в програмі» + кнопка «скинути до аркуша» для залоченого поля
+  const LockBadge: React.FC<{ field: string }> = ({ field }) =>
+    lockedFields.has(field) ? (
+      <span className="inline-flex items-center gap-1 ml-1 align-middle">
+        <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300 font-medium"
+              title="Змінено в програмі — парсер не перезатирає">✎ змінено</span>
+        <button onClick={() => unlockField(field)}
+                className="text-[10px] text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
+                title="Скинути до аркуша (відновиться при наступному парсингу)">↺</button>
+      </span>
+    ) : null;
+
+  // Inline-редаговане поле-рядок (модель, сезон). type: text|number|textarea
+  const EditableRow: React.FC<{
+    field: string; label: string; value?: string | number | null;
+    type?: 'text' | 'number' | 'textarea'; placeholder?: string;
+  }> = ({ field, label, value, type = 'text', placeholder }) => {
+    const isEditing = editingField === field;
+    return (
+      <div className="flex items-baseline gap-3 py-1.5 group">
+        <span className="text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500 w-[128px] shrink-0 font-medium">{label}</span>
+        <span className="text-sm text-gray-800 dark:text-gray-200 break-words flex-1 min-w-0">
+          {isEditing ? (
+            <span className="inline-flex items-center gap-1.5 w-full">
+              {type === 'textarea' ? (
+                <textarea autoFocus value={fieldDraft} onChange={(e) => setFieldDraft(e.target.value)}
+                  className="flex-1 px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 min-h-[60px]"
+                  onKeyDown={(e) => { if (e.key === 'Escape') setEditingField(null); }} />
+              ) : (
+                <input autoFocus type={type === 'number' ? 'number' : 'text'} value={fieldDraft}
+                  onChange={(e) => setFieldDraft(e.target.value)}
+                  className="flex-1 px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800"
+                  onKeyDown={(e) => { if (e.key === 'Enter') saveField(field); if (e.key === 'Escape') setEditingField(null); }} />
+              )}
+              <button onClick={() => saveField(field)} disabled={savingField}
+                className="text-green-600 hover:text-green-700 text-sm px-1" title="Зберегти">✓</button>
+              <button onClick={() => setEditingField(null)}
+                className="text-gray-400 hover:text-gray-600 text-sm px-1" title="Скасувати">✕</button>
+            </span>
+          ) : (
+            <span className="inline-flex items-center gap-1.5">
+              {(value === null || value === undefined || value === '')
+                ? <span className="text-gray-300 dark:text-gray-600 italic">{placeholder || '—'}</span>
+                : <CopyOnClick value={value as string | number} />}
+              <button onClick={() => startEdit(field, value ?? '')}
+                className="opacity-0 group-hover:opacity-100 text-[11px] text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition-opacity"
+                title="Редагувати">✎</button>
+              <LockBadge field={field} />
+            </span>
+          )}
         </span>
       </div>
     );
@@ -526,19 +630,39 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                 {/* Right: Info */}
                 <div className="flex flex-col min-w-0">
                   {/* Price */}
-                  <div className="flex items-baseline gap-3 mb-3">
-                    {p.price != null && p.price > 0 ? (
-                      <span className="text-3xl font-bold text-gray-900 dark:text-gray-50">
-                        <CopyOnClick
-                          value={Number(p.price).toFixed(0)}
-                          display={<>{Number(p.price).toFixed(0)} ₴</>}
-                        />
+                  <div className="flex items-baseline gap-3 mb-3 group">
+                    {editingField === 'price' ? (
+                      <span className="inline-flex items-center gap-1.5">
+                        <input autoFocus type="number" value={fieldDraft}
+                          onChange={(e) => setFieldDraft(e.target.value)}
+                          className="w-28 px-2 py-1 text-2xl font-bold rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800"
+                          onKeyDown={(e) => { if (e.key === 'Enter') saveField('price'); if (e.key === 'Escape') setEditingField(null); }} />
+                        <span className="text-2xl font-bold">₴</span>
+                        <button onClick={() => saveField('price')} disabled={savingField}
+                          className="text-green-600 hover:text-green-700 text-lg px-1" title="Зберегти">✓</button>
+                        <button onClick={() => setEditingField(null)}
+                          className="text-gray-400 hover:text-gray-600 text-lg px-1" title="Скасувати">✕</button>
                       </span>
                     ) : (
-                      <span className="text-xl text-gray-300 dark:text-gray-600">Ціна не вказана</span>
-                    )}
-                    {p.oldprice != null && p.oldprice > 0 && p.oldprice !== p.price && (
-                      <span className="text-base text-gray-400 line-through">{Number(p.oldprice).toFixed(0)} ₴</span>
+                      <>
+                        {p.price != null && p.price > 0 ? (
+                          <span className="text-3xl font-bold text-gray-900 dark:text-gray-50">
+                            <CopyOnClick
+                              value={Number(p.price).toFixed(0)}
+                              display={<>{Number(p.price).toFixed(0)} ₴</>}
+                            />
+                          </span>
+                        ) : (
+                          <span className="text-xl text-gray-300 dark:text-gray-600">Ціна не вказана</span>
+                        )}
+                        {p.oldprice != null && p.oldprice > 0 && p.oldprice !== p.price && (
+                          <span className="text-base text-gray-400 line-through">{Number(p.oldprice).toFixed(0)} ₴</span>
+                        )}
+                        <button onClick={() => startEdit('price', p.price ?? '')}
+                          className="opacity-0 group-hover:opacity-100 text-sm text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition-opacity self-center"
+                          title="Редагувати ціну">✎</button>
+                        <LockBadge field="price" />
+                      </>
                     )}
                   </div>
 
@@ -584,12 +708,12 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                   <div className="border-t border-gray-100 dark:border-gray-800 pt-4">
                     <div className="text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500 mb-2 font-medium">Характеристики</div>
                     <InfoRow label="Бренд" value={formatBrandName((p as any).brand_name)} />
-                    <InfoRow label="Модель" value={p.model} copyable />
+                    <EditableRow field="model" label="Модель" value={p.model} />
                     <InfoRow label="Тип" value={(p as any).type_name} />
                     <InfoRow label="Підтип" value={(p as any).subtype_name} />
                     <InfoRow label="Стиль" value={(p as any).style_name} />
                     <InfoRow label="Стать" value={(p as any).gender_name} />
-                    <InfoRow label="Сезон" value={p.season} />
+                    <EditableRow field="season" label="Сезон" value={p.season} />
                     <InfoRow label="Колір" value={(p as any).color_name} />
                     <InfoRow label="Габарити" value={p.dimensions} />
                     <InfoRow label="Ширина" value={p.width} />
@@ -653,25 +777,69 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                 </div>
               </div>
 
-              {/* Description */}
-              {p.description && (
-                <div className="px-6 pb-4">
-                  <div className="text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500 mb-2 font-medium">Опис</div>
+              {/* Description (editable) */}
+              <div className="px-6 pb-4 group">
+                <div className="text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500 mb-2 font-medium flex items-center gap-2">
+                  Опис
+                  {editingField !== 'description' && (
+                    <button onClick={() => startEdit('description', p.description ?? '')}
+                      className="opacity-0 group-hover:opacity-100 text-[11px] text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition-opacity normal-case"
+                      title="Редагувати опис">✎ редагувати</button>
+                  )}
+                  <LockBadge field="description" />
+                </div>
+                {editingField === 'description' ? (
+                  <div>
+                    <textarea autoFocus value={fieldDraft} onChange={(e) => setFieldDraft(e.target.value)}
+                      className="w-full px-4 py-3 text-sm rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 min-h-[80px]"
+                      onKeyDown={(e) => { if (e.key === 'Escape') setEditingField(null); }} />
+                    <div className="flex gap-2 mt-1">
+                      <button onClick={() => saveField('description')} disabled={savingField}
+                        className="text-xs px-3 py-1 rounded bg-green-600 !text-white hover:bg-green-700">Зберегти</button>
+                      <button onClick={() => setEditingField(null)}
+                        className="text-xs px-3 py-1 rounded bg-gray-200 dark:bg-gray-700">Скасувати</button>
+                    </div>
+                  </div>
+                ) : (
                   <p className="text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap leading-relaxed bg-gray-50 dark:bg-gray-800/40 rounded-lg px-4 py-3 first-letter:uppercase">
-                    {p.description}
+                    {p.description || <span className="text-gray-300 dark:text-gray-600 italic">опис не вказано</span>}
                   </p>
-                </div>
-              )}
+                )}
+              </div>
 
-              {/* Notes */}
-              {p.extranote && (
-                <div className="px-6 pb-6">
-                  <div className="text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500 mb-2 font-medium">Примітки</div>
-                  <p className="text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap leading-relaxed bg-amber-50 dark:bg-amber-900/15 rounded-lg px-4 py-3 border border-amber-100 dark:border-amber-800/30">
-                    {p.extranote}
-                  </p>
+              {/* Notes (editable) */}
+              <div className="px-6 pb-6 group">
+                <div className="text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500 mb-2 font-medium flex items-center gap-2">
+                  Примітки
+                  {editingField !== 'extranote' && (
+                    <button onClick={() => startEdit('extranote', p.extranote ?? '')}
+                      className="opacity-0 group-hover:opacity-100 text-[11px] text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition-opacity normal-case"
+                      title="Редагувати примітку">✎ редагувати</button>
+                  )}
+                  <LockBadge field="extranote" />
                 </div>
-              )}
+                {editingField === 'extranote' ? (
+                  <div>
+                    <textarea autoFocus value={fieldDraft} onChange={(e) => setFieldDraft(e.target.value)}
+                      className="w-full px-4 py-3 text-sm rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 min-h-[60px]"
+                      onKeyDown={(e) => { if (e.key === 'Escape') setEditingField(null); }} />
+                    <div className="flex gap-2 mt-1">
+                      <button onClick={() => saveField('extranote')} disabled={savingField}
+                        className="text-xs px-3 py-1 rounded bg-green-600 !text-white hover:bg-green-700">Зберегти</button>
+                      <button onClick={() => setEditingField(null)}
+                        className="text-xs px-3 py-1 rounded bg-gray-200 dark:bg-gray-700">Скасувати</button>
+                    </div>
+                  </div>
+                ) : (
+                  p.extranote ? (
+                    <p className="text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap leading-relaxed bg-amber-50 dark:bg-amber-900/15 rounded-lg px-4 py-3 border border-amber-100 dark:border-amber-800/30">
+                      {p.extranote}
+                    </p>
+                  ) : (
+                    <p className="text-sm text-gray-300 dark:text-gray-600 italic px-4 py-3">примітку не вказано</p>
+                  )
+                )}
+              </div>
             </div>
           </>
         )}

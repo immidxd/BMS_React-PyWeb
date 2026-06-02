@@ -44,6 +44,8 @@ export interface Product {
     measurementscm_min?: number;   // numeric range (for filters)
     measurementscm_max?: number;
     season?: string;       // multi-value, comma-separated: "Зима, Осінь"
+    manually_edited_fields?: string | null;  // CSV залочених у програмі полів (Phase 2a)
+    manually_edited_at?: string | null;      // час останньої правки в програмі
     dimensions?: string;   // габарити: "40x20x5"
     width?: string;        // ширина ніжки: "Вузька"/"Стандартна"/"Широка" або B/D/EE
     // Clothing/shoe measurements (см) — всі min/max; single value = min == max
