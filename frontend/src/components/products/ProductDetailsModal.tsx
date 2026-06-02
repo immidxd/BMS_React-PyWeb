@@ -795,8 +795,8 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                       onKeyDown={(e) => { if (e.key === 'Escape') setEditingField(null); }} />
                     <div className="flex gap-2 mt-1">
                       <button onClick={() => saveField('description')} disabled={savingField}
-                        className="text-xs px-3 py-1 rounded bg-green-600 !text-white hover:bg-green-700">Зберегти</button>
-                      <button onClick={() => setEditingField(null)}
+                        className="text-xs px-3 py-1 rounded bg-green-600 !text-white hover:bg-green-700 disabled:opacity-60">{savingField ? 'Збереження…' : 'Зберегти'}</button>
+                      <button onClick={() => setEditingField(null)} disabled={savingField}
                         className="text-xs px-3 py-1 rounded bg-gray-200 dark:bg-gray-700">Скасувати</button>
                     </div>
                   </div>
@@ -825,8 +825,8 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                       onKeyDown={(e) => { if (e.key === 'Escape') setEditingField(null); }} />
                     <div className="flex gap-2 mt-1">
                       <button onClick={() => saveField('extranote')} disabled={savingField}
-                        className="text-xs px-3 py-1 rounded bg-green-600 !text-white hover:bg-green-700">Зберегти</button>
-                      <button onClick={() => setEditingField(null)}
+                        className="text-xs px-3 py-1 rounded bg-green-600 !text-white hover:bg-green-700 disabled:opacity-60">{savingField ? 'Збереження…' : 'Зберегти'}</button>
+                      <button onClick={() => setEditingField(null)} disabled={savingField}
                         className="text-xs px-3 py-1 rounded bg-gray-200 dark:bg-gray-700">Скасувати</button>
                     </div>
                   </div>

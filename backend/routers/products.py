@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Body, Path, status
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 import logging
+import threading
 from datetime import datetime
 
 try:
@@ -323,22 +324,28 @@ async def update_product(
         if not updated_product:
             raise HTTPException(status_code=404, detail=f"Товар з ID {product_id} не знайдено")
 
-        # Phase 2b: write-back у журнал (best-effort — помилка не валить сейв,
-        # лок у БД зберігає правку до наступної успішної синхронізації)
+        # Phase 2b: write-back у журнал — у ФОНІ, щоб PUT відповідав миттєво
+        # (запис в аркуш ~2-3с мережі не має блокувати UI). Лок у БД зберігає
+        # правку, якщо фоновий запис відстане/впаде.
         if edited_lockable:
-            try:
-                from backend.scripts import sheets_parser as _sp
-            except ImportError:
-                from scripts import sheets_parser as _sp
             sheet_title = product_service.get_delivery_name(db, updated_product.deliveryid)
-            for f in edited_lockable:
+            pnum = updated_product.productnumber
+            field_values = {f: getattr(updated_product, f) for f in edited_lockable}
+
+            def _writeback_bg(sheet_title=sheet_title, pnum=pnum, field_values=field_values):
                 try:
-                    res = _sp.writeback_field_to_journal(
-                        sheet_title, updated_product.productnumber, f, getattr(updated_product, f))
-                    if not res.get("ok"):
-                        logger.warning(f"[writeback] {f} skipped: {res.get('reason')}")
-                except Exception as we:
-                    logger.error(f"[writeback] {f} failed: {we}")
+                    from backend.scripts import sheets_parser as _sp
+                except ImportError:
+                    from scripts import sheets_parser as _sp
+                for f, v in field_values.items():
+                    try:
+                        res = _sp.writeback_field_to_journal(sheet_title, pnum, f, v)
+                        if not res.get("ok"):
+                            logger.warning(f"[writeback] {f} skipped: {res.get('reason')}")
+                    except Exception as we:
+                        logger.error(f"[writeback] {f} failed: {we}")
+
+            threading.Thread(target=_writeback_bg, daemon=True).start()
 
         return updated_product
     except HTTPException:
