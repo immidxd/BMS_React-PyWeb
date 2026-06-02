@@ -311,12 +311,35 @@ async def update_product(
                     detail=f"Товар з номером {product_data.productnumber} вже існує"
                 )
         
-        # Оновлюємо товар
+        # Які lockable-поля редагуються (для write-back у аркуш)
+        edited_lockable = {
+            k for k in product_data.dict(exclude_unset=True).keys()
+            if k in product_service.LOCKABLE_PRODUCT_FIELDS
+        }
+
+        # Оновлюємо товар (+ лок + пропагація на «братів» ростовки)
         updated_product = product_service.update_product(db, product_id, product_data)
-        
+
         if not updated_product:
             raise HTTPException(status_code=404, detail=f"Товар з ID {product_id} не знайдено")
-        
+
+        # Phase 2b: write-back у журнал (best-effort — помилка не валить сейв,
+        # лок у БД зберігає правку до наступної успішної синхронізації)
+        if edited_lockable:
+            try:
+                from backend.scripts import sheets_parser as _sp
+            except ImportError:
+                from scripts import sheets_parser as _sp
+            sheet_title = product_service.get_delivery_name(db, updated_product.deliveryid)
+            for f in edited_lockable:
+                try:
+                    res = _sp.writeback_field_to_journal(
+                        sheet_title, updated_product.productnumber, f, getattr(updated_product, f))
+                    if not res.get("ok"):
+                        logger.warning(f"[writeback] {f} skipped: {res.get('reason')}")
+                except Exception as we:
+                    logger.error(f"[writeback] {f} failed: {we}")
+
         return updated_product
     except HTTPException:
         raise

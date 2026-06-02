@@ -131,6 +131,112 @@ def _restore_product_locks(session: Session, snapshot: dict) -> int:
     return restored
 
 
+# ── Phase 2b: write-back of in-app edits to the journal sheet ─────────────────
+# Maps editable product fields → journal column header (resolved by NAME, not
+# position; rename-safe). A field with no column here cannot be written back.
+WRITEBACK_FIELD_HEADERS = {
+    "price":       "Ціна",
+    "model":       "Модель",
+    "description": "Опис",
+    "season":      "Сезон",
+    "extranote":   "Екстра примітка",
+}
+# Text fields written RAW (literal, no formula interpretation); numeric fields
+# USER_ENTERED so the sheet stores a real number.
+WRITEBACK_TEXT_FIELDS = {"model", "description", "season", "extranote"}
+WRITEBACK_ENABLED = os.getenv("PARSER_WRITEBACK", "1") != "0"
+_WRITEBACK_BACKUP_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "writeback_backups")
+
+
+def _canon_pnum_for_match(s: str) -> str:
+    """Canonical productnumber for sheet matching: strip #, trailing ;, spaces."""
+    return (s or "").strip().lstrip("#").strip().rstrip(";").strip()
+
+
+def _save_writeback_backup(sheet_title: str, productnumber: str, field: str, backups: list) -> Optional[str]:
+    """Persist old cell values before a write-back so it can be reverted."""
+    try:
+        os.makedirs(_WRITEBACK_BACKUP_DIR, exist_ok=True)
+        import json
+        from datetime import datetime as _dt
+        fname = f"{_dt.now():%Y%m%d_%H%M%S}_{_canon_pnum_for_match(productnumber)}_{field}.json"
+        path = os.path.join(_WRITEBACK_BACKUP_DIR, fname)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump({"sheet": sheet_title, "productnumber": productnumber,
+                       "field": field, "cells": backups}, f, ensure_ascii=False, indent=2)
+        return path
+    except Exception as e:
+        logger.warning(f"[writeback] backup failed: {e}")
+        return None
+
+
+def writeback_field_to_journal(sheet_title: str, productnumber: str, field: str, value) -> dict:
+    """Write `value` for `field` into ALL rows of `productnumber` in the journal
+    worksheet `sheet_title`. Resolves the target column by header name, backs up
+    old values first, then writes only changed cells in one batch call.
+
+    Returns {ok, rows_updated, ...} or {ok: False, reason}.
+    """
+    if not WRITEBACK_ENABLED:
+        return {"ok": False, "reason": "writeback disabled"}
+    header_name = WRITEBACK_FIELD_HEADERS.get(field)
+    if not header_name:
+        return {"ok": False, "reason": f"no journal column for '{field}'"}
+    if not sheet_title:
+        return {"ok": False, "reason": "no sheet_title (product has no delivery)"}
+
+    import gspread as _gspread
+    gc = get_gc()
+    sh = gc.open_by_key(JOURNAL_ID)
+    try:
+        ws = sh.worksheet(sheet_title)
+    except Exception:
+        return {"ok": False, "reason": f"worksheet '{sheet_title}' not found"}
+
+    all_values = ws.get_all_values()
+    if not all_values:
+        return {"ok": False, "reason": "empty sheet"}
+    header = [h.strip() for h in all_values[0]]
+    if "Номер" not in header or header_name not in header:
+        return {"ok": False, "reason": f"column 'Номер' or '{header_name}' missing in sheet"}
+    num_idx = header.index("Номер")
+    col_idx = header.index(header_name)
+
+    # Normalize the new value to a cell string
+    if value is None:
+        new_str = ""
+    elif field == "price":
+        try:
+            fv = float(value)
+            new_str = str(int(fv)) if fv == int(fv) else str(fv)
+        except (TypeError, ValueError):
+            new_str = str(value)
+    else:
+        new_str = str(value)
+
+    target = _canon_pnum_for_match(productnumber)
+    updates, backups = [], []
+    for r_i, row in enumerate(all_values[1:], start=2):  # row 1 = header
+        cell_num = row[num_idx] if num_idx < len(row) else ""
+        if _canon_pnum_for_match(cell_num) != target:
+            continue
+        old = row[col_idx] if col_idx < len(row) else ""
+        if old == new_str:
+            continue  # already up to date
+        a1 = _gspread.utils.rowcol_to_a1(r_i, col_idx + 1)
+        updates.append({"range": a1, "values": [[new_str]]})
+        backups.append({"a1": a1, "row": r_i, "old": old, "new": new_str})
+
+    if not updates:
+        return {"ok": True, "rows_updated": 0, "note": "no matching rows or already current"}
+
+    backup_path = _save_writeback_backup(sheet_title, productnumber, field, backups)
+    value_input = "USER_ENTERED" if field not in WRITEBACK_TEXT_FIELDS else "RAW"
+    ws.batch_update(updates, value_input_option=value_input)
+    logger.info(f"[writeback] {field} → '{sheet_title}' {productnumber}: {len(updates)} row(s), backup={backup_path}")
+    return {"ok": True, "rows_updated": len(updates), "header": header_name, "backup": backup_path}
+
+
 def _file_unchanged(session: Session, spreadsheet_id: str, mode: str, last_update_time: str) -> bool:
     """True if the whole file's lastUpdateTime + parser_version match the last
     successful run of this (spreadsheet, mode)."""

@@ -52,3 +52,6 @@ workspace_backup_*.json
 
 # Local DB backups
 db_backup_*.sql
+
+# Write-back cell backups (local)
+backend/scripts/writeback_backups/

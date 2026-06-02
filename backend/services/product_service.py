@@ -608,11 +608,30 @@ def create_product(db: Session, product: schemas.ProductCreate) -> models.Produc
 LOCKABLE_PRODUCT_FIELDS = {"price", "model", "description", "extranote", "season"}
 
 
+def _merge_lock(prod, fields: set) -> None:
+    """Add `fields` to a product's manually_edited_fields and bump timestamp."""
+    existing = set()
+    if prod.manually_edited_fields:
+        existing = {x.strip() for x in prod.manually_edited_fields.split(",") if x.strip()}
+    prod.manually_edited_fields = ",".join(sorted(existing | fields))
+    prod.manually_edited_at = datetime.utcnow()
+
+
+def get_delivery_name(db: Session, delivery_id: Optional[int]) -> Optional[str]:
+    """Journal sheet title a product belongs to (deliveries.deliveryname)."""
+    if not delivery_id:
+        return None
+    row = db.execute(text("SELECT deliveryname FROM deliveries WHERE id = :id"),
+                     {"id": delivery_id}).fetchone()
+    return row[0] if row else None
+
+
 def update_product(db: Session, product_id: int, product: schemas.ProductUpdate) -> Optional[models.Product]:
     """Update an existing product.
 
-    Edited fields in LOCKABLE_PRODUCT_FIELDS get recorded in
-    manually_edited_fields so the parser won't overwrite them on reparse.
+    Edited LOCKABLE_PRODUCT_FIELDS are recorded in manually_edited_fields so the
+    parser won't overwrite them on reparse, and propagated to all sibling rows of
+    the same productnumber (per-model semantics for a rostovka).
     """
     try:
         db_product = db.query(models.Product).filter(models.Product.id == product_id).first()
@@ -621,14 +640,21 @@ def update_product(db: Session, product_id: int, product: schemas.ProductUpdate)
             for key, value in update_data.items():
                 setattr(db_product, key, value)
 
-            # Lock the lockable fields the user just edited (merge with existing).
             newly_locked = {k for k in update_data.keys() if k in LOCKABLE_PRODUCT_FIELDS}
             if newly_locked:
-                existing = set()
-                if db_product.manually_edited_fields:
-                    existing = {x.strip() for x in db_product.manually_edited_fields.split(",") if x.strip()}
-                db_product.manually_edited_fields = ",".join(sorted(existing | newly_locked))
-                db_product.manually_edited_at = datetime.utcnow()
+                _merge_lock(db_product, newly_locked)
+
+                # Per-model: a shared field applies to ALL sizes of this number.
+                # Propagate values + lock to siblings so the rostovka stays
+                # consistent in the DB (write-back covers all sheet rows).
+                siblings = db.query(models.Product).filter(
+                    models.Product.productnumber == db_product.productnumber,
+                    models.Product.id != db_product.id,
+                ).all()
+                for sib in siblings:
+                    for f in newly_locked:
+                        setattr(sib, f, getattr(db_product, f))
+                    _merge_lock(sib, newly_locked)
 
             db.commit()
             db.refresh(db_product)
