@@ -605,7 +605,7 @@ def create_product(db: Session, product: schemas.ProductCreate) -> models.Produc
 # Phase 2a: fields that, when edited in the app, get locked against parser
 # overwrite (the parser restores the user's value after a reparse). Keep in sync
 # with the frontend inline-edit set and PRODUCT_LOCK_FIELDS in sheets_parser.
-LOCKABLE_PRODUCT_FIELDS = {"price", "model", "description", "extranote", "season"}
+LOCKABLE_PRODUCT_FIELDS = {"price", "oldprice", "model", "description", "extranote", "season"}
 
 
 def _merge_lock(prod, fields: set) -> None:
@@ -637,6 +637,20 @@ def update_product(db: Session, product_id: int, product: schemas.ProductUpdate)
         db_product = db.query(models.Product).filter(models.Product.id == product_id).first()
         if db_product:
             update_data = product.dict(exclude_unset=True)
+
+            # Markdown: on a price DECREASE, preserve the previous price into
+            # "Стара ціна" if it is empty (per user rule). Existing oldprice and
+            # price increases are left untouched.
+            if update_data.get("price") is not None:
+                try:
+                    new_price = float(update_data["price"])
+                    cur_price = float(db_product.price or 0)
+                    cur_oldprice = float(db_product.oldprice or 0)
+                    if new_price < cur_price and not cur_oldprice:
+                        update_data["oldprice"] = cur_price
+                except (TypeError, ValueError):
+                    pass
+
             for key, value in update_data.items():
                 setattr(db_product, key, value)
 
@@ -658,6 +672,10 @@ def update_product(db: Session, product_id: int, product: schemas.ProductUpdate)
 
             db.commit()
             db.refresh(db_product)
+            # Transient (non-column) hint for the router: which lockable fields
+            # were actually written this call → those get written back to sheet.
+            # Includes auto-derived oldprice from the markdown rule.
+            db_product._writeback_fields = newly_locked
             logger.debug(f"Updated product: {db_product}")
         return db_product
     except Exception as e:

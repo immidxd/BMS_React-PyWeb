@@ -312,17 +312,15 @@ async def update_product(
                     detail=f"Товар з номером {product_data.productnumber} вже існує"
                 )
         
-        # Які lockable-поля редагуються (для write-back у аркуш)
-        edited_lockable = {
-            k for k in product_data.dict(exclude_unset=True).keys()
-            if k in product_service.LOCKABLE_PRODUCT_FIELDS
-        }
-
-        # Оновлюємо товар (+ лок + пропагація на «братів» ростовки)
+        # Оновлюємо товар (+ лок + пропагація на «братів» ростовки + markdown)
         updated_product = product_service.update_product(db, product_id, product_data)
 
         if not updated_product:
             raise HTTPException(status_code=404, detail=f"Товар з ID {product_id} не знайдено")
+
+        # Поля для write-back: ті, що реально записані+залочені цим викликом
+        # (включно з авто-похідним oldprice від правила уцінки)
+        edited_lockable = set(getattr(updated_product, "_writeback_fields", set()))
 
         # Phase 2b: write-back у журнал — у ФОНІ, щоб PUT відповідав миттєво
         # (запис в аркуш ~2-3с мережі не має блокувати UI). Лок у БД зберігає

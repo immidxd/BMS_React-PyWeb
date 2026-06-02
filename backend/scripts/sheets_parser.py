@@ -78,7 +78,8 @@ FILE_GATE_ENABLED = os.getenv("PARSER_FILE_GATE", "1") != "0"
 # scattered field-set sites in _parse_products_sheet untouched.
 # Keep in sync with LOCKABLE_PRODUCT_FIELDS in product_service.
 PRODUCT_LOCKS_ENABLED = os.getenv("PRODUCT_LOCKS", "1") != "0"
-PRODUCT_LOCK_FIELDS = {"price", "model", "description", "extranote", "season"}
+# oldprice included so the auto-markdown ("Стара ціна") survives reparse too.
+PRODUCT_LOCK_FIELDS = {"price", "oldprice", "model", "description", "extranote", "season"}
 
 
 def _snapshot_product_locks(session: Session) -> dict:
@@ -136,6 +137,7 @@ def _restore_product_locks(session: Session, snapshot: dict) -> int:
 # position; rename-safe). A field with no column here cannot be written back.
 WRITEBACK_FIELD_HEADERS = {
     "price":       "Ціна",
+    "oldprice":    "Стара ціна",
     "model":       "Модель",
     "description": "Опис",
     "season":      "Сезон",
