@@ -12,6 +12,7 @@ Skip sheets: Publications, Data, New, Клієнти, Temporary, Лист*, Copy
 """
 
 import logging
+import os
 import re
 import time
 from datetime import datetime, date
@@ -38,6 +39,68 @@ QUICK_SHEETS_COUNT = 30
 # Delay between sheet reads to stay within Google Sheets API quota (60 req/min/user)
 SHEET_READ_DELAY_SEC = 1.1  # ~54 req/min, safe margin
 
+# ── Layer A: batch reads ──────────────────────────────────────────────────────
+# values_batch_get fetches many sheets' values in ONE API request, collapsing
+# ~410 round-trips (+ per-sheet sleeps) into a handful of chunked calls.
+# Parsing logic is unchanged — only how rows are delivered. Disable via
+# PARSER_BATCH_READ=0 for an instant behavioural rollback to per-sheet reads.
+BATCH_READ_ENABLED = os.getenv("PARSER_BATCH_READ", "1") != "0"
+BATCH_CHUNK = int(os.getenv("PARSER_BATCH_CHUNK", "50"))  # sheets per batch read
+
+# ── Layer B: per-sheet change detection (hash skip) ───────────────────────────
+# A worksheet is reprocessed iff its content hash changed OR PARSER_VERSION was
+# bumped since the last parse. This catches manual sheet edits (content differs)
+# and forced reparses (version bump) while skipping untouched sheets.
+#
+# Applied to ORDERS only, and only in 'quick' mode. Products are never skipped
+# (their quantity is recomputed from cross-sheet appearance counts each run, so
+# skipping a sheet would undercount). 'full' mode never skips — it is the
+# escape hatch that rebuilds everything from the authoritative sheets.
+#
+# Bump PARSER_VERSION whenever the orders parsing logic changes in a way that
+# would produce different output for the same input → forces a full reparse.
+PARSER_VERSION = 1
+HASH_SKIP_ENABLED = os.getenv("PARSER_HASH_SKIP", "1") != "0"
+
+
+def _compute_sheet_hash(rows: list) -> str:
+    """Stable content hash of a sheet's values (order-sensitive)."""
+    import hashlib
+    import json
+    payload = json.dumps(rows, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.md5(payload.encode("utf-8")).hexdigest()
+
+
+def _sheet_unchanged(session: Session, spreadsheet_id: str, sheet_gid: int, content_hash: str) -> bool:
+    """True if this sheet's content AND parser_version match the last parse."""
+    row = session.execute(
+        text(
+            "SELECT content_hash, parser_version FROM sheet_sync_state "
+            "WHERE spreadsheet_id = :sid AND sheet_gid = :gid"
+        ),
+        {"sid": spreadsheet_id, "gid": sheet_gid},
+    ).fetchone()
+    return bool(row and row[0] == content_hash and row[1] == PARSER_VERSION)
+
+
+def _record_sheet_state(session: Session, spreadsheet_id: str, sheet_gid: int,
+                        sheet_title: str, content_hash: str) -> None:
+    """Upsert the per-sheet sync marker (content hash + parser version + time)."""
+    session.execute(
+        text(
+            "INSERT INTO sheet_sync_state "
+            "(spreadsheet_id, sheet_gid, sheet_title, content_hash, parser_version, parsed_at) "
+            "VALUES (:sid, :gid, :title, :h, :ver, now()) "
+            "ON CONFLICT (spreadsheet_id, sheet_gid) DO UPDATE SET "
+            "content_hash = EXCLUDED.content_hash, "
+            "sheet_title = EXCLUDED.sheet_title, "
+            "parser_version = EXCLUDED.parser_version, "
+            "parsed_at = now()"
+        ),
+        {"sid": spreadsheet_id, "gid": sheet_gid, "title": sheet_title[:255],
+         "h": content_hash, "ver": PARSER_VERSION},
+    )
+
 SKIP_SHEETS_PATTERNS = re.compile(
     r"^(Publications|Data|New|Клієнти|Temporary|Лист\d*|Copy of|Старі)",
     re.IGNORECASE,
@@ -51,6 +114,63 @@ def get_gc() -> gspread.Client:
 
 def is_skip_sheet(title: str) -> bool:
     return bool(SKIP_SHEETS_PATTERNS.match(title.strip()))
+
+
+def _chunks(lst, n):
+    """Yield successive n-sized chunks from lst."""
+    for i in range(0, len(lst), n):
+        yield lst[i:i + n]
+
+
+def _batch_read_values(sh, worksheets: list) -> dict:
+    """Read values for many worksheets in ONE API call via values_batch_get.
+
+    Returns {ws.id: rows} where rows is list[list[str]] — ragged (trailing
+    empty cells trimmed), exactly like the Sheets values API. All three row
+    consumers (_parse_products_sheet.col, _parse_orders_sheet.col,
+    _parse_delivery_financials) guard with `idx < len(row)`, so ragged rows
+    are safe. valueRanges come back in request order → map positionally.
+    """
+    from gspread.utils import absolute_range_name
+    ranges = [absolute_range_name(ws.title) for ws in worksheets]
+    resp = sh.values_batch_get(ranges, params={"majorDimension": "ROWS"})
+    value_ranges = resp.get("valueRanges", [])
+    out = {}
+    for ws, vr in zip(worksheets, value_ranges):
+        out[ws.id] = vr.get("values", []) or []
+    return out
+
+
+def _iter_sheets_with_rows(sh, worksheets: list):
+    """Yield (idx, ws, rows) for each worksheet, reading in batches to bound
+    both API calls and memory (only BATCH_CHUNK sheets held at once).
+
+    Falls back to per-sheet get_all_values() when batching is disabled or a
+    batch call errors — guarantees identical behaviour on the slow path.
+    """
+    if not BATCH_READ_ENABLED:
+        for idx, ws in enumerate(worksheets):
+            if idx > 0:
+                time.sleep(SHEET_READ_DELAY_SEC)
+            yield idx, ws, ws.get_all_values()
+        return
+
+    idx = 0
+    for chunk_i, chunk in enumerate(_chunks(worksheets, BATCH_CHUNK)):
+        if chunk_i > 0:
+            time.sleep(SHEET_READ_DELAY_SEC)
+        try:
+            rows_map = _batch_read_values(sh, chunk)
+        except Exception as e:
+            logger.warning(f"[batch] read failed ({e}); falling back to per-sheet reads")
+            rows_map = {}
+            for j, ws in enumerate(chunk):
+                if j > 0:
+                    time.sleep(SHEET_READ_DELAY_SEC)
+                rows_map[ws.id] = ws.get_all_values()
+        for ws in chunk:
+            yield idx, ws, rows_map.get(ws.id, [])
+            idx += 1
 
 
 _MEASUREMENT_RE = re.compile(r'\d+[хxХX]\d+')
@@ -2840,13 +2960,14 @@ def _parse_orders_sheet(
     session: Session,
     progress_cb: Optional[Callable] = None,
     cutoff_date: date = None,
+    prefetched_rows: Optional[list] = None,
 ) -> dict:
     from backend.models.models import Order, OrderItem, Product
 
     if cutoff_date is None:
         cutoff_date = date.min
 
-    rows = ws.get_all_values()
+    rows = prefetched_rows if prefetched_rows is not None else ws.get_all_values()
     if not rows:
         return {"orders": 0, "items": 0, "clients": 0, "skipped": 0}
 
@@ -3787,17 +3908,13 @@ def run_products_parsing(
     seen_in_run: dict = {}
 
     shipment_ids = []
-    for idx, ws in enumerate(batch_sheets):
+    for idx, ws, all_rows in _iter_sheets_with_rows(sh, batch_sheets):
         sheet_date = parse_date_from_sheet_title(ws.title)
         supplier_name = parse_supplier_from_sheet_title(ws.title)
         supplier_id = _get_or_create_supplier(session, supplier_name) if supplier_name else None
 
-        # Rate-limit: wait before each sheet read
-        if idx > 0:
-            time.sleep(SHEET_READ_DELAY_SEC)
-
-        # Read all rows once — used for both financial parsing and product parsing
-        all_rows = ws.get_all_values()
+        # Rows fetched in batches by _iter_sheets_with_rows (used for both
+        # financial parsing and product parsing).
 
         # Parse purchase/delivery costs from the info block on the right side of the sheet
         financials = _parse_delivery_financials(all_rows)
@@ -3854,7 +3971,10 @@ def run_orders_parsing(
         order_sheets = order_sheets[:QUICK_SHEETS_COUNT]
 
     total_orders = total_items = total_updated = total_skipped = 0
+    sheets_skipped_unchanged = 0
     total_sheets = len(order_sheets)
+    # Hash-skip only in 'quick' mode (see PARSER_VERSION / HASH_SKIP_ENABLED notes).
+    use_hash_skip = HASH_SKIP_ENABLED and mode == "quick"
 
     # Обчислюємо дати кожної вкладки (вкладки йдуть найновіша → найстаріша)
     sheet_dates = [
@@ -3862,8 +3982,21 @@ def run_orders_parsing(
         for ws in order_sheets
     ]
 
-    for idx, ws in enumerate(order_sheets):
+    for idx, ws, all_rows in _iter_sheets_with_rows(sh, order_sheets):
         sheet_date = sheet_dates[idx]
+
+        # ── Layer B: skip sheets whose content is unchanged since last parse ──
+        if use_hash_skip:
+            content_hash = _compute_sheet_hash(all_rows)
+            if _sheet_unchanged(session, ORDERS_ID, ws.id, content_hash):
+                sheets_skipped_unchanged += 1
+                logger.info(f"[orders] Skip unchanged sheet {idx+1}/{total_sheets}: {ws.title}")
+                if progress_cb:
+                    progress_cb(int((idx + 1) / total_sheets * 100), f"{ws.title}: unchanged (skip)")
+                continue
+        else:
+            content_hash = None
+
         # cutoff: дата наступної (старішої) вкладки — замовлення з order_date <= cutoff
         # є carried-over і вже парсились з їх "рідної" вкладки → пропускаємо
         cutoff_date = sheet_dates[idx + 1] if idx + 1 < len(sheet_dates) else date.min
@@ -3874,15 +4007,17 @@ def run_orders_parsing(
                 overall = int((_idx / total_sheets + done / total / total_sheets) * 100)
                 progress_cb(overall, f"{_ws.title}: {done}/{total}")
 
-        # Rate-limit: wait before each sheet read
-        if idx > 0:
-            time.sleep(SHEET_READ_DELAY_SEC)
-
-        result = _parse_orders_sheet(ws, sheet_date, session, _cb, cutoff_date)
+        result = _parse_orders_sheet(ws, sheet_date, session, _cb, cutoff_date, prefetched_rows=all_rows)
         total_orders  += result["orders"]
         total_items   += result["items"]
         total_updated += result.get("updated", 0)
         total_skipped += result["skipped"]
+
+        # Record sync marker only after the sheet parsed successfully, so a
+        # mid-run failure leaves later sheets unmarked → they reparse next time.
+        if use_hash_skip and content_hash is not None:
+            _record_sheet_state(session, ORDERS_ID, ws.id, ws.title, content_hash)
+            session.commit()
 
     return {
         "mode":    mode,
@@ -3891,6 +4026,7 @@ def run_orders_parsing(
         "items":   total_items,
         "updated": total_updated,
         "skipped": total_skipped,
+        "sheets_skipped_unchanged": sheets_skipped_unchanged,
     }
 
 

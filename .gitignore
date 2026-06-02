@@ -49,3 +49,6 @@ TASKS_ROADMAP.md
 
 # Локальні бекапи аркушів (бізнес-дані) — не комітити
 workspace_backup_*.json
+
+# Local DB backups
+db_backup_*.sql
