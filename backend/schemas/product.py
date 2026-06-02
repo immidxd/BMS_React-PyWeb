@@ -105,8 +105,10 @@ class ProductBase(BaseModel):
     def validate_productnumber(cls, v):
         if not v or not v.strip():
             raise ValueError('Номер товару не може бути порожнім')
-        if not re.match(r'^[A-Za-z0-9_\-\.]+$', v):
-            raise ValueError('Номер товару може містити лише латинські літери, цифри, дефіс, крапку та підкреслення')
+        # Live data uses Cyrillic letter prefixes (#Ф3800), '#' and '?'
+        # placeholders. \w is Unicode-aware (Latin+Cyrillic+digits+_).
+        if not re.match(r'^[#?\w\-\.]+$', v.strip(), re.UNICODE):
+            raise ValueError('Номер товару містить недопустимі символи')
         return v.strip()
     
     @validator('price', 'oldprice')
@@ -196,8 +198,9 @@ class ProductUpdate(BaseModel):
         if v is not None:
             if not v or not v.strip():
                 raise ValueError('Номер товару не може бути порожнім')
-            if not re.match(r'^[A-Za-z0-9_\-\.]+$', v):
-                raise ValueError('Номер товару може містити лише латинські літери, цифри, дефіс, крапку та підкреслення')
+            # Live data uses Cyrillic prefixes (#Ф3800), '#'/'?' placeholders.
+            if not re.match(r'^[#?\w\-\.]+$', v.strip(), re.UNICODE):
+                raise ValueError('Номер товару містить недопустимі символи')
             return v.strip()
         return v
     
