@@ -2,7 +2,7 @@ import React, { useEffect, useState, useMemo } from 'react';
 import { productService } from '../../services/productService';
 import type { Product } from '../../types/product';
 import { Tag, Spin, Image } from 'antd';
-import { CloseOutlined, PictureOutlined, LeftOutlined, RightOutlined, WarningOutlined } from '@ant-design/icons';
+import { CloseOutlined, PictureOutlined, LeftOutlined, RightOutlined, WarningOutlined, EditOutlined } from '@ant-design/icons';
 import { CopyOnClick, formatBrandName } from '../common/displayHelpers';
 
 interface Props {
@@ -247,14 +247,27 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
   // Бейдж «змінено в програмі» + кнопка «скинути до аркуша» для залоченого поля
   const LockBadge: React.FC<{ field: string }> = ({ field }) =>
     lockedFields.has(field) ? (
-      <span className="inline-flex items-center gap-1 ml-1 align-middle">
-        <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300 font-medium"
-              title="Змінено в програмі — парсер не перезатирає">✎ змінено</span>
+      <span className="inline-flex items-center gap-1 align-middle">
+        <span className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300 font-medium"
+              title="Змінено в програмі — парсер не перезатирає">
+          <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />змінено
+        </span>
         <button onClick={() => unlockField(field)}
-                className="text-[10px] text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
+                className="text-[11px] text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
                 title="Скинути до аркуша (відновиться при наступному парсингу)">↺</button>
       </span>
     ) : null;
+
+  // Акуратна кнопка-олівець (antd-іконка). Видима на hover рядка/блоку.
+  const EditBtn: React.FC<{ onClick: () => void; title?: string; always?: boolean }> = ({ onClick, title, always }) => (
+    <button onClick={onClick} title={title || 'Редагувати'}
+      className={`inline-flex items-center justify-center w-6 h-6 rounded-md shrink-0
+        text-gray-400 hover:text-gray-700 dark:text-gray-500 dark:hover:text-gray-200
+        hover:bg-gray-100 dark:hover:bg-gray-700/60 transition-all
+        ${always ? 'opacity-70 hover:opacity-100' : 'opacity-0 group-hover:opacity-100'}`}>
+      <EditOutlined style={{ fontSize: 13 }} />
+    </button>
+  );
 
   // Inline-редаговане поле-рядок (модель, сезон). type: text|number|textarea
   const EditableRow: React.FC<{
@@ -284,16 +297,12 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                 className="text-gray-400 hover:text-gray-600 text-sm px-1" title="Скасувати">✕</button>
             </span>
           ) : (
-            <span className="flex items-center gap-1.5 w-full">
-              <span className="inline-flex items-center gap-1.5 min-w-0">
-                {(value === null || value === undefined || value === '')
-                  ? <span className="text-gray-300 dark:text-gray-600 italic">{placeholder || '—'}</span>
-                  : <CopyOnClick value={value as string | number} />}
-                <LockBadge field={field} />
-              </span>
-              <button onClick={() => startEdit(field, value ?? '')}
-                className="ml-auto shrink-0 opacity-40 group-hover:opacity-100 text-xs text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition-opacity"
-                title="Редагувати">✎</button>
+            <span className="inline-flex items-center gap-2 min-w-0">
+              {(value === null || value === undefined || value === '')
+                ? <span className="text-gray-300 dark:text-gray-600 italic">{placeholder || '—'}</span>
+                : <span className="truncate">{value}</span>}
+              <EditBtn onClick={() => startEdit(field, value ?? '')} always />
+              <LockBadge field={field} />
             </span>
           )}
         </span>
@@ -632,7 +641,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                 {/* Right: Info */}
                 <div className="flex flex-col min-w-0">
                   {/* Price */}
-                  <div className="flex items-baseline gap-3 mb-3 group">
+                  <div className="flex items-center gap-3 mb-3 group">
                     {editingField === 'price' ? (
                       <span className="inline-flex items-center gap-1.5">
                         <input autoFocus type="number" value={fieldDraft}
@@ -648,21 +657,14 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                     ) : (
                       <>
                         {p.price != null && p.price > 0 ? (
-                          <span className="text-3xl font-bold text-gray-900 dark:text-gray-50">
-                            <CopyOnClick
-                              value={Number(p.price).toFixed(0)}
-                              display={<>{Number(p.price).toFixed(0)} ₴</>}
-                            />
-                          </span>
+                          <span className="text-3xl font-bold text-gray-900 dark:text-gray-50">{Number(p.price).toFixed(0)} ₴</span>
                         ) : (
                           <span className="text-xl text-gray-300 dark:text-gray-600">Ціна не вказана</span>
                         )}
                         {p.oldprice != null && p.oldprice > 0 && p.oldprice !== p.price && (
                           <span className="text-base text-gray-400 line-through">{Number(p.oldprice).toFixed(0)} ₴</span>
                         )}
-                        <button onClick={() => startEdit('price', p.price ?? '')}
-                          className="ml-5 self-center opacity-40 group-hover:opacity-100 text-base text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition-opacity"
-                          title="Редагувати ціну">✎</button>
+                        <EditBtn onClick={() => startEdit('price', p.price ?? '')} title="Редагувати ціну" always />
                         <LockBadge field="price" />
                       </>
                     )}
@@ -784,9 +786,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                 <div className="text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500 mb-2 font-medium flex items-center gap-2">
                   Опис
                   {editingField !== 'description' && (
-                    <button onClick={() => startEdit('description', p.description ?? '')}
-                      className="opacity-0 group-hover:opacity-100 text-[11px] text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition-opacity normal-case"
-                      title="Редагувати опис">✎ редагувати</button>
+                    <EditBtn onClick={() => startEdit('description', p.description ?? '')} title="Редагувати опис" />
                   )}
                   <LockBadge field="description" />
                 </div>
@@ -814,9 +814,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                 <div className="text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500 mb-2 font-medium flex items-center gap-2">
                   Примітки
                   {editingField !== 'extranote' && (
-                    <button onClick={() => startEdit('extranote', p.extranote ?? '')}
-                      className="opacity-0 group-hover:opacity-100 text-[11px] text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition-opacity normal-case"
-                      title="Редагувати примітку">✎ редагувати</button>
+                    <EditBtn onClick={() => startEdit('extranote', p.extranote ?? '')} title="Редагувати примітку" />
                   )}
                   <LockBadge field="extranote" />
                 </div>
