@@ -613,6 +613,45 @@ async def update_order(
     # Get complete order with details
     return await get_order(order_id, db)
 
+@router.put("/api/orders/{order_id}/items/{item_id}/price", response_model=OrderWithDetails)
+async def update_order_item_price(
+    order_id: int = Path(..., ge=1),
+    item_id: int = Path(..., ge=1),
+    price: float = Body(..., embed=True, ge=0),
+    db: Session = Depends(get_db),
+):
+    """Edit one order item's price → recalc order total → write Ціна+Сума back to sheet."""
+    item = db.query(OrderItem).filter(OrderItem.id == item_id, OrderItem.order_id == order_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Order item not found")
+    item.price = price
+    # Lock the order's item-prices so the parser won't overwrite on reparse
+    o = db.query(Order).filter(Order.id == order_id).first()
+    locked = {x.strip() for x in (o.manually_edited_fields or "").split(",") if x.strip()}
+    locked.add("item_prices")
+    o.manually_edited_fields = ",".join(sorted(locked))
+    o.manually_edited_at = datetime.utcnow()
+    db.commit()
+    OrderDAO(db).recalculate_order_total(order_id)
+
+    def _wb(oid=order_id):
+        try:
+            from backend.scripts import sheets_parser as _sp
+        except ImportError:
+            from scripts import sheets_parser as _sp
+        s = SessionLocal()
+        try:
+            res = _sp.writeback_order_to_journal(s, oid, dry_run=False)
+            if not res.get("ok"):
+                logger.warning(f"[order-writeback] item-price order {oid} skipped: {res.get('reason')}")
+        except Exception as we:
+            logger.error(f"[order-writeback] item-price order {oid} failed: {we}")
+        finally:
+            s.close()
+    threading.Thread(target=_wb, daemon=True).start()
+    return await get_order(order_id, db)
+
+
 @router.delete("/api/orders/{order_id}")
 async def delete_order(order_id: int = Path(..., ge=1), db: Session = Depends(get_db)):
     """

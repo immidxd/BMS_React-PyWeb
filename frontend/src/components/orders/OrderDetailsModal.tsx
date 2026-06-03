@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { fetchOrder, type OrderWithDetails, updateOrder, type FilterOptions } from '../../services/orderService';
+import { fetchOrder, type OrderWithDetails, updateOrder, updateOrderItemPrice, type FilterOptions } from '../../services/orderService';
 import ProductDetailsModal from '../products/ProductDetailsModal';
 
 interface Props {
@@ -16,6 +16,22 @@ const OrderDetailsModal: React.FC<Props> = ({ orderId, open, onClose, filterOpti
   const [saving, setSaving] = useState(false);
   const [edit, setEdit] = useState<Partial<OrderWithDetails>>({});
   const [cardProductId, setCardProductId] = useState<number | null>(null);
+  const [editingItemId, setEditingItemId] = useState<number | null>(null);
+  const [itemPriceDraft, setItemPriceDraft] = useState('');
+  const [savingItem, setSavingItem] = useState(false);
+
+  const saveItemPrice = async (itemId: number) => {
+    if (!orderId) return;
+    const v = Number(itemPriceDraft);
+    if (isNaN(v) || v < 0) return;
+    setSavingItem(true);
+    try {
+      const updated = await updateOrderItemPrice(orderId, itemId, v);
+      setOrder(updated);          // refresh modal in place (sum recalculated)
+      setEditingItemId(null);
+    } catch (e) { console.error('Failed to save item price', e); }
+    finally { setSavingItem(false); }
+  };
 
   useEffect(() => {
     if (!open || !orderId) return;
@@ -157,7 +173,25 @@ const OrderDetailsModal: React.FC<Props> = ({ orderId, open, onClose, filterOpti
                       </td>
                       <td className="px-3 py-2">{it.product_name || '—'}</td>
                       <td className="px-3 py-2 text-right">{it.quantity}</td>
-                      <td className="px-3 py-2 text-right">{new Intl.NumberFormat('uk-UA',{style:'currency',currency:'UAH'}).format(it.price)}</td>
+                      <td className="px-3 py-2 text-right">
+                        {editingItemId === it.id ? (
+                          <span className="inline-flex items-center gap-1 justify-end">
+                            <input autoFocus type="number" value={itemPriceDraft}
+                              onChange={(e) => setItemPriceDraft(e.target.value)}
+                              onKeyDown={(e) => { if (e.key === 'Enter') saveItemPrice(it.id!); if (e.key === 'Escape') setEditingItemId(null); }}
+                              className="w-24 px-2 py-0.5 text-right border rounded dark:bg-gray-800 dark:border-gray-600" />
+                            <button onClick={() => saveItemPrice(it.id!)} disabled={savingItem} className="text-green-600 hover:text-green-700 px-1" title="Зберегти">✓</button>
+                            <button onClick={() => setEditingItemId(null)} className="text-gray-400 hover:text-gray-600 px-1" title="Скасувати">✕</button>
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1.5 justify-end group">
+                            {new Intl.NumberFormat('uk-UA',{style:'currency',currency:'UAH'}).format(it.price)}
+                            <button onClick={() => { setEditingItemId(it.id!); setItemPriceDraft(String(it.price ?? '')); }}
+                              className="opacity-40 group-hover:opacity-100 text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 text-xs transition-opacity"
+                              title="Редагувати ціну позиції">✎</button>
+                          </span>
+                        )}
+                      </td>
                     </tr>
                   ))}
                 </tbody>

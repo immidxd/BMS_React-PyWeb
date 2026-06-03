@@ -241,6 +241,11 @@ export const updateOrder = async (id: number, order: OrderUpdate): Promise<Order
   }
 };
 
+export const updateOrderItemPrice = async (orderId: number, itemId: number, price: number): Promise<OrderWithDetails> => {
+  const response = await axios.put(`/api/orders/${orderId}/items/${itemId}/price`, { price });
+  return response.data;
+};
+
 export const deleteOrder = async (id: number): Promise<{ message: string, id: number }> => {
   try {
     const response = await axios.delete(`/api/orders/${id}`);

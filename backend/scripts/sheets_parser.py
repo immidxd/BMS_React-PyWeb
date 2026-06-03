@@ -362,6 +362,15 @@ CHANNEL_TOKENS = {"Telegram": "TG", "Viber": "Viber", "Instagram": "IG",
                   "TikTok": "TT", "OLX": "OLX", "Grailed": "Grailed", "Shafa": "Shafa"}
 
 
+def _fmt_price(v) -> str:
+    """Price as the sheet writes it: integer if whole, else plain float."""
+    try:
+        f = float(v)
+        return str(int(f)) if f == int(f) else str(f)
+    except (TypeError, ValueError):
+        return "" if v is None else str(v)
+
+
 def _norm_pnum_set(raw: str) -> set:
     """Normalized set of product numbers from a 'Номера товарів' cell."""
     out = set()
@@ -517,6 +526,43 @@ def writeback_order_to_journal(session: Session, order_id: int, dry_run: bool = 
         if old.strip() != new.strip():
             planned.append({"field": field, "header": hdr,
                             "a1": _gspread_a1(r_i, col_idx + 1), "old": old, "new": new})
+
+    # ── Item prices → "Ціна" (parallel list) + auto-sum → "Сума" ────────────
+    # Triggered when item prices were edited (lock marker "item_prices"). Rebuilds
+    # the "Ціна" list aligned to the "Номера товарів" positions; "Сума" = total.
+    # Product SET is unchanged (add/remove is a separate future step), so the row
+    # identity (fingerprint) stays stable.
+    if "item_prices" in locked and "Ціна" in header and "Номера товарів" in header:
+        from collections import deque, defaultdict
+        items = session.execute(text(
+            "SELECT p.productnumber, oi.price FROM order_items oi JOIN products p ON p.id=oi.product_id "
+            "WHERE oi.order_id=:oid ORDER BY oi.id"), {"oid": order_id}).fetchall()
+        by_pnum = defaultdict(deque)
+        for pn, pr in items:
+            by_pnum[(_canon_pnum_for_match(pn) or "").lower()].append(pr)
+        positions = [t for t in re.split(r"[;,]", row[header.index("Номера товарів")]) if t.strip()]
+        new_prices, aligned = [], bool(positions)
+        for pos in positions:
+            key = (_canon_pnum_for_match(pos) or "").lower()
+            if by_pnum[key]:
+                new_prices.append(_fmt_price(by_pnum[key].popleft()))
+            else:
+                aligned = False
+                break
+        if aligned:
+            old_cena, cidx = cell("Ціна")
+            new_cena = "; ".join(new_prices) + ";"
+            if old_cena.strip() != new_cena.strip():
+                planned.append({"field": "item_prices", "header": "Ціна",
+                                "a1": _gspread_a1(r_i, cidx + 1), "old": old_cena, "new": new_cena})
+        else:
+            fk_skipped.append("item_prices: products don't align to sheet row — Ціна not written")
+        if "Сума" in header:
+            old_sum, sidx = cell("Сума")
+            new_sum = _fmt_price(o.total_amount)
+            if old_sum.strip() != new_sum.strip():
+                planned.append({"field": "total_amount", "header": "Сума",
+                                "a1": _gspread_a1(r_i, sidx + 1), "old": old_sum, "new": new_sum})
 
     result = {"ok": True, "tab": target_ws.title, "row": r_i, "client": client_name,
               "dry_run": dry_run, "planned": planned, "fk_skipped": fk_skipped}
