@@ -652,6 +652,95 @@ async def update_order_item_price(
     return await get_order(order_id, db)
 
 
+def _order_pnums(db: Session, order_id: int) -> list:
+    return [oi.product.productnumber for oi in
+            db.query(OrderItem).filter(OrderItem.order_id == order_id).all()
+            if oi.product and oi.product.productnumber]
+
+
+def _lock_order_items(order: Order):
+    locked = {x.strip() for x in (order.manually_edited_fields or "").split(",") if x.strip()}
+    locked.update({"items", "item_prices"})
+    order.manually_edited_fields = ",".join(sorted(locked))
+    order.manually_edited_at = datetime.utcnow()
+
+
+def _order_items_writeback_bg(order_id: int, old_pnums: list):
+    """Background write-back for add/remove (anti-dup logic in sheets_parser)."""
+    try:
+        from backend.scripts import sheets_parser as _sp
+    except ImportError:
+        from scripts import sheets_parser as _sp
+    s = SessionLocal()
+    try:
+        res = _sp.writeback_order_to_journal(s, order_id, dry_run=False, locate_pnums=set(old_pnums))
+        if not res.get("ok"):
+            logger.warning(f"[order-writeback] add/remove order {order_id} skipped: {res.get('reason')}")
+        elif res.get("fk_skipped"):
+            logger.warning(f"[order-writeback] add/remove order {order_id} partial: {res.get('fk_skipped')}")
+    except Exception as we:
+        logger.error(f"[order-writeback] add/remove order {order_id} failed: {we}")
+    finally:
+        s.close()
+
+
+@router.post("/api/orders/{order_id}/items", response_model=OrderWithDetails)
+async def add_order_item(
+    order_id: int = Path(..., ge=1),
+    product_id: Optional[int] = Body(None, embed=True),
+    product_number: Optional[str] = Body(None, embed=True),
+    price: float = Body(..., embed=True, ge=0),
+    quantity: int = Body(1, embed=True, ge=1),
+    db: Session = Depends(get_db),
+):
+    """Add a product (by id or number) to an order → recalc total → write
+    Номера товарів+Ціна+Сума back to the sheet and recompute the fingerprint."""
+    order = db.query(Order).filter(Order.id == order_id).first()
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    product = None
+    if product_id:
+        product = db.query(Product).filter(Product.id == product_id).first()
+    elif product_number:
+        from backend.utils.productnumber_normalizer import normalize as _norm_pn
+        cand = _norm_pn(product_number) or product_number
+        product = (db.query(Product).filter(Product.productnumber == cand).first()
+                   or db.query(Product).filter(Product.productnumber == product_number.strip()).first())
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found (id or number)")
+    product_id = product.id
+    old_pnums = _order_pnums(db, order_id)
+    db.add(OrderItem(order_id=order_id, product_id=product_id, price=price, quantity=quantity))
+    _lock_order_items(order)
+    db.commit()
+    OrderDAO(db).recalculate_order_total(order_id)
+    threading.Thread(target=_order_items_writeback_bg, args=(order_id, old_pnums), daemon=True).start()
+    return await get_order(order_id, db)
+
+
+@router.delete("/api/orders/{order_id}/items/{item_id}", response_model=OrderWithDetails)
+async def remove_order_item(
+    order_id: int = Path(..., ge=1),
+    item_id: int = Path(..., ge=1),
+    db: Session = Depends(get_db),
+):
+    """Remove a product from an order → recalc total → write back + recompute fingerprint."""
+    item = db.query(OrderItem).filter(OrderItem.id == item_id, OrderItem.order_id == order_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Order item not found")
+    remaining = db.query(OrderItem).filter(OrderItem.order_id == order_id).count()
+    if remaining <= 1:
+        raise HTTPException(status_code=400, detail="Не можна видалити останню позицію замовлення")
+    old_pnums = _order_pnums(db, order_id)
+    order = db.query(Order).filter(Order.id == order_id).first()
+    db.delete(item)
+    _lock_order_items(order)
+    db.commit()
+    OrderDAO(db).recalculate_order_total(order_id)
+    threading.Thread(target=_order_items_writeback_bg, args=(order_id, old_pnums), daemon=True).start()
+    return await get_order(order_id, db)
+
+
 @router.delete("/api/orders/{order_id}")
 async def delete_order(order_id: int = Path(..., ge=1), db: Session = Depends(get_db)):
     """

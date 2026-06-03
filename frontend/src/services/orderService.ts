@@ -246,6 +246,16 @@ export const updateOrderItemPrice = async (orderId: number, itemId: number, pric
   return response.data;
 };
 
+export const addOrderItem = async (orderId: number, productNumber: string, price: number, quantity = 1): Promise<OrderWithDetails> => {
+  const response = await axios.post(`/api/orders/${orderId}/items`, { product_number: productNumber, price, quantity });
+  return response.data;
+};
+
+export const removeOrderItem = async (orderId: number, itemId: number): Promise<OrderWithDetails> => {
+  const response = await axios.delete(`/api/orders/${orderId}/items/${itemId}`);
+  return response.data;
+};
+
 export const deleteOrder = async (id: number): Promise<{ message: string, id: number }> => {
   try {
     const response = await axios.delete(`/api/orders/${id}`);

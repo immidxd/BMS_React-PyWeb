@@ -362,6 +362,20 @@ CHANNEL_TOKENS = {"Telegram": "TG", "Viber": "Viber", "Instagram": "IG",
                   "TikTok": "TT", "OLX": "OLX", "Grailed": "Grailed", "Shafa": "Shafa"}
 
 
+def compute_order_fingerprint(client_name: str, order_date, product_numbers) -> str:
+    """Stable order identity = md5(client | date | sorted normalized product nums).
+    SINGLE SOURCE OF TRUTH — the parser AND add/remove edits must use this so a
+    product-set change updates the fingerprint identically (no reparse duplicate)."""
+    import hashlib
+    norm = sorted(
+        re.sub(r"[^\wА-ЯҐЄІЇа-яґєії]", "", p).upper()
+        for p in (product_numbers or []) if p and p.strip()
+    )
+    iso = order_date.isoformat() if hasattr(order_date, "isoformat") else str(order_date)
+    fp_raw = f"{(client_name or '').strip().lower()}|{iso}|{'|'.join(norm)}"
+    return hashlib.md5(fp_raw.encode("utf-8")).hexdigest()
+
+
 def _fmt_price(v) -> str:
     """Price as the sheet writes it: integer if whole, else plain float."""
     try:
@@ -381,12 +395,14 @@ def _norm_pnum_set(raw: str) -> set:
     return out
 
 
-def writeback_order_to_journal(session: Session, order_id: int, dry_run: bool = True) -> dict:
-    """Write an order's locked raw-text fields back to its «Замовлення» row.
+def writeback_order_to_journal(session: Session, order_id: int, dry_run: bool = True,
+                               locate_pnums: set = None) -> dict:
+    """Write an order's locked fields back to its «Замовлення» row.
 
-    Locates the row in the order_date tab by client name + product-number set
-    (requires EXACTLY one match — aborts on 0 or >1 to avoid touching the wrong
-    sale). dry_run=True returns the planned changes without writing.
+    Locates the row by client name + product-number set (EXACTLY one match —
+    aborts on 0/>1 to never touch the wrong sale). `locate_pnums` (the OLD set)
+    is used for location when the product set changed (add/remove) — the row
+    still has the old numbers. dry_run=True returns the plan without writing.
     """
     if not WRITEBACK_ENABLED:
         return {"ok": False, "reason": "writeback disabled"}
@@ -412,6 +428,9 @@ def writeback_order_to_journal(session: Session, order_id: int, dry_run: bool = 
     if not pnums:
         return {"ok": False, "reason": "order has no product numbers to match a row"}
 
+    # Locate by the OLD set when the product set changed (row still has old nums)
+    match_pnums = {(_canon_pnum_for_match(p) or "").lower() for p in locate_pnums} if locate_pnums else pnums
+
     gc = get_gc()
     sh = gc.open_by_key(ORDERS_ID)
     # Orders live in the current batch tab(s), NOT a tab named by order_date, so
@@ -431,7 +450,7 @@ def writeback_order_to_journal(session: Session, order_id: int, dry_run: bool = 
             rc = (row[ci] if ci < len(row) else "").strip()
             if rc.lower() != client_name.lower():
                 continue
-            if _norm_pnum_set(row[ni] if ni < len(row) else "") == pnums:
+            if _norm_pnum_set(row[ni] if ni < len(row) else "") == match_pnums:
                 matches.append((w, header, r_i, row))
         if matches:
             break  # stop at the newest tab that has a match (current order home)
@@ -532,7 +551,7 @@ def writeback_order_to_journal(session: Session, order_id: int, dry_run: bool = 
     # the "Ціна" list aligned to the "Номера товарів" positions; "Сума" = total.
     # Product SET is unchanged (add/remove is a separate future step), so the row
     # identity (fingerprint) stays stable.
-    if "item_prices" in locked and "Ціна" in header and "Номера товарів" in header:
+    if "item_prices" in locked and "items" not in locked and "Ціна" in header and "Номера товарів" in header:
         from collections import deque, defaultdict
         items = session.execute(text(
             "SELECT p.productnumber, oi.price FROM order_items oi JOIN products p ON p.id=oi.product_id "
@@ -564,17 +583,65 @@ def writeback_order_to_journal(session: Session, order_id: int, dry_run: bool = 
                 planned.append({"field": "total_amount", "header": "Сума",
                                 "a1": _gspread_a1(r_i, sidx + 1), "old": old_sum, "new": new_sum})
 
+    # ── Add/remove products → rewrite "Номера товарів" + recompute fingerprint ──
+    # ANTI-DUPLICATION: the new fingerprint is computed from the SHEET client text
+    # + the EXACT tokens we write, so the next parse computes the same fp → matches
+    # THIS order (UPDATE, never CREATE). Updated only after a successful sheet write.
+    new_fingerprint = None
+    if "items" in locked and "Номера товарів" in header:
+        rows_pp = session.execute(text(
+            "SELECT p.productnumber, oi.price FROM order_items oi JOIN products p ON p.id=oi.product_id "
+            "WHERE oi.order_id=:oid ORDER BY oi.id"), {"oid": order_id}).fetchall()
+        new_nums = [(pn or "").lstrip("#").strip() for pn, _ in rows_pp if pn]
+        new_pric = [_fmt_price(pr) for pn, pr in rows_pp if pn]
+        if new_nums:
+            sheet_client = (row[header.index("Клієнт")] if header.index("Клієнт") < len(row) else "").strip()
+            fp_candidate = compute_order_fingerprint(sheet_client, o.order_date, new_nums)
+            clash = session.execute(text(
+                "SELECT id FROM orders WHERE source_fingerprint=:fp AND id<>:oid LIMIT 1"),
+                {"fp": fp_candidate, "oid": order_id}).fetchone()
+            if clash:
+                fk_skipped.append(f"items: new fingerprint collides with order {clash[0]} — NOT writing (anti-dup)")
+            else:
+                new_fingerprint = fp_candidate
+                # rebuild "Номера товарів" + parallel "Ціна" from order_items (same order)
+                old_nums_cell, nidx = cell("Номера товарів")
+                new_nums_cell = "; ".join(new_nums) + ";"
+                if old_nums_cell.strip() != new_nums_cell.strip():
+                    planned.append({"field": "items", "header": "Номера товарів",
+                                    "a1": _gspread_a1(r_i, nidx + 1), "old": old_nums_cell, "new": new_nums_cell})
+                if "Ціна" in header:
+                    old_cena, cidx = cell("Ціна")
+                    new_cena = "; ".join(new_pric) + ";"
+                    if old_cena.strip() != new_cena.strip():
+                        planned.append({"field": "items_prices", "header": "Ціна",
+                                        "a1": _gspread_a1(r_i, cidx + 1), "old": old_cena, "new": new_cena})
+                if "Сума" in header:
+                    old_sum, sidx = cell("Сума")
+                    new_sum = _fmt_price(o.total_amount)
+                    if old_sum.strip() != new_sum.strip():
+                        planned.append({"field": "total_amount", "header": "Сума",
+                                        "a1": _gspread_a1(r_i, sidx + 1), "old": old_sum, "new": new_sum})
+
     result = {"ok": True, "tab": target_ws.title, "row": r_i, "client": client_name,
-              "dry_run": dry_run, "planned": planned, "fk_skipped": fk_skipped}
-    if not planned:
-        result["note"] = "nothing to write (already current or no locked raw fields)"
+              "dry_run": dry_run, "planned": planned, "fk_skipped": fk_skipped,
+              "new_fingerprint": new_fingerprint}
+    if not planned and new_fingerprint is None:
+        result["note"] = "nothing to write (already current or no locked fields)"
         return result
     if dry_run:
         return result
-    _save_writeback_backup(target_ws.title, f"order{order_id}", "order_fields", planned)
-    target_ws.batch_update([{"range": p["a1"], "values": [[p["new"]]]} for p in planned],
-                           value_input_option="RAW")
-    logger.info(f"[order-writeback] order {order_id} → '{target_ws.title}' row {r_i}: {len(planned)} cell(s)")
+    if planned:
+        _save_writeback_backup(target_ws.title, f"order{order_id}", "order_fields", planned)
+        target_ws.batch_update([{"range": p["a1"], "values": [[p["new"]]]} for p in planned],
+                               value_input_option="RAW")
+        logger.info(f"[order-writeback] order {order_id} → '{target_ws.title}' row {r_i}: {len(planned)} cell(s)")
+    # Update fingerprint ONLY after the sheet row was successfully rewritten, so a
+    # failed/aborted write leaves fp untouched → next parse safely reverts the edit.
+    if new_fingerprint and new_fingerprint != o.source_fingerprint:
+        o.source_fingerprint = new_fingerprint
+        session.commit()
+        logger.info(f"[order-writeback] order {order_id} fingerprint → {new_fingerprint[:8]} (product set changed)")
     return result
 
 
@@ -3725,12 +3792,7 @@ def _parse_orders_sheet(
         # ── Fingerprint для дедуплікації ──────────────────────────────────
         # Стабільний ключ: client_name + date + sorted product nums
         # (без total_amount — він змінюється між версіями замовлення в різних вкладках)
-        norm_pnums = sorted(
-            re.sub(r"[^\wА-ЯҐЄІЇа-яґєії]", "", p).upper()
-            for p in product_nums if p.strip()
-        )
-        fp_raw = f"{(client_name or '').strip().lower()}|{order_date.isoformat()}|{'|'.join(norm_pnums)}"
-        source_fp = hashlib.md5(fp_raw.encode("utf-8")).hexdigest()
+        source_fp = compute_order_fingerprint(client_name, order_date, product_nums)
 
         existing_order = session.query(Order).filter(
             Order.source_fingerprint == source_fp
@@ -3741,8 +3803,7 @@ def _parse_orders_sheet(
         # Тепер order_date може бути реальною датою → fingerprint змінився.
         # Перевіряємо також старий fingerprint (з sheet_date) для плавного переходу.
         if not existing_order and order_date != sheet_date:
-            fp_old_raw = f"{(client_name or '').strip().lower()}|{sheet_date.isoformat()}|{'|'.join(norm_pnums)}"
-            source_fp_old = hashlib.md5(fp_old_raw.encode("utf-8")).hexdigest()
+            source_fp_old = compute_order_fingerprint(client_name, sheet_date, product_nums)
             existing_order = session.query(Order).filter(
                 Order.source_fingerprint == source_fp_old
             ).first()
@@ -3790,7 +3851,7 @@ def _parse_orders_sheet(
         # Тільки при ОДНОЗНАЧНОМУ збігу (рівно 1 кандидат), щоб не злити різні замовлення.
         if not existing_order and client_id and total_amount > 0 and product_nums:
             from datetime import timedelta as _td
-            _norm_set_current = set(norm_pnums)
+            _norm_set_current = {re.sub(r"[^\wА-ЯҐЄІЇа-яґєії]", "", p).upper() for p in product_nums if p.strip()}
             _num_items_current = len(product_nums)
             _window_lo = order_date - _td(days=7)
             _window_hi = order_date + _td(days=7)

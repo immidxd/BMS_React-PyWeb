@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { fetchOrder, type OrderWithDetails, updateOrder, updateOrderItemPrice, type FilterOptions } from '../../services/orderService';
+import { fetchOrder, type OrderWithDetails, updateOrder, updateOrderItemPrice, addOrderItem, removeOrderItem, type FilterOptions } from '../../services/orderService';
 import ProductDetailsModal from '../products/ProductDetailsModal';
 
 interface Props {
@@ -19,6 +19,32 @@ const OrderDetailsModal: React.FC<Props> = ({ orderId, open, onClose, filterOpti
   const [editingItemId, setEditingItemId] = useState<number | null>(null);
   const [itemPriceDraft, setItemPriceDraft] = useState('');
   const [savingItem, setSavingItem] = useState(false);
+  const [addPnum, setAddPnum] = useState('');
+  const [addPrice, setAddPrice] = useState('');
+  const [itemBusy, setItemBusy] = useState(false);
+
+  const removeItem = async (itemId: number) => {
+    if (!orderId) return;
+    if (!window.confirm('Прибрати цю позицію із замовлення? (Запишеться в аркуш)')) return;
+    setItemBusy(true);
+    try { setOrder(await removeOrderItem(orderId, itemId)); }
+    catch (e) { console.error('remove item failed', e); }
+    finally { setItemBusy(false); }
+  };
+
+  const addItem = async () => {
+    if (!orderId) return;
+    const pn = addPnum.trim(); const pr = Number(addPrice);
+    if (!pn || isNaN(pr) || pr < 0) return;
+    setItemBusy(true);
+    try {
+      setOrder(await addOrderItem(orderId, pn, pr));
+      setAddPnum(''); setAddPrice('');
+    } catch (e: any) {
+      console.error('add item failed', e);
+      alert(e?.response?.data?.detail || 'Не вдалося додати позицію');
+    } finally { setItemBusy(false); }
+  };
 
   const saveItemPrice = async (itemId: number) => {
     if (!orderId) return;
@@ -155,6 +181,7 @@ const OrderDetailsModal: React.FC<Props> = ({ orderId, open, onClose, filterOpti
                     <th className="px-3 py-2 text-left">Назва</th>
                     <th className="px-3 py-2 text-right">К-сть</th>
                     <th className="px-3 py-2 text-right">Ціна</th>
+                    <th className="px-3 py-2 text-center w-10"></th>
                   </tr>
                 </thead>
                 <tbody>
@@ -192,8 +219,29 @@ const OrderDetailsModal: React.FC<Props> = ({ orderId, open, onClose, filterOpti
                           </span>
                         )}
                       </td>
+                      <td className="px-3 py-2 text-center">
+                        <button onClick={() => removeItem(it.id!)} disabled={itemBusy}
+                          className="text-gray-400 hover:text-red-600 disabled:opacity-40" title="Прибрати позицію">✕</button>
+                      </td>
                     </tr>
                   ))}
+                  <tr className="border-t bg-gray-50/60 dark:bg-gray-700/30">
+                    <td className="px-3 py-2" colSpan={2}>
+                      <input value={addPnum} onChange={(e) => setAddPnum(e.target.value)} placeholder="№ товару (напр. Ф4046)"
+                        className="w-full px-2 py-1 border rounded dark:bg-gray-800 dark:border-gray-600"
+                        onKeyDown={(e) => { if (e.key === 'Enter') addItem(); }} />
+                    </td>
+                    <td className="px-3 py-2 text-right text-gray-400">+1</td>
+                    <td className="px-3 py-2 text-right">
+                      <input type="number" value={addPrice} onChange={(e) => setAddPrice(e.target.value)} placeholder="ціна"
+                        className="w-24 px-2 py-1 text-right border rounded dark:bg-gray-800 dark:border-gray-600"
+                        onKeyDown={(e) => { if (e.key === 'Enter') addItem(); }} />
+                    </td>
+                    <td className="px-3 py-2 text-center">
+                      <button onClick={addItem} disabled={itemBusy || !addPnum.trim() || !addPrice}
+                        className="text-green-600 hover:text-green-700 disabled:opacity-40 font-bold" title="Додати позицію">＋</button>
+                    </td>
+                  </tr>
                 </tbody>
               </table>
             </div>
