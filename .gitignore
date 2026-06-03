@@ -55,3 +55,6 @@ db_backup_*.sql
 
 # Write-back cell backups (local)
 backend/scripts/writeback_backups/
+
+# Local prune/manual cleanup backups
+backend/scripts/prune_backups/
