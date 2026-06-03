@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { fetchOrder, type OrderWithDetails, updateOrder, updateOrderItemPrice, addOrderItem, removeOrderItem, type FilterOptions } from '../../services/orderService';
 import ProductDetailsModal from '../products/ProductDetailsModal';
+import { productService } from '../../services/productService';
 
 interface Props {
   orderId: number | null;
@@ -22,6 +23,27 @@ const OrderDetailsModal: React.FC<Props> = ({ orderId, open, onClose, filterOpti
   const [addPnum, setAddPnum] = useState('');
   const [addPrice, setAddPrice] = useState('');
   const [itemBusy, setItemBusy] = useState(false);
+  const [sug, setSug] = useState<any[]>([]);
+  const [sugOpen, setSugOpen] = useState(false);
+
+  // Debounced product autocomplete for the add-item input
+  useEffect(() => {
+    const q = addPnum.trim();
+    if (q.length < 2) { setSug([]); return; }
+    const t = setTimeout(async () => {
+      try {
+        const res = await productService.getProducts({ search: q, per_page: 8, sort_by: 'id', sort_dir: 'desc' });
+        setSug(res.items || []);
+      } catch { setSug([]); }
+    }, 250);
+    return () => clearTimeout(t);
+  }, [addPnum]);
+
+  const pickSuggestion = (p: any) => {
+    setAddPnum((p.productnumber || '').replace(/^#/, ''));
+    if (p.price != null && p.price > 0) setAddPrice(String(Number(p.price).toFixed(0)));
+    setSug([]); setSugOpen(false);
+  };
 
   const removeItem = async (itemId: number) => {
     if (!orderId) return;
@@ -227,9 +249,28 @@ const OrderDetailsModal: React.FC<Props> = ({ orderId, open, onClose, filterOpti
                   ))}
                   <tr className="border-t bg-gray-50/60 dark:bg-gray-700/30">
                     <td className="px-3 py-2" colSpan={2}>
-                      <input value={addPnum} onChange={(e) => setAddPnum(e.target.value)} placeholder="№ товару (напр. Ф4046)"
-                        className="w-full px-2 py-1 border rounded dark:bg-gray-800 dark:border-gray-600"
-                        onKeyDown={(e) => { if (e.key === 'Enter') addItem(); }} />
+                      <div className="relative">
+                        <input value={addPnum}
+                          onChange={(e) => { setAddPnum(e.target.value); setSugOpen(true); }}
+                          onFocus={() => setSugOpen(true)}
+                          onBlur={() => setTimeout(() => setSugOpen(false), 150)}
+                          placeholder="№ товару або модель — почни вводити…"
+                          className="w-full px-2 py-1 border rounded dark:bg-gray-800 dark:border-gray-600"
+                          onKeyDown={(e) => { if (e.key === 'Enter' && sug.length === 0) addItem(); if (e.key === 'Escape') setSugOpen(false); }} />
+                        {sugOpen && sug.length > 0 && (
+                          <ul className="absolute z-10 left-0 right-0 mt-1 max-h-60 overflow-auto bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-600 rounded shadow-lg text-sm">
+                            {sug.map((p) => (
+                              <li key={p.id}
+                                  onMouseDown={(e) => { e.preventDefault(); pickSuggestion(p); }}
+                                  className="px-3 py-1.5 cursor-pointer hover:bg-blue-50 dark:hover:bg-blue-900/30 flex justify-between gap-3">
+                                <span className="font-mono">{p.productnumber}</span>
+                                <span className="text-gray-500 truncate flex-1">{[(p as any).brand_name, p.model].filter(Boolean).join(' ')}</span>
+                                {p.price != null && p.price > 0 && <span className="text-gray-400 shrink-0">{Number(p.price).toFixed(0)}₴</span>}
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </div>
                     </td>
                     <td className="px-3 py-2 text-right text-gray-400">+1</td>
                     <td className="px-3 py-2 text-right">
