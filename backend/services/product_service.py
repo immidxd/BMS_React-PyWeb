@@ -605,12 +605,19 @@ def create_product(db: Session, product: schemas.ProductCreate) -> models.Produc
 # Phase 2a: fields that, when edited in the app, get locked against parser
 # overwrite (the parser restores the user's value after a reparse). Keep in sync
 # with the frontend inline-edit set and PRODUCT_LOCK_FIELDS in sheets_parser.
-LOCKABLE_PRODUCT_FIELDS = {"price", "oldprice", "model", "marking", "description", "extranote", "season"}
+LOCKABLE_PRODUCT_FIELDS = {
+    "price", "oldprice", "model", "marking", "description", "extranote", "season",
+    # Model-level scalar fields (same across a rostovka) — full sheet sync.
+    "year", "width", "clonednumbers",
+    # Per-item scalar fields (unique per size-row) — see PER_ITEM_FIELDS below.
+    "sizeeu", "size_letter", "measurementscm", "dimensions",
+}
 # Propagation policy across rostovka siblings (same productnumber):
-#   PER_ITEM_FIELDS — unique per pair, NEVER propagated (e.g. condition/стан).
+#   PER_ITEM_FIELDS — unique per pair/size, NEVER propagated (e.g. condition/розмір).
 #   PRICE_FIELDS    — propagated only to same-condition siblings without their own locked price.
 #   (anything else lockable) — per-model: propagated to all siblings.
-PER_ITEM_FIELDS = {"current_conditionid", "conditionid"}
+PER_ITEM_FIELDS = {"current_conditionid", "conditionid",
+                   "sizeeu", "size_letter", "measurementscm", "dimensions"}
 PRICE_FIELDS = {"price", "oldprice"}
 
 

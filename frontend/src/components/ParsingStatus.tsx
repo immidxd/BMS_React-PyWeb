@@ -23,6 +23,9 @@ export const ParsingStatus: React.FC<ParsingStatusProps> = ({ jobId = null, onCo
   const wsRef = useRef<WebSocket | null>(null);
   const pollRef = useRef<any>(null);
   const autoHideRef = useRef<any>(null);
+  // Monotonic floor for the displayed percent — guards the bar from flickering
+  // backwards when WS / poll payloads arrive out of order during a run.
+  const percentRef = useRef(0);
 
   // Auto-hide widget 5 seconds after parsing completes
   const terminal = job?.status && ['succeeded','failed','canceled','stalled'].includes(job.status);
@@ -39,36 +42,42 @@ export const ParsingStatus: React.FC<ParsingStatusProps> = ({ jobId = null, onCo
   // Job-based live stream
   useEffect(() => {
     if (!jobId) { setJob(null); if (pollRef.current) { clearInterval(pollRef.current); pollRef.current=null; } return; }
+    // jobId === -1 is the transient "pending" placeholder set the instant the
+    // user starts a run, before POST /run returns the real id. Don't open a
+    // doomed stream/poll for it (jobs/-1 → 404) — just show "З'єднання...".
+    if (jobId <= 0) { setJob(null); if (pollRef.current) { clearInterval(pollRef.current); pollRef.current=null; } return; }
     setLegacy(null);
+    percentRef.current = 0; // reset monotonic floor for the new job
     const base = axios.defaults.baseURL || window.location.origin;
     const u = new URL(base);
     const wsScheme = u.protocol === 'https:' ? 'wss:' : 'ws:';
     const url = `${wsScheme}//${u.host}/api/parsing/jobs/${jobId}/stream`;
 
+    // Poll is a TRUE fallback — it runs only while the WS is down. Running both
+    // at once made the bar flicker between the WS value and a laggier poll value.
+    const stopPoll = () => { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; } };
+    const startPoll = () => {
+      if (pollRef.current) return; // already polling — never stack intervals
+      pollRef.current = setInterval(async () => {
+        try {
+          const r = await axios.get(`/api/parsing/jobs/${jobId}`);
+          setJob(r.data); setLastPayloadTs(Date.now());
+          if (['succeeded','failed','canceled','stalled'].includes(String(r.data?.status || ''))) stopPoll();
+        } catch { stopPoll(); }
+      }, 1000);
+    };
+
     const ws = new WebSocket(url);
     wsRef.current = ws;
+    ws.onopen = () => { stopPoll(); };            // WS is the single live source
     ws.onmessage = (ev) => { try { const p = JSON.parse(ev.data); setJob(p); setLastPayloadTs(Date.now()); } catch {} };
-    ws.onerror = () => { /* fallback handled by polling below */ };
-    ws.onclose = () => { /* fallback handled by polling below */ };
+    ws.onerror = () => { startPoll(); };
+    ws.onclose = () => { startPoll(); };
 
-    // Єдиний цикл опитування REST як резерв, без вкладених інтервалів
-    if (pollRef.current) { clearInterval(pollRef.current); }
-    pollRef.current = setInterval(async () => {
-      try {
-        const r = await axios.get(`/api/parsing/jobs/${jobId}`);
-        setJob(r.data); setLastPayloadTs(Date.now());
-        if (['succeeded','failed','canceled','stalled'].includes(String(r.data?.status || ''))) {
-          clearInterval(pollRef.current as any);
-          pollRef.current = null;
-        }
-      } catch {
-        // stop polling on error to avoid spamming
-        clearInterval(pollRef.current as any);
-        pollRef.current = null;
-      }
-    }, 1000);
+    // Failsafe: if the socket never opens, fall back to polling.
+    const failsafe = setTimeout(() => { if (ws.readyState !== WebSocket.OPEN) startPoll(); }, 2000);
 
-    return () => { try { ws.close(); } catch {} if (pollRef.current) { clearInterval(pollRef.current); pollRef.current=null; } };
+    return () => { clearTimeout(failsafe); try { ws.close(); } catch {} stopPoll(); };
   }, [jobId]);
 
   // Legacy global status as fallback when no jobId
@@ -121,9 +130,18 @@ export const ParsingStatus: React.FC<ParsingStatusProps> = ({ jobId = null, onCo
   
   const visible = showJob || showLegacy || showPendingJob;
 
-  const percent = showJob
-    ? (Number(job?.percent ?? (job?.total_items ? Math.round((job.processed_items / job.total_items) * 100) : 0)))
-    : (legacy && legacy.total > 0 ? Math.round((legacy.current / legacy.total) * 100) : 0);
+  // Bar binds ONLY to the backend's single overall percent (job.percent), which
+  // is monotonic across phases. processed_items/total_items are PER-SHEET — using
+  // them as a fallback made the bar jump to the current sheet's ratio. When a
+  // payload lacks percent we hold the last value instead of recomputing.
+  let percent: number;
+  if (showJob) {
+    const p = Number(job?.percent);
+    percent = terminal ? 100 : Math.max(percentRef.current, Number.isFinite(p) ? p : percentRef.current);
+    percentRef.current = percent;
+  } else {
+    percent = (legacy && legacy.total > 0) ? Math.round((legacy.current / legacy.total) * 100) : 0;
+  }
 
   const title = showJob ? `Парсинг (${job.mode || '...'})` : 'Парсинг даних';
   const terminalVisible = showJob && terminal;

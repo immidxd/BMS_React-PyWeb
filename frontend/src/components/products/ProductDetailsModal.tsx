@@ -2,7 +2,7 @@ import React, { useEffect, useState, useMemo } from 'react';
 import { productService } from '../../services/productService';
 import type { Product } from '../../types/product';
 import { Tag, Spin, Image } from 'antd';
-import { CloseOutlined, PictureOutlined, LeftOutlined, RightOutlined, WarningOutlined, EditOutlined } from '@ant-design/icons';
+import { CloseOutlined, PictureOutlined, LeftOutlined, RightOutlined, WarningOutlined, EditOutlined, CheckOutlined } from '@ant-design/icons';
 import { CopyOnClick, formatBrandName } from '../common/displayHelpers';
 
 interface Props {
@@ -25,10 +25,38 @@ interface GalleryImage {
   kind?: GalleryKind;
 }
 
+type FieldType = 'text' | 'number' | 'textarea';
+
+// Поля з безпечною синхронізацією у аркуш (write-back за назвою колонки) + лок у БД.
+// Model-level (model/season/marking/year/width/clonednumbers) пишуться на всі рядки
+// номера; per-item (sizeeu/size_letter/measurementscm/dimensions) — лише коли номер
+// займає один рядок (інакше зберігаються лише в БД, щоб не затерти сусідів ростовки).
+const EDITABLE_FIELDS: { field: string; type: FieldType }[] = [
+  { field: 'model', type: 'text' },
+  { field: 'season', type: 'text' },
+  { field: 'marking', type: 'text' },
+  { field: 'year', type: 'number' },
+  { field: 'width', type: 'text' },
+  { field: 'clonednumbers', type: 'text' },
+  { field: 'sizeeu', type: 'text' },
+  { field: 'size_letter', type: 'text' },
+  { field: 'measurementscm', type: 'text' },
+  { field: 'dimensions', type: 'text' },
+  { field: 'price', type: 'number' },
+  { field: 'oldprice', type: 'number' },
+  { field: 'description', type: 'textarea' },
+  { field: 'extranote', type: 'textarea' },
+];
+
+// Скільки чекати фото з Drive, перш ніж прибрати спінер галереї (картку показуємо
+// одразу — фото вантажаться окремо й «доїжджають» у фоні навіть після таймауту).
+const IMAGE_SOFT_TIMEOUT_MS = 3500;
+
 const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev, onNext }) => {
   const [loading, setLoading] = useState(false);
   const [product, setProduct] = useState<Product | null>(null);
   const [allImages, setAllImages] = useState<GalleryImage[]>([]);
+  const [imagesLoading, setImagesLoading] = useState(false);
   const [showDefects, setShowDefects] = useState(false);
   const [activeKind, setActiveKind] = useState<'official' | 'real'>('official');
   const [activeIdx, setActiveIdx] = useState(0);
@@ -37,10 +65,15 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
   const [editingPhotoSrc, setEditingPhotoSrc] = useState(false);
   const [photoSrcDraft, setPhotoSrcDraft] = useState('');
   const [savingPhotoSrc, setSavingPhotoSrc] = useState(false);
-  // Inline-редагування полів товару (Phase 2a): ціна, модель, опис, примітка, сезон
+  // Швидке inline-редагування ОКРЕМОГО поля (опис/примітка/ціна) без загального режиму
   const [editingField, setEditingField] = useState<string | null>(null);
   const [fieldDraft, setFieldDraft] = useState('');
   const [savingField, setSavingField] = useState(false);
+  // Глобальний режим редагування: всі поля одночасно стають інпутами + «Зберегти все»
+  const [editMode, setEditMode] = useState(false);
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [savingAll, setSavingAll] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   const officialCount = useMemo(() => allImages.filter((i) => (i.kind ?? 'official') === 'official').length, [allImages]);
   const realCount = useMemo(() => allImages.filter((i) => i.kind === 'real').length, [allImages]);
@@ -58,17 +91,39 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
   }, [allImages, showDefects, activeKind]);
   const defectCount = useMemo(() => allImages.filter((i) => i.is_defect).length, [allImages]);
 
-  // Перезавантаження товару + фото (викликається при відкритті та після збереження)
-  const reloadProductAndImages = React.useCallback(async (withSpinner = true) => {
+  // Завантаження товару — картка показується одразу, НЕ чекаючи фото з Drive.
+  const loadProduct = React.useCallback(async (withSpinner = true) => {
     if (!productId) return;
     if (withSpinner) setLoading(true);
-    const [prodRes, imgRes] = await Promise.allSettled([
-      productService.getProduct(productId),
-      productService.getProductImages(productId),
-    ]);
-    if (prodRes.status === 'fulfilled') setProduct(prodRes.value);
-    if (imgRes.status === 'fulfilled') setAllImages(imgRes.value.images || []);
-    if (withSpinner) setLoading(false);
+    try {
+      const prod = await productService.getProduct(productId);
+      setProduct(prod);
+    } catch (e) {
+      console.error('Failed to load product', e);
+    } finally {
+      if (withSpinner) setLoading(false);
+    }
+  }, [productId]);
+
+  // Фото вантажимо ОКРЕМО від товару. Спінер галереї тримаємо лише до soft-таймауту:
+  // якщо Drive відповідає довго — показуємо плейсхолдер, але запит триває й фото
+  // зʼявляться коли доїдуть. Картку це ніколи не блокує.
+  const loadImages = React.useCallback(async () => {
+    if (!productId) return;
+    setImagesLoading(true);
+    let settled = false;
+    const timer = setTimeout(() => { if (!settled) setImagesLoading(false); }, IMAGE_SOFT_TIMEOUT_MS);
+    try {
+      const res = await productService.getProductImages(productId);
+      if (!settled) settled = true;
+      setAllImages(res.images || []);
+    } catch (e) {
+      console.error('Failed to load images', e);
+    } finally {
+      settled = true;
+      clearTimeout(timer);
+      setImagesLoading(false);
+    }
   }, [productId]);
 
   useEffect(() => {
@@ -80,8 +135,11 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     setActiveIdx(0);
     setEditingPhotoSrc(false);
     setEditingField(null);
-    reloadProductAndImages(true);
-  }, [open, productId, reloadProductAndImages]);
+    setEditMode(false);
+    setSaveError(null);
+    loadProduct(true);
+    loadImages();
+  }, [open, productId, loadProduct, loadImages]);
 
   // Зберегти official_photos_from і одразу перепідтягнути фото
   const savePhotoSrc = async () => {
@@ -91,7 +149,8 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
       const val = photoSrcDraft.trim();
       await productService.updateProduct(productId, { official_photos_from: val || null });
       setEditingPhotoSrc(false);
-      await reloadProductAndImages(false);
+      await loadProduct(false);
+      await loadImages();
       setActiveIdx(0);
     } catch (e) {
       console.error('Failed to save official_photos_from', e);
@@ -100,7 +159,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     }
   };
 
-  // Зберегти редаговане поле товару (Phase 2a) → лок ставиться на бекенді
+  // Зберегти ОДНЕ редаговане поле (швидкий пенсіл біля опису/примітки/ціни)
   const saveField = async (field: string) => {
     if (!productId) return;
     setSavingField(true);
@@ -114,7 +173,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
       }
       await productService.updateProduct(productId, { [field]: val } as any);
       setEditingField(null);
-      await reloadProductAndImages(false);
+      await loadProduct(false);
     } catch (e) {
       console.error('Failed to save field', field, e);
     } finally {
@@ -127,7 +186,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     if (!productId) return;
     try {
       await productService.unlockProductFields(productId, [field]);
-      await reloadProductAndImages(false);
+      await loadProduct(false);
     } catch (e) {
       console.error('Failed to unlock field', field, e);
     }
@@ -136,6 +195,65 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
   const startEdit = (field: string, raw: string | number | null | undefined) => {
     setEditingField(field);
     setFieldDraft(raw == null ? '' : String(raw));
+  };
+
+  // ── Глобальний режим редагування ────────────────────────────────────────────
+  const rawFieldStr = React.useCallback((field: string): string => {
+    const v = (product as any)?.[field];
+    return v === null || v === undefined ? '' : String(v);
+  }, [product]);
+
+  const enterEditMode = () => {
+    if (!product) return;
+    const init: Record<string, string> = {};
+    for (const { field } of EDITABLE_FIELDS) init[field] = rawFieldStr(field);
+    setDrafts(init);
+    setEditingField(null);
+    setEditingPhotoSrc(false);
+    setSaveError(null);
+    setEditMode(true);
+  };
+
+  const cancelEditMode = () => {
+    setEditMode(false);
+    setDrafts({});
+    setSaveError(null);
+  };
+
+  const setDraft = (field: string, val: string) => setDrafts((d) => ({ ...d, [field]: val }));
+
+  const saveAll = async () => {
+    if (!productId) return;
+    const payload: Record<string, any> = {};
+    for (const { field, type } of EDITABLE_FIELDS) {
+      const cur = (drafts[field] ?? '');
+      const orig = rawFieldStr(field);
+      if (cur.trim() === orig.trim()) continue;
+      if (type === 'number') {
+        const t = cur.trim();
+        if (t === '') { payload[field] = null; continue; }
+        const n = Number(t);
+        if (isNaN(n) || n < 0) { setSaveError(`Некоректне число у полі «${field}»`); return; }
+        payload[field] = n;
+      } else {
+        payload[field] = cur.trim() === '' ? null : cur;
+      }
+    }
+    if (Object.keys(payload).length === 0) { cancelEditMode(); return; }
+    setSavingAll(true);
+    setSaveError(null);
+    try {
+      await productService.updateProduct(productId, payload as any);
+      await loadProduct(false);
+      setEditMode(false);
+      setDrafts({});
+    } catch (e: any) {
+      console.error('Failed to save all', e);
+      const detail = e?.response?.data?.detail;
+      setSaveError(typeof detail === 'string' ? detail : 'Не вдалося зберегти зміни');
+    } finally {
+      setSavingAll(false);
+    }
   };
 
   // Якщо офіційних нема, а реальні є — стартуємо з «Реальні»
@@ -151,38 +269,38 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     if (activeIdx >= images.length) setActiveIdx(Math.max(0, images.length - 1));
   }, [images.length, activeIdx]);
 
-  // Preload усі фото товару у фоні (browser http-cache).
-  // Triggers після того як allImages підвантажились → коли користувач переключає
-  // фото стрілками, нова картинка вже в кеші браузера (миттєве переключення).
+  // Preload усі фото товару у фоні (browser http-cache) для миттєвого перемикання.
   useEffect(() => {
     if (allImages.length === 0) return;
     const preloaded: HTMLImageElement[] = [];
     for (const img of allImages) {
       const i = new window.Image();
-      i.src = img.url;  // запускає GET; результат → browser cache
+      i.src = img.url;
       preloaded.push(i);
     }
-    // Тримаємо посилання щоб GC не сміттяр зібрав до завершення завантаження
     return () => { preloaded.length = 0; };
   }, [allImages]);
 
-  // Keyboard: Esc closes, ←/→ navigate gallery, < > navigate between product cards.
-  // < > слухаємо через e.code (Comma/Period) — фізичні клавіші, незалежно від
-  // розкладки (кирилиця дала б 'б'/'ю' у e.key). Не спрацьовує у полях вводу.
+  // Card navigation вимкнено в режимі редагування (щоб не загубити незбережене).
+  const navPrev = (!editMode && onPrev) ? onPrev : undefined;
+  const navNext = (!editMode && onNext) ? onNext : undefined;
+
+  // Keyboard: Esc closes (або виходить з edit-режиму), ←/→ gallery, < > картки.
   useEffect(() => {
     if (!open) return;
     const handleKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         if (previewVisible) return;
+        if (editMode) { cancelEditMode(); return; }
         onClose();
         return;
       }
-      // Card navigation: < (Comma) / > (Period). Ігноруємо, якщо фокус в інпуті.
       const tag = (e.target as HTMLElement)?.tagName;
       const inField = tag === 'INPUT' || tag === 'TEXTAREA' || (e.target as HTMLElement)?.isContentEditable;
-      if (!inField && !previewVisible && !e.metaKey && !e.ctrlKey && !e.altKey) {
-        if (e.code === 'Comma' && onPrev) { e.preventDefault(); onPrev(); return; }
-        if (e.code === 'Period' && onNext) { e.preventDefault(); onNext(); return; }
+      if (editMode || inField) return;  // у режимі редагування клавіатурна навігація вимкнена
+      if (!previewVisible && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        if (e.code === 'Comma' && navPrev) { e.preventDefault(); navPrev(); return; }
+        if (e.code === 'Period' && navNext) { e.preventDefault(); navNext(); return; }
       }
       if (images.length > 1 && !previewVisible) {
         if (e.key === 'ArrowLeft') setActiveIdx((i) => (i - 1 + images.length) % images.length);
@@ -191,7 +309,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     };
     window.addEventListener('keydown', handleKey);
     return () => window.removeEventListener('keydown', handleKey);
-  }, [open, onClose, images.length, previewVisible, onPrev, onNext]);
+  }, [open, onClose, images.length, previewVisible, navPrev, navNext, editMode]);
 
   const p = product;
 
@@ -207,11 +325,10 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     return { text: staticStatus || 'Не вказано', color: staticStatus ? 'geekblue' : 'default' };
   }, [p]);
 
-  const sizesLine = useMemo(() => {
-    if (!p) return null;
+  // Розміри в інших системах (UA/USA/UK) — обчислені, без колонки в аркуші → read-only.
+  const derivedSizes = useMemo(() => {
+    if (!p) return [];
     const parts: { label: string; val: any }[] = [
-      { label: 'Буквений', val: (p as any).size_letter },
-      { label: 'EU', val: p.sizeeu },
       { label: 'UA', val: p.sizeua },
       { label: 'USA', val: p.sizeusa },
       { label: 'UK', val: p.sizeuk },
@@ -227,22 +344,8 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
 
   if (!open) return null;
 
-  const InfoRow: React.FC<{ label: string; value?: React.ReactNode; copyable?: boolean }> = ({ label, value }) => {
-    if (value === null || value === undefined || value === '') return null;
-    // Усі прості значення (string/number) загортаємо у CopyOnClick для єдиного
-    // вирівнювання — без винятків. CopyOnClick додає px-1, і коли частина
-    // рядків була без нього, текст «гуляв» на ~4px ліворуч.
-    return (
-      <div className="flex items-baseline gap-3 py-1.5">
-        <span className="text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500 w-[128px] shrink-0 font-medium">{label}</span>
-        <span className="text-sm text-gray-800 dark:text-gray-200 break-words">
-          {(typeof value === 'string' || typeof value === 'number')
-            ? <CopyOnClick value={value as string | number} />
-            : value}
-        </span>
-      </div>
-    );
-  };
+  // ── Дрібні UI-хелпери ─────────────────────────────────────────────────────────
+  const inputCls = 'w-full px-2 py-1.5 text-sm rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-100 focus:outline-none focus:ring-1 focus:ring-primary-400';
 
   // Бейдж «змінено в програмі» + кнопка «скинути до аркуша» для залоченого поля
   const LockBadge: React.FC<{ field: string }> = ({ field }) =>
@@ -258,6 +361,12 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
       </span>
     ) : null;
 
+  // Маленька крапка-індикатор лока (для компактних місць — лейбли в edit-режимі)
+  const LockDot: React.FC<{ field: string }> = ({ field }) =>
+    lockedFields.has(field)
+      ? <span className="w-1.5 h-1.5 rounded-full bg-amber-500 inline-block" title="Змінено в програмі" />
+      : null;
+
   // Акуратна кнопка-олівець (antd-іконка). Видима на hover рядка/блоку.
   const EditBtn: React.FC<{ onClick: () => void; title?: string; always?: boolean }> = ({ onClick, title, always }) => (
     <button onClick={onClick} title={title || 'Редагувати'}
@@ -269,42 +378,48 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     </button>
   );
 
-  // Inline-редаговане поле-рядок (модель, сезон). type: text|number|textarea
-  const EditableRow: React.FC<{
-    field: string; label: string; value?: string | number | null;
-    type?: 'text' | 'number' | 'textarea'; placeholder?: string;
-  }> = ({ field, label, value, type = 'text', placeholder }) => {
-    const isEditing = editingField === field;
+  // Read-only клітинка характеристик: лейбл + значення (порожні ховаємо для компактності).
+  const RoCell: React.FC<{ label: string; value?: React.ReactNode }> = ({ label, value }) => {
+    if (value === null || value === undefined || value === '') return null;
     return (
-      <div className="flex items-baseline gap-3 py-1.5 group">
-        <span className="text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500 w-[128px] shrink-0 font-medium">{label}</span>
-        <span className="text-sm text-gray-800 dark:text-gray-200 break-words flex-1 min-w-0">
-          {isEditing ? (
-            <span className="inline-flex items-center gap-1.5 w-full">
-              {type === 'textarea' ? (
-                <textarea autoFocus value={fieldDraft} onChange={(e) => setFieldDraft(e.target.value)}
-                  className="flex-1 px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 min-h-[60px]"
-                  onKeyDown={(e) => { if (e.key === 'Escape') setEditingField(null); }} />
-              ) : (
-                <input autoFocus type={type === 'number' ? 'number' : 'text'} value={fieldDraft}
-                  onChange={(e) => setFieldDraft(e.target.value)}
-                  className="flex-1 px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800"
-                  onKeyDown={(e) => { if (e.key === 'Enter') saveField(field); if (e.key === 'Escape') setEditingField(null); }} />
-              )}
-              <button onClick={() => saveField(field)} disabled={savingField}
-                className="text-green-600 hover:text-green-700 text-sm px-1" title="Зберегти">✓</button>
-              <button onClick={() => setEditingField(null)}
-                className="text-gray-400 hover:text-gray-600 text-sm px-1" title="Скасувати">✕</button>
-            </span>
-          ) : (
-            <span className="inline-flex items-center gap-2 min-w-0">
-              {(value === null || value === undefined || value === '')
-                ? <span className="text-gray-300 dark:text-gray-600 italic">{placeholder || '—'}</span>
-                : <span className="truncate">{value}</span>}
-              <EditBtn onClick={() => startEdit(field, value ?? '')} always />
-              <LockBadge field={field} />
-            </span>
-          )}
+      <div className="flex flex-col gap-0.5 min-w-0">
+        <span className="text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500 font-medium">{label}</span>
+        <span className="text-sm text-gray-800 dark:text-gray-200 break-words">
+          {(typeof value === 'string' || typeof value === 'number')
+            ? <CopyOnClick value={value as string | number} />
+            : value}
+        </span>
+      </div>
+    );
+  };
+
+  // Редагована клітинка: input у глобальному edit-режимі; інакше — значення (+ лок).
+  // У read-режимі порожнє значення ховаємо. Тип number → number input.
+  const EditCell: React.FC<{ field: string; label: string; type?: FieldType; placeholder?: string }> = ({ field, label, type = 'text', placeholder }) => {
+    if (editMode) {
+      return (
+        <div className="flex flex-col gap-1 min-w-0">
+          <span className="text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500 font-medium flex items-center gap-1.5">
+            {label}<LockDot field={field} />
+          </span>
+          <input
+            type={type === 'number' ? 'number' : 'text'}
+            value={drafts[field] ?? ''}
+            onChange={(e) => setDraft(field, e.target.value)}
+            placeholder={placeholder}
+            className={inputCls}
+          />
+        </div>
+      );
+    }
+    const v = (p as any)?.[field];
+    if (v === null || v === undefined || v === '') return null;
+    return (
+      <div className="flex flex-col gap-0.5 min-w-0">
+        <span className="text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500 font-medium">{label}</span>
+        <span className="text-sm text-gray-800 dark:text-gray-200 break-words flex items-center gap-2">
+          <CopyOnClick value={v as string | number} />
+          <LockBadge field={field} />
         </span>
       </div>
     );
@@ -320,6 +435,14 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
 
   const activeImage = images[activeIdx];
   const productTitle = p ? ([formatBrandName((p as any).brand_name), p.model].filter(Boolean).join(' ') || (p.productnumber || '').replace(/^#/, '')) : '';
+  const pnumClean = (p?.productnumber || '').replace(/^#/, '');
+  // Колонка-галерея присутня ЗАВЖДИ (стабільний макет: фото ліворуч, інфо праворуч).
+  // Коли фото нема — показуємо плейсхолдер «Фото відсутнє», а не згортаємо колонку
+  // (інакше макет «стрибає» між товарами — користувача це збиває).
+  const hasGalleryColumn = true;
+  // Характеристики живуть у правій колонці ПОРУЧ із фото (заповнюють її висоту) — 2 колонки.
+  const charCols = 'grid-cols-2';
+  const hasAnySize = !!(p && (p.sizeeu || (p as any).size_letter || p.measurementscm || p.dimensions || derivedSizes.length > 0));
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
@@ -328,15 +451,13 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
         .bms-fade-in { animation: bmsFadeIn 180ms ease-out; }
       `}</style>
       {/* Backdrop */}
-      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
+      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={editMode ? undefined : onClose} />
 
-      {/* Крайові стрілки навігації між картками (поза карткою, біля країв програми).
-          Мінімалістичні: невидимі без курсору, проявляються при наведенні на крайову зону.
-          Циклічна навігація в межах поточного списку — логіка в батьку (onPrev/onNext). */}
-      {onPrev && (
+      {/* Крайові стрілки навігації між картками (поза карткою). Сховані в edit-режимі. */}
+      {navPrev && (
         <div
           className="group/nav absolute left-0 top-0 bottom-0 w-14 sm:w-16 z-[60] flex items-center justify-start cursor-pointer"
-          onClick={(e) => { e.stopPropagation(); onPrev(); }}
+          onClick={(e) => { e.stopPropagation(); navPrev(); }}
           title="Попередній товар  ( < )"
         >
           <button
@@ -348,10 +469,10 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
           </button>
         </div>
       )}
-      {onNext && (
+      {navNext && (
         <div
           className="group/nav absolute right-0 top-0 bottom-0 w-14 sm:w-16 z-[60] flex items-center justify-end cursor-pointer"
-          onClick={(e) => { e.stopPropagation(); onNext(); }}
+          onClick={(e) => { e.stopPropagation(); navNext(); }}
           title="Наступний товар  ( > )"
         >
           <button
@@ -384,11 +505,9 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
             {/* Header */}
             <div className="flex items-start justify-between px-6 pt-5 pb-4 border-b border-gray-100 dark:border-gray-800">
               <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-3 mb-1">
+                <div className="flex items-center gap-3 mb-1 flex-wrap">
                   <span className="text-xs font-mono text-gray-400 dark:text-gray-500 px-2 py-0.5 rounded bg-gray-100 dark:bg-gray-800">
-                    {(p.productnumber || '').replace(/^#/, '')
-                      ? <CopyOnClick value={(p.productnumber || '').replace(/^#/, '')} />
-                      : '—'}
+                    {pnumClean ? <CopyOnClick value={pnumClean} /> : '—'}
                   </span>
                   {(p as any).type_name && (
                     <span className="text-xs text-gray-500 dark:text-gray-400">{(p as any).type_name}{(p as any).subtype_name ? ` · ${(p as any).subtype_name}` : ''}</span>
@@ -413,246 +532,241 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                       <span>Дефект{defectCount > 1 ? `·${defectCount}` : ''}</span>
                     </button>
                   )}
+                  {editMode && (
+                    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-primary-100 text-primary-700 border border-primary-200 dark:bg-primary-900/30 dark:text-primary-300 dark:border-primary-700">
+                      Режим редагування
+                    </span>
+                  )}
                 </div>
                 <h2 className="text-2xl font-semibold text-gray-900 dark:text-gray-50 truncate leading-tight">
                   {productTitle ? <CopyOnClick value={productTitle} /> : productTitle}
                 </h2>
               </div>
-              {(() => {
-                const parts = [(p as any).brand_name, p.model, p.marking].filter(Boolean) as string[];
-                const q = parts.join(' ').replace(/\s+/g, ' ').trim();
-                if (!q) return null;
-                return (
-                  <a
-                    href={`https://www.google.com/search?q=${encodeURIComponent(q)}`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="shrink-0 ml-2 px-3 py-2 rounded-lg text-sm font-medium border border-blue-200 dark:border-blue-700 text-blue-600 hover:text-blue-800 hover:bg-blue-50 dark:text-blue-400 dark:hover:text-blue-300 dark:hover:bg-blue-900/20 transition-colors flex items-center gap-1.5"
-                    title={`Пошук в Google: ${q}`}
+
+              {/* Дії: Google + Редагувати / Зберегти все · Скасувати + Закрити */}
+              <div className="shrink-0 ml-2 flex items-center gap-2">
+                {!editMode && (() => {
+                  const parts = [(p as any).brand_name, p.model, p.marking].filter(Boolean) as string[];
+                  const q = parts.join(' ').replace(/\s+/g, ' ').trim();
+                  if (!q) return null;
+                  return (
+                    <a
+                      href={`https://www.google.com/search?q=${encodeURIComponent(q)}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="px-3 py-2 rounded-lg text-sm font-medium border border-blue-200 dark:border-blue-700 text-blue-600 hover:text-blue-800 hover:bg-blue-50 dark:text-blue-400 dark:hover:text-blue-300 dark:hover:bg-blue-900/20 transition-colors flex items-center gap-1.5"
+                      title={`Пошук в Google: ${q}`}
+                    >
+                      <span className="font-bold text-xs">G</span>
+                      <span>Знайти в Google</span>
+                    </a>
+                  );
+                })()}
+
+                {!editMode ? (
+                  <button
+                    onClick={enterEditMode}
+                    className="px-3 py-2 rounded-lg text-sm font-medium border border-gray-200 dark:border-gray-700 text-gray-600 hover:text-gray-900 hover:bg-gray-50 dark:text-gray-300 dark:hover:text-gray-100 dark:hover:bg-gray-800 transition-colors flex items-center gap-1.5"
+                    title="Редагувати всі поля картки"
                   >
-                    <span className="font-bold text-xs">G</span>
-                    <span>Знайти в Google</span>
-                  </a>
-                );
-              })()}
-              <button
-                onClick={onClose}
-                className="shrink-0 ml-2 p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition-colors"
-                aria-label="Закрити"
-              >
-                <CloseOutlined className="text-base" />
-              </button>
+                    <EditOutlined style={{ fontSize: 14 }} />
+                    <span>Редагувати</span>
+                  </button>
+                ) : (
+                  <>
+                    <button
+                      onClick={saveAll}
+                      disabled={savingAll}
+                      className="px-3 py-2 rounded-lg text-sm font-semibold bg-green-600 hover:bg-green-700 !text-white transition-colors flex items-center gap-1.5 disabled:opacity-60"
+                      title="Зберегти всі зміни (БД + аркуш)"
+                    >
+                      <CheckOutlined style={{ fontSize: 14 }} />
+                      <span>{savingAll ? 'Збереження…' : 'Зберегти все'}</span>
+                    </button>
+                    <button
+                      onClick={cancelEditMode}
+                      disabled={savingAll}
+                      className="px-3 py-2 rounded-lg text-sm font-medium border border-gray-200 dark:border-gray-700 text-gray-600 hover:bg-gray-50 dark:text-gray-300 dark:hover:bg-gray-800 transition-colors"
+                    >
+                      Скасувати
+                    </button>
+                  </>
+                )}
+
+                <button
+                  onClick={editMode ? cancelEditMode : onClose}
+                  className="p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition-colors"
+                  aria-label="Закрити"
+                >
+                  <CloseOutlined className="text-base" />
+                </button>
+              </div>
             </div>
 
-            {/* Body — two columns */}
+            {/* Body */}
             <div className="overflow-y-auto flex-1">
-              <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)] gap-8 p-6">
+              {saveError && (
+                <div className="mx-6 mt-4 px-3 py-2 rounded-lg text-sm bg-red-50 text-red-700 border border-red-200 dark:bg-red-900/20 dark:text-red-300 dark:border-red-800">
+                  {saveError}
+                </div>
+              )}
+
+              {/* Hero: галерея (якщо є/вантажиться) + зведення (ціна/статус/розмір) */}
+              <div className={`p-6 ${hasGalleryColumn ? 'grid grid-cols-1 lg:grid-cols-[minmax(0,580px)_minmax(0,1fr)] gap-8' : ''}`}>
 
                 {/* Left: Gallery */}
-                <div className="flex flex-col gap-3">
-                  {/* Main image */}
-                  <div className="relative w-full aspect-square bg-gray-50 dark:bg-gray-800/40 rounded-xl overflow-hidden border border-gray-100 dark:border-gray-800 flex items-center justify-center group">
-                    {activeImage ? (
-                      <>
-                        <Image
-                          key={activeImage.url}
-                          src={activeImage.url}
-                          alt={activeImage.filename}
-                          preview={{
-                            visible: previewVisible,
-                            onVisibleChange: setPreviewVisible,
-                            src: activeImage.url,
-                          }}
-                          className="!w-full !h-full bms-fade-in"
-                          style={{ objectFit: 'contain', width: '100%', height: '100%', cursor: 'zoom-in' }}
-                          wrapperStyle={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-                        />
-                        {activeImage.is_defect && (
-                          <div className="absolute top-3 left-3 inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-semibold bg-amber-500/90 text-white shadow-md pointer-events-none">
-                            <WarningOutlined className="text-xs" />
-                            <span>Дефект</span>
-                          </div>
-                        )}
-                        {images.length > 1 && (
-                          <>
-                            <button
-                              onClick={(e) => { e.stopPropagation(); setActiveIdx((i) => (i - 1 + images.length) % images.length); }}
-                              className="absolute left-2 top-1/2 -translate-y-1/2 p-2 rounded-full bg-white/80 dark:bg-gray-900/80 hover:bg-white dark:hover:bg-gray-900 shadow-md text-gray-700 dark:text-gray-200 opacity-0 group-hover:opacity-100 transition-opacity"
-                              aria-label="Попереднє фото"
-                            >
-                              <LeftOutlined />
-                            </button>
-                            <button
-                              onClick={(e) => { e.stopPropagation(); setActiveIdx((i) => (i + 1) % images.length); }}
-                              className="absolute right-2 top-1/2 -translate-y-1/2 p-2 rounded-full bg-white/80 dark:bg-gray-900/80 hover:bg-white dark:hover:bg-gray-900 shadow-md text-gray-700 dark:text-gray-200 opacity-0 group-hover:opacity-100 transition-opacity"
-                              aria-label="Наступне фото"
-                            >
-                              <RightOutlined />
-                            </button>
-                            <div className="absolute bottom-3 right-3 px-2 py-1 rounded-md text-xs bg-black/60 text-white font-mono">
-                              {activeIdx + 1} / {images.length}
-                            </div>
-                          </>
-                        )}
-                      </>
-                    ) : (
-                      <div className="flex flex-col items-center justify-center text-gray-300 dark:text-gray-600 px-6 w-full">
-                        <PictureOutlined style={{ fontSize: 64 }} />
-                        <span className="text-sm mt-3">Фото відсутнє</span>
-                        <span className="text-[11px] text-gray-400 dark:text-gray-500 mt-1">додайте файли з префіксом {(p.productnumber || '').replace(/^#/, '') || 'номер'}_</span>
-
-                        {/* Підтягнути студійні фото з товару-близнюка (ростовка з іншим номером) */}
-                        <div className="mt-5 w-full max-w-xs">
-                          {!editingPhotoSrc ? (
-                            <button
-                              type="button"
-                              onClick={() => { setPhotoSrcDraft((p as any).official_photos_from || ''); setEditingPhotoSrc(true); }}
-                              className="text-[12px] text-blue-600 dark:text-blue-400 hover:underline"
-                            >
-                              📷 Підтягнути студійні фото з іншого товару…
-                            </button>
-                          ) : (
-                            <div className="flex flex-col gap-2">
-                              <span className="text-[11px] text-gray-500 dark:text-gray-400 text-left">
-                                Номер товару-донора студійних фото (напр. Ф3883):
-                              </span>
-                              <input
-                                autoFocus
-                                value={photoSrcDraft}
-                                onChange={(e) => setPhotoSrcDraft(e.target.value)}
-                                onKeyDown={(e) => { if (e.key === 'Enter') savePhotoSrc(); if (e.key === 'Escape') setEditingPhotoSrc(false); }}
-                                placeholder="Ф3883"
-                                disabled={savingPhotoSrc}
-                                className="w-full px-2 py-1.5 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-100 focus:outline-none focus:ring-1 focus:ring-blue-400"
-                              />
-                              <div className="flex items-center gap-2 justify-end">
-                                <button type="button" onClick={() => setEditingPhotoSrc(false)} disabled={savingPhotoSrc}
-                                  className="text-[12px] px-2 py-1 rounded text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-700">Скасувати</button>
-                                <button type="button" onClick={savePhotoSrc} disabled={savingPhotoSrc}
-                                  className="text-[12px] px-3 py-1 rounded bg-blue-600 hover:bg-blue-700 text-white disabled:opacity-50">
-                                  {savingPhotoSrc ? 'Збереження…' : 'Зберегти'}
-                                </button>
-                              </div>
+                {hasGalleryColumn && (
+                  <div className="flex flex-col gap-3">
+                    <div className="relative w-full aspect-square bg-gray-50 dark:bg-gray-800/40 rounded-xl overflow-hidden border border-gray-100 dark:border-gray-800 flex items-center justify-center group">
+                      {activeImage ? (
+                        <>
+                          <Image
+                            key={activeImage.url}
+                            src={activeImage.url}
+                            alt={activeImage.filename}
+                            preview={{ visible: previewVisible, onVisibleChange: setPreviewVisible, src: activeImage.url }}
+                            className="!w-full !h-full bms-fade-in"
+                            style={{ objectFit: 'contain', width: '100%', height: '100%', cursor: 'zoom-in' }}
+                            wrapperStyle={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                          />
+                          {activeImage.is_defect && (
+                            <div className="absolute top-3 left-3 inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-semibold bg-amber-500/90 text-white shadow-md pointer-events-none">
+                              <WarningOutlined className="text-xs" />
+                              <span>Дефект</span>
                             </div>
                           )}
+                          {images.length > 1 && (
+                            <>
+                              <button
+                                onClick={(e) => { e.stopPropagation(); setActiveIdx((i) => (i - 1 + images.length) % images.length); }}
+                                className="absolute left-2 top-1/2 -translate-y-1/2 p-2 rounded-full bg-white/80 dark:bg-gray-900/80 hover:bg-white dark:hover:bg-gray-900 shadow-md text-gray-700 dark:text-gray-200 opacity-0 group-hover:opacity-100 transition-opacity"
+                                aria-label="Попереднє фото"
+                              >
+                                <LeftOutlined />
+                              </button>
+                              <button
+                                onClick={(e) => { e.stopPropagation(); setActiveIdx((i) => (i + 1) % images.length); }}
+                                className="absolute right-2 top-1/2 -translate-y-1/2 p-2 rounded-full bg-white/80 dark:bg-gray-900/80 hover:bg-white dark:hover:bg-gray-900 shadow-md text-gray-700 dark:text-gray-200 opacity-0 group-hover:opacity-100 transition-opacity"
+                                aria-label="Наступне фото"
+                              >
+                                <RightOutlined />
+                              </button>
+                              <div className="absolute bottom-3 right-3 px-2 py-1 rounded-md text-xs bg-black/60 text-white font-mono">
+                                {activeIdx + 1} / {images.length}
+                              </div>
+                            </>
+                          )}
+                        </>
+                      ) : imagesLoading ? (
+                        <div className="flex flex-col items-center justify-center text-gray-300 dark:text-gray-600">
+                          <Spin />
+                          <span className="text-[11px] text-gray-400 dark:text-gray-500 mt-3">Завантаження фото…</span>
+                        </div>
+                      ) : (
+                        <div className="flex flex-col items-center justify-center text-gray-300 dark:text-gray-600 px-6 w-full text-center">
+                          <PictureOutlined style={{ fontSize: 56 }} />
+                          <span className="text-sm mt-3">Фото відсутнє</span>
+                          <span className="text-[11px] text-gray-400 dark:text-gray-500 mt-1">додайте файли з префіксом {pnumClean || 'номер'}_</span>
+                          <button type="button"
+                            onClick={() => { setPhotoSrcDraft((p as any).official_photos_from || ''); setEditingPhotoSrc(true); }}
+                            className="mt-4 text-[12px] text-blue-600 dark:text-blue-400 hover:underline">
+                            📷 Підтягнути студійні фото з іншого товару…
+                          </button>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Gallery kind switcher */}
+                    {hasBothKinds && (
+                      <div className="inline-flex self-start items-center rounded-full bg-gray-100 dark:bg-gray-800/60 p-0.5 text-[11px] font-medium select-none">
+                        <button type="button"
+                          onClick={() => { if (activeKind !== 'official') { setActiveKind('official'); setActiveIdx(0); } }}
+                          className={`px-3 py-1 rounded-full transition-all duration-200 ${activeKind === 'official' ? 'bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-50 shadow-sm' : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'}`}
+                          title={`Офіційні фото (${officialCount})`}>Офіційні</button>
+                        <button type="button"
+                          onClick={() => { if (activeKind !== 'real') { setActiveKind('real'); setActiveIdx(0); } }}
+                          className={`px-3 py-1 rounded-full transition-all duration-200 ${activeKind === 'real' ? 'bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-50 shadow-sm' : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'}`}
+                          title={`Мої реальні фото (${realCount})`}>Реальні</button>
+                      </div>
+                    )}
+
+                    {/* Бейдж джерела студійних фото (коли фото запозичені) */}
+                    {images.length > 0 && (p as any).official_photos_from && (
+                      <button type="button"
+                        onClick={() => { setPhotoSrcDraft((p as any).official_photos_from || ''); setEditingPhotoSrc(true); }}
+                        className="self-start inline-flex items-center gap-1.5 px-2 py-1 rounded-full text-[11px] bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 hover:bg-blue-100 dark:hover:bg-blue-900/50 transition-colors"
+                        title="Змінити джерело студійних фото">
+                        📷 студійні з {String((p as any).official_photos_from).replace(/^#/, '')}
+                      </button>
+                    )}
+
+                    {/* Thumbnails */}
+                    {images.length > 1 && (
+                      <div className="flex gap-2 overflow-x-auto pb-1 -mx-1 px-1">
+                        {images.map((img, i) => (
+                          <button key={img.filename} onClick={() => setActiveIdx(i)}
+                            className={`relative shrink-0 w-16 h-16 rounded-lg overflow-hidden border-2 transition-all ${
+                              i === activeIdx
+                                ? (img.is_defect ? 'border-amber-500 ring-2 ring-amber-200 dark:ring-amber-800' : 'border-primary-500 ring-2 ring-primary-200 dark:ring-primary-800')
+                                : (img.is_defect ? 'border-amber-400/60 hover:border-amber-500 opacity-80 hover:opacity-100' : 'border-gray-200 dark:border-gray-700 hover:border-gray-400 dark:hover:border-gray-500 opacity-70 hover:opacity-100')
+                            }`}
+                            title={img.is_defect ? `Дефект: ${img.filename}` : img.filename}>
+                            <img src={img.url} alt={img.filename} className="w-full h-full object-cover" loading="lazy" />
+                            {img.is_defect && (
+                              <span className="absolute top-0.5 right-0.5 inline-flex items-center justify-center w-4 h-4 rounded-full bg-amber-500 text-white text-[9px] shadow">
+                                <WarningOutlined style={{ fontSize: 9 }} />
+                              </span>
+                            )}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Inline-редактор джерела студійних фото (під галереєю) */}
+                    {editingPhotoSrc && (
+                      <div className="flex flex-col gap-2 w-full max-w-sm p-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50">
+                        <span className="text-[11px] text-gray-500 dark:text-gray-400">Номер товару-донора студійних фото (порожньо = власні):</span>
+                        <input autoFocus value={photoSrcDraft} onChange={(e) => setPhotoSrcDraft(e.target.value)}
+                          onKeyDown={(e) => { if (e.key === 'Enter') savePhotoSrc(); if (e.key === 'Escape') setEditingPhotoSrc(false); }}
+                          placeholder="Ф3883" disabled={savingPhotoSrc} className={inputCls} />
+                        <div className="flex items-center gap-2 justify-end">
+                          <button type="button" onClick={() => setEditingPhotoSrc(false)} disabled={savingPhotoSrc}
+                            className="text-[12px] px-2 py-1 rounded text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-700">Скасувати</button>
+                          <button type="button" onClick={savePhotoSrc} disabled={savingPhotoSrc}
+                            className="text-[12px] px-3 py-1 rounded bg-blue-600 hover:bg-blue-700 !text-white disabled:opacity-50">
+                            {savingPhotoSrc ? 'Збереження…' : 'Зберегти'}
+                          </button>
                         </div>
                       </div>
                     )}
                   </div>
+                )}
 
-                  {/* Gallery kind switcher — мінімалістичний segmented (тільки якщо є обидва типи) */}
-                  {hasBothKinds && (
-                    <div className="inline-flex self-start items-center rounded-full bg-gray-100 dark:bg-gray-800/60 p-0.5 text-[11px] font-medium select-none">
-                      <button
-                        type="button"
-                        onClick={() => { if (activeKind !== 'official') { setActiveKind('official'); setActiveIdx(0); } }}
-                        className={`px-3 py-1 rounded-full transition-all duration-200 ${
-                          activeKind === 'official'
-                            ? 'bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-50 shadow-sm'
-                            : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'
-                        }`}
-                        title={`Офіційні фото (${officialCount})`}
-                      >
-                        Офіційні
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => { if (activeKind !== 'real') { setActiveKind('real'); setActiveIdx(0); } }}
-                        className={`px-3 py-1 rounded-full transition-all duration-200 ${
-                          activeKind === 'real'
-                            ? 'bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-50 shadow-sm'
-                            : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'
-                        }`}
-                        title={`Мої реальні фото (${realCount})`}
-                      >
-                        Реальні
-                      </button>
-                    </div>
-                  )}
-
-                  {/* Бейдж джерела студійних фото (коли фото є і вони запозичені) */}
-                  {images.length > 0 && (p as any).official_photos_from && (
-                    <button
-                      type="button"
-                      onClick={() => { setPhotoSrcDraft((p as any).official_photos_from || ''); setEditingPhotoSrc(true); }}
-                      className="self-start inline-flex items-center gap-1.5 px-2 py-1 rounded-full text-[11px] bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 hover:bg-blue-100 dark:hover:bg-blue-900/50 transition-colors"
-                      title="Змінити джерело студійних фото"
-                    >
-                      📷 студійні з {String((p as any).official_photos_from).replace(/^#/, '')}
-                    </button>
-                  )}
-
-                  {/* Inline-редактор джерела, коли фото Є (визивається з бейджа) */}
-                  {images.length > 0 && editingPhotoSrc && (
-                    <div className="self-start flex flex-col gap-2 w-full max-w-xs p-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50">
-                      <span className="text-[11px] text-gray-500 dark:text-gray-400">
-                        Номер товару-донора студійних фото (порожньо = власні):
-                      </span>
-                      <input
-                        autoFocus
-                        value={photoSrcDraft}
-                        onChange={(e) => setPhotoSrcDraft(e.target.value)}
-                        onKeyDown={(e) => { if (e.key === 'Enter') savePhotoSrc(); if (e.key === 'Escape') setEditingPhotoSrc(false); }}
-                        placeholder="Ф3883"
-                        disabled={savingPhotoSrc}
-                        className="w-full px-2 py-1.5 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-100 focus:outline-none focus:ring-1 focus:ring-blue-400"
-                      />
-                      <div className="flex items-center gap-2 justify-end">
-                        <button type="button" onClick={() => setEditingPhotoSrc(false)} disabled={savingPhotoSrc}
-                          className="text-[12px] px-2 py-1 rounded text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-700">Скасувати</button>
-                        <button type="button" onClick={savePhotoSrc} disabled={savingPhotoSrc}
-                          className="text-[12px] px-3 py-1 rounded bg-blue-600 hover:bg-blue-700 text-white disabled:opacity-50">
-                          {savingPhotoSrc ? 'Збереження…' : 'Зберегти'}
-                        </button>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Thumbnails */}
-                  {images.length > 1 && (
-                    <div className="flex gap-2 overflow-x-auto pb-1 -mx-1 px-1">
-                      {images.map((img, i) => (
-                        <button
-                          key={img.filename}
-                          onClick={() => setActiveIdx(i)}
-                          className={`relative shrink-0 w-16 h-16 rounded-lg overflow-hidden border-2 transition-all ${
-                            i === activeIdx
-                              ? (img.is_defect
-                                  ? 'border-amber-500 ring-2 ring-amber-200 dark:ring-amber-800'
-                                  : 'border-primary-500 ring-2 ring-primary-200 dark:ring-primary-800')
-                              : (img.is_defect
-                                  ? 'border-amber-400/60 hover:border-amber-500 opacity-80 hover:opacity-100'
-                                  : 'border-gray-200 dark:border-gray-700 hover:border-gray-400 dark:hover:border-gray-500 opacity-70 hover:opacity-100')
-                          }`}
-                          title={img.is_defect ? `Дефект: ${img.filename}` : img.filename}
-                        >
-                          <img src={img.url} alt={img.filename} className="w-full h-full object-cover" loading="lazy" />
-                          {img.is_defect && (
-                            <span className="absolute top-0.5 right-0.5 inline-flex items-center justify-center w-4 h-4 rounded-full bg-amber-500 text-white text-[9px] shadow">
-                              <WarningOutlined style={{ fontSize: 9 }} />
-                            </span>
-                          )}
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </div>
-
-                {/* Right: Info */}
+                {/* Right: Summary (price / status / sizes) */}
                 <div className="flex flex-col min-w-0">
                   {/* Price */}
-                  <div className="flex items-center gap-3 mb-3 group">
-                    {editingField === 'price' ? (
+                  <div className="flex items-center gap-3 mb-3 group flex-wrap">
+                    {editMode ? (
+                      <span className="inline-flex items-end gap-2">
+                        <span className="flex flex-col gap-1">
+                          <span className="text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500 font-medium">Ціна</span>
+                          <input type="number" value={drafts['price'] ?? ''} onChange={(e) => setDraft('price', e.target.value)}
+                            className="w-28 px-2 py-1 text-xl font-bold rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800" />
+                        </span>
+                        <span className="flex flex-col gap-1">
+                          <span className="text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500 font-medium">Стара ціна</span>
+                          <input type="number" value={drafts['oldprice'] ?? ''} onChange={(e) => setDraft('oldprice', e.target.value)}
+                            className="w-28 px-2 py-1 text-base rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800" />
+                        </span>
+                      </span>
+                    ) : editingField === 'price' ? (
                       <span className="inline-flex items-center gap-1.5">
-                        <input autoFocus type="number" value={fieldDraft}
-                          onChange={(e) => setFieldDraft(e.target.value)}
+                        <input autoFocus type="number" value={fieldDraft} onChange={(e) => setFieldDraft(e.target.value)}
                           className="w-28 px-2 py-1 text-2xl font-bold rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800"
                           onKeyDown={(e) => { if (e.key === 'Enter') saveField('price'); if (e.key === 'Escape') setEditingField(null); }} />
                         <span className="text-2xl font-bold">₴</span>
-                        <button onClick={() => saveField('price')} disabled={savingField}
-                          className="text-green-600 hover:text-green-700 text-lg px-1" title="Зберегти">✓</button>
-                        <button onClick={() => setEditingField(null)}
-                          className="text-gray-400 hover:text-gray-600 text-lg px-1" title="Скасувати">✕</button>
+                        <button onClick={() => saveField('price')} disabled={savingField} className="text-green-600 hover:text-green-700 text-lg px-1" title="Зберегти">✓</button>
+                        <button onClick={() => setEditingField(null)} className="text-gray-400 hover:text-gray-600 text-lg px-1" title="Скасувати">✕</button>
                       </span>
                     ) : (
                       <>
@@ -687,12 +801,39 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                     })()}
                   </div>
 
-                  {/* Sizes — visual block, like e-commerce */}
-                  {sizesLine && sizesLine.length > 0 && (
-                    <div className="mb-5">
-                      <div className="text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500 mb-2 font-medium">Розмір</div>
+                  {/* Sizes — ховаємо коли розміру нема (напр. сумки), показуємо в edit-режимі */}
+                  {(editMode || hasAnySize) && (
+                  <div className="mb-5">
+                    <div className="text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500 mb-2 font-medium">Розмір</div>
+                    {editMode ? (
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 max-w-md">
+                        {([
+                          { field: 'sizeeu', label: 'EU' },
+                          { field: 'size_letter', label: 'Буквений' },
+                          { field: 'measurementscm', label: 'СМ' },
+                          { field: 'dimensions', label: 'Габарити' },
+                        ] as const).map(({ field, label }) => (
+                          <div key={field} className="flex flex-col gap-1">
+                            <span className="text-[10px] text-gray-400 dark:text-gray-500 font-medium flex items-center gap-1">{label}<LockDot field={field} /></span>
+                            <input value={drafts[field] ?? ''} onChange={(e) => setDraft(field, e.target.value)} className={inputCls + ' !py-1 text-center'} />
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
                       <div className="flex flex-wrap gap-2">
-                        {sizesLine.map(({ label, val }) => (
+                        {p.sizeeu && (
+                          <div className="flex flex-col items-center px-3 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50 min-w-[58px]">
+                            <span className="text-[10px] text-gray-400 dark:text-gray-500 font-medium">EU</span>
+                            <span className="text-sm font-semibold text-gray-800 dark:text-gray-100">{p.sizeeu}</span>
+                          </div>
+                        )}
+                        {(p as any).size_letter && (
+                          <div className="flex flex-col items-center px-3 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50 min-w-[58px]">
+                            <span className="text-[10px] text-gray-400 dark:text-gray-500 font-medium">Буквений</span>
+                            <span className="text-sm font-semibold text-gray-800 dark:text-gray-100">{(p as any).size_letter}</span>
+                          </div>
+                        )}
+                        {derivedSizes.map(({ label, val }) => (
                           <div key={label} className="flex flex-col items-center px-3 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50 min-w-[58px]">
                             <span className="text-[10px] text-gray-400 dark:text-gray-500 font-medium">{label}</span>
                             <span className="text-sm font-semibold text-gray-800 dark:text-gray-100">{val}</span>
@@ -704,66 +845,78 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                             <span className="text-sm font-semibold text-gray-800 dark:text-gray-100">{p.measurementscm}</span>
                           </div>
                         )}
+                        {p.dimensions && (
+                          <div className="flex flex-col items-center px-3 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50 min-w-[58px]">
+                            <span className="text-[10px] text-gray-400 dark:text-gray-500 font-medium">Габарити</span>
+                            <span className="text-sm font-semibold text-gray-800 dark:text-gray-100">{p.dimensions}</span>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                  )}
+
+                  {/* Характеристики — у правій колонці ПОРУЧ із фото (заповнюють висоту) */}
+                  <div className="mt-5 border-t border-gray-100 dark:border-gray-800 pt-4">
+                    <div className="text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500 mb-3 font-medium">Характеристики</div>
+                    <div className={`grid ${charCols} gap-x-6 gap-y-3`}>
+                    <RoCell label="Бренд" value={formatBrandName((p as any).brand_name)} />
+                    <EditCell field="model" label="Модель" />
+                    <RoCell label="Тип" value={(p as any).type_name} />
+                    <RoCell label="Підтип" value={(p as any).subtype_name} />
+                    <RoCell label="Стиль" value={(p as any).style_name} />
+                    <RoCell label="Стать" value={(p as any).gender_name} />
+                    <EditCell field="season" label="Сезон" />
+                    <RoCell label="Колір" value={(p as any).color_name} />
+                    <EditCell field="width" label="Ширина" />
+                    <RoCell label="Стан" value={(p as any).current_condition_name} />
+                    <EditCell field="marking" label="Маркування" />
+                    <EditCell field="year" label="Рік" type="number" />
+                    <EditCell field="clonednumbers" label="Клони" />
+                    <RoCell label="Завіз" value={p.dateadded} />
+                    <RoCell label="У базі з" value={p.created_at ? new Date(p.created_at).toLocaleDateString('uk-UA') : null} />
+                  </div>
+
+                  {/* Shoe characteristics */}
+                  {(p.sole_type_name || p.toe_shape_name || p.fastening_type_name || p.lining_name ||
+                    p.measurements_height_min != null || p.measurements_sole_thickness_min != null || p.measurements_heel_min != null) && (
+                    <div className="mt-4 pt-4 border-t border-gray-100 dark:border-gray-800">
+                      <div className="text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500 mb-3 font-medium">Взуття</div>
+                      <div className={`grid ${charCols} gap-x-6 gap-y-3`}>
+                        <RoCell label="Тип підошви" value={p.sole_type_name} />
+                        <RoCell label="Форма носка" value={p.toe_shape_name} />
+                        <RoCell label="Застібка" value={p.fastening_type_name} />
+                        <RoCell label="Підкладка" value={p.lining_name} />
+                        <RoCell label="Висота" value={fmtRange(p.measurements_height_min, p.measurements_height_max)} />
+                        <RoCell label="Підошва" value={fmtRange(p.measurements_sole_thickness_min, p.measurements_sole_thickness_max)} />
+                        <RoCell label="Каблук" value={fmtRange(p.measurements_heel_min, p.measurements_heel_max)} />
                       </div>
                     </div>
                   )}
 
-                  {/* Specifications */}
-                  <div className="border-t border-gray-100 dark:border-gray-800 pt-4">
-                    <div className="text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500 mb-2 font-medium">Характеристики</div>
-                    <InfoRow label="Бренд" value={formatBrandName((p as any).brand_name)} />
-                    <EditableRow field="model" label="Модель" value={p.model} />
-                    <InfoRow label="Тип" value={(p as any).type_name} />
-                    <InfoRow label="Підтип" value={(p as any).subtype_name} />
-                    <InfoRow label="Стиль" value={(p as any).style_name} />
-                    <InfoRow label="Стать" value={(p as any).gender_name} />
-                    <EditableRow field="season" label="Сезон" value={p.season} />
-                    <InfoRow label="Колір" value={(p as any).color_name} />
-                    <InfoRow label="Габарити" value={p.dimensions} />
-                    <InfoRow label="Ширина" value={p.width} />
-                    <InfoRow label="Стан" value={(p as any).current_condition_name} />
-                    <EditableRow field="marking" label="Маркування" value={p.marking} />
-                    <InfoRow label="Рік" value={p.year} />
-                    <InfoRow label="Клони" value={p.clonednumbers} />
-                    <InfoRow label="Завіз" value={p.dateadded} />
-                    <InfoRow label="У базі з" value={p.created_at ? new Date(p.created_at).toLocaleDateString('uk-UA') : null} />
-
-                    {/* Shoe characteristics */}
-                    {(p.sole_type_name || p.toe_shape_name || p.fastening_type_name || p.lining_name ||
-                      p.measurements_height_min != null || p.measurements_sole_thickness_min != null || p.measurements_heel_min != null) && (
-                      <div className="mt-3 pt-3 border-t border-gray-100 dark:border-gray-800">
-                        <div className="text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500 mb-1 font-medium">Взуття</div>
-                        <InfoRow label="Тип підошви" value={p.sole_type_name} />
-                        <InfoRow label="Форма носка" value={p.toe_shape_name} />
-                        <InfoRow label="Застібка" value={p.fastening_type_name} />
-                        <InfoRow label="Підкладка" value={p.lining_name} />
-                        <InfoRow label="Висота" value={fmtRange(p.measurements_height_min, p.measurements_height_max)} />
-                        <InfoRow label="Підошва" value={fmtRange(p.measurements_sole_thickness_min, p.measurements_sole_thickness_max)} />
-                        <InfoRow label="Каблук" value={fmtRange(p.measurements_heel_min, p.measurements_heel_max)} />
+                  {/* Clothing measurements */}
+                  {(p.measurements_length_min != null || p.measurements_pog_min != null ||
+                    p.measurements_pob_min != null || p.measurements_pot_min != null || p.measurements_sleeve_min != null) && (
+                    <div className="mt-4 pt-4 border-t border-gray-100 dark:border-gray-800">
+                      <div className="text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500 mb-3 font-medium">Виміри одягу</div>
+                      <div className={`grid ${charCols} gap-x-6 gap-y-3`}>
+                        <RoCell label="Довжина" value={fmtRange(p.measurements_length_min, p.measurements_length_max)} />
+                        <RoCell label="Груди (н/о)" value={fmtRange(p.measurements_pog_min, p.measurements_pog_max)} />
+                        <RoCell label="Бедра (н/о)" value={fmtRange(p.measurements_pob_min, p.measurements_pob_max)} />
+                        <RoCell label="Талія (н/о)" value={fmtRange(p.measurements_pot_min, p.measurements_pot_max)} />
+                        <RoCell label="Рукав" value={fmtRange(p.measurements_sleeve_min, p.measurements_sleeve_max)} />
                       </div>
-                    )}
+                    </div>
+                  )}
 
-                    {/* Clothing measurements */}
-                    {(p.measurements_length_min != null || p.measurements_pog_min != null ||
-                      p.measurements_pob_min != null || p.measurements_pot_min != null || p.measurements_sleeve_min != null) && (
-                      <div className="mt-3 pt-3 border-t border-gray-100 dark:border-gray-800">
-                        <div className="text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500 mb-1 font-medium">Виміри одягу</div>
-                        <InfoRow label="Довжина" value={fmtRange(p.measurements_length_min, p.measurements_length_max)} />
-                        <InfoRow label="Груди (н/о)" value={fmtRange(p.measurements_pog_min, p.measurements_pog_max)} />
-                        <InfoRow label="Бедра (н/о)" value={fmtRange(p.measurements_pob_min, p.measurements_pob_max)} />
-                        <InfoRow label="Талія (н/о)" value={fmtRange(p.measurements_pot_min, p.measurements_pot_max)} />
-                        <InfoRow label="Рукав" value={fmtRange(p.measurements_sleeve_min, p.measurements_sleeve_max)} />
-                      </div>
-                    )}
-
-                    {/* Materials */}
-                    {p.materials && p.materials.length > 0 && (
-                      <div className="mt-3 pt-3 border-t border-gray-100 dark:border-gray-800">
-                        <div className="text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500 mb-2 font-medium">Матеріали</div>
+                  {/* Materials */}
+                  {p.materials && p.materials.length > 0 && (
+                    <div className="mt-4 pt-4 border-t border-gray-100 dark:border-gray-800">
+                      <div className="text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500 mb-3 font-medium">Матеріали</div>
+                      <div className={`grid ${charCols} gap-x-6 gap-y-3`}>
                         {(() => {
                           const posLabels: Record<string, string> = {
-                            upper: 'Верх', middle: 'Середина', insole: 'Устілка',
-                            sole: 'Підошва', membrane: 'Мембрана',
+                            upper: 'Верх', middle: 'Середина', insole: 'Устілка', sole: 'Підошва', membrane: 'Мембрана',
                           };
                           const grouped = new Map<string, string[]>();
                           for (const mat of p.materials!) {
@@ -772,25 +925,30 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                             grouped.get(label)!.push(mat.materialname || String(mat.material_id));
                           }
                           return Array.from(grouped.entries()).map(([pos, names]) => (
-                            <InfoRow key={pos} label={pos} value={names.join(', ')} />
+                            <RoCell key={pos} label={pos} value={names.join(', ')} />
                           ));
                         })()}
                       </div>
-                    )}
-                  </div>
-                </div>
-              </div>
+                    </div>
+                  )}
+                  </div>{/* /Характеристики */}
+                </div>{/* /Right panel */}
+              </div>{/* /Hero grid */}
 
-              {/* Description (editable) */}
-              <div className="px-6 pb-4 group">
+              {/* Description */}
+              <div className="px-6 pb-4 pt-2 group">
                 <div className="text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500 mb-2 font-medium flex items-center gap-2">
                   Опис
-                  {editingField !== 'description' && (
+                  {!editMode && editingField !== 'description' && (
                     <EditBtn onClick={() => startEdit('description', p.description ?? '')} title="Редагувати опис" />
                   )}
                   <LockBadge field="description" />
                 </div>
-                {editingField === 'description' ? (
+                {editMode ? (
+                  <textarea value={drafts['description'] ?? ''} onChange={(e) => setDraft('description', e.target.value)}
+                    placeholder="Опис не вказано"
+                    className="w-full px-4 py-3 text-sm rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 min-h-[80px]" />
+                ) : editingField === 'description' ? (
                   <div>
                     <textarea autoFocus value={fieldDraft} onChange={(e) => setFieldDraft(e.target.value)}
                       className="w-full px-4 py-3 text-sm rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 min-h-[80px]"
@@ -809,16 +967,20 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                 )}
               </div>
 
-              {/* Notes (editable) */}
+              {/* Notes */}
               <div className="px-6 pb-6 group">
                 <div className="text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500 mb-2 font-medium flex items-center gap-2">
                   Примітки
-                  {editingField !== 'extranote' && (
+                  {!editMode && editingField !== 'extranote' && (
                     <EditBtn onClick={() => startEdit('extranote', p.extranote ?? '')} title="Редагувати примітку" />
                   )}
                   <LockBadge field="extranote" />
                 </div>
-                {editingField === 'extranote' ? (
+                {editMode ? (
+                  <textarea value={drafts['extranote'] ?? ''} onChange={(e) => setDraft('extranote', e.target.value)}
+                    placeholder="Примітку не вказано"
+                    className="w-full px-4 py-3 text-sm rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 min-h-[60px]" />
+                ) : editingField === 'extranote' ? (
                   <div>
                     <textarea autoFocus value={fieldDraft} onChange={(e) => setFieldDraft(e.target.value)}
                       className="w-full px-4 py-3 text-sm rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 min-h-[60px]"

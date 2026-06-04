@@ -35,6 +35,12 @@ DRIVE_CREDS_PATH = os.environ.get(
     "/Users/i.malashenko/Desktop/react-fastapi-app/mcp-google-sheets/working_credentials.json",
 )
 DRIVE_INDEX_TTL_SEC = int(os.environ.get("PRODUCT_IMAGES_DRIVE_TTL", "900"))  # 15 хв
+# Коли rebuild впав (мережа/quota) — НЕ кешуємо порожнечу на повний TTL, лише
+# короткий retry-вікно. Інакше один збій «гасить» усі фото на 15 хв (симптом:
+# «фото є, але не підтягуються»).
+DRIVE_RETRY_TTL_SEC = int(os.environ.get("PRODUCT_IMAGES_DRIVE_RETRY_TTL", "30"))
+# Поки фоновий refresh працює — віддаємо stale й не плодимо паралельні скани.
+DRIVE_REFRESH_GRACE_SEC = int(os.environ.get("PRODUCT_IMAGES_DRIVE_REFRESH_GRACE", "120"))
 DRIVE_BYTES_CACHE_DIR = os.path.expanduser(
     os.environ.get("PRODUCT_IMAGES_DRIVE_CACHE_DIR", "~/.cache/bms_drive_images")
 )
@@ -49,6 +55,7 @@ _index_state: dict = {
     "expires_at": 0.0,
     "last_rebuild_at": 0.0,
     "total_files": 0,
+    "refreshing": False,    # фоновий rebuild у процесі
 }
 
 
@@ -107,13 +114,17 @@ def _extract_pnum_from_filename(filename: str) -> Optional[str]:
 
 
 # ── Index build/cache ─────────────────────────────────────────────────────────
-def _rebuild_index() -> Dict[str, List[Tuple[str, str]]]:
+def _rebuild_index() -> Optional[Dict[str, List[Tuple[str, str]]]]:
     """Скан Drive: всі підпапки в корені 'Товар' + усі фото у них.
-    Returns {pnum_lower: [(filename, file_id)]}.
+
+    Returns {pnum_lower: [(filename, file_id)]} при успіху (можливо порожній,
+    якщо в Drive справді нема файлів) або **None** при збої (мережа/quota/creds).
+    None vs {} критичне: на None НЕ затираємо валідний кеш і не кешуємо
+    порожнечу надовго (див. `_get_index`).
     """
     service = _get_service()
     if not service:
-        return {}
+        return None
 
     by_pnum: Dict[str, List[Tuple[str, str]]] = {}
     total = 0
@@ -154,25 +165,81 @@ def _rebuild_index() -> Dict[str, List[Tuple[str, str]]]:
 
     except Exception as e:
         logger.error(f"[drive-images] Index rebuild failed: {e}")
-        return {}
+        return None
 
     logger.info(f"[drive-images] Index rebuilt: {total} files in {len(by_pnum)} pnum buckets")
     return by_pnum
 
 
+def _store_index(idx: Dict[str, List[Tuple[str, str]]]) -> None:
+    """Зберегти свіжий індекс + поставити повний TTL."""
+    now = time.time()
+    _index_state["by_pnum"] = idx
+    _index_state["expires_at"] = now + DRIVE_INDEX_TTL_SEC
+    _index_state["last_rebuild_at"] = now
+    _index_state["total_files"] = sum(len(v) for v in idx.values())
+
+
+def _background_refresh() -> None:
+    """Перебудувати індекс у фоні (stale-while-revalidate). Запускається коли
+    кеш протух, але ще валідний для віддачі — користувач не чекає скан Drive."""
+    with _index_lock:
+        if _index_state.get("refreshing"):
+            return  # вже оновлюється — не плодимо паралельні скани
+        _index_state["refreshing"] = True
+        # Подовжуємо вікно віддачі stale, щоб не спамити рестартами refresh.
+        _index_state["expires_at"] = time.time() + DRIVE_REFRESH_GRACE_SEC
+
+    def _run():
+        try:
+            idx = _rebuild_index()
+            if idx is not None:
+                _store_index(idx)  # успіх → новий TTL
+            else:
+                # Збій: лишаємо старий індекс, коротке retry-вікно.
+                _index_state["expires_at"] = time.time() + DRIVE_RETRY_TTL_SEC
+        finally:
+            _index_state["refreshing"] = False
+
+    threading.Thread(target=_run, daemon=True, name="drive-index-refresh").start()
+
+
 def _get_index() -> Dict[str, List[Tuple[str, str]]]:
+    """Повертає індекс Drive. Принципи:
+      • свіжий кеш → одразу;
+      • протух, але є дані → віддаємо stale + фоновий refresh (нуль блокування);
+      • холодний старт (даних ще нема) → будуємо синхронно один раз;
+      • збій rebuild → НЕ кешуємо порожнечу надовго (коротке retry-вікно),
+        старі дані зберігаємо.
+    """
     now = time.time()
     if now < _index_state["expires_at"]:
         return _index_state["by_pnum"]
+
+    # Протух. Якщо вже маємо дані — віддаємо stale й оновлюємо у фоні.
+    if _index_state["by_pnum"]:
+        _background_refresh()
+        return _index_state["by_pnum"]
+
+    # Холодний старт — будуємо синхронно (тільки перший раз).
     with _index_lock:
-        if now < _index_state["expires_at"]:  # double-check
+        if now < _index_state["expires_at"] or _index_state["by_pnum"]:
             return _index_state["by_pnum"]
         idx = _rebuild_index()
-        _index_state["by_pnum"] = idx
-        _index_state["expires_at"] = now + DRIVE_INDEX_TTL_SEC
-        _index_state["last_rebuild_at"] = now
-        _index_state["total_files"] = sum(len(v) for v in idx.values())
-        return idx
+        if idx is None:
+            # Збій на холодному старті — коротке retry, без довгого «гасіння» фото.
+            _index_state["expires_at"] = time.time() + DRIVE_RETRY_TTL_SEC
+            return _index_state["by_pnum"]  # {}
+        _store_index(idx)
+        return _index_state["by_pnum"]
+
+
+def prewarm_drive_index() -> None:
+    """Прогріти індекс у фоні (виклик на старті backend), щоб перша відкрита
+    картка не платила за повний скан Drive синхронно."""
+    if _index_state["by_pnum"] or _index_state.get("refreshing"):
+        return
+    _background_refresh()
 
 
 def invalidate_drive_index() -> None:

@@ -145,6 +145,8 @@ class ProductUpdate(BaseModel):
     year: Optional[int] = None
     description: Optional[str] = None
     extranote: Optional[str] = None
+    dimensions: Optional[str] = None
+    width: Optional[str] = None
     price: Optional[float] = None
     oldprice: Optional[float] = None
     sizeeu: Optional[str] = None

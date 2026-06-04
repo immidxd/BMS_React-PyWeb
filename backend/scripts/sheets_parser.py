@@ -188,17 +188,33 @@ def _restore_order_locks(session: Session, snapshot: dict) -> int:
 # Maps editable product fields → journal column header (resolved by NAME, not
 # position; rename-safe). A field with no column here cannot be written back.
 WRITEBACK_FIELD_HEADERS = {
-    "price":       "Ціна",
-    "oldprice":    "Стара ціна",
-    "model":       "Модель",
-    "description": "Опис",
-    "season":      "Сезон",
-    "marking":     "Маркування",
-    "extranote":   "Екстра примітка",
+    "price":          "Ціна",
+    "oldprice":       "Стара ціна",
+    "model":          "Модель",
+    "description":    "Опис",
+    "season":         "Сезон",
+    "marking":        "Маркування",
+    "extranote":      "Екстра примітка",
+    # Model-level (однакові на всіх рядках ростовки) — безпечний write-to-all-rows.
+    "year":           "Рік",
+    "width":          "Ширина",
+    "clonednumbers":  "Номера-клони",
+    # Per-item (унікальні на КОЖЕН рядок ростовки) — пишуться лише коли номер
+    # у аркуші займає один рядок (див. PER_ITEM_WRITEBACK_FIELDS + guard нижче).
+    "sizeeu":         "Розмір",
+    "size_letter":    "Буквений",
+    "measurementscm": "СМ",
+    "dimensions":     "Габарити",
 }
+# Поля, унікальні на кожен рядок ростовки. Поточний write-back пише в УСІ рядки
+# спільного номера → для таких полів це затерло б сусідні розміри. Тому пишемо
+# їх лише коли номер у аркуші — один рядок (guard у writeback_field_to_journal).
+PER_ITEM_WRITEBACK_FIELDS = {"sizeeu", "size_letter", "measurementscm", "dimensions"}
 # Text fields written RAW (literal, no formula interpretation); numeric fields
 # USER_ENTERED so the sheet stores a real number.
-WRITEBACK_TEXT_FIELDS = {"model", "marking", "description", "season", "extranote"}
+WRITEBACK_TEXT_FIELDS = {"model", "marking", "description", "season", "extranote",
+                         "width", "clonednumbers",
+                         "sizeeu", "size_letter", "measurementscm", "dimensions"}
 WRITEBACK_ENABLED = os.getenv("PARSER_WRITEBACK", "1") != "0"
 _WRITEBACK_BACKUP_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "writeback_backups")
 
@@ -275,6 +291,20 @@ def writeback_field_to_journal(sheet_title: str, productnumber: str, field: str,
         new_str = str(value)
 
     target = _canon_pnum_for_match(productnumber)
+
+    # Guard ростовки: per-item поле (розмір/СМ/габарити) безпечно писати лише
+    # коли номер займає ОДИН рядок. Інакше write-to-all-rows затер би сусідні
+    # розміри. У такому разі правка лишається в БД (lock), аркуш не чіпаємо.
+    if field in PER_ITEM_WRITEBACK_FIELDS:
+        matching_rows = sum(
+            1 for row in all_values[1:]
+            if _canon_pnum_for_match(row[num_idx] if num_idx < len(row) else "") == target
+        )
+        if matching_rows > 1:
+            return {"ok": False, "reason": f"per-item field '{field}' skipped: "
+                    f"{matching_rows} rostovka rows share number {target} "
+                    f"(saved to DB only, sheet untouched to avoid overwriting siblings)"}
+
     updates, backups = [], []
     for r_i, row in enumerate(all_values[1:], start=2):  # row 1 = header
         cell_num = row[num_idx] if num_idx < len(row) else ""
@@ -2448,6 +2478,15 @@ def _parse_products_sheet(
             # ── Global dedup: check for orphaned product with same marking+brand+sizeeu
             # This catches products left with ???_ or __tmp_rename_ numbers after
             # failed renames, preventing duplicate creation.
+            #
+            # ⚠️ The candidate MUST already carry a genuine orphan number pattern
+            # (NULL / '???' / '???_…' / '__tmp_rename_…'). Without this guard the
+            # query reclaims a REAL, fully-numbered product that merely shares
+            # marking+brand+size — e.g. ONLY #Ф3425 «ONLYTRACY BONDED BRIEF NOOS
+            # 3-PK» and #Ф3431 «TRACY BONDED BRIEF» both have marking 15211634,
+            # brand ONLY, no numeric size. That collapsed two distinct items onto
+            # one row whose number ping-ponged #Ф3425↔#Ф3431 every run, so one of
+            # them vanished from search. (model differs but wasn't compared.)
             orphan = None
             if marking and brand_id:
                 orphan = session.query(Product).filter(
@@ -2455,6 +2494,12 @@ def _parse_products_sheet(
                     Product.brandid == brand_id,
                     Product.sizeeu == (size_val or None),
                     Product.productnumber.notlike(f"{base_pnum}%"),
+                    or_(
+                        Product.productnumber.is_(None),
+                        Product.productnumber == '???',
+                        Product.productnumber.like('???\\_%'),
+                        Product.productnumber.like('\\_\\_tmp\\_rename\\_%'),
+                    ),
                 ).first()
             if orphan:
                 # Reclaim orphan: update its productnumber + data

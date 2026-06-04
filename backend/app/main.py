@@ -210,6 +210,20 @@ if get_drive_file_bytes is not None:
 
     logger.info(f"Drive image proxy mounted: {URL_PREFIX_DRIVE}/<file_id>")
 
+    @app.on_event("startup")
+    async def _prewarm_drive_index():
+        """Прогріти Drive-індекс фото у фоні на старті, щоб перша відкрита
+        картка не чекала повний скан Drive синхронно."""
+        try:
+            try:
+                from services.product_images_drive import prewarm_drive_index
+            except ImportError:
+                from backend.services.product_images_drive import prewarm_drive_index
+            prewarm_drive_index()
+            logger.info("Drive image index prewarm triggered (background)")
+        except Exception as e:
+            logger.warning(f"Drive index prewarm failed: {e}")
+
 # Mount static files from frontend build if available
 frontend_build_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../frontend/build"))
 

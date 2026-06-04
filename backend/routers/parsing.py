@@ -430,6 +430,11 @@ async def job_stream(websocket: WebSocket, job_id: int, db: Session = Depends(ge
     await websocket.accept()
     try:
         while True:
+            # The parser thread commits progress in a SEPARATE session. Without
+            # expiring our identity map, this long-lived session keeps returning
+            # the first cached snapshot → the widget hangs at "initializing"/0%
+            # while parsing actually runs. Expire so each poll re-reads fresh.
+            db.expire_all()
             job = db.query(ParsingJob).filter(ParsingJob.id == job_id).first()
             if not job:
                 await websocket.send_json({"error": "not_found"})

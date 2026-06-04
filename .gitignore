@@ -58,3 +58,4 @@ backend/scripts/writeback_backups/
 
 # Local prune/manual cleanup backups
 backend/scripts/prune_backups/
+manual_cleanup_backups/
