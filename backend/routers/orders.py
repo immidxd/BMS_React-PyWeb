@@ -74,8 +74,22 @@ def get_orders(
             OR c.nickname ILIKE :search
             OR c.phone_number ILIKE :search OR c.email ILIKE :search
             OR o.tracking_number ILIKE :search OR o.notes ILIKE :search
+            OR CAST(o.id AS TEXT) ILIKE :search
+            OR o.alternative_order_number ILIKE :search
+            OR EXISTS (
+                SELECT 1 FROM order_items oi
+                JOIN products p ON p.id = oi.product_id
+                WHERE oi.order_id = o.id
+                  AND (p.productnumber ILIKE :search OR p.productnumber ILIKE :search_cyr)
+            )
         )""")
         params["search"] = f"%{search}%"
+        # Latin→Cyrillic confusables для номера товару (BMS-конвент: номери кириличні)
+        _l2c = str.maketrans({'A':'А','B':'В','C':'С','E':'Е','H':'Н','I':'І','K':'К',
+                              'M':'М','O':'О','P':'Р','T':'Т','X':'Х','Y':'У',
+                              'a':'а','b':'в','c':'с','e':'е','h':'н','i':'і','k':'к',
+                              'm':'м','o':'о','p':'р','t':'т','x':'х','y':'у'})
+        params["search_cyr"] = f"%{search.translate(_l2c)}%"
 
     if client_id:
         where.append("o.client_id = :client_id")

@@ -82,6 +82,11 @@ class ProductBase(BaseModel):
     toeshapeid: Optional[int] = Field(None, description="ID форми носка")
     fasteningtypeid: Optional[int] = Field(None, description="ID типу застібки")
     liningid: Optional[int] = Field(None, description="ID типу підкладки")
+    heeltypeid: Optional[int] = Field(None, description="ID типу каблука")
+    lacetypeid: Optional[int] = Field(None, description="ID типу шнурівки")
+    packagingid: Optional[int] = Field(None, description="ID типу пакування")
+    technologyid: Optional[int] = Field(None, description="ID технології")
+    sole_colorid: Optional[int] = Field(None, description="ID кольору підошви (reuse colors)")
     quantity: int = Field(1, ge=0, description="Кількість товару в наявності")
     mainimage: Optional[str] = Field(None, max_length=255, description="URL основного зображення товару")
     is_visible: bool = Field(True, description="Чи відображається товар")
@@ -179,6 +184,19 @@ class ProductUpdate(BaseModel):
     toeshapeid: Optional[int] = None
     fasteningtypeid: Optional[int] = None
     liningid: Optional[int] = None
+    heeltypeid: Optional[int] = None
+    lacetypeid: Optional[int] = None
+    packagingid: Optional[int] = None
+    technologyid: Optional[int] = None
+    sole_colorid: Optional[int] = None
+    # Inline-edit by NAME (resolved → FK id server-side; "" / null clears).
+    # Mirrors free-text edit of other characteristics; written back to the journal.
+    heel_type_name: Optional[str] = None
+    lace_type_name: Optional[str] = None
+    packaging_name: Optional[str] = None
+    technology_name: Optional[str] = None
+    sole_color_name: Optional[str] = None
+    current_condition_name: Optional[str] = None   # «Стан» (поточний стан) — per-item
     materials: Optional[List[ProductMaterialEntry]] = None   # full replace on PUT if provided
     quantity: Optional[int] = None
     mainimage: Optional[str] = None
@@ -253,6 +271,11 @@ class Product(ProductBase):
     toe_shape_name: Optional[str] = None
     fastening_type_name: Optional[str] = None
     lining_name: Optional[str] = None
+    heel_type_name: Optional[str] = None
+    lace_type_name: Optional[str] = None
+    packaging_name: Optional[str] = None
+    technology_name: Optional[str] = None
+    sole_color_name: Optional[str] = None
     materials: List[ProductMaterialEntry] = []
 
     class Config:
@@ -318,10 +341,20 @@ class ProductList(BaseModel):
     toeshapeid: Optional[int] = None
     fasteningtypeid: Optional[int] = None
     liningid: Optional[int] = None
+    heeltypeid: Optional[int] = None
+    lacetypeid: Optional[int] = None
+    packagingid: Optional[int] = None
+    technologyid: Optional[int] = None
+    sole_colorid: Optional[int] = None
     sole_type_name: Optional[str] = None
     toe_shape_name: Optional[str] = None
     fastening_type_name: Optional[str] = None
     lining_name: Optional[str] = None
+    heel_type_name: Optional[str] = None
+    lace_type_name: Optional[str] = None
+    packaging_name: Optional[str] = None
+    technology_name: Optional[str] = None
+    sole_color_name: Optional[str] = None
     materials: List[ProductMaterialEntry] = []
     importid: Optional[int] = None
     deliveryid: Optional[int] = None

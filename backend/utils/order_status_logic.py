@@ -62,6 +62,15 @@ STATUS_HANDOFF     = 11  # Передати
 #  • Includes 7=Подарунок because the unit physically left the shelf.
 #  • Excludes everything pending (2/3/4/8/10/11) — those reserve stock but the
 #    transaction is not complete.
+#
+# ⚠️ sold_count refinement (2026-06-04): a unit counts as SOLD only when
+#   • status = 7 (Подарунок), OR
+#   • status = 1 (Підтверджено) AND payment_status_id = 1 (Оплачено).
+# i.e. a confirmed-but-UNPAID order does NOT consume stock (it's a pending sale).
+# product_service.get_products applies this in its sold_count / last_sale / sibling
+# subqueries. So `STATUS_CONFIRMED in CONFIRMED_SOLD` is necessary but NOT
+# sufficient for sold_count — the payment check rides alongside it.
+PAID_STATUS_ID: int = 1   # payment_statuses.id == 'Оплачено'
 CONFIRMED_SOLD: tuple[int, ...] = (STATUS_CONFIRMED, STATUS_GIFT)
 
 

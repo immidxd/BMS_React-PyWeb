@@ -328,7 +328,15 @@ async def update_product(
         if edited_lockable:
             sheet_title = product_service.get_delivery_name(db, updated_product.deliveryid)
             pnum = updated_product.productnumber
-            field_values = {f: getattr(updated_product, f) for f in edited_lockable}
+            # Shoe-lookup FKs are written back as the canonical NAME, not the id.
+            # Resolve now (request scope, session alive) — the write-back runs in a
+            # background thread where lazy relationship loads would fail.
+            field_values = {}
+            for f in edited_lockable:
+                v = getattr(updated_product, f)
+                if f in product_service.SHOE_FK_NAME_FIELDS:
+                    v = product_service.resolve_lookup_name(db, f, v)
+                field_values[f] = v
 
             def _writeback_bg(sheet_title=sheet_title, pnum=pnum, field_values=field_values):
                 try:

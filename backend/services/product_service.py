@@ -138,6 +138,11 @@ def get_products(
                tsh.toeshapename as toe_shape_name,
                fst.fasteningtypename as fastening_type_name,
                lin.liningname as lining_name,
+               ht.heeltypename as heel_type_name,
+               lt.lacetypename as lace_type_name,
+               pk.packagingname as packaging_name,
+               tech.technologyname as technology_name,
+               scol.colorname as sole_color_name,
                COALESCE(sold.sold_count, 0) AS sold_count,
                GREATEST(COALESCE(p.quantity, 0) - COALESCE(sold.sold_count, 0), 0) AS available_qty,
                COALESCE(dup.dup_brands, 0) AS pnum_dup_brands,
@@ -166,12 +171,25 @@ def get_products(
         LEFT JOIN toe_shapes tsh ON p.toeshapeid = tsh.id
         LEFT JOIN fastening_types fst ON p.fasteningtypeid = fst.id
         LEFT JOIN linings lin ON p.liningid = lin.id
+        LEFT JOIN heel_types ht ON p.heeltypeid = ht.id
+        LEFT JOIN lace_types lt ON p.lacetypeid = lt.id
+        LEFT JOIN packaging_types pk ON p.packagingid = pk.id
+        LEFT JOIN technologies tech ON p.technologyid = tech.id
+        LEFT JOIN colors scol ON p.sole_colorid = scol.id
         LEFT JOIN (
-            SELECT oi.product_id, COUNT(*) AS sold_count
+            SELECT oi.product_id,
+                   -- «Продано» = Подарунок(7) АБО (Підтверджено(1) І Оплачено),
+                   -- МІНУС Повернення(9): повернений товар знову в наявності.
+                   -- payment_status_id=1 = «Оплачено». Див. utils/order_status_logic.
+                   GREATEST(
+                     COUNT(*) FILTER (WHERE o.order_status_id = 7
+                                        OR (o.order_status_id = 1 AND o.payment_status_id = 1))
+                     - COUNT(*) FILTER (WHERE o.order_status_id = 9),
+                   0) AS sold_count
             FROM order_items oi
             JOIN orders o ON o.id = oi.order_id
             WHERE oi.product_id IS NOT NULL
-              AND o.order_status_id IN (1, 7)
+              AND o.order_status_id IN (1, 7, 9)
             GROUP BY oi.product_id
         ) sold ON sold.product_id = p.id
         LEFT JOIN (
@@ -187,7 +205,11 @@ def get_products(
             FROM order_items oi
             JOIN orders o ON o.id = oi.order_id
             WHERE oi.product_id IS NOT NULL
-              AND o.order_status_id IN (1, 7)
+              -- «Продано» = Подарунок(7) АБО (Підтверджено(1) І Оплачено). Саме
+              -- «Підтверджено» без оплати ще НЕ продано (бізнес-правило).
+              -- payment_status_id=1 = «Оплачено». Див. utils/order_status_logic.
+              AND (o.order_status_id = 7
+                   OR (o.order_status_id = 1 AND o.payment_status_id = 1))
             GROUP BY oi.product_id
         ) last_sale ON last_sale.product_id = p.id
         LEFT JOIN (
@@ -563,10 +585,20 @@ def get_products(
                 'toeshapeid': m.get('toeshapeid'),
                 'fasteningtypeid': m.get('fasteningtypeid'),
                 'liningid': m.get('liningid'),
+                'heeltypeid': m.get('heeltypeid'),
+                'lacetypeid': m.get('lacetypeid'),
+                'packagingid': m.get('packagingid'),
+                'technologyid': m.get('technologyid'),
+                'sole_colorid': m.get('sole_colorid'),
                 'sole_type_name': m.get('sole_type_name'),
                 'toe_shape_name': m.get('toe_shape_name'),
                 'fastening_type_name': m.get('fastening_type_name'),
                 'lining_name': m.get('lining_name'),
+                'heel_type_name': m.get('heel_type_name'),
+                'lace_type_name': m.get('lace_type_name'),
+                'packaging_name': m.get('packaging_name'),
+                'technology_name': m.get('technology_name'),
+                'sole_color_name': m.get('sole_color_name'),
                 'sold_count': m.get('sold_count', 0),
                 'available_qty': m.get('available_qty'),
                 'pnum_dup_brands': m.get('pnum_dup_brands', 0),
@@ -611,7 +643,81 @@ LOCKABLE_PRODUCT_FIELDS = {
     "year", "width", "clonednumbers",
     # Per-item scalar fields (unique per size-row) — see PER_ITEM_FIELDS below.
     "sizeeu", "size_letter", "measurementscm", "dimensions",
+    # Shoe-lookup FKs (model-level; edited by NAME, written back as name). See
+    # LOOKUP_NAME_FIELDS below + SHOE_FK_WRITEBACK in sheets_parser.
+    "heeltypeid", "lacetypeid", "packagingid", "technologyid", "sole_colorid",
+    # Condition (Стан/поточний стан) — PER-ITEM (not propagated to rostovka siblings).
+    "current_conditionid",
 }
+
+# Inline-edit name field (from ProductUpdate) → (FK id column, lookup table, name column).
+# update_product resolves the typed name → FK id (get-or-create, case-insensitive).
+LOOKUP_NAME_FIELDS = {
+    "heel_type_name":  ("heeltypeid",   "heel_types",      "heeltypename"),
+    "lace_type_name":  ("lacetypeid",   "lace_types",      "lacetypename"),
+    "packaging_name":  ("packagingid",  "packaging_types", "packagingname"),
+    "technology_name": ("technologyid", "technologies",    "technologyname"),
+    "sole_color_name": ("sole_colorid", "colors",          "colorname"),
+    "current_condition_name": ("current_conditionid", "conditions", "conditionname"),
+}
+
+
+def _resolve_lookup_id_by_name(db: Session, table: str, name_col: str, value: str) -> Optional[int]:
+    """Case-insensitive get-or-create in a single-FK lookup table. Returns id.
+
+    ⚠️ SQL LOWER()/ILIKE do NOT case-fold Cyrillic in this DB (C collation), so the
+    case-insensitive step is done in Python (str.lower() handles Cyrillic). See
+    feedback_ilike_exact_match. Lookups are tiny, so the full scan is cheap.
+    """
+    val = (value or "").strip()
+    if not val:
+        return None
+    # 1) exact match (fast path; covers the common "kept the pre-filled value" case)
+    row = db.execute(
+        text(f"SELECT id FROM {table} WHERE TRIM({name_col}) = :v LIMIT 1"),
+        {"v": val},
+    ).fetchone()
+    if row:
+        return int(row[0])
+    # 2) Cyrillic-correct case-insensitive fold in Python
+    folded = val.lower()
+    for rid, nm in db.execute(text(f"SELECT id, {name_col} FROM {table}")).fetchall():
+        if (nm or "").strip().lower() == folded:
+            return int(rid)
+    # 3) create new — preserve the user's casing
+    new_id = db.execute(
+        text(f"INSERT INTO {table} ({name_col}) VALUES (:v) "
+             f"ON CONFLICT ({name_col}) DO UPDATE SET {name_col} = EXCLUDED.{name_col} "
+             f"RETURNING id"),
+        {"v": val},
+    ).fetchone()
+    return int(new_id[0]) if new_id else None
+
+
+def resolve_lookup_name(db: Session, fk_field: str, fk_id: Optional[int]) -> Optional[str]:
+    """FK id → canonical name string (for sheet write-back). None if id is None."""
+    if fk_id is None:
+        return None
+    tbl_col = {
+        "heeltypeid":          ("heel_types",      "heeltypename"),
+        "lacetypeid":          ("lace_types",      "lacetypename"),
+        "packagingid":         ("packaging_types", "packagingname"),
+        "technologyid":        ("technologies",    "technologyname"),
+        "sole_colorid":        ("colors",          "colorname"),
+        "current_conditionid": ("conditions",      "conditionname"),
+    }.get(fk_field)
+    if not tbl_col:
+        return None
+    row = db.execute(
+        text(f"SELECT {tbl_col[1]} FROM {tbl_col[0]} WHERE id = :id"),
+        {"id": fk_id},
+    ).fetchone()
+    return row[0] if row else None
+
+
+# FK fields edited by name (used by the router to map id→name for write-back).
+SHOE_FK_NAME_FIELDS = {"heeltypeid", "lacetypeid", "packagingid", "technologyid", "sole_colorid",
+                       "current_conditionid"}
 # Propagation policy across rostovka siblings (same productnumber):
 #   PER_ITEM_FIELDS — unique per pair/size, NEVER propagated (e.g. condition/розмір).
 #   PRICE_FIELDS    — propagated only to same-condition siblings without their own locked price.
@@ -650,6 +756,13 @@ def update_product(db: Session, product_id: int, product: schemas.ProductUpdate)
         db_product = db.query(models.Product).filter(models.Product.id == product_id).first()
         if db_product:
             update_data = product.dict(exclude_unset=True)
+
+            # Inline-edit by NAME: translate typed lookup names → FK id columns
+            # (get-or-create, case-insensitive). "" / null clears the FK.
+            for name_key, (fk_field, table, name_col) in LOOKUP_NAME_FIELDS.items():
+                if name_key in update_data:
+                    raw = update_data.pop(name_key)
+                    update_data[fk_field] = _resolve_lookup_id_by_name(db, table, name_col, raw)
 
             # Markdown: on a price DECREASE, preserve the previous price into
             # "Стара ціна" if it is empty (per user rule). Existing oldprice and
@@ -864,6 +977,11 @@ def get_product_with_relations(db: Session, product_id: int) -> Optional[Dict[st
                    tsh.toeshapename as toe_shape_name,
                    fst.fasteningtypename as fastening_type_name,
                    lin.liningname as lining_name,
+                   ht.heeltypename as heel_type_name,
+                   lt.lacetypename as lace_type_name,
+                   pk.packagingname as packaging_name,
+                   tech.technologyname as technology_name,
+                   scol.colorname as sole_color_name,
                    COALESCE(sold.sold_count, 0) AS sold_count,
                    GREATEST(COALESCE(p.quantity, 0) - COALESCE(sold.sold_count, 0), 0) AS available_qty,
                    mat_agg.materials_json
@@ -885,12 +1003,24 @@ def get_product_with_relations(db: Session, product_id: int) -> Optional[Dict[st
             LEFT JOIN toe_shapes tsh ON p.toeshapeid = tsh.id
             LEFT JOIN fastening_types fst ON p.fasteningtypeid = fst.id
             LEFT JOIN linings lin ON p.liningid = lin.id
+            LEFT JOIN heel_types ht ON p.heeltypeid = ht.id
+            LEFT JOIN lace_types lt ON p.lacetypeid = lt.id
+            LEFT JOIN packaging_types pk ON p.packagingid = pk.id
+            LEFT JOIN technologies tech ON p.technologyid = tech.id
+            LEFT JOIN colors scol ON p.sole_colorid = scol.id
             LEFT JOIN (
-                SELECT oi.product_id, COUNT(*) AS sold_count
+                SELECT oi.product_id,
+                       -- «Продано» = Подарунок(7) АБО (Підтверджено(1) І Оплачено),
+                       -- МІНУС Повернення(9): повернений товар знову в наявності.
+                       GREATEST(
+                         COUNT(*) FILTER (WHERE o.order_status_id = 7
+                                            OR (o.order_status_id = 1 AND o.payment_status_id = 1))
+                         - COUNT(*) FILTER (WHERE o.order_status_id = 9),
+                       0) AS sold_count
                 FROM order_items oi
                 JOIN orders o ON o.id = oi.order_id
                 WHERE oi.product_id IS NOT NULL
-                  AND o.order_status_id IN (1, 7)
+                  AND o.order_status_id IN (1, 7, 9)
                 GROUP BY oi.product_id
             ) sold ON sold.product_id = p.id
             LEFT JOIN LATERAL (
@@ -1082,10 +1212,16 @@ def sync_product_statuses(db: Session) -> Dict[str, int]:
                       SELECT
                           p2.id,
                           COALESCE(
-                              (SELECT COUNT(*) FROM order_items oi
+                              (SELECT GREATEST(
+                                   COUNT(*) FILTER (WHERE o.order_status_id = 7
+                                                      OR (o.order_status_id = 1 AND o.payment_status_id = 1))
+                                   - COUNT(*) FILTER (WHERE o.order_status_id = 9),
+                                 0)
+                               FROM order_items oi
                                JOIN orders o ON o.id = oi.order_id
                                WHERE oi.product_id = p2.id
-                                 AND o.order_status_id IN (1, 7)), 0
+                                 -- «Продано» = Подарунок(7) АБО (Підтверджено(1) І Оплачено), мінус Повернення(9).
+                                 AND o.order_status_id IN (1, 7, 9)), 0
                           ) AS sold_count,
                           COALESCE(p2.quantity, 1) AS qty
                       FROM products p2

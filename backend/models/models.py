@@ -385,6 +385,11 @@ class Product(Base):
     toeshapeid       = Column(Integer, ForeignKey("toe_shapes.id",       ondelete="SET NULL"), nullable=True)
     fasteningtypeid  = Column(Integer, ForeignKey("fastening_types.id",  ondelete="SET NULL"), nullable=True)
     liningid         = Column(Integer, ForeignKey("linings.id",          ondelete="SET NULL"), nullable=True)
+    heeltypeid       = Column(Integer, ForeignKey("heel_types.id",       ondelete="SET NULL"), nullable=True)   # тип каблука (≠ висота measurements_heel)
+    lacetypeid       = Column(Integer, ForeignKey("lace_types.id",       ondelete="SET NULL"), nullable=True)   # тип шнурівки (≠ застібка «шнурки»)
+    packagingid      = Column(Integer, ForeignKey("packaging_types.id",  ondelete="SET NULL"), nullable=True)   # пакування
+    technologyid     = Column(Integer, ForeignKey("technologies.id",     ondelete="SET NULL"), nullable=True)   # технології (v1: single value)
+    sole_colorid     = Column(Integer, ForeignKey("colors.id",           ondelete="SET NULL"), nullable=True)   # колір підошви (reuse colors)
 
     # Relationships
     order_items = relationship("OrderItem", back_populates="product")
@@ -402,6 +407,11 @@ class Product(Base):
     toe_shape      = relationship("ToeShape",      foreign_keys=[toeshapeid])
     fastening_type = relationship("FasteningType", foreign_keys=[fasteningtypeid])
     lining         = relationship("Lining",        foreign_keys=[liningid])
+    heel_type      = relationship("HeelType",      foreign_keys=[heeltypeid])
+    lace_type      = relationship("LaceType",      foreign_keys=[lacetypeid])
+    packaging      = relationship("PackagingType", foreign_keys=[packagingid])
+    technology     = relationship("Technology",    foreign_keys=[technologyid])
+    sole_color     = relationship("Color",         foreign_keys=[sole_colorid])
     materials = relationship(
         "ProductMaterial",
         back_populates="product",
@@ -460,6 +470,34 @@ class Lining(Base):
     id         = Column(Integer, primary_key=True, index=True)
     liningname = Column(String, unique=True, nullable=False, index=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class HeelType(Base):
+    __tablename__ = "heel_types"
+    id           = Column(Integer, primary_key=True, index=True)
+    heeltypename = Column(String, unique=True, nullable=False, index=True)
+    created_at   = Column(DateTime, default=datetime.utcnow)
+
+
+class LaceType(Base):
+    __tablename__ = "lace_types"
+    id           = Column(Integer, primary_key=True, index=True)
+    lacetypename = Column(String, unique=True, nullable=False, index=True)
+    created_at   = Column(DateTime, default=datetime.utcnow)
+
+
+class PackagingType(Base):
+    __tablename__ = "packaging_types"
+    id            = Column(Integer, primary_key=True, index=True)
+    packagingname = Column(String, unique=True, nullable=False, index=True)
+    created_at    = Column(DateTime, default=datetime.utcnow)
+
+
+class Technology(Base):
+    __tablename__ = "technologies"
+    id             = Column(Integer, primary_key=True, index=True)
+    technologyname = Column(String, unique=True, nullable=False, index=True)
+    created_at     = Column(DateTime, default=datetime.utcnow)
 
 
 class ParsingSource(Base):

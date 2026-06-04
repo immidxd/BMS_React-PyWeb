@@ -59,3 +59,6 @@ backend/scripts/writeback_backups/
 # Local prune/manual cleanup backups
 backend/scripts/prune_backups/
 manual_cleanup_backups/
+
+# Ignore journal header snapshot backups (one-time structural-edit artifacts)
+backend/scripts/journal_header_backup_*.json

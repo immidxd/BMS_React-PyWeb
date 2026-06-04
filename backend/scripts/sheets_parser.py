@@ -79,7 +79,11 @@ FILE_GATE_ENABLED = os.getenv("PARSER_FILE_GATE", "1") != "0"
 # Keep in sync with LOCKABLE_PRODUCT_FIELDS in product_service.
 PRODUCT_LOCKS_ENABLED = os.getenv("PRODUCT_LOCKS", "1") != "0"
 # oldprice included so the auto-markdown ("Стара ціна") survives reparse too.
-PRODUCT_LOCK_FIELDS = {"price", "oldprice", "model", "marking", "description", "extranote", "season"}
+PRODUCT_LOCK_FIELDS = {"price", "oldprice", "model", "marking", "description", "extranote", "season",
+                       # Shoe-lookup FKs edited in-app (model-level). Snapshot/restore by id.
+                       "heeltypeid", "lacetypeid", "packagingid", "technologyid", "sole_colorid",
+                       # Condition (per-item) edited in-app.
+                       "current_conditionid"}
 # Order fields protected from parser overwrite (Order editing Phase A). Keep in
 # sync with LOCKABLE_ORDER_FIELDS in order_service.
 ORDER_LOCKS_ENABLED = os.getenv("ORDER_LOCKS", "1") != "0"
@@ -199,6 +203,15 @@ WRITEBACK_FIELD_HEADERS = {
     "year":           "Рік",
     "width":          "Ширина",
     "clonednumbers":  "Номера-клони",
+    # Shoe-lookup FKs — model-level. Router passes the resolved NAME as the value,
+    # so write-back treats them as plain text (see SHOE_FK_NAME_FIELDS in service).
+    "heeltypeid":     "Тип каблука",
+    "lacetypeid":     "Тип шнурівки",
+    "packagingid":    "Пакування",
+    "technologyid":   "Технології",
+    "sole_colorid":   "Колір підошви",
+    # Per-item FK (унікальний на пару ростовки) — журнальна колонка «Поточний стан».
+    "current_conditionid": "Поточний стан",
     # Per-item (унікальні на КОЖЕН рядок ростовки) — пишуться лише коли номер
     # у аркуші займає один рядок (див. PER_ITEM_WRITEBACK_FIELDS + guard нижче).
     "sizeeu":         "Розмір",
@@ -209,12 +222,16 @@ WRITEBACK_FIELD_HEADERS = {
 # Поля, унікальні на кожен рядок ростовки. Поточний write-back пише в УСІ рядки
 # спільного номера → для таких полів це затерло б сусідні розміри. Тому пишемо
 # їх лише коли номер у аркуші — один рядок (guard у writeback_field_to_journal).
-PER_ITEM_WRITEBACK_FIELDS = {"sizeeu", "size_letter", "measurementscm", "dimensions"}
+PER_ITEM_WRITEBACK_FIELDS = {"sizeeu", "size_letter", "measurementscm", "dimensions",
+                             "current_conditionid"}
 # Text fields written RAW (literal, no formula interpretation); numeric fields
 # USER_ENTERED so the sheet stores a real number.
 WRITEBACK_TEXT_FIELDS = {"model", "marking", "description", "season", "extranote",
                          "width", "clonednumbers",
-                         "sizeeu", "size_letter", "measurementscm", "dimensions"}
+                         "sizeeu", "size_letter", "measurementscm", "dimensions",
+                         # Shoe-lookup + condition FKs written back as canonical name text.
+                         "heeltypeid", "lacetypeid", "packagingid", "technologyid", "sole_colorid",
+                         "current_conditionid"}
 WRITEBACK_ENABLED = os.getenv("PARSER_WRITEBACK", "1") != "0"
 _WRITEBACK_BACKUP_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "writeback_backups")
 
@@ -281,7 +298,8 @@ def writeback_field_to_journal(sheet_title: str, productnumber: str, field: str,
     # Normalize the new value to a cell string
     if value is None:
         new_str = ""
-    elif field == "price":
+    elif field in ("price", "oldprice"):
+        # Whole numbers → "1900" (not "1900.0"); keep decimals otherwise.
         try:
             fv = float(value)
             new_str = str(int(fv)) if fv == int(fv) else str(fv)
@@ -322,7 +340,24 @@ def writeback_field_to_journal(sheet_title: str, productnumber: str, field: str,
 
     backup_path = _save_writeback_backup(sheet_title, productnumber, field, backups)
     value_input = "USER_ENTERED" if field not in WRITEBACK_TEXT_FIELDS else "RAW"
-    ws.batch_update(updates, value_input_option=value_input)
+    # Retry transient failures (network reset / 429 rate-limit). The write-back runs
+    # in a background thread, so a swallowed transient error would silently desync the
+    # sheet from the (locked) DB value forever — retry with backoff instead.
+    last_err = None
+    for attempt in range(4):
+        try:
+            ws.batch_update(updates, value_input_option=value_input)
+            last_err = None
+            break
+        except Exception as e:  # gspread APIError / ConnectionError / etc.
+            last_err = e
+            if attempt < 3:
+                time.sleep(2 * (attempt + 1))   # 2s, 4s, 6s
+    if last_err is not None:
+        logger.error(f"[writeback] {field} → '{sheet_title}' {productnumber}: "
+                     f"all retries failed: {last_err}")
+        return {"ok": False, "reason": f"sheet write failed after retries: {last_err}",
+                "header": header_name, "backup": backup_path}
     logger.info(f"[writeback] {field} → '{sheet_title}' {productnumber}: {len(updates)} row(s), backup={backup_path}")
     return {"ok": True, "rows_updated": len(updates), "header": header_name, "backup": backup_path}
 
@@ -944,11 +979,17 @@ def _resolve_shoe_lookup_id(session, table: str, name_col: str, value: str) -> O
 
 # Sheet column → (table, name_col, FK column on products) for shoe lookups
 SHOE_LOOKUP_COLUMNS: dict[str, tuple[str, str, str]] = {
-    "Тип підошви": ("sole_types",       "soletypename",       "soletypeid"),
-    "Форма носка": ("toe_shapes",       "toeshapename",       "toeshapeid"),
-    "Застібка":    ("fastening_types",  "fasteningtypename",  "fasteningtypeid"),
-    "Підкладка":   ("linings",          "liningname",         "liningid"),
+    "Тип підошви":  ("sole_types",       "soletypename",       "soletypeid"),
+    "Форма носка":  ("toe_shapes",       "toeshapename",       "toeshapeid"),
+    "Застібка":     ("fastening_types",  "fasteningtypename",  "fasteningtypeid"),
+    "Підкладка":    ("linings",          "liningname",         "liningid"),
+    "Тип каблука":  ("heel_types",       "heeltypename",       "heeltypeid"),
+    "Тип шнурівки": ("lace_types",       "lacetypename",       "lacetypeid"),
+    "Пакування":    ("packaging_types",  "packagingname",      "packagingid"),
+    "Технології":   ("technologies",     "technologyname",     "technologyid"),
 }
+# "Колір підошви" → reuse colors table (auto-create), resolved separately (not here),
+# written into sole_colorid. See _resolve_sole_color() usage in both parser paths.
 
 # New min/max measurement pairs (paired so we never set min without max).
 _NEW_MIN_MAX_PAIRS: list[tuple[str, str]] = [
@@ -965,6 +1006,7 @@ _NEW_MIN_MAX_PAIRS: list[tuple[str, str]] = [
 # Single-FK fields (one value per product).
 _NEW_SINGLE_FK_FIELDS: list[str] = [
     "soletypeid", "toeshapeid", "fasteningtypeid", "liningid",
+    "heeltypeid", "lacetypeid", "packagingid", "technologyid", "sole_colorid",
 ]
 
 
@@ -2196,7 +2238,7 @@ def _parse_products_sheet(
         heel_min, heel_max                     = _parse_measurement_range(heel_val)
 
         # Shoe-specific lookups (single FK each). Unknown values → unmapped log, FK stays NULL.
-        sole_type_id = toe_shape_id = fastening_type_id = lining_id = None
+        resolved_shoe_fk: dict[str, Optional[int]] = {}
         for sheet_col, (tbl, name_col, fk_col) in SHOE_LOOKUP_COLUMNS.items():
             if sheet_col not in header:
                 continue
@@ -2208,14 +2250,12 @@ def _parse_products_sheet(
                 # Reuse unmapped_materials infra with position prefix to avoid a new table.
                 _log_unmapped_material(session, raw_val, f"_{fk_col}", None, ws.title)
                 continue
-            if fk_col == "soletypeid":
-                sole_type_id = rid
-            elif fk_col == "toeshapeid":
-                toe_shape_id = rid
-            elif fk_col == "fasteningtypeid":
-                fastening_type_id = rid
-            elif fk_col == "liningid":
-                lining_id = rid
+            resolved_shoe_fk[fk_col] = rid
+
+        # "Колір підошви" → reuse colors (auto-create нові кольори, як основний колір).
+        sole_color_raw = col(row, "Колір підошви").strip() if "Колір підошви" in header else ""
+        sole_color_obj = _get_or_create(session, Color, "colorname", sole_color_raw) if sole_color_raw else None
+        sole_color_id  = sole_color_obj.id if sole_color_obj else None
 
         # Collect all new-style fields into one dict for UPDATE-branch helpers.
         parsed_new_fields = {
@@ -2229,10 +2269,15 @@ def _parse_products_sheet(
             "measurements_sole_thickness_min": sole_thickness_min,
             "measurements_sole_thickness_max": sole_thickness_max,
             "measurements_heel_min":   heel_min,           "measurements_heel_max":   heel_max,
-            "soletypeid":              sole_type_id,
-            "toeshapeid":              toe_shape_id,
-            "fasteningtypeid":         fastening_type_id,
-            "liningid":                lining_id,
+            "soletypeid":              resolved_shoe_fk.get("soletypeid"),
+            "toeshapeid":              resolved_shoe_fk.get("toeshapeid"),
+            "fasteningtypeid":         resolved_shoe_fk.get("fasteningtypeid"),
+            "liningid":                resolved_shoe_fk.get("liningid"),
+            "heeltypeid":              resolved_shoe_fk.get("heeltypeid"),
+            "lacetypeid":              resolved_shoe_fk.get("lacetypeid"),
+            "packagingid":             resolved_shoe_fk.get("packagingid"),
+            "technologyid":            resolved_shoe_fk.get("technologyid"),
+            "sole_colorid":            sole_color_id,
         }
 
         # Матеріали: збираємо за позиціями. Порожня клітинка = не чіпати існуюче в БД.
@@ -4263,7 +4308,7 @@ def _parse_workspace_sheet(
         heel_min, heel_max             = _parse_measurement_range(col(row, "Підбор")          if "Підбор" in header else "")
 
         # Взуттєві lookup (single FK each). Невідоме → unmapped log, FK = NULL.
-        sole_type_id = toe_shape_id = fastening_type_id = lining_id = None
+        resolved_shoe_fk: dict[str, Optional[int]] = {}
         for sheet_col, (tbl, name_col, fk_col) in SHOE_LOOKUP_COLUMNS.items():
             if sheet_col not in header:
                 continue
@@ -4274,10 +4319,12 @@ def _parse_workspace_sheet(
             if rid is None:
                 _log_unmapped_material(session, raw_val, f"_{fk_col}", None, ws.title)
                 continue
-            if fk_col == "soletypeid":        sole_type_id = rid
-            elif fk_col == "toeshapeid":      toe_shape_id = rid
-            elif fk_col == "fasteningtypeid": fastening_type_id = rid
-            elif fk_col == "liningid":        lining_id = rid
+            resolved_shoe_fk[fk_col] = rid
+
+        # "Колір підошви" → reuse colors (auto-create нові кольори, як основний колір).
+        sole_color_raw = col(row, "Колір підошви").strip() if "Колір підошви" in header else ""
+        sole_color_obj = _get_or_create(session, Color, "colorname", sole_color_raw) if sole_color_raw else None
+        sole_color_id  = sole_color_obj.id if sole_color_obj else None
 
         parsed_new_fields = {
             "measurementscm_min":      cm_min,             "measurementscm_max":      cm_max,
@@ -4290,10 +4337,15 @@ def _parse_workspace_sheet(
             "measurements_sole_thickness_min": sole_thickness_min,
             "measurements_sole_thickness_max": sole_thickness_max,
             "measurements_heel_min":   heel_min,           "measurements_heel_max":   heel_max,
-            "soletypeid":              sole_type_id,
-            "toeshapeid":              toe_shape_id,
-            "fasteningtypeid":         fastening_type_id,
-            "liningid":                lining_id,
+            "soletypeid":              resolved_shoe_fk.get("soletypeid"),
+            "toeshapeid":              resolved_shoe_fk.get("toeshapeid"),
+            "fasteningtypeid":         resolved_shoe_fk.get("fasteningtypeid"),
+            "liningid":                resolved_shoe_fk.get("liningid"),
+            "heeltypeid":              resolved_shoe_fk.get("heeltypeid"),
+            "lacetypeid":              resolved_shoe_fk.get("lacetypeid"),
+            "packagingid":             resolved_shoe_fk.get("packagingid"),
+            "technologyid":            resolved_shoe_fk.get("technologyid"),
+            "sole_colorid":            sole_color_id,
         }
 
         # Матеріали за позиціями. Порожня клітинка = не чіпати існуюче в БД.

@@ -70,10 +70,20 @@ export interface Product {
     toeshapeid?: number;
     fasteningtypeid?: number;
     liningid?: number;
+    heeltypeid?: number;
+    lacetypeid?: number;
+    packagingid?: number;
+    technologyid?: number;
+    sole_colorid?: number;
     sole_type_name?: string;
     toe_shape_name?: string;
     fastening_type_name?: string;
     lining_name?: string;
+    heel_type_name?: string;       // тип каблука (≠ висота measurements_heel)
+    lace_type_name?: string;       // тип шнурівки (≠ застібка)
+    packaging_name?: string;       // пакування
+    technology_name?: string;      // технології
+    sole_color_name?: string;      // колір підошви
     materials?: ProductMaterialEntry[];
     quantity: number;
     typeid?: number;

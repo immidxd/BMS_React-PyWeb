@@ -46,6 +46,15 @@ const EDITABLE_FIELDS: { field: string; type: FieldType }[] = [
   { field: 'oldprice', type: 'number' },
   { field: 'description', type: 'textarea' },
   { field: 'extranote', type: 'textarea' },
+  // Shoe-lookup characteristics edited by NAME (resolved → FK id server-side,
+  // written back to the journal). Draft/display read from the `*_name` field.
+  { field: 'sole_color_name', type: 'text' },
+  { field: 'heel_type_name', type: 'text' },
+  { field: 'lace_type_name', type: 'text' },
+  { field: 'technology_name', type: 'text' },
+  { field: 'packaging_name', type: 'text' },
+  // Стан (поточний стан) — per-item FK, edited by name.
+  { field: 'current_condition_name', type: 'text' },
 ];
 
 // Скільки чекати фото з Drive, перш ніж прибрати спінер галереї (картку показуємо
@@ -395,12 +404,13 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
 
   // Редагована клітинка: input у глобальному edit-режимі; інакше — значення (+ лок).
   // У read-режимі порожнє значення ховаємо. Тип number → number input.
-  const EditCell: React.FC<{ field: string; label: string; type?: FieldType; placeholder?: string }> = ({ field, label, type = 'text', placeholder }) => {
+  const EditCell: React.FC<{ field: string; label: string; type?: FieldType; placeholder?: string; lockField?: string }> = ({ field, label, type = 'text', placeholder, lockField }) => {
+    const lf = lockField ?? field;   // lock state may live on a different DB column (e.g. FK id)
     if (editMode) {
       return (
         <div className="flex flex-col gap-1 min-w-0">
           <span className="text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500 font-medium flex items-center gap-1.5">
-            {label}<LockDot field={field} />
+            {label}<LockDot field={lf} />
           </span>
           <input
             type={type === 'number' ? 'number' : 'text'}
@@ -419,7 +429,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
         <span className="text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500 font-medium">{label}</span>
         <span className="text-sm text-gray-800 dark:text-gray-200 break-words flex items-center gap-2">
           <CopyOnClick value={v as string | number} />
-          <LockBadge field={field} />
+          <LockBadge field={lf} />
         </span>
       </div>
     );
@@ -869,7 +879,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                     <EditCell field="season" label="Сезон" />
                     <RoCell label="Колір" value={(p as any).color_name} />
                     <EditCell field="width" label="Ширина" />
-                    <RoCell label="Стан" value={(p as any).current_condition_name} />
+                    <EditCell field="current_condition_name" lockField="current_conditionid" label="Стан" />
                     <EditCell field="marking" label="Маркування" />
                     <EditCell field="year" label="Рік" type="number" />
                     <EditCell field="clonednumbers" label="Клони" />
@@ -878,15 +888,21 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                   </div>
 
                   {/* Shoe characteristics */}
-                  {(p.sole_type_name || p.toe_shape_name || p.fastening_type_name || p.lining_name ||
+                  {(editMode || p.sole_type_name || p.toe_shape_name || p.fastening_type_name || p.lining_name ||
+                    p.heel_type_name || p.lace_type_name || p.packaging_name || p.technology_name || p.sole_color_name ||
                     p.measurements_height_min != null || p.measurements_sole_thickness_min != null || p.measurements_heel_min != null) && (
                     <div className="mt-4 pt-4 border-t border-gray-100 dark:border-gray-800">
                       <div className="text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500 mb-3 font-medium">Взуття</div>
                       <div className={`grid ${charCols} gap-x-6 gap-y-3`}>
                         <RoCell label="Тип підошви" value={p.sole_type_name} />
+                        <EditCell field="sole_color_name" lockField="sole_colorid" label="Колір підошви" />
                         <RoCell label="Форма носка" value={p.toe_shape_name} />
                         <RoCell label="Застібка" value={p.fastening_type_name} />
+                        <EditCell field="lace_type_name" lockField="lacetypeid" label="Тип шнурівки" />
                         <RoCell label="Підкладка" value={p.lining_name} />
+                        <EditCell field="heel_type_name" lockField="heeltypeid" label="Тип каблука" />
+                        <EditCell field="technology_name" lockField="technologyid" label="Технології" />
+                        <EditCell field="packaging_name" lockField="packagingid" label="Пакування" />
                         <RoCell label="Висота" value={fmtRange(p.measurements_height_min, p.measurements_height_max)} />
                         <RoCell label="Підошва" value={fmtRange(p.measurements_sole_thickness_min, p.measurements_sole_thickness_max)} />
                         <RoCell label="Каблук" value={fmtRange(p.measurements_heel_min, p.measurements_heel_max)} />
