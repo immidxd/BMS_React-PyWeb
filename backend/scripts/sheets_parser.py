@@ -235,6 +235,14 @@ WRITEBACK_TEXT_FIELDS = {"model", "marking", "description", "season", "extranote
 WRITEBACK_ENABLED = os.getenv("PARSER_WRITEBACK", "1") != "0"
 _WRITEBACK_BACKUP_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "writeback_backups")
 
+# Ghost-замовлення: коли набір товарів у рядку аркуша змінюється, fingerprint
+# змінюється → парсер створює НОВИЙ ордер, старий зависає орфаном (NULL-status).
+# Після прогону прибираємо такі привиди ВУЗЬКОЮ сигнатурою (untouched + строгий
+# containment із touched-сиблінгом same client+date + NULL-status + має fingerprint)
+# з бекапом. НЕ глобальний mark&sweep. Див. feedback_orders_ghost_dupes.md.
+ORDER_GHOST_SWEEP = os.getenv("ORDER_GHOST_SWEEP", "1") != "0"
+_GHOST_SWEEP_BACKUP_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ghost_sweep_backups")
+
 # Marker written into a merged lost product's Воркспейс row ("Екстра примітка").
 # The workspace parser skips rows carrying it, so a merged item is not re-created
 # as is_lost after the source row stays in the sheet.
@@ -3709,7 +3717,8 @@ def _parse_orders_sheet(
 
     rows = prefetched_rows if prefetched_rows is not None else ws.get_all_values()
     if not rows:
-        return {"orders": 0, "items": 0, "clients": 0, "skipped": 0}
+        return {"orders": 0, "items": 0, "clients": 0, "skipped": 0,
+                "touched_order_ids": set()}
 
     header = [h.strip() for h in rows[0]]
 
@@ -3722,6 +3731,7 @@ def _parse_orders_sheet(
 
     import hashlib
     orders_added = orders_updated = items_added = clients_added = skipped = 0
+    touched_order_ids: set[int] = set()  # ордери, що мають живий рядок у цьому прогоні
     total = len(rows) - 1
 
     for i, row in enumerate(rows[1:], 1):
@@ -4055,6 +4065,10 @@ def _parse_orders_sheet(
             session.flush()
             orders_added += 1
 
+        # Цей ордер має живий рядок у аркуші цього прогону (matched або created).
+        if getattr(order, "id", None):
+            touched_order_ids.add(order.id)
+
         # ── Auto-detect "разом з <Name>" → client_relations (safe, isolated) ──
         # Не валимо парсер, навіть якщо щось пішло не так зі звʼязками.
         if combined_notes and client_id and order is not None and getattr(order, "id", None):
@@ -4145,7 +4159,8 @@ def _parse_orders_sheet(
         session.commit()
 
     return {"orders": orders_added, "items": items_added, "clients": clients_added,
-            "updated": orders_updated, "skipped": skipped}
+            "updated": orders_updated, "skipped": skipped,
+            "touched_order_ids": touched_order_ids}
 
 
 # ── Workspace parser ─────────────────────────────────────────────────────────
@@ -4725,6 +4740,99 @@ def run_products_parsing(
     }
 
 
+def _reconcile_evolved_order_ghosts(session: Session, touched_ids: set) -> dict:
+    """Прибрати ghost-замовлення, що лишились після зміни набору товарів у рядку
+    аркуша (fingerprint змінився → парсер створив новий ордер, старий завис).
+
+    БЕЗПЕЧНА сигнатура (ВСІ умови разом) — НЕ глобальний mark&sweep:
+      • ордер НЕ touched цього прогону (жоден рядок аркуша його не матчив);
+      • існує touched-сиблінг той самий client_id+order_date (ДОВОДИТЬ, що групу
+        реально розпарсено цього прогону → не частковий прогін/hash-skip);
+      • набір product_id у строгому containment із touched-сиблінгом (підмножина
+        АБО надмножина) — підпис «додали/прибрали товари», не два різні замовлення;
+      • source_fingerprint IS NOT NULL (парсер-походження; legacy/ручні не чіпаємо);
+      • order_status_id IS NULL (рання версія рядка до статусу; фіналізовані — НЕ цей прохід).
+    Перед видаленням — JSON-бекап. Помилки логуються, парс не валиться.
+    """
+    if not ORDER_GHOST_SWEEP or not touched_ids:
+        return {"removed": 0}
+    try:
+        from backend.models.models import Order, OrderItem
+    except ImportError:
+        from models.models import Order, OrderItem
+    try:
+        # Групи (client_id, order_date), що мають touched-ордер, + їхні набори product_id.
+        touched = session.query(Order).filter(Order.id.in_(touched_ids)).all()
+        def pidset(oid):
+            return frozenset(
+                r[0] for r in session.query(OrderItem.product_id)
+                .filter(OrderItem.order_id == oid).all()
+            )
+        groups: dict = {}  # (client_id, order_date) -> [(oid, frozenset)]
+        for t in touched:
+            if t.client_id is None:
+                continue
+            groups.setdefault((t.client_id, t.order_date), []).append((t.id, pidset(t.id)))
+
+        ghost_ids = []
+        for (cid, odate), tlist in groups.items():
+            tsets = [s for (_tid, s) in tlist if s]
+            if not tsets:
+                continue
+            siblings = session.query(Order).filter(
+                Order.client_id == cid,
+                Order.order_date == odate,
+                Order.id.notin_(touched_ids),
+                Order.order_status_id.is_(None),
+                Order.source_fingerprint.isnot(None),
+            ).all()
+            for s in siblings:
+                sset = pidset(s.id)
+                if not sset:
+                    continue
+                # строгий containment із будь-яким touched-сиблінгом групи
+                if any((sset < tset or tset < sset) for tset in tsets):
+                    ghost_ids.append(s.id)
+
+        if not ghost_ids:
+            return {"removed": 0}
+
+        # Бекап перед видаленням
+        try:
+            import json
+            from datetime import datetime as _dt
+            os.makedirs(_GHOST_SWEEP_BACKUP_DIR, exist_ok=True)
+            orders_dump = [
+                {c.name: (str(getattr(o, c.name)) if getattr(o, c.name) is not None else None)
+                 for c in Order.__table__.columns}
+                for o in session.query(Order).filter(Order.id.in_(ghost_ids)).all()
+            ]
+            items_dump = [
+                {c.name: (str(getattr(it, c.name)) if getattr(it, c.name) is not None else None)
+                 for c in OrderItem.__table__.columns}
+                for it in session.query(OrderItem).filter(OrderItem.order_id.in_(ghost_ids)).all()
+            ]
+            path = os.path.join(_GHOST_SWEEP_BACKUP_DIR, f"{_dt.now():%Y%m%d_%H%M%S}_ghosts.json")
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump({"ghost_ids": ghost_ids, "orders": orders_dump, "order_items": items_dump},
+                          f, ensure_ascii=False, indent=2)
+            logger.warning(f"[ghost-sweep] backup {len(ghost_ids)} ghost order(s) → {path}")
+        except Exception as be:
+            logger.error(f"[ghost-sweep] backup failed ({be}); ABORT delete (safety)")
+            return {"removed": 0}
+
+        # Видалення: order_items (FK NO ACTION) → orders (решта CASCADE/SET NULL)
+        session.query(OrderItem).filter(OrderItem.order_id.in_(ghost_ids)).delete(synchronize_session=False)
+        session.query(Order).filter(Order.id.in_(ghost_ids)).delete(synchronize_session=False)
+        session.commit()
+        logger.warning(f"[ghost-sweep] removed {len(ghost_ids)} ghost order(s): {ghost_ids}")
+        return {"removed": len(ghost_ids)}
+    except Exception as e:
+        session.rollback()
+        logger.error(f"[ghost-sweep] failed (no orders removed): {e}")
+        return {"removed": 0}
+
+
 def run_orders_parsing(
     session: Session,
     mode: str = "quick",
@@ -4757,6 +4865,7 @@ def run_orders_parsing(
         order_sheets = order_sheets[:QUICK_SHEETS_COUNT]
 
     total_orders = total_items = total_updated = total_skipped = 0
+    all_touched: set = set()  # ордери з живим рядком цього прогону (для ghost-reconcile)
     sheets_skipped_unchanged = 0
     total_sheets = len(order_sheets)
     # Hash-skip only in 'quick' mode (see PARSER_VERSION / HASH_SKIP_ENABLED notes).
@@ -4802,12 +4911,18 @@ def run_orders_parsing(
         total_items   += result["items"]
         total_updated += result.get("updated", 0)
         total_skipped += result["skipped"]
+        all_touched   |= result.get("touched_order_ids", set())
 
         # Record sync marker only after the sheet parsed successfully, so a
         # mid-run failure leaves later sheets unmarked → they reparse next time.
         if use_hash_skip and content_hash is not None:
             _record_sheet_state(session, ORDERS_ID, ws.id, ws.title, content_hash)
             session.commit()
+
+    # Прибрати ghost-замовлення, що лишились від зміни набору товарів у рядку
+    # (вузька сигнатура + бекап; не глобальний sweep). Після повного циклу, коли
+    # відомо які ордери мають живий рядок (all_touched).
+    ghost_result = _reconcile_evolved_order_ghosts(session, all_touched)
 
     # Order editing Phase A: restore user-locked order fields the parser overwrote
     orders_locks_restored = _restore_order_locks(session, order_locks_snapshot)
@@ -4828,6 +4943,7 @@ def run_orders_parsing(
         "skipped": total_skipped,
         "sheets_skipped_unchanged": sheets_skipped_unchanged,
         "order_locks_restored": orders_locks_restored,
+        "ghosts_removed": ghost_result.get("removed", 0),
     }
 
 

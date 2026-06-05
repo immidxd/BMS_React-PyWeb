@@ -62,3 +62,6 @@ manual_cleanup_backups/
 
 # Ignore journal header snapshot backups (one-time structural-edit artifacts)
 backend/scripts/journal_header_backup_*.json
+
+# Ghost-sweep backups (local)
+backend/scripts/ghost_sweep_backups/
