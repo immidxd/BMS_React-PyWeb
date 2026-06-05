@@ -15,6 +15,11 @@ except ImportError:
         REVENUE_GENERATING, CONFIRMED_SOLD, CANCELLED_OR_RETURNED, sql_in_list,
     )
 
+try:
+    from backend.utils.client_rating import client_rating_sql
+except ImportError:
+    from utils.client_rating import client_rating_sql
+
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
@@ -708,6 +713,13 @@ async def get_clients_stats(
         ORDER BY month
     """)).mappings().all()
 
+    _rating_expr_dist = client_rating_sql(
+        confirmed="stats.confirmed_orders",
+        revenue="stats.confirmed_total_amount",
+        cancelled="stats.cancelled_count",
+        ignored="stats.ignored_count",
+        returns="stats.return_exchange_count",
+    )
     rating_dist = db.execute(text(f"""
         SELECT category, COUNT(*) AS count
         FROM (
@@ -720,18 +732,12 @@ async def get_clients_stats(
                 END AS category
             FROM (
                 SELECT c.id,
-                    GREATEST(0, LEAST(10,
-                        5.0
-                        + LEAST(COALESCE(stats.confirmed_orders, 0) * 0.5, 3.0)
-                        - LEAST(COALESCE(stats.cancelled_count, 0) * 1.0, 3.0)
-                        - LEAST(COALESCE(stats.ignored_count, 0) * 0.5, 2.0)
-                        - LEAST(COALESCE(stats.return_exchange_count, 0) * 0.3, 1.0)
-                        + LEAST(COALESCE(c.total_order_amount, 0) / 10000.0, 2.0)
-                    )) AS rating
+                    {_rating_expr_dist} AS rating
                 FROM clients c
                 LEFT JOIN LATERAL (
                     SELECT
                         COUNT(*) FILTER (WHERE o.order_status_id IN {REVENUE_SQL}) AS confirmed_orders,
+                        COALESCE(SUM(o.total_amount) FILTER (WHERE o.order_status_id IN {REVENUE_SQL}), 0) AS confirmed_total_amount,
                         COUNT(*) FILTER (WHERE o.order_status_id = 5) AS cancelled_count,
                         COUNT(*) FILTER (WHERE o.order_status_id = 6) AS ignored_count,
                         COUNT(*) FILTER (WHERE o.order_status_id IN (9,10)) AS return_exchange_count

@@ -23,6 +23,7 @@ from utils.identity_normalizer import (
     normalize_phone, normalize_facebook,
     normalize_instagram, normalize_telegram,
 )
+from utils.client_rating import client_rating_sql
 
 
 def _apply_normalized(client_obj):
@@ -192,6 +193,14 @@ async def get_clients(
     params["limit_val"] = per_page
     params["offset_val"] = (page - 1) * per_page
 
+    rating_expr = client_rating_sql(
+        confirmed="stats.confirmed_orders",
+        revenue="stats.confirmed_total_amount",
+        cancelled="stats.cancelled_count",
+        ignored="stats.ignored_count",
+        returns="stats.return_exchange_count",
+    )
+
     # ВАЖЛИВО: response-схема ClientBase вимагає first_name/last_name як str
     # (non-Optional), але в БД ці поля дозволяють NULL (унаслідок старих імпортів).
     # Тому явно перевизначаємо їх через COALESCE → '' для серіалізації, інакше
@@ -210,15 +219,10 @@ async def get_clients(
             COALESCE(stats.has_deferred, false) AS has_deferred,
             COALESCE(flags.has_active_flags, false) AS has_active_flags,
             flags.top_flag_type AS top_flag_type,
-            -- Rating formula: base 5.0 + order bonus - cancel/ignore/return penalties + amount bonus, clamped 0-10
-            GREATEST(0, LEAST(10,
-                5.0
-                + LEAST(COALESCE(stats.confirmed_orders, 0) * 0.5, 3.0)
-                - LEAST(COALESCE(stats.cancelled_count, 0) * 1.0, 3.0)
-                - LEAST(COALESCE(stats.ignored_count, 0) * 0.5, 2.0)
-                - LEAST(COALESCE(stats.return_exchange_count, 0) * 0.3, 1.0)
-                + LEAST(COALESCE(c.total_order_amount, 0) / 10000.0, 2.0)
-            )) AS rating
+            -- Rating (0-10): value(log revenue)+volume(log orders), reliability as
+            -- ratio-multiplier. Єдина формула → utils/client_rating.py. Виручка —
+            -- ЖИВА confirmed_total_amount (НЕ stale c.total_order_amount).
+            {rating_expr} AS rating
         FROM clients c
         LEFT JOIN LATERAL (
             SELECT
@@ -276,7 +280,14 @@ async def get_client(client_id: int, db: Session = Depends(get_db)):
     Includes order breakdown by status, purchased models count, and recent orders.
     """
     # Основні дані клієнта + повна статистика замовлень
-    sql = text("""
+    rating_expr_card = client_rating_sql(
+        confirmed="stats.confirmed_orders",
+        revenue="stats.total_amount",
+        cancelled="stats.cancelled_count",
+        ignored="stats.ignored_count",
+        returns="stats.return_exchange_count",
+    )
+    sql = text(f"""
         SELECT
             c.*,
             COALESCE(c.first_name, '') || ' ' || COALESCE(c.last_name, '') AS full_name,
@@ -295,15 +306,8 @@ async def get_client(client_id: int, db: Session = Depends(get_db)):
             COALESCE(stats.first_order, c.first_order_date) AS computed_first_order,
             COALESCE(stats.last_order, c.last_order_date) AS computed_last_order,
             COALESCE(models.purchased_models, 0) AS purchased_models,
-            -- Rating formula: base 5.0 + order bonus - penalties + amount bonus, clamped 0-10
-            GREATEST(0, LEAST(10,
-                5.0
-                + LEAST(COALESCE(stats.confirmed_orders, 0) * 0.5, 3.0)
-                - LEAST(COALESCE(stats.cancelled_count, 0) * 1.0, 3.0)
-                - LEAST(COALESCE(stats.ignored_count, 0) * 0.5, 2.0)
-                - LEAST(COALESCE(stats.return_exchange_count, 0) * 0.3, 1.0)
-                + LEAST(COALESCE(stats.total_amount, 0) / 10000.0, 2.0)
-            )) AS rating
+            -- Rating (0-10): єдина формула → utils/client_rating.py (value+volume+reliability).
+            {rating_expr_card} AS rating
         FROM clients c
         LEFT JOIN LATERAL (
             SELECT

@@ -744,11 +744,17 @@ def _record_file_state(session: Session, spreadsheet_id: str, mode: str, last_up
     )
 
 
-def _file_gate_check(session: Session, sh, spreadsheet_id: str, mode: str):
+def _file_gate_check(session: Session, sh, spreadsheet_id: str, mode: str, force: bool = False):
     """Returns (gated: bool, last_update_time: Optional[str]).
     gated=True → whole file unchanged, caller should skip the run.
     last_update_time is the value to record after a successful run (None if the
-    gate is disabled or the lookup failed → don't record/skip)."""
+    gate is disabled or the lookup failed → don't record/skip).
+
+    force=True → НІКОЛИ не гейтити (manual/user-тригер мусить завжди читати й
+    обробляти), але lut усе одно повертаємо, щоб записати маркер після успіху →
+    майбутні авто-парси гейтяться коректно. Причина: Google `lastUpdateTime` лагає
+    кілька хв після правки, тож gate міг мовчки пропустити щойно доданий рядок.
+    Layer B (per-sheet hash-skip) лишається активним і коректним (читає контент)."""
     if not FILE_GATE_ENABLED:
         return False, None
     try:
@@ -756,6 +762,8 @@ def _file_gate_check(session: Session, sh, spreadsheet_id: str, mode: str):
     except Exception as e:
         logger.warning(f"[file-gate] lastUpdateTime fetch failed ({e}); proceeding without gate")
         return False, None
+    if force:
+        return False, lut
     if lut and _file_unchanged(session, spreadsheet_id, mode, lut):
         return True, lut
     return False, lut
@@ -2256,6 +2264,14 @@ def _parse_products_sheet(
         sole_color_raw = col(row, "Колір підошви").strip() if "Колір підошви" in header else ""
         sole_color_obj = _get_or_create(session, Color, "colorname", sole_color_raw) if sole_color_raw else None
         sole_color_id  = sole_color_obj.id if sole_color_obj else None
+
+        # Bare aliases для Product(...)-конструкторів CREATE-гілок (рефакторинг на
+        # resolved_shoe_fk не оновив їх → NameError при створенні взуття; file-gate
+        # маскував це, бо products-парс рідко реально виконувався). Визначаємо ОДИН раз.
+        sole_type_id      = resolved_shoe_fk.get("soletypeid")
+        toe_shape_id      = resolved_shoe_fk.get("toeshapeid")
+        fastening_type_id = resolved_shoe_fk.get("fasteningtypeid")
+        lining_id         = resolved_shoe_fk.get("liningid")
 
         # Collect all new-style fields into one dict for UPDATE-branch helpers.
         parsed_new_fields = {
@@ -4616,17 +4632,19 @@ def run_products_parsing(
     session: Session,
     mode: str = "quick",
     progress_cb: Optional[Callable] = None,
+    force: bool = False,
 ) -> dict:
     """
     Parse Журнал sheets → products table.
     mode: 'quick' = last QUICK_SHEETS_COUNT batch sheets
           'full'  = all batch sheets
+    force: True → обійти file-gate (manual-тригер завжди читає; див. _file_gate_check).
     """
     gc = get_gc()
     sh = gc.open_by_key(JOURNAL_ID)
 
     # Layer C: skip the whole run if the file is unchanged since last products parse
-    gated, file_lut = _file_gate_check(session, sh, JOURNAL_ID, f"products_{mode}")
+    gated, file_lut = _file_gate_check(session, sh, JOURNAL_ID, f"products_{mode}", force=force)
     if gated:
         logger.info(f"[products] Журнал без змін з останнього {mode}-парсингу — пропуск")
         if progress_cb:
@@ -4711,17 +4729,19 @@ def run_orders_parsing(
     session: Session,
     mode: str = "quick",
     progress_cb: Optional[Callable] = None,
+    force: bool = False,
 ) -> dict:
     """
     Parse Замовлення sheets → orders + order_items + clients.
     mode: 'quick' = last QUICK_SHEETS_COUNT date sheets
           'full'  = all date sheets
+    force: True → обійти file-gate (manual-тригер завжди читає; див. _file_gate_check).
     """
     gc = get_gc()
     sh = gc.open_by_key(ORDERS_ID)
 
     # Layer C: skip the whole run if the file is unchanged since last orders parse
-    gated, file_lut = _file_gate_check(session, sh, ORDERS_ID, f"orders_{mode}")
+    gated, file_lut = _file_gate_check(session, sh, ORDERS_ID, f"orders_{mode}", force=force)
     if gated:
         logger.info(f"[orders] Замовлення без змін з останнього {mode}-парсингу — пропуск")
         if progress_cb:
@@ -4861,8 +4881,10 @@ def run_full_parsing(
     session: Session,
     mode: str = "quick",
     progress_cb: Optional[Callable] = None,
+    force: bool = False,
 ) -> dict:
-    """Run products → orders → workspace parsing sequentially."""
+    """Run products → orders → workspace parsing sequentially.
+    force: True → обійти file-gate у products+orders (manual-тригер завжди читає)."""
     def products_cb(pct, msg):
         if progress_cb:
             progress_cb(pct // 3, f"[Товари] {msg}")
@@ -4875,8 +4897,8 @@ def run_full_parsing(
         if progress_cb:
             progress_cb(66 + pct // 3, f"[Воркспейс] {msg}")
 
-    products_result  = run_products_parsing(session, mode=mode, progress_cb=products_cb)
-    orders_result    = run_orders_parsing(session, mode=mode, progress_cb=orders_cb)
+    products_result  = run_products_parsing(session, mode=mode, progress_cb=products_cb, force=force)
+    orders_result    = run_orders_parsing(session, mode=mode, progress_cb=orders_cb, force=force)
     workspace_result = run_workspace_parsing(session, progress_cb=workspace_cb)
 
     # ── Mark & Sweep: delete orphan products after full parse ────────────

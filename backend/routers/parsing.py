@@ -749,14 +749,18 @@ def _run_sheets_job(job_id: int, target: str, mode: str):
             finally:
                 s.close()
 
+        # force=True: це MANUAL-тригер (користувач натиснув «Парсинг») → ЗАВЖДИ
+        # читати й обробляти, не пропускати через file-gate (Google lastUpdateTime
+        # лагає після правки → інакше щойно доданий рядок міг мовчки не спарситись).
+        # Авто-startup-парс лишається force=False (gate як оптимізація).
         if target == "products":
-            result = run_products_parsing(sess, mode=mode, progress_cb=progress_cb)
+            result = run_products_parsing(sess, mode=mode, progress_cb=progress_cb, force=True)
         elif target == "orders":
-            result = run_orders_parsing(sess, mode=mode, progress_cb=progress_cb)
+            result = run_orders_parsing(sess, mode=mode, progress_cb=progress_cb, force=True)
         elif target == "workspace":
             result = run_workspace_parsing(sess, progress_cb=progress_cb)
         else:
-            result = run_full_parsing(sess, mode=mode, progress_cb=progress_cb)
+            result = run_full_parsing(sess, mode=mode, progress_cb=progress_cb, force=True)
 
         # Strip internal tracking sets before logging
         for _key in ("seen_product_ids", "touched_product_ids"):
