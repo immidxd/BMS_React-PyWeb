@@ -104,8 +104,16 @@ def get_orders(
         params["product_id"] = product_id
 
     if order_status_ids:
-        where.append("o.order_status_id = ANY(:order_status_ids)")
-        params["order_status_ids"] = order_status_ids
+        # Сентинел 0 = «Невідомо» (порожній статус у аркуші → order_status_id IS NULL).
+        real_status_ids = [i for i in order_status_ids if i != 0]
+        os_clauses = []
+        if real_status_ids:
+            os_clauses.append("o.order_status_id = ANY(:order_status_ids)")
+            params["order_status_ids"] = real_status_ids
+        if 0 in order_status_ids:
+            os_clauses.append("o.order_status_id IS NULL")
+        if os_clauses:
+            where.append("(" + " OR ".join(os_clauses) + ")")
 
     if payment_status_ids:
         # Special handling: "Не оплачено" (id=4) includes NULL payment_status_id

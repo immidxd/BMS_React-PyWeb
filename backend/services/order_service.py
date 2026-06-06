@@ -270,6 +270,9 @@ class OrderDAO:
         """
         order_statuses = self.db.query(OrderStatus).all()
         order_statuses_list = [{"id": s.id, "status_name": s.status_name} for s in order_statuses]
+        # NB: «Невідомо» (порожній статус, order_status_id IS NULL) додається ЛИШЕ у
+        # фільтрі замовлень на фронті (id=0), щоб НЕ засмічувати edit-дропдани статусу.
+        # Роутер /api/orders мапить order_status_ids=0 → order_status_id IS NULL.
 
         # payment_statuses: id, status_name
         ps = self.db.execute(text("SELECT id, status_name FROM payment_statuses ORDER BY id")).fetchall()

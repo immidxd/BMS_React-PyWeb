@@ -269,9 +269,13 @@ const OrdersFilterPanel: React.FC<{
         </div>
       </FilterSection>
 
-      {/* Статус замовлення */}
+      {/* Статус замовлення (+ синтетичний «Невідомо» = порожній статус у аркуші, id=0 → IS NULL) */}
       <FilterSection title="Статус замовлення" badge={countActive('order_status_ids')} defaultOpen>
-        <CheckList items={filterOpts.order_statuses} selected={filters.order_status_ids || []} onToggle={toggleArr('order_status_ids')} />
+        <CheckList
+          items={[...filterOpts.order_statuses, { id: 0, status_name: 'Невідомо' } as FilterOption]}
+          selected={filters.order_status_ids || []}
+          onToggle={toggleArr('order_status_ids')}
+        />
       </FilterSection>
 
       {/* Статус оплати */}
