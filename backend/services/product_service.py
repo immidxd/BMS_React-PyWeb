@@ -145,6 +145,11 @@ def get_products(
                scol.colorname as sole_color_name,
                COALESCE(sold.sold_count, 0) AS sold_count,
                GREATEST(COALESCE(p.quantity, 0) - COALESCE(sold.sold_count, 0), 0) AS available_qty,
+               -- «Заброньовано»: є активна бронь (Підтверджено без Оплачено) і товар
+               -- ще не повністю проданий. Оверлей над «Непродано» — НЕ змінює sold/available.
+               COALESCE(reserved.reserved_count, 0) AS reserved_count,
+               (COALESCE(reserved.reserved_count, 0) > 0
+                    AND COALESCE(sold.sold_count, 0) < COALESCE(NULLIF(p.quantity, 0), 1)) AS is_reserved,
                COALESCE(dup.dup_brands, 0) AS pnum_dup_brands,
                COALESCE(mc.pending_count, 0) AS pending_candidates_count,
                -- Ростовка: quantity>1 АБО extranote містить "ростовка" АБО (n)-суфікс
@@ -192,6 +197,18 @@ def get_products(
               AND o.order_status_id IN (1, 7, 9)
             GROUP BY oi.product_id
         ) sold ON sold.product_id = p.id
+        LEFT JOIN (
+            -- «Заброньовано» = Підтверджено(1) але НЕ Оплачено (payment_status_id != 1):
+            -- активна бронь, що ще НЕ спожила сток (на відміну від sold). NULL-оплата
+            -- теж = не оплачено. Див. utils/order_status_logic.PAID_STATUS_ID.
+            SELECT oi.product_id, COUNT(*) AS reserved_count
+            FROM order_items oi
+            JOIN orders o ON o.id = oi.order_id
+            WHERE oi.product_id IS NOT NULL
+              AND o.order_status_id = 1
+              AND o.payment_status_id IS DISTINCT FROM 1
+            GROUP BY oi.product_id
+        ) reserved ON reserved.product_id = p.id
         LEFT JOIN (
             SELECT productnumber, COUNT(DISTINCT COALESCE(brandid, 0)) AS dup_brands
             FROM products
@@ -601,6 +618,8 @@ def get_products(
                 'sole_color_name': m.get('sole_color_name'),
                 'sold_count': m.get('sold_count', 0),
                 'available_qty': m.get('available_qty'),
+                'reserved_count': int(m.get('reserved_count') or 0),
+                'is_reserved': bool(m.get('is_reserved', False)),
                 'pnum_dup_brands': m.get('pnum_dup_brands', 0),
                 'pending_candidates_count': int(m.get('pending_candidates_count') or 0),
                 'is_rostovka': bool(m.get('is_rostovka', False)),
@@ -984,6 +1003,9 @@ def get_product_with_relations(db: Session, product_id: int) -> Optional[Dict[st
                    scol.colorname as sole_color_name,
                    COALESCE(sold.sold_count, 0) AS sold_count,
                    GREATEST(COALESCE(p.quantity, 0) - COALESCE(sold.sold_count, 0), 0) AS available_qty,
+                   COALESCE(reserved.reserved_count, 0) AS reserved_count,
+                   (COALESCE(reserved.reserved_count, 0) > 0
+                        AND COALESCE(sold.sold_count, 0) < COALESCE(NULLIF(p.quantity, 0), 1)) AS is_reserved,
                    mat_agg.materials_json
             FROM products p
             LEFT JOIN types t ON p.typeid = t.id
@@ -1023,6 +1045,16 @@ def get_product_with_relations(db: Session, product_id: int) -> Optional[Dict[st
                   AND o.order_status_id IN (1, 7, 9)
                 GROUP BY oi.product_id
             ) sold ON sold.product_id = p.id
+            LEFT JOIN (
+                -- «Заброньовано» = Підтверджено(1) без Оплачено (payment != 1). Бронь.
+                SELECT oi.product_id, COUNT(*) AS reserved_count
+                FROM order_items oi
+                JOIN orders o ON o.id = oi.order_id
+                WHERE oi.product_id IS NOT NULL
+                  AND o.order_status_id = 1
+                  AND o.payment_status_id IS DISTINCT FROM 1
+                GROUP BY oi.product_id
+            ) reserved ON reserved.product_id = p.id
             LEFT JOIN LATERAL (
                 SELECT json_agg(
                     json_build_object(

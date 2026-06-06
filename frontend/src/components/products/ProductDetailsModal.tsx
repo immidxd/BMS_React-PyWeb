@@ -797,6 +797,16 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                   {/* Status + condition + availability */}
                   <div className="flex flex-wrap items-center gap-2 mb-5">
                     <Tag color={status.color} style={{ margin: 0 }}>{status.text}</Tag>
+                    {/* «Заброньовано» — Підтверджене замовлення без оплати (бронь). Slate, мінімалістично. */}
+                    {(p as any).is_reserved && (
+                      <span
+                        title="Заброньовано: є Підтверджене замовлення без оплати"
+                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold text-slate-600 bg-slate-100 border border-slate-300 dark:text-slate-300 dark:bg-slate-700/40 dark:border-slate-600"
+                      >
+                        🔒 Заброньовано
+                        {((p as any).reserved_count ?? 0) > 1 ? `·${(p as any).reserved_count}` : ''}
+                      </span>
+                    )}
                     {(p as any).condition_name && <Tag color="blue" style={{ margin: 0 }}>{(p as any).condition_name}</Tag>}
                     {(() => {
                       const total = p.quantity ?? 0;

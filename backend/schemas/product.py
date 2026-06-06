@@ -374,6 +374,8 @@ class ProductList(BaseModel):
     # Computed from order_items
     sold_count: int = 0
     available_qty: Optional[int] = None
+    reserved_count: int = 0           # Підтверджено без Оплачено = бронь
+    is_reserved: bool = False         # активна бронь і товар ще не повністю проданий
     pnum_dup_brands: int = 0
     pending_candidates_count: int = 0  # merge-candidate UX badge
     

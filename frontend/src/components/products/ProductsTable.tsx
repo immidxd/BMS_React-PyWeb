@@ -419,13 +419,28 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
                     'Пошкоджений': 'volcano',
                 };
                 const color = colorMap[displayStatus] || 'default';
+                // «Бронь» — оверлей на «Непродано» (Підтверджено без оплати). Мінімалістичний
+                // slate-чип під статусом; не показуємо коли товар уже Продано/фінальний.
+                const showReserved = !!record.is_reserved && displayStatus === 'Непродано';
                 return (
-                    <Tag
-                        color={color}
-                        style={{ display: 'block', maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', padding: '0 6px', fontSize: 12, textAlign: 'center' }}
-                    >
-                        {displayStatus}
-                    </Tag>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 2, alignItems: 'center' }}>
+                        <Tag
+                            color={color}
+                            style={{ display: 'block', maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', padding: '0 6px', fontSize: 12, textAlign: 'center', margin: 0 }}
+                        >
+                            {displayStatus}
+                        </Tag>
+                        {showReserved && (
+                            <span
+                                title="Заброньовано: є Підтверджене замовлення без оплати"
+                                style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 10, fontWeight: 600,
+                                         color: '#475569', background: 'rgba(100,116,139,0.13)', border: '1px solid rgba(100,116,139,0.28)',
+                                         borderRadius: 9999, padding: '0 6px', lineHeight: '15px', whiteSpace: 'nowrap' }}
+                            >
+                                🔒 Бронь
+                            </span>
+                        )}
+                    </div>
                 );
             } },
         condition_name: { title: 'Початковий стан', dataIndex: 'condition_name', key: 'condition_name', width: 120 },
@@ -619,9 +634,12 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
                         if ((record.pnum_dup_brands ?? 0) > 1) issues.push('Номер товару дублюється (різні бренди)');
                         const hasIssue = issues.length > 0;
                         const conflictTitle = issues.join(' • ');
+                        // «Бронь» (Підтверджено без Оплачено) — subtle gray. Конфлікт (amber)
+                        // має пріоритет над бронею.
+                        const rowState = hasIssue ? 'bms-conflict-row' : (record.is_reserved ? 'bms-row-reserved' : 'bms-row-hover');
                         return {
-                            title: hasIssue ? `⚠ ${conflictTitle}` : undefined,
-                            className: `cursor-pointer ${hasIssue ? 'bms-conflict-row' : 'bms-row-hover'}`,
+                            title: hasIssue ? `⚠ ${conflictTitle}` : (record.is_reserved ? '🔒 Заброньовано (Підтверджено, без оплати)' : undefined),
+                            className: `cursor-pointer ${rowState}`,
                             onDoubleClick: () => { setDetailsId(record.id); setDetailsOpen(true); },
                             onContextMenu: (e: React.MouseEvent) => handleRowContextMenu(e, record),
                         };

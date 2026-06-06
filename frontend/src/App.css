@@ -376,6 +376,17 @@ body {
   background: var(--bms-hover) !important;
 }
 
+/* ── Reserved row (Підтверджено без Оплачено = бронь): subtle gray, minimalist ── */
+.ant-table-tbody > tr.bms-row-reserved > td {
+  background: rgba(100, 116, 139, 0.06) !important;  /* slate, ледь помітно */
+}
+.ant-table-tbody > tr.bms-row-reserved > td:first-child {
+  box-shadow: inset 3px 0 0 0 #94a3b8;  /* slate-400 акцент зліва */
+}
+.ant-table-tbody > tr.bms-row-reserved:hover > td {
+  background: rgba(100, 116, 139, 0.11) !important;
+}
+
 /* ── MUI overrides → монохром (Dialog, Buttons, Progress) ── */
 .MuiButton-contained,
 .MuiButton-containedPrimary {

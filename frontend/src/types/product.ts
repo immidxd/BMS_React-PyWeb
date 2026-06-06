@@ -132,6 +132,8 @@ export interface Product {
     // Computed from order_items
     sold_count?: number;
     available_qty?: number;
+    reserved_count?: number;   // Підтверджено без Оплачено = бронь
+    is_reserved?: boolean;     // активна бронь, товар ще не повністю проданий
     pnum_dup_brands?: number;
     pending_candidates_count?: number;  // merge-candidate UX badge
 
