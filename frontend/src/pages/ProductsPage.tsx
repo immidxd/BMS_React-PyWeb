@@ -149,9 +149,15 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
     
     useEffect(() => { fetchProducts(); }, [page, perPage, currentSearchTerm, selectedFilters, onlyUnsold, onlyProblematic, onlyRostovka, selectedShipmentId, visibleOnly, sortBy, sortDir]);
 
-    // Auto-refresh products when parsing completes
+    // Auto-refresh products when parsing completes — через ref на АКТУАЛЬНИЙ
+    // fetchProducts. Інакше listener із порожніми deps захоплює stale-замикання з
+    // монтування (порожній пошук/дефолтні фільтри), і коли фоновий авто-парс
+    // диспатчить 'parsing-complete' (через ~5-10с), він перезавантажує список з
+    // дефолтними параметрами → активний пошук користувача мовчки скидається.
+    const fetchProductsRef = useRef(fetchProducts);
+    fetchProductsRef.current = fetchProducts;
     useEffect(() => {
-      const handler = () => { fetchProducts(); };
+      const handler = () => { fetchProductsRef.current(); };
       window.addEventListener('parsing-complete', handler);
       return () => window.removeEventListener('parsing-complete', handler);
     }, []);
