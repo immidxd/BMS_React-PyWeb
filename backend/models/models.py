@@ -240,6 +240,10 @@ class Order(Base):
     broadcast_id = Column(Integer, ForeignKey("broadcasts.id"))
     sales_channel = Column(String(50), default='Ефір', nullable=True)
     source_fingerprint = Column(String(64), index=True, nullable=True)
+    # Стабільна прив'язка до вкладки-джерела (gid Google Sheets), щоб scoped-sweep
+    # після парсингу видаляв привидів: ордери цієї вкладки, що НЕ матчили жодного
+    # живого рядка цього прогону. NULL = legacy (до фічі) → sweep не чіпає.
+    source_sheet_gid = Column(Integer, index=True, nullable=True)
     # In-app edit locks (Order editing Phase A) — parser restores these on reparse
     manually_edited_fields = Column(Text, nullable=True)   # CSV: 'notes,tracking_number,...'
     manually_edited_at = Column(DateTime, nullable=True)

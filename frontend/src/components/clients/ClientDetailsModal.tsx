@@ -565,13 +565,22 @@ const ClientDetailsModal: React.FC<Props> = ({ clientId, open, onClose }) => {
 
   const setDraftField = (k: keyof ClientFull, v: any) => setDraft(d => ({ ...d, [k]: v }));
 
-  // Закриття по Escape
+  // Закриття по Escape. Гасимо подію (preventDefault+stopPropagation), щоб Esc ЛИШЕ
+  // закривав картку, а не доходив до вебв'ю/ОС і «зменшував» вікно. Якщо відкрита
+  // вкладена картка товару — її власний (capture) хендлер обробить Esc першим.
   useEffect(() => {
     if (!open) return;
-    const handleKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
-    window.addEventListener('keydown', handleKey);
-    return () => window.removeEventListener('keydown', handleKey);
-  }, [open, onClose]);
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      if (cardProductId !== null) return;   // вкладена картка товару сама обробить Esc
+      e.preventDefault();
+      e.stopPropagation();
+      if (editMode) { cancelEdit(); return; }
+      onClose();
+    };
+    window.addEventListener('keydown', handleKey, true);
+    return () => window.removeEventListener('keydown', handleKey, true);
+  }, [open, onClose, cardProductId, editMode]);
 
   if (!open) return null;
 

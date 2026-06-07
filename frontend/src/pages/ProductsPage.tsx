@@ -9,6 +9,7 @@ import type { ProductFilter as ProductFilterType, ProductFilters as ProductFilte
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useEffect as ReactUseEffect } from 'react';
 import { Button } from 'antd';
+import { toast } from 'react-toastify';
 import Pagination from '../components/common/Pagination';
 import { PlusOutlined, EyeOutlined, EyeInvisibleOutlined } from '@ant-design/icons';
 
@@ -160,6 +161,28 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
       const handler = () => { fetchProductsRef.current(); };
       window.addEventListener('parsing-complete', handler);
       return () => window.removeEventListener('parsing-complete', handler);
+    }, []);
+
+    // ⌘/Ctrl+U — увімкнути/вимкнути «Тільки непродані».
+    // Слухаємо e.code === 'KeyU' (фізична клавіша), бо e.key на кириличній
+    // розкладці повертає 'г' і умова `=== 'u'` не спрацювала б.
+    useEffect(() => {
+      const onKey = (e: KeyboardEvent) => {
+        const mod = e.metaKey || e.ctrlKey;
+        if (!mod || e.altKey || e.shiftKey) return;
+        if (e.code !== 'KeyU') return;
+        const tag = (e.target as HTMLElement)?.tagName;
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || (e.target as HTMLElement)?.isContentEditable) return;
+        e.preventDefault();
+        setOnlyUnsold((v) => {
+          const next = !v;
+          toast.info(next ? 'Лише непродані' : 'Усі товари', { autoClose: 1000, hideProgressBar: true });
+          return next;
+        });
+        setPage(1);
+      };
+      window.addEventListener('keydown', onKey);
+      return () => window.removeEventListener('keydown', onKey);
     }, []);
 
     useEffect(() => {
@@ -343,7 +366,7 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
         <div className="fixed bottom-0 left-0 right-0 px-0 py-3 bg-white/95 dark:bg-gray-800/95 backdrop-blur supports-backdrop-blur:backdrop-blur-md border-t border-gray-100 dark:border-gray-700 z-20 shadow-[0_-2px_10px_rgba(0,0,0,0.04)]">
           <div className="w-full grid grid-cols-1 md:grid-cols-[1fr_auto_1fr] items-center px-4 lg:px-6 gap-4">
             <div className="order-2 md:order-none flex items-center gap-6 justify-self-start justify-start mt-3 md:mt-0 pl-2 md:pl-0">
-              <label className="inline-flex items-center text-sm text-gray-700 dark:text-gray-300">
+              <label className="inline-flex items-center text-sm text-gray-700 dark:text-gray-300" title="Перемкнути: ⌘/Ctrl + U">
                 <input
                   type="checkbox"
                   checked={onlyUnsold}

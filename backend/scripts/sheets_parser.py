@@ -59,7 +59,7 @@ BATCH_CHUNK = int(os.getenv("PARSER_BATCH_CHUNK", "50"))  # sheets per batch rea
 #
 # Bump PARSER_VERSION whenever the orders parsing logic changes in a way that
 # would produce different output for the same input → forces a full reparse.
-PARSER_VERSION = 2  # v2: МІСЦЕВ* → "Місцевий" (was wrongly → "Самовивіз")
+PARSER_VERSION = 3  # v3: orders.source_sheet_gid + gid-scoped ghost sweep (reparse to backfill gids)
 HASH_SKIP_ENABLED = os.getenv("PARSER_HASH_SKIP", "1") != "0"
 
 # ── Layer C: whole-file change gate ───────────────────────────────────────────
@@ -241,6 +241,11 @@ _WRITEBACK_BACKUP_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 # containment із touched-сиблінгом same client+date + NULL-status + має fingerprint)
 # з бекапом. НЕ глобальний mark&sweep. Див. feedback_orders_ghost_dupes.md.
 ORDER_GHOST_SWEEP = os.getenv("ORDER_GHOST_SWEEP", "1") != "0"
+# Scoped-sweep за стабільним gid вкладки: вкладка-джерело = повна істина для СВОЇХ
+# ордерів, тож після її парсингу будь-який parser-origin ордер цієї вкладки, що НЕ
+# матчив живого рядка цього прогону, — привид (рядок видалено/змінено). Ловить навіть
+# disjoint-привидів (інший набір товарів), які containment-сигнатура не бачить.
+ORDER_GID_SWEEP = os.getenv("ORDER_GID_SWEEP", "1") != "0"
 _GHOST_SWEEP_BACKUP_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ghost_sweep_backups")
 
 # Marker written into a merged lost product's Воркспейс row ("Екстра примітка").
@@ -4039,6 +4044,7 @@ def _parse_orders_sheet(
             existing_order.total_amount      = total_amount  # оновлюємо суму (знижку вже враховано в Сума)
             if _sales_channel:
                 existing_order.sales_channel = _sales_channel
+            existing_order.source_sheet_gid  = ws.id   # прив'язка до живої вкладки (для scoped-sweep)
             existing_order.updated_at        = datetime.utcnow()
             # Видаляємо старі items і перестворюємо нижче
             session.query(OrderItem).filter(OrderItem.order_id == existing_order.id).delete()
@@ -4059,6 +4065,7 @@ def _parse_orders_sheet(
                 notes              = combined_notes if combined_notes else None,
                 sales_channel      = _sales_channel if _sales_channel else None,
                 source_fingerprint = source_fp,
+                source_sheet_gid   = ws.id,   # прив'язка до живої вкладки (для scoped-sweep)
                 created_at         = datetime.utcnow(),
             )
             session.add(order)
@@ -4833,6 +4840,75 @@ def _reconcile_evolved_order_ghosts(session: Session, touched_ids: set) -> dict:
         return {"removed": 0}
 
 
+def _reconcile_orders_by_sheet_gid(session: Session, parsed_gids: set, touched_ids: set) -> dict:
+    """Scoped-sweep привидів за gid вкладки-джерела.
+
+    Видаляє ордери, у яких `source_sheet_gid` належить до вкладок, РЕАЛЬНО розпарсених
+    цього прогону (parsed_gids), але які НЕ матчили жодного живого рядка (id ∉ touched)
+    і є parser-origin (`source_fingerprint IS NOT NULL`). Вкладка = повна істина для
+    своїх ордерів → відсутній рядок означає, що замовлення видалили/змінили в аркуші.
+
+    Безпека:
+      • parsed_gids містить ЛИШЕ вкладки, що пройшли парс без винятку (НЕ hash-skip,
+        НЕ gated) — інакше частковий прогін не призведе до хибних видалень;
+      • NULL gid (legacy, до фічі) НІКОЛИ не чіпаємо;
+      • тільки parser-origin (ручні/legacy без fingerprint захищені);
+      • JSON-бекап перед видаленням; помилка → нічого не видаляємо.
+    """
+    if not ORDER_GID_SWEEP or not parsed_gids:
+        return {"removed": 0}
+    try:
+        from backend.models.models import Order, OrderItem
+    except ImportError:
+        from models.models import Order, OrderItem
+    try:
+        q = session.query(Order).filter(
+            Order.source_sheet_gid.in_(list(parsed_gids)),
+            Order.source_fingerprint.isnot(None),
+        )
+        if touched_ids:
+            q = q.filter(Order.id.notin_(list(touched_ids)))
+        ghosts = q.all()
+        ghost_ids = [o.id for o in ghosts]
+        if not ghost_ids:
+            return {"removed": 0}
+
+        # Бекап перед видаленням
+        try:
+            import json
+            from datetime import datetime as _dt
+            os.makedirs(_GHOST_SWEEP_BACKUP_DIR, exist_ok=True)
+            orders_dump = [
+                {c.name: (str(getattr(o, c.name)) if getattr(o, c.name) is not None else None)
+                 for c in Order.__table__.columns}
+                for o in ghosts
+            ]
+            items_dump = [
+                {c.name: (str(getattr(it, c.name)) if getattr(it, c.name) is not None else None)
+                 for c in OrderItem.__table__.columns}
+                for it in session.query(OrderItem).filter(OrderItem.order_id.in_(ghost_ids)).all()
+            ]
+            path = os.path.join(_GHOST_SWEEP_BACKUP_DIR, f"{_dt.now():%Y%m%d_%H%M%S}_gid_ghosts.json")
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump({"ghost_ids": ghost_ids, "parsed_gids": list(parsed_gids),
+                           "orders": orders_dump, "order_items": items_dump},
+                          f, ensure_ascii=False, indent=2)
+            logger.warning(f"[gid-sweep] backup {len(ghost_ids)} ghost order(s) → {path}")
+        except Exception as be:
+            logger.error(f"[gid-sweep] backup failed ({be}); ABORT delete (safety)")
+            return {"removed": 0}
+
+        session.query(OrderItem).filter(OrderItem.order_id.in_(ghost_ids)).delete(synchronize_session=False)
+        session.query(Order).filter(Order.id.in_(ghost_ids)).delete(synchronize_session=False)
+        session.commit()
+        logger.warning(f"[gid-sweep] removed {len(ghost_ids)} ghost order(s): {ghost_ids}")
+        return {"removed": len(ghost_ids)}
+    except Exception as e:
+        session.rollback()
+        logger.error(f"[gid-sweep] failed (no orders removed): {e}")
+        return {"removed": 0}
+
+
 def run_orders_parsing(
     session: Session,
     mode: str = "quick",
@@ -4866,6 +4942,7 @@ def run_orders_parsing(
 
     total_orders = total_items = total_updated = total_skipped = 0
     all_touched: set = set()  # ордери з живим рядком цього прогону (для ghost-reconcile)
+    parsed_gids: set = set()  # gid вкладок, РЕАЛЬНО розпарсених цього прогону (для gid-sweep)
     sheets_skipped_unchanged = 0
     total_sheets = len(order_sheets)
     # Hash-skip only in 'quick' mode (see PARSER_VERSION / HASH_SKIP_ENABLED notes).
@@ -4912,6 +4989,10 @@ def run_orders_parsing(
         total_updated += result.get("updated", 0)
         total_skipped += result["skipped"]
         all_touched   |= result.get("touched_order_ids", set())
+        # Вкладку успішно розпарсено повністю → її gid придатний для scoped-sweep.
+        # (Hash-skip робить `continue` вище й сюди не доходить; виняток у парсі
+        #  пробросився б і перервав прогін до sweep — отже часткового sweep не буде.)
+        parsed_gids.add(ws.id)
 
         # Record sync marker only after the sheet parsed successfully, so a
         # mid-run failure leaves later sheets unmarked → they reparse next time.
@@ -4923,6 +5004,10 @@ def run_orders_parsing(
     # (вузька сигнатура + бекап; не глобальний sweep). Після повного циклу, коли
     # відомо які ордери мають живий рядок (all_touched).
     ghost_result = _reconcile_evolved_order_ghosts(session, all_touched)
+
+    # Scoped-sweep за gid вкладки: прибирає привидів навіть з реальним статусом і
+    # disjoint-набором (як #64752/#64803), яких containment-сигнатура не бачить.
+    gid_ghost_result = _reconcile_orders_by_sheet_gid(session, parsed_gids, all_touched)
 
     # Order editing Phase A: restore user-locked order fields the parser overwrote
     orders_locks_restored = _restore_order_locks(session, order_locks_snapshot)
@@ -4944,6 +5029,7 @@ def run_orders_parsing(
         "sheets_skipped_unchanged": sheets_skipped_unchanged,
         "order_locks_restored": orders_locks_restored,
         "ghosts_removed": ghost_result.get("removed", 0),
+        "gid_ghosts_removed": gid_ghost_result.get("removed", 0),
     }
 
 

@@ -230,7 +230,7 @@ const AppContent: React.FC = () => {
   };
 
   return (
-    <div className="bms-root app-container min-h-screen flex flex-col">
+    <div className="bms-root app-container h-screen overflow-hidden flex flex-col">
       <nav className="bms-tabs">
         {TABS.map(tab => (
           <button
@@ -280,7 +280,7 @@ const AppContent: React.FC = () => {
         </div>
       </header>
 
-      <main className="flex-grow p-4 container mx-auto w-full">
+      <main className="flex-grow min-h-0 overflow-auto p-4 container mx-auto w-full">
         <Suspense 
           fallback={
             <div className="flex justify-center items-center h-64">

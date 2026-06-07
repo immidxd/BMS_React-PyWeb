@@ -151,7 +151,7 @@ const MergeCandidatesModal: React.FC<Props> = ({ productId, open, onClose, onMer
                             <Row label="Маркування" np={c.np_marking} sp={c.sp_marking} />
                             <Row label="Розмір"     np={c.np_size}    sp={c.sp_size} />
                             <Row label="Колір"      np={c.np_color}   sp={c.sp_color} />
-                            <Row label="Завіз"      np={c.np_delivery} sp={c.sp_delivery} />
+                            <Row label="Завоз"      np={c.np_delivery} sp={c.sp_delivery} />
                             <Row label="Продано"    np={c.np_sold}    sp={c.sp_sold} />
                             <Row label="Опис"       np={c.np_desc}    sp={c.sp_desc} />
 

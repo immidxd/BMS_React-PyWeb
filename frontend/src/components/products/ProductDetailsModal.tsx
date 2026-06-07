@@ -83,6 +83,10 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [savingAll, setSavingAll] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  // Згорнуті підрозділи (Матеріали/Інше/Примітки) — за замовчуванням приховані,
+  // розкриваються кліком. У режимі редагування завжди розгорнуті (щоб редагувати).
+  const [openSections, setOpenSections] = useState<Record<string, boolean>>({});
+  const toggleSection = (id: string) => setOpenSections((s) => ({ ...s, [id]: !s[id] }));
 
   const officialCount = useMemo(() => allImages.filter((i) => (i.kind ?? 'official') === 'official').length, [allImages]);
   const realCount = useMemo(() => allImages.filter((i) => i.kind === 'real').length, [allImages]);
@@ -99,6 +103,21 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     });
   }, [allImages, showDefects, activeKind]);
   const defectCount = useMemo(() => allImages.filter((i) => i.is_defect).length, [allImages]);
+
+  // Перемкнути показ дефектних фото. При УВІМКНЕННІ — одразу перегортаємо галерею
+  // до першого дефектного кадру (а не лишаємось на поточному непошкодженому).
+  const toggleDefects = React.useCallback(() => {
+    const next = !showDefects;
+    if (next) {
+      const future = allImages.filter((i) => {
+        const k = (i.kind ?? 'official') as GalleryKind;
+        return k === 'defect' || k === activeKind;
+      });
+      const di = future.findIndex((i) => i.is_defect);
+      if (di >= 0) setActiveIdx(di);
+    }
+    setShowDefects(next);
+  }, [showDefects, allImages, activeKind]);
 
   // Завантаження товару — картка показується одразу, НЕ чекаючи фото з Drive.
   const loadProduct = React.useCallback(async (withSpinner = true) => {
@@ -146,6 +165,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     setEditingField(null);
     setEditMode(false);
     setSaveError(null);
+    setOpenSections({});
     loadProduct(true);
     loadImages();
   }, [open, productId, loadProduct, loadImages]);
@@ -299,7 +319,11 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     if (!open) return;
     const handleKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        if (previewVisible) return;
+        if (previewVisible) return;   // antd-прев'ю саме обробляє свій Esc
+        // Esc при відкритій картці = ЛИШЕ закрити картку. Гасимо подію, щоб вона не
+        // дійшла до вебв'ю/ОС і не «зменшувала» вікно (вихід із fullscreen тощо).
+        e.preventDefault();
+        e.stopPropagation();
         if (editMode) { cancelEditMode(); return; }
         onClose();
         return;
@@ -316,8 +340,8 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
         if (e.key === 'ArrowRight') setActiveIdx((i) => (i + 1) % images.length);
       }
     };
-    window.addEventListener('keydown', handleKey);
-    return () => window.removeEventListener('keydown', handleKey);
+    window.addEventListener('keydown', handleKey, true);
+    return () => window.removeEventListener('keydown', handleKey, true);
   }, [open, onClose, images.length, previewVisible, navPrev, navNext, editMode]);
 
   const p = product;
@@ -386,6 +410,28 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
       <EditOutlined style={{ fontSize: 13 }} />
     </button>
   );
+
+  // Згортуваний підрозділ (Матеріали/Інше). Заголовок-кнопка з шевроном; вміст
+  // прихований доки користувач не розкриє. У edit-режимі завжди розгорнутий.
+  const CollapsibleSection: React.FC<{ id: string; title: string; children: React.ReactNode }> = ({ id, title, children }) => {
+    const sectionOpen = editMode || !!openSections[id];
+    return (
+      <div className="mt-4 pt-4 border-t border-gray-100 dark:border-gray-800">
+        <button
+          type="button"
+          onClick={editMode ? undefined : () => toggleSection(id)}
+          className={`flex items-center gap-1.5 text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500 font-medium ${sectionOpen ? 'mb-3' : ''} ${editMode ? 'cursor-default' : 'hover:text-gray-600 dark:hover:text-gray-300'} transition-colors`}
+        >
+          {!editMode && (
+            <RightOutlined style={{ fontSize: 9 }} className={`transition-transform duration-200 ${sectionOpen ? 'rotate-90' : ''}`} />
+          )}
+          {title}
+          {!sectionOpen && <span className="w-1.5 h-1.5 rounded-full bg-gray-300 dark:bg-gray-600" />}
+        </button>
+        {sectionOpen && children}
+      </div>
+    );
+  };
 
   // Read-only клітинка характеристик: лейбл + значення (порожні ховаємо для компактності).
   const RoCell: React.FC<{ label: string; value?: React.ReactNode }> = ({ label, value }) => {
@@ -530,7 +576,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                   {defectCount > 0 && (
                     <button
                       type="button"
-                      onClick={() => setShowDefects((v) => !v)}
+                      onClick={toggleDefects}
                       className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold border transition-colors ${
                         showDefects
                           ? 'bg-amber-500 text-white border-amber-600 dark:bg-amber-600 dark:border-amber-500'
@@ -712,7 +758,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
 
                     {/* Thumbnails */}
                     {images.length > 1 && (
-                      <div className="flex gap-2 overflow-x-auto pb-1 -mx-1 px-1">
+                      <div className="flex gap-2 overflow-x-auto py-1.5 -mx-1 px-1">
                         {images.map((img, i) => (
                           <button key={img.filename} onClick={() => setActiveIdx(i)}
                             className={`relative shrink-0 w-16 h-16 rounded-lg overflow-hidden border-2 transition-all ${
@@ -761,12 +807,12 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                         <span className="flex flex-col gap-1">
                           <span className="text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500 font-medium">Ціна</span>
                           <input type="number" value={drafts['price'] ?? ''} onChange={(e) => setDraft('price', e.target.value)}
-                            className="w-28 px-2 py-1 text-xl font-bold rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800" />
+                            className="w-28 px-2 py-1.5 text-lg font-bold rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800" />
                         </span>
                         <span className="flex flex-col gap-1">
                           <span className="text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500 font-medium">Стара ціна</span>
                           <input type="number" value={drafts['oldprice'] ?? ''} onChange={(e) => setDraft('oldprice', e.target.value)}
-                            className="w-28 px-2 py-1 text-base rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800" />
+                            className="w-28 px-2 py-1.5 text-lg font-bold rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800" />
                         </span>
                       </span>
                     ) : editingField === 'price' ? (
@@ -893,52 +939,13 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                     <EditCell field="marking" label="Маркування" />
                     <EditCell field="year" label="Рік" type="number" />
                     <EditCell field="clonednumbers" label="Клони" />
-                    <RoCell label="Завіз" value={p.dateadded} />
+                    <RoCell label="Завоз" value={p.dateadded} />
                     <RoCell label="У базі з" value={p.created_at ? new Date(p.created_at).toLocaleDateString('uk-UA') : null} />
                   </div>
 
-                  {/* Shoe characteristics */}
-                  {(editMode || p.sole_type_name || p.toe_shape_name || p.fastening_type_name || p.lining_name ||
-                    p.heel_type_name || p.lace_type_name || p.packaging_name || p.technology_name || p.sole_color_name ||
-                    p.measurements_height_min != null || p.measurements_sole_thickness_min != null || p.measurements_heel_min != null) && (
-                    <div className="mt-4 pt-4 border-t border-gray-100 dark:border-gray-800">
-                      <div className="text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500 mb-3 font-medium">Взуття</div>
-                      <div className={`grid ${charCols} gap-x-6 gap-y-3`}>
-                        <RoCell label="Тип підошви" value={p.sole_type_name} />
-                        <EditCell field="sole_color_name" lockField="sole_colorid" label="Колір підошви" />
-                        <RoCell label="Форма носка" value={p.toe_shape_name} />
-                        <RoCell label="Застібка" value={p.fastening_type_name} />
-                        <EditCell field="lace_type_name" lockField="lacetypeid" label="Тип шнурівки" />
-                        <RoCell label="Підкладка" value={p.lining_name} />
-                        <EditCell field="heel_type_name" lockField="heeltypeid" label="Тип каблука" />
-                        <EditCell field="technology_name" lockField="technologyid" label="Технології" />
-                        <EditCell field="packaging_name" lockField="packagingid" label="Пакування" />
-                        <RoCell label="Висота" value={fmtRange(p.measurements_height_min, p.measurements_height_max)} />
-                        <RoCell label="Підошва" value={fmtRange(p.measurements_sole_thickness_min, p.measurements_sole_thickness_max)} />
-                        <RoCell label="Каблук" value={fmtRange(p.measurements_heel_min, p.measurements_heel_max)} />
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Clothing measurements */}
-                  {(p.measurements_length_min != null || p.measurements_pog_min != null ||
-                    p.measurements_pob_min != null || p.measurements_pot_min != null || p.measurements_sleeve_min != null) && (
-                    <div className="mt-4 pt-4 border-t border-gray-100 dark:border-gray-800">
-                      <div className="text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500 mb-3 font-medium">Виміри одягу</div>
-                      <div className={`grid ${charCols} gap-x-6 gap-y-3`}>
-                        <RoCell label="Довжина" value={fmtRange(p.measurements_length_min, p.measurements_length_max)} />
-                        <RoCell label="Груди (н/о)" value={fmtRange(p.measurements_pog_min, p.measurements_pog_max)} />
-                        <RoCell label="Бедра (н/о)" value={fmtRange(p.measurements_pob_min, p.measurements_pob_max)} />
-                        <RoCell label="Талія (н/о)" value={fmtRange(p.measurements_pot_min, p.measurements_pot_max)} />
-                        <RoCell label="Рукав" value={fmtRange(p.measurements_sleeve_min, p.measurements_sleeve_max)} />
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Materials */}
+                  {/* Матеріали — ЗАВЖДИ першим підрозділом (згорнуто за замовчуванням) */}
                   {p.materials && p.materials.length > 0 && (
-                    <div className="mt-4 pt-4 border-t border-gray-100 dark:border-gray-800">
-                      <div className="text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500 mb-3 font-medium">Матеріали</div>
+                    <CollapsibleSection id="materials" title="Матеріали">
                       <div className={`grid ${charCols} gap-x-6 gap-y-3`}>
                         {(() => {
                           const posLabels: Record<string, string> = {
@@ -955,7 +962,37 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                           ));
                         })()}
                       </div>
-                    </div>
+                    </CollapsibleSection>
+                  )}
+
+                  {/* Інше — решта характеристик (взуття + усі виміри), єдиним підрозділом без
+                      окремих заголовків «Взуття»/«Виміри одягу» (згорнуто за замовчуванням). */}
+                  {(editMode || p.sole_type_name || p.toe_shape_name || p.fastening_type_name || p.lining_name ||
+                    p.heel_type_name || p.lace_type_name || p.packaging_name || p.technology_name || p.sole_color_name ||
+                    p.measurements_height_min != null || p.measurements_sole_thickness_min != null || p.measurements_heel_min != null ||
+                    p.measurements_length_min != null || p.measurements_pog_min != null || p.measurements_pob_min != null ||
+                    p.measurements_pot_min != null || p.measurements_sleeve_min != null) && (
+                    <CollapsibleSection id="other" title="Інше">
+                      <div className={`grid ${charCols} gap-x-6 gap-y-3`}>
+                        <RoCell label="Тип підошви" value={p.sole_type_name} />
+                        <EditCell field="sole_color_name" lockField="sole_colorid" label="Колір підошви" />
+                        <RoCell label="Форма носка" value={p.toe_shape_name} />
+                        <RoCell label="Застібка" value={p.fastening_type_name} />
+                        <EditCell field="lace_type_name" lockField="lacetypeid" label="Тип шнурівки" />
+                        <RoCell label="Підкладка" value={p.lining_name} />
+                        <EditCell field="heel_type_name" lockField="heeltypeid" label="Тип каблука" />
+                        <EditCell field="technology_name" lockField="technologyid" label="Технології" />
+                        <EditCell field="packaging_name" lockField="packagingid" label="Пакування" />
+                        <RoCell label="Висота" value={fmtRange(p.measurements_height_min, p.measurements_height_max)} />
+                        <RoCell label="Підошва" value={fmtRange(p.measurements_sole_thickness_min, p.measurements_sole_thickness_max)} />
+                        <RoCell label="Каблук" value={fmtRange(p.measurements_heel_min, p.measurements_heel_max)} />
+                        <RoCell label="Довжина" value={fmtRange(p.measurements_length_min, p.measurements_length_max)} />
+                        <RoCell label="Груди (н/о)" value={fmtRange(p.measurements_pog_min, p.measurements_pog_max)} />
+                        <RoCell label="Бедра (н/о)" value={fmtRange(p.measurements_pob_min, p.measurements_pob_max)} />
+                        <RoCell label="Талія (н/о)" value={fmtRange(p.measurements_pot_min, p.measurements_pot_max)} />
+                        <RoCell label="Рукав" value={fmtRange(p.measurements_sleeve_min, p.measurements_sleeve_max)} />
+                      </div>
+                    </CollapsibleSection>
                   )}
                   </div>{/* /Характеристики */}
                 </div>{/* /Right panel */}
@@ -993,16 +1030,29 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                 )}
               </div>
 
-              {/* Notes */}
+              {/* Notes — згорнуто за замовчуванням, розкривається кліком */}
+              {(() => {
+                const notesOpen = editMode || !!openSections['notes'];
+                return (
               <div className="px-6 pb-6 group">
-                <div className="text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500 mb-2 font-medium flex items-center gap-2">
-                  Примітки
-                  {!editMode && editingField !== 'extranote' && (
+                <div className="flex items-center gap-2 mb-2">
+                  <button
+                    type="button"
+                    onClick={editMode ? undefined : () => toggleSection('notes')}
+                    className={`flex items-center gap-1.5 text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500 font-medium ${editMode ? 'cursor-default' : 'hover:text-gray-600 dark:hover:text-gray-300'} transition-colors`}
+                  >
+                    {!editMode && (
+                      <RightOutlined style={{ fontSize: 9 }} className={`transition-transform duration-200 ${notesOpen ? 'rotate-90' : ''}`} />
+                    )}
+                    Примітки
+                    {!notesOpen && p.extranote && <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />}
+                  </button>
+                  {notesOpen && !editMode && editingField !== 'extranote' && (
                     <EditBtn onClick={() => startEdit('extranote', p.extranote ?? '')} title="Редагувати примітку" />
                   )}
-                  <LockBadge field="extranote" />
+                  {notesOpen && <LockBadge field="extranote" />}
                 </div>
-                {editMode ? (
+                {!notesOpen ? null : editMode ? (
                   <textarea value={drafts['extranote'] ?? ''} onChange={(e) => setDraft('extranote', e.target.value)}
                     placeholder="Примітку не вказано"
                     className="w-full px-4 py-3 text-sm rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 min-h-[60px]" />
@@ -1028,6 +1078,8 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                   )
                 )}
               </div>
+                );
+              })()}
             </div>
           </>
         )}

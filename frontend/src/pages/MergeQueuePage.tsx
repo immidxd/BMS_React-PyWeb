@@ -189,7 +189,7 @@ const MergeQueuePage: React.FC = () => {
                                             <FieldRow label="Маркування" np={c.np_marking} sp={c.sp_marking} />
                                             <FieldRow label="Розмір" np={c.np_size} sp={c.sp_size} />
                                             <FieldRow label="Колір" np={c.np_color} sp={c.sp_color} />
-                                            <FieldRow label="Завіз" np={c.np_delivery} sp={c.sp_delivery} />
+                                            <FieldRow label="Завоз" np={c.np_delivery} sp={c.sp_delivery} />
                                             <FieldRow label="Продано" np={c.np_sold} sp={c.sp_sold} />
                                             <FieldRow label="Опис" np={c.np_desc} sp={c.sp_desc} />
                                             <div className="flex justify-end gap-2 mt-3">

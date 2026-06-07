@@ -109,7 +109,7 @@ const MainLayout: React.FC<MainLayoutProps> = ({
   };
 
 return (
-  <div className="main-layout flex flex-col h-screen relative">{/* тягнемося на весь екран */}
+  <div className="main-layout flex flex-col h-full min-h-0 relative">{/* заповнюємо доступну висоту <main>, а не цілий екран — інакше body теж скролився б (подвійний слайдер) */}
       <div className="flex flex-row flex-grow gap-4 overflow-hidden px-2 sm:px-4">{/* трохи більше корисної ширини */}
         <div 
           className="hidden sm:block fixed left-0 top-0 bottom-0 w-4 z-30 cursor-pointer"

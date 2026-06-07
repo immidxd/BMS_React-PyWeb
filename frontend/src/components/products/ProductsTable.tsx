@@ -207,8 +207,11 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
     // "Показати в замовленнях" — кладемо фільтр і перемикаємо вкладку
     const handleShowInOrders = (record: Product) => {
         const sold = record.sold_count ?? 0;
-        if (sold <= 0) {
-            message.info('Товар не продано — немає замовлень для показу');
+        // Заброньовані товари ТЕЖ мають замовлення (Підтверджено без оплати), тож
+        // дозволяємо перехід і для них, а не лише для проданих.
+        const isReserved = !!(record as any).is_reserved || ((record as any).reserved_count ?? 0) > 0;
+        if (sold <= 0 && !isReserved) {
+            message.info('Товар не продано і не заброньовано — немає замовлень для показу');
             return;
         }
         const label = (record.productnumber || '').replace(/^#/, '') || `ID ${record.id}`;
@@ -695,15 +698,17 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
                   </div>
                   {(() => {
                     const sold = rowMenuRecord.sold_count ?? 0;
-                    const isSold = sold > 0;
+                    // Бронь = Підтверджене замовлення без оплати → теж має що показати.
+                    const isReserved = !!(rowMenuRecord as any).is_reserved || ((rowMenuRecord as any).reserved_count ?? 0) > 0;
+                    const hasOrder = sold > 0 || isReserved;
                     return (
                       <button
                         type="button"
-                        disabled={!isSold}
+                        disabled={!hasOrder}
                         onClick={() => handleShowInOrders(rowMenuRecord)}
-                        title={isSold ? 'Перейти у Замовлення та показати це замовлення' : 'Товар ще не продано'}
+                        title={hasOrder ? (sold > 0 ? 'Перейти у Замовлення та показати це замовлення' : 'Перейти у Замовлення (бронь)') : 'Товар ще не продано'}
                         className={`w-full flex items-center gap-2 px-3 py-2 text-sm text-left ${
-                          isSold
+                          hasOrder
                             ? 'text-gray-700 dark:text-gray-200 hover:bg-blue-50 dark:hover:bg-blue-900/30 cursor-pointer'
                             : 'text-gray-300 dark:text-gray-600 cursor-not-allowed'
                         }`}
