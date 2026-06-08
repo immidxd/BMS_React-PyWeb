@@ -872,7 +872,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
 
                   {/* Sizes — ховаємо коли розміру нема (напр. сумки), показуємо в edit-режимі */}
                   {(editMode || hasAnySize) && (
-                  <div className="mb-5">
+                  <div className="mb-3">
                     {(editMode || hasRealSize) && (
                       <div className="text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500 mb-2 font-medium">Розмір</div>
                     )}
@@ -928,7 +928,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                   )}
 
                   {/* Характеристики — у правій колонці ПОРУЧ із фото (заповнюють висоту) */}
-                  <div className="mt-5 border-t border-gray-100 dark:border-gray-800 pt-4">
+                  <div className="mt-3 border-t border-gray-100 dark:border-gray-800 pt-4">
                     <div className="text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500 mb-3 font-medium">Характеристики</div>
                     <div className={`grid ${charCols} gap-x-6 gap-y-3`}>
                     <RoCell label="Бренд" value={formatBrandName((p as any).brand_name)} />
