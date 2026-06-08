@@ -91,6 +91,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
   // loadSeqRef відкидає застарілі fetch'і при швидкому гортанні.
   const prevIdRef = useRef<number | null>(null);
   const loadSeqRef = useRef(0);
+  const bodyRef = useRef<HTMLDivElement>(null);   // для скиду скролу при підміні картки
 
   const officialCount = useMemo(() => allImages.filter((i) => (i.kind ?? 'official') === 'official').length, [allImages]);
   const realCount = useMemo(() => allImages.filter((i) => i.kind === 'real').length, [allImages]);
@@ -202,6 +203,10 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
       })();
     }
   }, [open, productId, loadProduct, loadImages]);
+
+  // Скид скролу тіла до верху при підміні картки — інакше нова (коротша) картка
+  // успадкувала б позицію скролу попередньої → виглядало б як «скачок».
+  useEffect(() => { bodyRef.current?.scrollTo({ top: 0 }); }, [product?.id]);
 
   // Зберегти official_photos_from і одразу перепідтягнути фото
   const savePhotoSrc = async () => {
@@ -578,7 +583,9 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
       )}
 
       {/* Modal */}
-      <div className="relative bg-white dark:bg-gray-900 rounded-2xl shadow-2xl w-full max-w-6xl mx-4 max-h-[92vh] overflow-hidden flex flex-col">
+      {/* Фіксована висота (а не max-h) → бокс НЕ ресайзиться/перецентровується між
+          товарами різного обсягу контенту = головна причина «скачків» при ◀/▶. */}
+      <div className="relative bg-white dark:bg-gray-900 rounded-2xl shadow-2xl w-full max-w-6xl mx-4 h-[90vh] overflow-hidden flex flex-col">
 
         {loading && (
           <div className="flex items-center justify-center py-32">
@@ -696,7 +703,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
             </div>
 
             {/* Body */}
-            <div className="overflow-y-auto flex-1">
+            <div ref={bodyRef} className="overflow-y-auto flex-1">
               {saveError && (
                 <div className="mx-6 mt-4 px-3 py-2 rounded-lg text-sm bg-red-50 text-red-700 border border-red-200 dark:bg-red-900/20 dark:text-red-300 dark:border-red-800">
                   {saveError}
