@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useMemo } from 'react';
+import React, { useEffect, useState, useMemo, useRef } from 'react';
 import { productService } from '../../services/productService';
 import type { Product } from '../../types/product';
 import { Tag, Spin, Image } from 'antd';
@@ -87,6 +87,10 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
   // розкриваються кліком. У режимі редагування завжди розгорнуті (щоб редагувати).
   const [openSections, setOpenSections] = useState<Record<string, boolean>>({});
   const toggleSection = (id: string) => setOpenSections((s) => ({ ...s, [id]: !s[id] }));
+  // Плавна навігація між картками: prevIdRef відрізняє первинне відкриття від ◀/▶;
+  // loadSeqRef відкидає застарілі fetch'і при швидкому гортанні.
+  const prevIdRef = useRef<number | null>(null);
+  const loadSeqRef = useRef(0);
 
   const officialCount = useMemo(() => allImages.filter((i) => (i.kind ?? 'official') === 'official').length, [allImages]);
   const realCount = useMemo(() => allImages.filter((i) => i.kind === 'real').length, [allImages]);
@@ -154,10 +158,18 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     }
   }, [productId]);
 
+  // Кожне свіже відкриття (після закриття) трактуємо як ПЕРВИННЕ (зі спінером).
+  useEffect(() => { if (!open) prevIdRef.current = null; }, [open]);
+
   useEffect(() => {
     if (!open || !productId) return;
-    setProduct(null);
-    setAllImages([]);
+    // Навігація (◀/▶) = productId змінився, поки модал відкритий. На відміну від
+    // первинного відкриття, НЕ обнуляємо картку й НЕ показуємо повноекранний спінер
+    // (саме це давало «блимання»). Лишаємо стару картку, плавно підмінюємо новою.
+    const isNavigation = prevIdRef.current !== null && prevIdRef.current !== productId;
+    prevIdRef.current = productId;
+
+    // Спільний скид стану галереї/редагування (для будь-якого переходу).
     setShowDefects(false);
     setActiveKind('official');
     setActiveIdx(0);
@@ -166,8 +178,29 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     setEditMode(false);
     setSaveError(null);
     setOpenSections({});
-    loadProduct(true);
-    loadImages();
+
+    const seq = ++loadSeqRef.current;
+    if (!isNavigation) {
+      // Первинне відкриття — спінер, чиста картка.
+      setProduct(null);
+      setAllImages([]);
+      loadProduct(true);
+      loadImages();
+    } else {
+      // Навігація — стара картка лишається видимою, нову готуємо у фоні (без спінера),
+      // підмінюємо РІВНО коли дані готові → keyed-fade робить перехід плавним.
+      (async () => {
+        try {
+          const prod = await productService.getProduct(productId);
+          if (seq !== loadSeqRef.current) return;   // застарілий запит (швидке гортання)
+          setAllImages([]);   // чистимо галерею саме при підміні → спінер під новим текстом, не чужі фото
+          setProduct(prod);   // підміна картки (key=p.id → плавний fade)
+        } catch (e) {
+          console.error('Failed to load product (nav)', e);
+        }
+        if (seq === loadSeqRef.current) loadImages();
+      })();
+    }
   }, [open, productId, loadProduct, loadImages]);
 
   // Зберегти official_photos_from і одразу перепідтягнути фото
@@ -560,7 +593,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
         )}
 
         {!loading && p && (
-          <>
+          <div className="flex flex-col flex-1 min-h-0 bms-fade-in">
             {/* Header */}
             <div className="flex items-start justify-between px-6 pt-5 pb-4 border-b border-gray-100 dark:border-gray-800">
               <div className="min-w-0 flex-1">
@@ -1086,7 +1119,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                 );
               })()}
             </div>
-          </>
+          </div>
         )}
       </div>
     </div>
