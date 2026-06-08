@@ -499,6 +499,9 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
   // Характеристики живуть у правій колонці ПОРУЧ із фото (заповнюють її висоту) — 2 колонки.
   const charCols = 'grid-cols-2';
   const hasAnySize = !!(p && (p.sizeeu || (p as any).size_letter || p.measurementscm || p.dimensions || derivedSizes.length > 0));
+  // «Справжній» розмір (EU/буквений/похідні/СМ) — БЕЗ габаритів. Якщо є лише габарити
+  // (сумки), заголовок «Розмір» зайвий над самотнім чипом «Габарити» → ховаємо його.
+  const hasRealSize = !!(p && (p.sizeeu || (p as any).size_letter || p.measurementscm || derivedSizes.length > 0));
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
@@ -870,7 +873,9 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                   {/* Sizes — ховаємо коли розміру нема (напр. сумки), показуємо в edit-режимі */}
                   {(editMode || hasAnySize) && (
                   <div className="mb-5">
-                    <div className="text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500 mb-2 font-medium">Розмір</div>
+                    {(editMode || hasRealSize) && (
+                      <div className="text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500 mb-2 font-medium">Розмір</div>
+                    )}
                     {editMode ? (
                       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 max-w-md">
                         {([
