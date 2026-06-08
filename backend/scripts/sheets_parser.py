@@ -2216,6 +2216,9 @@ def _parse_products_sheet(
         color_val  = color_raw.split(",")[0].strip() if color_raw else ""
         cond_val   = col(row, "Стан")
         status_val = col(row, "Статус") if "Статус" in header else ""
+        # Габарити (сумки/валізи/рюкзаки): "22x16x7". Журнальний парсер раніше це поле
+        # ІГНОРУВАВ (читав лише workspace) → усі журнальні сумки лишались без габаритів.
+        dimensions_val = col(row, "Габарити").strip() if "Габарити" in header else ""
         mfr_cntry  = col(row, "Країна-виробник")
         own_cntry  = col(row, "Країна-власник")
         size_val   = _normalize_size(col(row, "Розмір"))
@@ -2520,6 +2523,8 @@ def _parse_products_sheet(
             full_match.clonednumbers = clones or None
             if cm_val:
                 full_match.measurementscm = cm_val
+            if dimensions_val:
+                full_match.dimensions = dimensions_val
             # Ціна синкається з аркуша. oldprice — строго з колонки "Стара ціна"
             # (порожня клітинка = NULL); ніякої авто-деривації з попередньої ціни.
             if price_float:
@@ -2608,6 +2613,7 @@ def _parse_products_sheet(
                 # Case 5: brand new productnumber
                 product = Product(
                     productnumber         = pnum,
+                    dimensions            = dimensions_val or None,
                     clonednumbers         = clones or None,
                     model                 = model_val or None,
                     marking               = marking or None,
@@ -2697,6 +2703,7 @@ def _parse_products_sheet(
                 # → new DB record, same productnumber (e.g. both are #125)
                 product = Product(
                     productnumber         = base_pnum,
+                    dimensions            = dimensions_val or None,
                     clonednumbers         = clones or None,
                     model                 = model_val or None,
                     marking               = marking or None,
@@ -2855,6 +2862,7 @@ def _parse_products_sheet(
                         )
                         product = Product(
                             productnumber         = target_pnum,
+                            dimensions            = dimensions_val or None,
                             clonednumbers         = clones or None,
                             model                 = model_val or None,
                             marking               = marking or None,
@@ -2989,6 +2997,7 @@ def _parse_products_sheet(
                     )
                     product = Product(
                         productnumber         = target_pnum,
+                        dimensions            = dimensions_val or None,
                         clonednumbers         = clones or None,
                         model                 = model_val or None,
                         marking               = marking or None,
