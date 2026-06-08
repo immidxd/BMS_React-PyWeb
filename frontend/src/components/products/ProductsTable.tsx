@@ -23,7 +23,7 @@ import { Product } from '../../types/product';
 import type { TableProps } from 'antd';
 import ProductDetailsModal from './ProductDetailsModal';
 import MergeCandidatesModal from './MergeCandidatesModal';
-import { LinkOutlined } from '@ant-design/icons';
+import { LinkOutlined, LockFilled } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import { productService } from '../../services/productService';
 import { CopyOnClick, UnknownIf, isUnknownValue, BrandName } from '../common/displayHelpers';
@@ -422,11 +422,11 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
                     'Пошкоджений': 'volcano',
                 };
                 const color = colorMap[displayStatus] || 'default';
-                // «Бронь» — оверлей на «Непродано» (Підтверджено без оплати). Мінімалістичний
-                // slate-чип під статусом; не показуємо коли товар уже Продано/фінальний.
+                // «Бронь» (Підтверджено без оплати) — мінімалістичний чорний силует замка
+                // ПОРЯД зі статусом (не під ним). Не показуємо для фінальних статусів.
                 const showReserved = !!record.is_reserved && displayStatus === 'Непродано';
                 return (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 2, alignItems: 'center' }}>
+                    <div style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 5, maxWidth: '100%' }}>
                         <Tag
                             color={color}
                             style={{ display: 'block', maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', padding: '0 6px', fontSize: 12, textAlign: 'center', margin: 0 }}
@@ -434,14 +434,10 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
                             {displayStatus}
                         </Tag>
                         {showReserved && (
-                            <span
+                            <LockFilled
                                 title="Заброньовано: є Підтверджене замовлення без оплати"
-                                style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 10, fontWeight: 600,
-                                         color: '#475569', background: 'rgba(100,116,139,0.13)', border: '1px solid rgba(100,116,139,0.28)',
-                                         borderRadius: 9999, padding: '0 6px', lineHeight: '15px', whiteSpace: 'nowrap' }}
-                            >
-                                🔒 Бронь
-                            </span>
+                                style={{ fontSize: 12, color: 'var(--bms-fg, #1f2937)', flexShrink: 0 }}
+                            />
                         )}
                     </div>
                 );
