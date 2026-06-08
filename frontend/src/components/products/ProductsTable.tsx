@@ -425,20 +425,25 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
                 // «Бронь» (Підтверджено без оплати) — мінімалістичний чорний силует замка
                 // ПОРЯД зі статусом (не під ним). Не показуємо для фінальних статусів.
                 const showReserved = !!record.is_reserved && displayStatus === 'Непродано';
+                // Grid 1fr/auto/1fr тримає чип СТРОГО по центру колонки незалежно від
+                // наявності замка (інакше замок зсував чип → нерівність між рядками).
                 return (
-                    <div style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 5, maxWidth: '100%' }}>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr auto 1fr', alignItems: 'center', columnGap: 4, width: '100%' }}>
+                        <span />
                         <Tag
                             color={color}
                             style={{ display: 'block', maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', padding: '0 6px', fontSize: 12, textAlign: 'center', margin: 0 }}
                         >
                             {displayStatus}
                         </Tag>
-                        {showReserved && (
-                            <LockFilled
-                                title="Заброньовано: є Підтверджене замовлення без оплати"
-                                style={{ fontSize: 12, color: 'var(--bms-fg, #1f2937)', flexShrink: 0 }}
-                            />
-                        )}
+                        <span style={{ justifySelf: 'start', display: 'inline-flex', alignItems: 'center' }}>
+                            {showReserved && (
+                                <LockFilled
+                                    title="Заброньовано: є Підтверджене замовлення без оплати"
+                                    style={{ fontSize: 12, color: 'var(--bms-fg, #1f2937)' }}
+                                />
+                            )}
+                        </span>
                     </div>
                 );
             } },

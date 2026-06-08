@@ -376,15 +376,15 @@ body {
   background: var(--bms-hover) !important;
 }
 
-/* ── Reserved row (Підтверджено без Оплачено = бронь): subtle gray, minimalist ── */
+/* ── Reserved row (Підтверджено без Оплачено = бронь): мінімалістично ──
+   Маркер броні — чорний значок замка в колонці «Статус». Рядок лише ледь-ледь
+   притінюємо НЕЙТРАЛЬНИМ сірим (монохром, у стиль застосунку), БЕЗ кольорового
+   лівого акценту (раніше slate-400 «синив» край рядка). */
 .ant-table-tbody > tr.bms-row-reserved > td {
-  background: rgba(100, 116, 139, 0.06) !important;  /* slate, ледь помітно */
-}
-.ant-table-tbody > tr.bms-row-reserved > td:first-child {
-  box-shadow: inset 3px 0 0 0 #94a3b8;  /* slate-400 акцент зліва */
+  background: rgba(120, 120, 120, 0.07) !important;
 }
 .ant-table-tbody > tr.bms-row-reserved:hover > td {
-  background: rgba(100, 116, 139, 0.11) !important;
+  background: rgba(120, 120, 120, 0.12) !important;
 }
 
 /* ── MUI overrides → монохром (Dialog, Buttons, Progress) ── */
