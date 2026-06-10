@@ -126,9 +126,11 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
         { id: 'style_name', title: 'Стиль', optional: true },
         // 3
         { id: 'brand_name', title: 'Бренд', optional: false },
-        // 3.1, 3.2, 3.3
+        // 3.1, 3.2, 3.3 (+ Колекція/GTIN — порядок як у журналі)
         { id: 'model', title: 'Модель', optional: true },
+        { id: 'collection', title: 'Колекція', optional: true },
         { id: 'marking', title: 'Маркування', optional: true },
+        { id: 'gtin', title: 'GTIN', optional: true },
         { id: 'year', title: 'Рік', optional: true },
         // 4
         { id: 'gender_name', title: 'Стать', optional: false },
@@ -141,6 +143,7 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
         { id: 'sizeeu', title: 'Розмір', optional: false },
         { id: 'width', title: 'Ширина', optional: true },
         { id: 'dimensions', title: 'Габарити', optional: true },
+        { id: 'geometric_shape', title: 'Геом. форма', optional: true },
         // 7
         { id: 'measurementscm', title: 'СМ', optional: false },
         { id: 'sole_type_name', title: 'Тип підошви', optional: true },
@@ -340,7 +343,11 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
             render: (text: string, record: Product) => {
                 const isRost = record.is_rostovka;
                 const letter = (record as any).size_letter;
-                const display = text && letter ? `${text} · ${letter}` : (text || letter || '');
+                // Колонка «Розмір»: за замовчуванням цифровий розмір (sizeeu). Якщо
+                // цифри нема, але є буквений (валізи/одяг) — показуємо букву. Товарів
+                // із цифрою це не змінює (буква їх не зачіпає). Лише відображення —
+                // на пошук/фільтри/сортування не впливає (вони працюють по колонках БД).
+                const display = text || letter || '';
                 if (!display) return <span className="text-gray-300 text-xs">—</span>;
                 return (
                     <span className={`text-xs ${isRost ? 'text-purple-700 font-medium' : ''}`}>
@@ -480,6 +487,11 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
             render: (v: string) => v ? <span className="text-xs">{v}</span> : null },
         dimensions: { title: 'Габарити', dataIndex: 'dimensions', key: 'dimensions', width: 100,
             render: (v: string) => v ? <span className="text-xs">{v}</span> : null },
+        geometric_shape: { title: 'Геом. форма', dataIndex: 'geometric_shape', key: 'geometric_shape', width: 110,
+            render: (v: string) => v ? <span className="text-xs">{v}</span> : null },
+        collection: { title: 'Колекція', dataIndex: 'collection', key: 'collection', width: 130, ellipsis: true },
+        gtin: { title: 'GTIN', dataIndex: 'gtin', key: 'gtin', width: 140,
+            render: (v: string) => v ? <span className="text-xs tabular-nums">{v}</span> : null },
         clonednumbers: { title: 'Номера-клони', dataIndex: 'clonednumbers', key: 'clonednumbers', width: 160 },
         marking: { title: 'Маркування', dataIndex: 'marking', key: 'marking', width: 140,
             render: (text: string, record: Product) => {

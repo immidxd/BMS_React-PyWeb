@@ -323,7 +323,9 @@ class Product(Base):
     # з різними номерами, ділять студійні зйомки, але мають окремі реальні).
     official_photos_from = Column(String(64), nullable=True)
     model = Column(String(100))
+    collection = Column(Text)         # колекція (журнал: «Колекція», model-level)
     marking = Column(String(100))
+    gtin = Column(Text)               # GTIN/штрихкод (журнал: «GTIN», per-item — свій на кожен розмір)
     year = Column(Integer)
     description = Column(Text)
     extranote = Column(Text)
@@ -343,6 +345,7 @@ class Product(Base):
     measurementscm_max = Column(Float)
     season = Column(String(100))      # multi-value, comma-separated: "Зима, Осінь"
     dimensions = Column(String(50))   # габарити: "40x20x5"
+    geometric_shape = Column(Text)    # геометрична форма (журнал: «Геометрична форма», model-level)
     width = Column(String(20))        # ширина ніжки: "Вузька"/"Стандартна"/"Широка" або B/D/EE
     # Clothing/shoe measurements (см) — всі min/max; single value = min == max
     measurements_length_min         = Column(Float)   # довжина

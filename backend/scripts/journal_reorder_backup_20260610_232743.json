@@ -1,0 +1,148 @@
+{
+ "Валізи(Андрій)": {
+  "sheetId": 327626227,
+  "header": [
+   "Номер",
+   "Номера-клони",
+   "Вид",
+   "Підвид",
+   "Стиль",
+   "Бренд",
+   "Модель",
+   "Колекція",
+   "Маркування",
+   "GTIN",
+   "Рік",
+   "Стать",
+   "Сезон",
+   "Колір",
+   "Опис",
+   "Верх",
+   "Середина",
+   "Підкладка",
+   "Устілка",
+   "Мембрана",
+   "Технології",
+   "Підошва",
+   "Колір підошви",
+   "Тип підошви",
+   "Тип каблука",
+   "Форма носка",
+   "Застібка",
+   "Тип шнурівки",
+   "Пакування",
+   "Країна-виробник",
+   "Країна-власник",
+   "Розмір",
+   "Буквений",
+   "Груди (н/о)",
+   "Талія (н/о)",
+   "Бедра (н/о)",
+   "Рукав",
+   "Довжина",
+   "Ширина",
+   "Габарити",
+   "Геометрична форма",
+   "СМ",
+   "Висота",
+   "Товщина підошви",
+   "Підбор",
+   "Ціна",
+   "Стара ціна",
+   "Статус",
+   "Стан",
+   "Поточний стан",
+   "Екстра примітка",
+   "",
+   "",
+   "",
+   "Інформація про завоз"
+  ],
+  "columnGroups": [
+   {
+    "range": {
+     "sheetId": 327626227,
+     "dimension": "COLUMNS",
+     "startIndex": 1,
+     "endIndex": 2
+    },
+    "depth": 1,
+    "collapsed": true
+   },
+   {
+    "range": {
+     "sheetId": 327626227,
+     "dimension": "COLUMNS",
+     "startIndex": 3,
+     "endIndex": 5
+    },
+    "depth": 1
+   },
+   {
+    "range": {
+     "sheetId": 327626227,
+     "dimension": "COLUMNS",
+     "startIndex": 6,
+     "endIndex": 10
+    },
+    "depth": 1,
+    "collapsed": true
+   },
+   {
+    "range": {
+     "sheetId": 327626227,
+     "dimension": "COLUMNS",
+     "startIndex": 15,
+     "endIndex": 29
+    },
+    "depth": 1
+   },
+   {
+    "range": {
+     "sheetId": 327626227,
+     "dimension": "COLUMNS",
+     "startIndex": 33,
+     "endIndex": 38
+    },
+    "depth": 1
+   },
+   {
+    "range": {
+     "sheetId": 327626227,
+     "dimension": "COLUMNS",
+     "startIndex": 40,
+     "endIndex": 41
+    },
+    "depth": 1,
+    "collapsed": true
+   },
+   {
+    "range": {
+     "sheetId": 327626227,
+     "dimension": "COLUMNS",
+     "startIndex": 42,
+     "endIndex": 45
+    },
+    "depth": 1
+   },
+   {
+    "range": {
+     "sheetId": 327626227,
+     "dimension": "COLUMNS",
+     "startIndex": 46,
+     "endIndex": 47
+    },
+    "depth": 1
+   },
+   {
+    "range": {
+     "sheetId": 327626227,
+     "dimension": "COLUMNS",
+     "startIndex": 54,
+     "endIndex": 63
+    },
+    "depth": 1
+   }
+  ]
+ }
+}

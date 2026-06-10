@@ -59,7 +59,7 @@ BATCH_CHUNK = int(os.getenv("PARSER_BATCH_CHUNK", "50"))  # sheets per batch rea
 #
 # Bump PARSER_VERSION whenever the orders parsing logic changes in a way that
 # would produce different output for the same input → forces a full reparse.
-PARSER_VERSION = 3  # v3: orders.source_sheet_gid + gid-scoped ghost sweep (reparse to backfill gids)
+PARSER_VERSION = 5  # v5: +Проміжна підошва (material midsole) і реструктуризація shoe-блоку журналу
 HASH_SKIP_ENABLED = os.getenv("PARSER_HASH_SKIP", "1") != "0"
 
 # ── Layer C: whole-file change gate ───────────────────────────────────────────
@@ -80,8 +80,16 @@ FILE_GATE_ENABLED = os.getenv("PARSER_FILE_GATE", "1") != "0"
 PRODUCT_LOCKS_ENABLED = os.getenv("PRODUCT_LOCKS", "1") != "0"
 # oldprice included so the auto-markdown ("Стара ціна") survives reparse too.
 PRODUCT_LOCK_FIELDS = {"price", "oldprice", "model", "marking", "description", "extranote", "season",
+                       # Нові журнальні колонки (2026-06-10): Колекція/GTIN/Геометрична форма.
+                       "collection", "gtin", "geometric_shape",
                        # Shoe-lookup FKs edited in-app (model-level). Snapshot/restore by id.
                        "heeltypeid", "lacetypeid", "packagingid", "technologyid", "sole_colorid",
+                       # «Інше» shoe-lookups edited in-app (model-level).
+                       "soletypeid", "toeshapeid", "fasteningtypeid", "liningid",
+                       # Main color edited in-app (model-level).
+                       "colorid",
+                       # Класифікація edited in-app (model-level, dropdown).
+                       "typeid", "subtypeid", "styleid", "brandid", "genderid",
                        # Condition (per-item) edited in-app.
                        "current_conditionid"}
 # Order fields protected from parser overwrite (Order editing Phase A). Keep in
@@ -199,6 +207,8 @@ WRITEBACK_FIELD_HEADERS = {
     "season":         "Сезон",
     "marking":        "Маркування",
     "extranote":      "Екстра примітка",
+    "collection":     "Колекція",
+    "geometric_shape": "Геометрична форма",
     # Model-level (однакові на всіх рядках ростовки) — безпечний write-to-all-rows.
     "year":           "Рік",
     "width":          "Ширина",
@@ -210,28 +220,73 @@ WRITEBACK_FIELD_HEADERS = {
     "packagingid":    "Пакування",
     "technologyid":   "Технології",
     "sole_colorid":   "Колір підошви",
+    "soletypeid":     "Тип підошви",
+    "toeshapeid":     "Форма носка",
+    "fasteningtypeid": "Застібка",
+    "liningid":       "Підкладка",
+    "colorid":        "Колір",
+    # Класифікація (model-level) → колонки журналу.
+    "typeid":         "Тип",
+    "subtypeid":      "Підтип",
+    "styleid":        "Стиль",
+    "brandid":        "Бренд",
+    "genderid":       "Стать",
     # Per-item FK (унікальний на пару ростовки) — журнальна колонка «Поточний стан».
     "current_conditionid": "Поточний стан",
+    # Матеріали — синтетичні поля material_<position> → колонки позицій (model-level).
+    "material_upper":    "Верх",
+    "material_middle":   "Середина",
+    "material_insole":   "Устілка",
+    "material_sole":     "Підошва",
+    "material_midsole":  "Проміжна підошва",
+    "material_membrane": "Мембрана",
+    # Заміри — синтетичні meas_<name> → колонки (per-item: значення-діапазон рядком).
+    "meas_length":         "Довжина",
+    "meas_pog":            "Груди (н/о)",
+    "meas_pob":            "Бедра (н/о)",
+    "meas_pot":            "Талія (н/о)",
+    "meas_sleeve":         "Рукав",
+    "meas_height":         "Висота",
+    "meas_sole_thickness": "Товщина підошви",
+    "meas_heel":           "Підбор",
     # Per-item (унікальні на КОЖЕН рядок ростовки) — пишуться лише коли номер
     # у аркуші займає один рядок (див. PER_ITEM_WRITEBACK_FIELDS + guard нижче).
     "sizeeu":         "Розмір",
     "size_letter":    "Буквений",
     "measurementscm": "СМ",
     "dimensions":     "Габарити",
+    "gtin":           "GTIN",
 }
 # Поля, унікальні на кожен рядок ростовки. Поточний write-back пише в УСІ рядки
 # спільного номера → для таких полів це затерло б сусідні розміри. Тому пишемо
 # їх лише коли номер у аркуші — один рядок (guard у writeback_field_to_journal).
 PER_ITEM_WRITEBACK_FIELDS = {"sizeeu", "size_letter", "measurementscm", "dimensions",
-                             "current_conditionid"}
+                             "gtin",  # штрихкод свій на кожен розмір ростовки
+                             "current_conditionid",
+                             # Заміри — унікальні на розмір ростовки.
+                             "meas_length", "meas_pog", "meas_pob", "meas_pot",
+                             "meas_sleeve", "meas_height", "meas_sole_thickness", "meas_heel"}
 # Text fields written RAW (literal, no formula interpretation); numeric fields
 # USER_ENTERED so the sheet stores a real number.
 WRITEBACK_TEXT_FIELDS = {"model", "marking", "description", "season", "extranote",
                          "width", "clonednumbers",
+                         # GTIN обовʼязково RAW: USER_ENTERED перетворив би довгий
+                         # штрихкод на число (наукова нотація, втрата провідних нулів).
+                         "collection", "gtin", "geometric_shape",
                          "sizeeu", "size_letter", "measurementscm", "dimensions",
                          # Shoe-lookup + condition FKs written back as canonical name text.
                          "heeltypeid", "lacetypeid", "packagingid", "technologyid", "sole_colorid",
-                         "current_conditionid"}
+                         "soletypeid", "toeshapeid", "fasteningtypeid", "liningid",
+                         "colorid",
+                         "typeid", "subtypeid", "styleid", "brandid", "genderid",
+                         "current_conditionid",
+                         # Матеріали (CSV назв) — пишуться як літеральний текст.
+                         "material_upper", "material_middle", "material_insole",
+                         "material_sole", "material_midsole", "material_membrane",
+                         # Заміри — рядок-діапазон ("25-27") пишемо літерально (RAW),
+                         # щоб Sheets не трактував як дату/формулу.
+                         "meas_length", "meas_pog", "meas_pob", "meas_pot",
+                         "meas_sleeve", "meas_height", "meas_sole_thickness", "meas_heel"}
 WRITEBACK_ENABLED = os.getenv("PARSER_WRITEBACK", "1") != "0"
 _WRITEBACK_BACKUP_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "writeback_backups")
 
@@ -949,6 +1004,7 @@ MATERIAL_POSITIONS: dict[str, str] = {
     "Середина": "middle",
     "Устілка":  "insole",
     "Підошва":  "sole",
+    "Проміжна підошва": "midsole",   # 2026-06-10: міжпідошва (ЕВА/ПУ між устілкою і підошвою)
     "Мембрана": "membrane",
 }
 
@@ -1029,6 +1085,9 @@ _NEW_SINGLE_FK_FIELDS: list[str] = [
     "soletypeid", "toeshapeid", "fasteningtypeid", "liningid",
     "heeltypeid", "lacetypeid", "packagingid", "technologyid", "sole_colorid",
 ]
+# Plain-text fields enriched NULL-only ТІЛЬКИ Воркспейс-парсером (Журнал-парсер
+# пише їх авторитетно у своїй update-гілці і в new_fields сюди не передає).
+_NEW_TEXT_FIELDS: list[str] = ["collection", "gtin", "geometric_shape"]
 
 
 def _apply_new_fields_and_materials(
@@ -1058,6 +1117,10 @@ def _apply_new_fields_and_materials(
     for f in _NEW_SINGLE_FK_FIELDS:
         v = new_fields.get(f)
         if v is not None and getattr(prod, f, None) is None:
+            setattr(prod, f, v)
+    for f in _NEW_TEXT_FIELDS:
+        v = new_fields.get(f)
+        if v and getattr(prod, f, None) is None:
             setattr(prod, f, v)
     if materials_parsed:
         _apply_product_materials(session, prod.id, materials_parsed, source)
@@ -1120,7 +1183,22 @@ def _apply_product_materials(
     if not parsed:
         return
     from sqlalchemy import text as _sql
+    # Поважаємо інлайн-локи: позиції, відредаговані в програмі (`material_<pos>` у
+    # manually_edited_fields), парсер НЕ перезаписує (sheet-write-back тримає аркуш
+    # синхронним, а тут — захист від відкату до старого значення аркуша).
+    mef_row = session.execute(
+        _sql("SELECT manually_edited_fields FROM products WHERE id = :pid"),
+        {"pid": product_id},
+    ).first()
+    mef = (mef_row[0] if mef_row else "") or ""
+    locked_positions = {
+        x.strip()[len("material_"):]
+        for x in mef.split(",")
+        if x.strip().startswith("material_")
+    }
     for position, names in parsed.items():
+        if position in locked_positions:
+            continue  # відредаговано в програмі — не чіпаємо
         if not names:
             continue
         # Wipe existing rows for this (product, position), then re-insert in order.
@@ -2236,6 +2314,12 @@ def _parse_products_sheet(
         price_val  = col(row, "Ціна")
         oldprice_val = col(row, "Стара ціна") if "Стара ціна" in header else ""
         desc_val   = col(row, "Опис") if "Опис" in header else ""
+        # Нові колонки 2026-06-10 (опційні — старі/інші аркуші можуть їх не мати).
+        # Аркуш авторитетний: порожня клітинка → NULL (див. feedback_sheet_empty_clears_field);
+        # in-app правки захищені snapshot-restore локами (PRODUCT_LOCK_FIELDS).
+        collection_val  = col(row, "Колекція").strip() if "Колекція" in header else ""
+        gtin_val        = col(row, "GTIN").strip() if "GTIN" in header else ""
+        geom_shape_val  = col(row, "Геометрична форма").strip() if "Геометрична форма" in header else ""
         # Опційні розширені колонки (старі аркуші можуть їх не мати)
         season_val       = col(row, "Сезон").strip() if "Сезон" in header else ""
         style_val        = col(row, "Стиль").strip() if "Стиль" in header else ""
@@ -2525,6 +2609,14 @@ def _parse_products_sheet(
                 full_match.measurementscm = cm_val
             if dimensions_val:
                 full_match.dimensions = dimensions_val
+            # Колекція/GTIN/Геометрична форма: аркуш авторитетний (порожнє → NULL),
+            # але лише коли колонка реально існує в цьому аркуші.
+            if "Колекція" in header:
+                full_match.collection = collection_val or None
+            if "GTIN" in header:
+                full_match.gtin = gtin_val or None
+            if "Геометрична форма" in header:
+                full_match.geometric_shape = geom_shape_val or None
             # Ціна синкається з аркуша. oldprice — строго з колонки "Стара ціна"
             # (порожня клітинка = NULL); ніякої авто-деривації з попередньої ціни.
             if price_float:
@@ -2591,6 +2683,12 @@ def _parse_products_sheet(
                     orphan.model = model_val
                 if desc_val:
                     orphan.description = desc_val
+                if "Колекція" in header:
+                    orphan.collection = collection_val or None
+                if "GTIN" in header:
+                    orphan.gtin = gtin_val or None
+                if "Геометрична форма" in header:
+                    orphan.geometric_shape = geom_shape_val or None
                 if price_float:
                     orphan.price = price_float
                 if shipment_id and not orphan.deliveryid:
@@ -2614,9 +2712,12 @@ def _parse_products_sheet(
                 product = Product(
                     productnumber         = pnum,
                     dimensions            = dimensions_val or None,
+                    geometric_shape       = geom_shape_val or None,
                     clonednumbers         = clones or None,
                     model                 = model_val or None,
+                    collection            = collection_val or None,
                     marking               = marking or None,
+                    gtin                  = gtin_val or None,
                     year                  = year_int,
                     description           = desc_val or None,
                     price                 = price_float,
@@ -2704,9 +2805,12 @@ def _parse_products_sheet(
                 product = Product(
                     productnumber         = base_pnum,
                     dimensions            = dimensions_val or None,
+                    geometric_shape       = geom_shape_val or None,
                     clonednumbers         = clones or None,
                     model                 = model_val or None,
+                    collection            = collection_val or None,
                     marking               = marking or None,
+                    gtin                  = gtin_val or None,
                     year                  = year_int,
                     description           = desc_val or None,
                     price                 = price_float,
@@ -2863,9 +2967,12 @@ def _parse_products_sheet(
                         product = Product(
                             productnumber         = target_pnum,
                             dimensions            = dimensions_val or None,
+                            geometric_shape       = geom_shape_val or None,
                             clonednumbers         = clones or None,
                             model                 = model_val or None,
+                            collection            = collection_val or None,
                             marking               = marking or None,
+                            gtin                  = gtin_val or None,
                             year                  = year_int,
                             description           = desc_val or None,
                             price                 = price_float,
@@ -2998,9 +3105,12 @@ def _parse_products_sheet(
                     product = Product(
                         productnumber         = target_pnum,
                         dimensions            = dimensions_val or None,
+                        geometric_shape       = geom_shape_val or None,
                         clonednumbers         = clones or None,
                         model                 = model_val or None,
+                        collection            = collection_val or None,
                         marking               = marking or None,
+                        gtin                  = gtin_val or None,
                         year                  = year_int,
                         description           = desc_val or None,
                         price                 = price_float,
@@ -4341,6 +4451,10 @@ def _parse_workspace_sheet(
         style_val        = col(row, "Стиль") if "Стиль" in header else ""
         current_cond_val = col(row, "Поточний стан") if "Поточний стан" in header else ""
         width_val        = col(row, "Ширина") if "Ширина" in header else ""
+        # Колонки 2026-06-10 (Колекція/GTIN/Геометрична форма) — вставлені й у Воркспейс.
+        collection_val   = col(row, "Колекція").strip() if "Колекція" in header else ""
+        gtin_val         = col(row, "GTIN").strip() if "GTIN" in header else ""
+        geom_shape_val   = col(row, "Геометрична форма").strip() if "Геометрична форма" in header else ""
 
         # ── Нові поля (виміри/взуття/матеріали) — дзеркало Журнал-парсера ──
         # Виміри: парсимо діапазони (single value → min==max).
@@ -4393,6 +4507,11 @@ def _parse_workspace_sheet(
             "packagingid":             resolved_shoe_fk.get("packagingid"),
             "technologyid":            resolved_shoe_fk.get("technologyid"),
             "sole_colorid":            sole_color_id,
+            # Текстові поля 2026-06-10 — NULL-only збагачення (_NEW_TEXT_FIELDS):
+            # воркспейс не перетирає журнальні значення, лише заповнює порожні.
+            "collection":              collection_val or None,
+            "gtin":                    gtin_val or None,
+            "geometric_shape":         geom_shape_val or None,
         }
 
         # Матеріали за позиціями. Порожня клітинка = не чіпати існуюче в БД.
@@ -4550,7 +4669,9 @@ def _parse_workspace_sheet(
                     productnumber         = target_pnum,
                     clonednumbers         = clones_raw or None,
                     model                 = model_val or None,
+                    collection            = collection_val or None,
                     marking               = marking or None,
+                    gtin                  = gtin_val or None,
                     year                  = year_int,
                     description           = desc_val or None,
                     price                 = price_float,
@@ -4582,6 +4703,7 @@ def _parse_workspace_sheet(
                     liningid                        = lining_id,
                     season                = season_val or None,
                     dimensions            = dimensions_val or None,
+                    geometric_shape       = geom_shape_val or None,
                     width                 = width_val or None,
                     styleid               = style_id,
                     dateadded             = date.today(),

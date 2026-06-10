@@ -242,7 +242,6 @@ def get_products(
         
         if filters:
             if filters.search:
-                search = f"%{filters.search}%"
                 # Latin → Cyrillic confusables: щоб "A1248" латиниця знаходила
                 # "А1248" кирилицю в clonednumbers (BMS-конвент: номери кириличні).
                 _LAT2CYR = str.maketrans({
@@ -251,23 +250,35 @@ def get_products(
                     'a':'а','b':'в','c':'с','e':'е','h':'н','i':'і','k':'к',
                     'm':'м','o':'о','p':'р','t':'т','x':'х','y':'у',
                 })
-                search_cyr = f"%{filters.search.translate(_LAT2CYR)}%"
+                # ⚠️ Cyrillic case-insensitive search: у цій БД (C collation) ILIKE/LOWER
+                # НЕ складають регістр кирилиці ('Сітка' ILIKE '%сітк%' = FALSE), тож
+                # звичайний ILIKE ловив лише точний регістр — варто було браузеру
+                # автокапіталізувати «сітк»→«Сітк» на blur, і пошук мовчки порожнів.
+                # Python .lower()/.upper()/.capitalize() кирилицю обробляють → будуємо
+                # набір регістрових варіантів (для raw + Lat→Cyr) і матчимо ILIKE ANY.
+                # Див. feedback_ilike_exact_match.
+                _bases = {filters.search, filters.search.translate(_LAT2CYR)}
+                _variants = set()
+                for _b in _bases:
+                    _variants.update({_b, _b.lower(), _b.upper(), _b.capitalize()})
+                search_patterns = [f"%{v}%" for v in _variants]
                 where_conditions.append("""
-                    (p.productnumber  ILIKE :search OR p.productnumber  ILIKE :search_cyr OR
-                     p.clonednumbers  ILIKE :search OR p.clonednumbers  ILIKE :search_cyr OR
-                     p.model          ILIKE :search OR
-                     p.description    ILIKE :search OR
-                     p.marking        ILIKE :search OR
-                     p.extranote      ILIKE :search OR
-                     b.brandname      ILIKE :search OR
-                     t.typename       ILIKE :search OR
-                     c.colorname      ILIKE :search OR
-                     g.gendername     ILIKE :search OR
-                     cond.conditionname ILIKE :search OR
-                     s.statusname     ILIKE :search)
+                    (p.productnumber  ILIKE ANY(:search_patterns) OR
+                     p.clonednumbers  ILIKE ANY(:search_patterns) OR
+                     p.model          ILIKE ANY(:search_patterns) OR
+                     p.description    ILIKE ANY(:search_patterns) OR
+                     p.marking        ILIKE ANY(:search_patterns) OR
+                     p.gtin           ILIKE ANY(:search_patterns) OR
+                     p.collection     ILIKE ANY(:search_patterns) OR
+                     p.extranote      ILIKE ANY(:search_patterns) OR
+                     b.brandname      ILIKE ANY(:search_patterns) OR
+                     t.typename       ILIKE ANY(:search_patterns) OR
+                     c.colorname      ILIKE ANY(:search_patterns) OR
+                     g.gendername     ILIKE ANY(:search_patterns) OR
+                     cond.conditionname ILIKE ANY(:search_patterns) OR
+                     s.statusname     ILIKE ANY(:search_patterns))
                 """)
-                params['search'] = search
-                params['search_cyr'] = search_cyr
+                params['search_patterns'] = search_patterns
                 
             # Single ID filters
             if filters.typeid and not filters.typeids:
@@ -551,7 +562,9 @@ def get_products(
                 'clonednumbers': m.get('clonednumbers'),
                 'official_photos_from': m.get('official_photos_from'),
                 'model': m.get('model'),
+                'collection': m.get('collection'),
                 'marking': m.get('marking'),
+                'gtin': m.get('gtin'),
                 'year': m.get('year'),
                 'description': m.get('description'),
                 'extranote': m.get('extranote'),
@@ -559,6 +572,7 @@ def get_products(
                 'oldprice': m.get('oldprice'),
                 'dateadded': str(m.get('dateadded')) if m.get('dateadded') else None,
                 'sizeeu': m.get('sizeeu'),
+                'size_letter': m.get('size_letter'),
                 'sizeua': m.get('sizeua'),
                 'sizeusa': m.get('sizeusa'),
                 'sizeuk': m.get('sizeuk'),
@@ -581,6 +595,7 @@ def get_products(
                 'styleid': m.get('styleid'),
                 'season': m.get('season'),
                 'dimensions': m.get('dimensions'),
+                'geometric_shape': m.get('geometric_shape'),
                 'width': m.get('width'),
                 'importid': m.get('importid'),
                 'deliveryid': m.get('deliveryid'),
@@ -659,12 +674,18 @@ def create_product(db: Session, product: schemas.ProductCreate) -> models.Produc
 LOCKABLE_PRODUCT_FIELDS = {
     "price", "oldprice", "model", "marking", "description", "extranote", "season",
     # Model-level scalar fields (same across a rostovka) — full sheet sync.
-    "year", "width", "clonednumbers",
+    "year", "width", "clonednumbers", "collection", "geometric_shape",
     # Per-item scalar fields (unique per size-row) — see PER_ITEM_FIELDS below.
-    "sizeeu", "size_letter", "measurementscm", "dimensions",
+    "sizeeu", "size_letter", "measurementscm", "dimensions", "gtin",
     # Shoe-lookup FKs (model-level; edited by NAME, written back as name). See
     # LOOKUP_NAME_FIELDS below + SHOE_FK_WRITEBACK in sheets_parser.
     "heeltypeid", "lacetypeid", "packagingid", "technologyid", "sole_colorid",
+    # «Інше» shoe-lookups (model-level; edited by NAME) — same pattern.
+    "soletypeid", "toeshapeid", "fasteningtypeid", "liningid",
+    # Main color (model-level FK → colors; edited by NAME like sole color).
+    "colorid",
+    # Класифікація (model-level; edited via dropdown by id). Write-back as name.
+    "typeid", "subtypeid", "styleid", "brandid", "genderid",
     # Condition (Стан/поточний стан) — PER-ITEM (not propagated to rostovka siblings).
     "current_conditionid",
 }
@@ -677,6 +698,11 @@ LOOKUP_NAME_FIELDS = {
     "packaging_name":  ("packagingid",  "packaging_types", "packagingname"),
     "technology_name": ("technologyid", "technologies",    "technologyname"),
     "sole_color_name": ("sole_colorid", "colors",          "colorname"),
+    "sole_type_name":      ("soletypeid",     "sole_types",      "soletypename"),
+    "toe_shape_name":      ("toeshapeid",     "toe_shapes",      "toeshapename"),
+    "fastening_type_name": ("fasteningtypeid", "fastening_types", "fasteningtypename"),
+    "lining_name":         ("liningid",       "linings",         "liningname"),
+    "color_name":      ("colorid",      "colors",          "colorname"),
     "current_condition_name": ("current_conditionid", "conditions", "conditionname"),
 }
 
@@ -723,7 +749,18 @@ def resolve_lookup_name(db: Session, fk_field: str, fk_id: Optional[int]) -> Opt
         "packagingid":         ("packaging_types", "packagingname"),
         "technologyid":        ("technologies",    "technologyname"),
         "sole_colorid":        ("colors",          "colorname"),
+        "soletypeid":          ("sole_types",      "soletypename"),
+        "toeshapeid":          ("toe_shapes",      "toeshapename"),
+        "fasteningtypeid":     ("fastening_types", "fasteningtypename"),
+        "liningid":            ("linings",         "liningname"),
+        "colorid":             ("colors",          "colorname"),
         "current_conditionid": ("conditions",      "conditionname"),
+        # Класифікація (для write-back id→name у відповідну колонку журналу).
+        "typeid":              ("types",           "typename"),
+        "subtypeid":           ("subtypes",        "subtypename"),
+        "styleid":             ("styles",          "stylename"),
+        "brandid":             ("brands",          "brandname"),
+        "genderid":            ("genders",         "gendername"),
     }.get(fk_field)
     if not tbl_col:
         return None
@@ -736,13 +773,16 @@ def resolve_lookup_name(db: Session, fk_field: str, fk_id: Optional[int]) -> Opt
 
 # FK fields edited by name (used by the router to map id→name for write-back).
 SHOE_FK_NAME_FIELDS = {"heeltypeid", "lacetypeid", "packagingid", "technologyid", "sole_colorid",
-                       "current_conditionid"}
+                       "soletypeid", "toeshapeid", "fasteningtypeid", "liningid",
+                       "colorid", "current_conditionid",
+                       # Класифікація — write-back as canonical name.
+                       "typeid", "subtypeid", "styleid", "brandid", "genderid"}
 # Propagation policy across rostovka siblings (same productnumber):
 #   PER_ITEM_FIELDS — unique per pair/size, NEVER propagated (e.g. condition/розмір).
 #   PRICE_FIELDS    — propagated only to same-condition siblings without their own locked price.
 #   (anything else lockable) — per-model: propagated to all siblings.
 PER_ITEM_FIELDS = {"current_conditionid", "conditionid",
-                   "sizeeu", "size_letter", "measurementscm", "dimensions"}
+                   "sizeeu", "size_letter", "measurementscm", "dimensions", "gtin"}
 PRICE_FIELDS = {"price", "oldprice"}
 
 
@@ -753,6 +793,121 @@ def _merge_lock(prod, fields: set) -> None:
         existing = {x.strip() for x in prod.manually_edited_fields.split(",") if x.strip()}
     prod.manually_edited_fields = ",".join(sorted(existing | fields))
     prod.manually_edited_at = datetime.utcnow()
+
+
+# Measurements inline-edit ──────────────────────────────────────────────────
+# name → (min_col, max_col). Рядок-діапазон ("26"/"25-27") → min/max (per-item:
+# заміри унікальні на розмір ростовки, тож НЕ пропагуються; write-back per-item).
+MEASUREMENT_EDIT_FIELDS = {
+    "length":         ("measurements_length_min",         "measurements_length_max"),
+    "pog":            ("measurements_pog_min",            "measurements_pog_max"),
+    "pob":            ("measurements_pob_min",            "measurements_pob_max"),
+    "pot":            ("measurements_pot_min",            "measurements_pot_max"),
+    "sleeve":         ("measurements_sleeve_min",         "measurements_sleeve_max"),
+    "height":         ("measurements_height_min",         "measurements_height_max"),
+    "sole_thickness": ("measurements_sole_thickness_min", "measurements_sole_thickness_max"),
+    "heel":           ("measurements_heel_min",           "measurements_heel_max"),
+}
+
+
+def _fmt_measure_num(v) -> str:
+    """26.0 → '26'; 26.5 → '26.5'; None → ''."""
+    if v is None:
+        return ""
+    try:
+        fv = float(v)
+        return str(int(fv)) if fv == int(fv) else str(fv)
+    except (TypeError, ValueError):
+        return ""
+
+
+def _fmt_measure_range(mn, mx) -> str:
+    """(min,max) → рядок для write-back: '26' (min==max) / '25-27' / ''."""
+    if mn is None and mx is None:
+        return ""
+    if mn is not None and mx is not None and float(mn) == float(mx):
+        return _fmt_measure_num(mn)
+    if mn is not None and mx is not None:
+        return f"{_fmt_measure_num(mn)}-{_fmt_measure_num(mx)}"
+    return _fmt_measure_num(mn if mn is not None else mx)
+
+
+def _apply_measurements_edit(db_product, edits: Dict[str, str]) -> Dict[str, str]:
+    """Парсить рядок-діапазон кожного заміру → *_min/*_max на товарі. Повертає
+    {meas_<name>: canonical_range_str} для реально оброблених (для write-back)."""
+    try:
+        from scripts.sheets_parser import _parse_measurement_range
+    except ImportError:
+        from backend.scripts.sheets_parser import _parse_measurement_range
+    out: Dict[str, str] = {}
+    for name, rng in edits.items():
+        cols = MEASUREMENT_EDIT_FIELDS.get(name)
+        if not cols:
+            continue
+        mn, mx = _parse_measurement_range(rng or "")
+        setattr(db_product, cols[0], mn)
+        setattr(db_product, cols[1], mx)
+        out[f"meas_{name}"] = _fmt_measure_range(mn, mx)
+    return out
+
+
+# Materials inline-edit ─────────────────────────────────────────────────────
+# Канонічні позиції матеріалів (узгоджено з MATERIAL_POSITIONS у sheets_parser).
+MATERIAL_POSITIONS = {"upper", "middle", "insole", "sole", "membrane"}
+
+
+def _get_or_create_material_id(db: Session, name: str) -> Optional[int]:
+    """Канонічна назва матеріалу (lowercase) → material_id. Get-or-create:
+    матеріали — відкрита лексика (на відміну від бренду/типу), тож невідоме
+    значення створюємо (category='other'), а не глушимо. Порожнє → None."""
+    val = (name or "").strip().lower()
+    if not val:
+        return None
+    row = db.execute(
+        text("SELECT id FROM materials WHERE materialname = :n LIMIT 1"), {"n": val}
+    ).fetchone()
+    if row:
+        return int(row[0])
+    new = db.execute(
+        text("INSERT INTO materials (materialname, category) VALUES (:n, 'other') "
+             "ON CONFLICT (materialname) DO UPDATE SET materialname = EXCLUDED.materialname "
+             "RETURNING id"),
+        {"n": val},
+    ).fetchone()
+    return int(new[0]) if new else None
+
+
+def _apply_materials_edit(db: Session, product_id: int, by_position: Dict[str, str]) -> Dict[str, str]:
+    """Full-replace матеріалів для КОЖНОЇ наданої позиції. Повертає
+    {position: canonical_csv} лише для реально оброблених позицій (для лока +
+    write-back). Невідома позиція ігнорується. "" → очищає позицію."""
+    applied: Dict[str, str] = {}
+    for position, csv in by_position.items():
+        pos = (position or "").strip()
+        if pos not in MATERIAL_POSITIONS:
+            continue
+        names = [n.strip().lower() for n in (csv or "").split(",") if n.strip()]
+        # Wipe + re-insert у порядку (як парсерний _apply_product_materials).
+        db.execute(
+            text("DELETE FROM product_materials WHERE product_id = :pid AND position = :pos"),
+            {"pid": product_id, "pos": pos},
+        )
+        ord_idx = 0
+        canon: list[str] = []
+        for nm in names:
+            mid = _get_or_create_material_id(db, nm)
+            if mid is None:
+                continue
+            db.execute(
+                text("INSERT INTO product_materials (product_id, position, material_id, ord) "
+                     "VALUES (:pid, :pos, :mid, :ord) "
+                     "ON CONFLICT (product_id, position, material_id) DO UPDATE SET ord = EXCLUDED.ord"),
+                {"pid": product_id, "pos": pos, "mid": mid, "ord": ord_idx},
+            )
+            ord_idx += 1
+            canon.append(nm)
+        applied[pos] = ", ".join(canon)
+    return applied
 
 
 def get_delivery_name(db: Session, delivery_id: Optional[int]) -> Optional[str]:
@@ -775,6 +930,13 @@ def update_product(db: Session, product_id: int, product: schemas.ProductUpdate)
         db_product = db.query(models.Product).filter(models.Product.id == product_id).first()
         if db_product:
             update_data = product.dict(exclude_unset=True)
+
+            # Materials (per-position CSV) — обробляються окремо (не ORM-колонка).
+            # Витягуємо ДО загального setattr-циклу. Legacy-поле `materials` (структурне)
+            # інлайн-UI не шле — popаємо, щоб не присвоїти relationship напряму.
+            materials_by_position = update_data.pop("materials_by_position", None)
+            update_data.pop("materials", None)
+            measurements_edit = update_data.pop("measurements_edit", None)
 
             # Inline-edit by NAME: translate typed lookup names → FK id columns
             # (get-or-create, case-insensitive). "" / null clears the FK.
@@ -831,12 +993,39 @@ def update_product(db: Session, product_id: int, product: schemas.ProductUpdate)
                     if applied:
                         _merge_lock(sib, applied)
 
+            # Заміри (per-item) — парс рядка-діапазону → *_min/*_max на товарі.
+            # НЕ пропагуються на сиблінгів (унікальні на розмір). Захист від
+            # парсера — NULL-only guard у _apply_new_fields_and_materials; write-back
+            # тримає аркуш синхронним (per-item guard: лише коли номер = 1 рядок).
+            measurement_writeback: Dict[str, str] = {}
+            if measurements_edit:
+                measurement_writeback = _apply_measurements_edit(db_product, measurements_edit)
+
+            # Materials (per-position CSV) — full-replace + лок кожної редагованої
+            # позиції (`material_<pos>`). Model-level: дублюємо на всіх «братів»
+            # ростовки. Лок прибирає перезапис парсером (skip-guard у sheets_parser).
+            material_writeback: Dict[str, str] = {}
+            if materials_by_position:
+                material_writeback = _apply_materials_edit(db, db_product.id, materials_by_position)
+                pos_locks = {f"material_{p}" for p in material_writeback.keys()}
+                if pos_locks:
+                    _merge_lock(db_product, pos_locks)
+                    mat_sibs = db.query(models.Product).filter(
+                        models.Product.productnumber == db_product.productnumber,
+                        models.Product.id != db_product.id,
+                    ).all()
+                    for sib in mat_sibs:
+                        _apply_materials_edit(db, sib.id, materials_by_position)
+                        _merge_lock(sib, pos_locks)
+
             db.commit()
             db.refresh(db_product)
             # Transient (non-column) hint for the router: which lockable fields
             # were actually written this call → those get written back to sheet.
             # Includes auto-derived oldprice from the markdown rule.
             db_product._writeback_fields = newly_locked
+            db_product._material_writeback = material_writeback   # {position: csv}
+            db_product._measurement_writeback = measurement_writeback   # {meas_<name>: range}
             logger.debug(f"Updated product: {db_product}")
         return db_product
     except Exception as e:

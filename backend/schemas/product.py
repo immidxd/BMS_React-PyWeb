@@ -13,7 +13,7 @@ class ReferenceItem(BaseModel):
 
 class ProductMaterialEntry(BaseModel):
     """One material assignment on a product (e.g. upper = шкіра)."""
-    position: str           # upper|middle|insole|sole|membrane
+    position: str           # upper|middle|insole|sole|midsole|membrane
     material_id: int
     materialname: Optional[str] = None   # convenience for API consumers
     category: Optional[str] = None
@@ -41,7 +41,9 @@ class ProductBase(BaseModel):
     clonednumbers: Optional[str] = Field(None, description="Номери клонів, розділені комою")
     official_photos_from: Optional[str] = Field(None, max_length=64, description="productnumber товару-донора студійних фото (для ростовки з різними номерами)")
     model: Optional[str] = Field(None, max_length=500, description="Назва моделі товару")
+    collection: Optional[str] = Field(None, max_length=500, description="Колекція (model-level)")
     marking: Optional[str] = Field(None, max_length=500, description="Маркування товару")
+    gtin: Optional[str] = Field(None, max_length=500, description="GTIN/штрихкод (per-item — свій на кожен розмір)")
     year: Optional[int] = Field(None, description="Рік випуску")
     description: Optional[str] = Field(None, description="Детальний опис товару")
     extranote: Optional[str] = Field(None, description="Додаткові примітки")
@@ -59,6 +61,7 @@ class ProductBase(BaseModel):
     measurementscm_max: Optional[float] = Field(None, description="СМ (max) — для числових range-фільтрів")
     season: Optional[str] = Field(None, max_length=100, description="Сезон (multi-value, через кому): \"Зима, Осінь\"")
     dimensions: Optional[str] = Field(None, max_length=50, description="Габарити: \"40x20x5\"")
+    geometric_shape: Optional[str] = Field(None, max_length=500, description="Геометрична форма (model-level)")
     width: Optional[str] = Field(None, max_length=20, description="Ширина ніжки: 'Вузька'/'Стандартна'/'Широка' або B/D/EE")
     # Заміри (см) — всі min/max; single value = min == max; діапазон = min<max
     measurements_length_min: Optional[float] = Field(None, description="Довжина, см (min)")
@@ -146,12 +149,19 @@ class ProductUpdate(BaseModel):
     clonednumbers: Optional[str] = None
     official_photos_from: Optional[str] = Field(None, max_length=64)
     model: Optional[str] = None
+    collection: Optional[str] = None
     marking: Optional[str] = None
+    gtin: Optional[str] = None
     year: Optional[int] = None
     description: Optional[str] = None
     extranote: Optional[str] = None
     dimensions: Optional[str] = None
+    geometric_shape: Optional[str] = None
     width: Optional[str] = None
+    # Сезон — МУЛЬТИ-значення через кому ("Демі, Єврозима"). Нормалізується нижче
+    # тим самим normalize_season_csv, що й парсер (trim/dedupe/канонічний порядок,
+    # невідомі токени зберігаються). Без цього поля PUT мовчки губив сезон.
+    season: Optional[str] = Field(None, max_length=100)
     price: Optional[float] = None
     oldprice: Optional[float] = None
     sizeeu: Optional[str] = None
@@ -196,13 +206,27 @@ class ProductUpdate(BaseModel):
     packaging_name: Optional[str] = None
     technology_name: Optional[str] = None
     sole_color_name: Optional[str] = None
+    # Shoe-lookup характеристики «Інше» — той самий патерн edit-by-NAME.
+    sole_type_name: Optional[str] = None
+    toe_shape_name: Optional[str] = None
+    fastening_type_name: Optional[str] = None
+    lining_name: Optional[str] = None
+    color_name: Optional[str] = None   # головний «Колір» (resolved → colorid server-side)
     current_condition_name: Optional[str] = None   # «Стан» (поточний стан) — per-item
-    materials: Optional[List[ProductMaterialEntry]] = None   # full replace on PUT if provided
+    materials: Optional[List[ProductMaterialEntry]] = None   # legacy/structured (not used by inline UI)
+    # Inline-edit матеріалів по позиціях: {position: "шкіра, замша"} (CSV назв).
+    # Позиція present → full-replace тієї позиції; "" → очистити; відсутня → не чіпати.
+    # position ∈ upper|middle|insole|sole|midsole|membrane.
+    materials_by_position: Optional[Dict[str, str]] = None
+    # Inline-edit замірів: {name: "26" | "25-27"} — рядок-діапазон, сервер парсить
+    # у *_min/*_max. name ∈ length|pog|pob|pot|sleeve|height|sole_thickness|heel.
+    measurements_edit: Optional[Dict[str, str]] = None
     quantity: Optional[int] = None
     mainimage: Optional[str] = None
     is_visible: Optional[bool] = None
     typeid: Optional[int] = None
     subtypeid: Optional[int] = None
+    styleid: Optional[int] = None   # Класифікація — інлайн-edit через дропдаун (FK id)
     brandid: Optional[int] = None
     genderid: Optional[int] = None
     colorid: Optional[int] = None
@@ -243,6 +267,22 @@ class ProductUpdate(BaseModel):
             if v < 1900 or v > current_year + 1:
                 raise ValueError(f'Рік має бути між 1900 та {current_year + 1}')
         return v
+
+    @validator('season')
+    def normalize_season(cls, v):
+        """Канонізувати мульти-сезон CSV ("демі,єврозима" → "Демі, Єврозима").
+        Порожнє → None (очищає поле). Reuse єдиного хелпера парсера (lazy-import,
+        щоб не тягнути важкий модуль при завантаженні схем)."""
+        if v is None:
+            return v
+        v = v.strip()
+        if not v:
+            return None
+        try:
+            from scripts.sheets_parser import normalize_season_csv
+        except ImportError:
+            from backend.scripts.sheets_parser import normalize_season_csv
+        return normalize_season_csv(v) or None
 
 # Повна модель товару з бази даних
 class Product(ProductBase):
@@ -288,7 +328,9 @@ class ProductList(BaseModel):
     clonednumbers: Optional[str] = None
     official_photos_from: Optional[str] = None
     model: Optional[str] = None
+    collection: Optional[str] = None
     marking: Optional[str] = None
+    gtin: Optional[str] = None
     year: Optional[int] = None
     description: Optional[str] = None
     extranote: Optional[str] = None
@@ -319,6 +361,7 @@ class ProductList(BaseModel):
     styleid: Optional[int] = None
     season: Optional[str] = None
     dimensions: Optional[str] = None
+    geometric_shape: Optional[str] = None
     width: Optional[str] = None
     # Заміри (см) — всі min/max
     measurements_length_min: Optional[float] = None

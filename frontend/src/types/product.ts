@@ -3,7 +3,7 @@ export interface ReferenceItem {
     name: string;
 }
 
-export type MaterialPosition = 'upper' | 'middle' | 'insole' | 'sole' | 'membrane';
+export type MaterialPosition = 'upper' | 'middle' | 'insole' | 'sole' | 'midsole' | 'membrane';
 
 export interface ProductMaterialEntry {
     position: MaterialPosition;
@@ -26,7 +26,9 @@ export interface Product {
     clonednumbers?: string;
     official_photos_from?: string | null;
     model?: string;
+    collection?: string;   // колекція (журнал: «Колекція», model-level)
     marking?: string;
+    gtin?: string;         // GTIN/штрихкод (журнал: «GTIN», per-item)
     year?: number;
     description?: string;
     extranote?: string;
@@ -47,6 +49,7 @@ export interface Product {
     manually_edited_fields?: string | null;  // CSV залочених у програмі полів (Phase 2a)
     manually_edited_at?: string | null;      // час останньої правки в програмі
     dimensions?: string;   // габарити: "40x20x5"
+    geometric_shape?: string;  // геометрична форма (журнал: «Геометрична форма», model-level)
     width?: string;        // ширина ніжки: "Вузька"/"Стандартна"/"Широка" або B/D/EE
     // Clothing/shoe measurements (см) — всі min/max; single value = min == max
     measurements_length_min?: number;          // довжина

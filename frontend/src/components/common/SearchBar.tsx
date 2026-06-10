@@ -133,6 +133,16 @@ const SearchBar: React.FC<SearchBarProps> = ({
           <input
             ref={inputRef}
             type="text"
+            // Вимикаємо браузерний autofill/історію: інакше Chrome/Safari підміняють
+            // щойно введений текст (напр. «сітк») на схожий збережений запис («Стік»),
+            // і список «через кілька секунд» стає порожнім. role=presentation +
+            // нестандартний name глушать евристику автозаповнення навіть у Chrome,
+            // що ігнорує autocomplete="off" для текстових полів.
+            name="bms-search-no-autofill"
+            autoComplete="off"
+            autoCorrect="off"
+            autoCapitalize="off"
+            spellCheck={false}
             value={searchTerm}
             onChange={handleInputChange}
             onFocus={handleInputFocus}

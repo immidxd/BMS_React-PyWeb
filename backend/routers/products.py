@@ -322,10 +322,16 @@ async def update_product(
         # (включно з авто-похідним oldprice від правила уцінки)
         edited_lockable = set(getattr(updated_product, "_writeback_fields", set()))
 
+        # Матеріали по позиціях → синтетичні поля material_<pos> для write-back
+        # (значення = CSV назв; колонка резолвиться через WRITEBACK_FIELD_HEADERS).
+        material_writeback = getattr(updated_product, "_material_writeback", {}) or {}
+        # Заміри → синтетичні meas_<name> (значення = рядок-діапазон).
+        measurement_writeback = getattr(updated_product, "_measurement_writeback", {}) or {}
+
         # Phase 2b: write-back у журнал — у ФОНІ, щоб PUT відповідав миттєво
         # (запис в аркуш ~2-3с мережі не має блокувати UI). Лок у БД зберігає
         # правку, якщо фоновий запис відстане/впаде.
-        if edited_lockable:
+        if edited_lockable or material_writeback or measurement_writeback:
             sheet_title = product_service.get_delivery_name(db, updated_product.deliveryid)
             pnum = updated_product.productnumber
             # Shoe-lookup FKs are written back as the canonical NAME, not the id.
@@ -337,6 +343,10 @@ async def update_product(
                 if f in product_service.SHOE_FK_NAME_FIELDS:
                     v = product_service.resolve_lookup_name(db, f, v)
                 field_values[f] = v
+            for pos, csv in material_writeback.items():
+                field_values[f"material_{pos}"] = csv
+            for mkey, rng in measurement_writeback.items():
+                field_values[mkey] = rng   # mkey уже 'meas_<name>'
 
             def _writeback_bg(sheet_title=sheet_title, pnum=pnum, field_values=field_values):
                 try:

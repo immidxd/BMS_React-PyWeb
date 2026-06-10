@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useMemo, useRef } from 'react';
 import { productService } from '../../services/productService';
-import type { Product } from '../../types/product';
+import type { Product, ProductFilters } from '../../types/product';
 import { Tag, Spin, Image } from 'antd';
 import { CloseOutlined, PictureOutlined, LeftOutlined, RightOutlined, WarningOutlined, EditOutlined, CheckOutlined } from '@ant-design/icons';
 import { CopyOnClick, formatBrandName } from '../common/displayHelpers';
@@ -33,8 +33,11 @@ type FieldType = 'text' | 'number' | 'textarea';
 // займає один рядок (інакше зберігаються лише в БД, щоб не затерти сусідів ростовки).
 const EDITABLE_FIELDS: { field: string; type: FieldType }[] = [
   { field: 'model', type: 'text' },
+  { field: 'collection', type: 'text' },
   { field: 'season', type: 'text' },
   { field: 'marking', type: 'text' },
+  { field: 'gtin', type: 'text' },
+  { field: 'geometric_shape', type: 'text' },
   { field: 'year', type: 'number' },
   { field: 'width', type: 'text' },
   { field: 'clonednumbers', type: 'text' },
@@ -49,6 +52,11 @@ const EDITABLE_FIELDS: { field: string; type: FieldType }[] = [
   // Shoe-lookup characteristics edited by NAME (resolved → FK id server-side,
   // written back to the journal). Draft/display read from the `*_name` field.
   { field: 'sole_color_name', type: 'text' },
+  { field: 'sole_type_name', type: 'text' },
+  { field: 'toe_shape_name', type: 'text' },
+  { field: 'fastening_type_name', type: 'text' },
+  { field: 'lining_name', type: 'text' },
+  { field: 'color_name', type: 'text' },
   { field: 'heel_type_name', type: 'text' },
   { field: 'lace_type_name', type: 'text' },
   { field: 'technology_name', type: 'text' },
@@ -56,6 +64,56 @@ const EDITABLE_FIELDS: { field: string; type: FieldType }[] = [
   // Стан (поточний стан) — per-item FK, edited by name.
   { field: 'current_condition_name', type: 'text' },
 ];
+
+// Матеріали по позиціях — порядок і підписи (узгоджено з MATERIAL_POSITIONS бекенду).
+const MATERIAL_POSITIONS: { pos: string; label: string }[] = [
+  { pos: 'upper', label: 'Верх' },
+  { pos: 'middle', label: 'Середина' },
+  { pos: 'insole', label: 'Устілка' },
+  { pos: 'sole', label: 'Підошва' },
+  { pos: 'midsole', label: 'Проміжна підошва' },
+  { pos: 'membrane', label: 'Мембрана' },
+];
+
+// p.materials (список {position, materialname}) → {position: "шкіра, замша"} CSV.
+const groupMaterialsByPosition = (materials?: { position: string; materialname?: string; material_id: number }[]): Record<string, string> => {
+  const out: Record<string, string> = {};
+  for (const { pos } of MATERIAL_POSITIONS) out[pos] = '';
+  if (!materials) return out;
+  const acc: Record<string, string[]> = {};
+  for (const mat of materials) {
+    (acc[mat.position] ||= []).push(mat.materialname || String(mat.material_id));
+  }
+  for (const pos of Object.keys(acc)) out[pos] = acc[pos].join(', ');
+  return out;
+};
+
+// Заміри — порядок, підпис, та *_min/*_max ключі (узгоджено з MEASUREMENT_EDIT_FIELDS бекенду).
+const MEASUREMENTS: { name: string; label: string; minKey: string; maxKey: string }[] = [
+  { name: 'height',         label: 'Висота',     minKey: 'measurements_height_min',         maxKey: 'measurements_height_max' },
+  { name: 'sole_thickness', label: 'Підошва',    minKey: 'measurements_sole_thickness_min', maxKey: 'measurements_sole_thickness_max' },
+  { name: 'heel',           label: 'Каблук',     minKey: 'measurements_heel_min',           maxKey: 'measurements_heel_max' },
+  { name: 'length',         label: 'Довжина',    minKey: 'measurements_length_min',         maxKey: 'measurements_length_max' },
+  { name: 'pog',            label: 'Груди (н/о)', minKey: 'measurements_pog_min',           maxKey: 'measurements_pog_max' },
+  { name: 'pob',            label: 'Бедра (н/о)', minKey: 'measurements_pob_min',           maxKey: 'measurements_pob_max' },
+  { name: 'pot',            label: 'Талія (н/о)', minKey: 'measurements_pot_min',           maxKey: 'measurements_pot_max' },
+  { name: 'sleeve',         label: 'Рукав',      minKey: 'measurements_sleeve_min',         maxKey: 'measurements_sleeve_max' },
+];
+
+// (min,max) → рядок для інпута: '26' (min==max) / '25-27' / ''. Без суфікса «см».
+const measRangeStr = (min: any, max: any): string => {
+  const f = (v: any) => { const n = Number(v); return Number.isInteger(n) ? String(n) : String(n); };
+  if (min == null && max == null) return '';
+  if (min != null && max != null && Number(min) === Number(max)) return f(min);
+  if (min != null && max != null) return `${f(min)}-${f(max)}`;
+  return f(min != null ? min : max);
+};
+
+const measurementsFromProduct = (p: any): Record<string, string> => {
+  const out: Record<string, string> = {};
+  for (const { name, minKey, maxKey } of MEASUREMENTS) out[name] = measRangeStr(p?.[minKey], p?.[maxKey]);
+  return out;
+};
 
 // Скільки чекати фото з Drive, перш ніж прибрати спінер галереї (картку показуємо
 // одразу — фото вантажаться окремо й «доїжджають» у фоні навіть після таймауту).
@@ -81,6 +139,14 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
   // Глобальний режим редагування: всі поля одночасно стають інпутами + «Зберегти все»
   const [editMode, setEditMode] = useState(false);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
+  // Матеріали редагуються окремо від `drafts`: ключ = позиція (upper/middle/...),
+  // значення = CSV назв. Ініціалізуються з p.materials у enterEditMode.
+  const [materialDrafts, setMaterialDrafts] = useState<Record<string, string>>({});
+  // Заміри: ключ = name (height/length/...), значення = рядок-діапазон ('26'/'25-27').
+  const [measurementDrafts, setMeasurementDrafts] = useState<Record<string, string>>({});
+  // Класифікація: дропдауни наявних значень (FK id як рядок; '' = очистити).
+  const [classDrafts, setClassDrafts] = useState<Record<string, string>>({});
+  const [filterOpts, setFilterOpts] = useState<ProductFilters | null>(null);
   const [savingAll, setSavingAll] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   // Згорнуті підрозділи (Матеріали/Інше/Примітки) — за замовчуванням приховані,
@@ -275,6 +341,18 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     const init: Record<string, string> = {};
     for (const { field } of EDITABLE_FIELDS) init[field] = rawFieldStr(field);
     setDrafts(init);
+    setMaterialDrafts(groupMaterialsByPosition((product as any)?.materials));
+    setMeasurementDrafts(measurementsFromProduct(product as any));
+    const cd: Record<string, string> = {};
+    for (const f of ['brandid', 'typeid', 'subtypeid', 'styleid', 'genderid']) {
+      const v = (product as any)?.[f];
+      cd[f] = v == null ? '' : String(v);
+    }
+    setClassDrafts(cd);
+    // Дропдауни наявних значень — підвантажуємо довідник раз (лінь).
+    if (!filterOpts) {
+      productService.getFilters().then(setFilterOpts).catch((e) => console.error('Failed to load filters', e));
+    }
     setEditingField(null);
     setEditingPhotoSrc(false);
     setSaveError(null);
@@ -284,6 +362,9 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
   const cancelEditMode = () => {
     setEditMode(false);
     setDrafts({});
+    setMaterialDrafts({});
+    setMeasurementDrafts({});
+    setClassDrafts({});
     setSaveError(null);
   };
 
@@ -306,6 +387,32 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
         payload[field] = cur.trim() === '' ? null : cur;
       }
     }
+    // Матеріали: лише позиції, що змінилися (порівняно з вихідним станом картки).
+    const origMaterials = groupMaterialsByPosition((product as any)?.materials);
+    const matChanges: Record<string, string> = {};
+    for (const { pos } of MATERIAL_POSITIONS) {
+      const cur = (materialDrafts[pos] ?? '').trim();
+      if (cur !== (origMaterials[pos] ?? '').trim()) matChanges[pos] = cur;
+    }
+    if (Object.keys(matChanges).length > 0) payload.materials_by_position = matChanges;
+
+    // Заміри: лише змінені виміри (порівняно з вихідним станом картки).
+    const origMeas = measurementsFromProduct(product as any);
+    const measChanges: Record<string, string> = {};
+    for (const { name } of MEASUREMENTS) {
+      const cur = (measurementDrafts[name] ?? '').trim();
+      if (cur !== (origMeas[name] ?? '').trim()) measChanges[name] = cur;
+    }
+    if (Object.keys(measChanges).length > 0) payload.measurements_edit = measChanges;
+
+    // Класифікація: лише змінені FK id (дропдаун). '' → null (очистити).
+    for (const f of ['brandid', 'typeid', 'subtypeid', 'styleid', 'genderid']) {
+      const cur = classDrafts[f] ?? '';
+      const orig = (product as any)?.[f] == null ? '' : String((product as any)[f]);
+      if (cur === orig) continue;
+      payload[f] = cur === '' ? null : Number(cur);
+    }
+
     if (Object.keys(payload).length === 0) { cancelEditMode(); return; }
     setSavingAll(true);
     setSaveError(null);
@@ -418,6 +525,16 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
   // ── Дрібні UI-хелпери ─────────────────────────────────────────────────────────
   const inputCls = 'w-full px-2 py-1.5 text-sm rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-100 focus:outline-none focus:ring-1 focus:ring-primary-400';
 
+  // Підтипи фільтруються за обраним типом (subtypes мають typeid). Якщо тип не
+  // обрано — показуємо всі. Поточний підтип товару завжди лишаємо у списку.
+  const subtypeOptions = (() => {
+    const all = (filterOpts?.subtypes ?? []) as any[];
+    const tid = classDrafts['typeid'] ? Number(classDrafts['typeid']) : null;
+    if (tid == null) return all;
+    const curSub = (p as any)?.subtypeid;
+    return all.filter((s) => s.typeid === tid || s.id === curSub);
+  })();
+
   // Бейдж «змінено в програмі» + кнопка «скинути до аркуша» для залоченого поля
   const LockBadge: React.FC<{ field: string }> = ({ field }) =>
     lockedFields.has(field) ? (
@@ -488,7 +605,12 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
 
   // Редагована клітинка: input у глобальному edit-режимі; інакше — значення (+ лок).
   // У read-режимі порожнє значення ховаємо. Тип number → number input.
-  const EditCell: React.FC<{ field: string; label: string; type?: FieldType; placeholder?: string; lockField?: string }> = ({ field, label, type = 'text', placeholder, lockField }) => {
+  // ⚠️ ВИКЛИКАТИ ЯК ФУНКЦІЮ: {EditCell({ field, label })}, НЕ <EditCell .../>.
+  // EditCell оголошено всередині компонента → як JSX-елемент <EditCell/> він має
+  // НОВУ ідентичність типу щорендера, тож React РОЗМОНТОВУЄ+монтує input на кожне
+  // натискання → інпут губить фокус після першої літери («стан не редагується»).
+  // Виклик функцією вбудовує JSX без межі компонента → input зберігає фокус.
+  const EditCell = ({ field, label, type = 'text', placeholder, lockField }: { field: string; label: string; type?: FieldType; placeholder?: string; lockField?: string }): React.ReactElement | null => {
     const lf = lockField ?? field;   // lock state may live on a different DB column (e.g. FK id)
     if (editMode) {
       return (
@@ -519,6 +641,40 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     );
   };
 
+  // Класифікація: дропдаун наявних значень (edit) / RoCell зі значенням (read).
+  // ⚠️ Викликати ЯК ФУНКЦІЮ: {classSelect({...})} — як і EditCell (без межі компонента).
+  const classSelect = ({ field, label, options, readValue }: {
+    field: string; label: string; options: { id: number; name: string }[]; readValue?: React.ReactNode;
+  }): React.ReactElement | null => {
+    if (editMode) {
+      return (
+        <div className="flex flex-col gap-1 min-w-0">
+          <span className="text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500 font-medium flex items-center gap-1.5">
+            {label}<LockDot field={field} />
+          </span>
+          <select
+            value={classDrafts[field] ?? ''}
+            onChange={(e) => setClassDrafts((d) => ({ ...d, [field]: e.target.value }))}
+            className={inputCls}
+          >
+            <option value="">—</option>
+            {options.map((o) => <option key={o.id} value={String(o.id)}>{o.name}</option>)}
+          </select>
+        </div>
+      );
+    }
+    if (readValue === null || readValue === undefined || readValue === '') return null;
+    return (
+      <div className="flex flex-col gap-0.5 min-w-0">
+        <span className="text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500 font-medium">{label}</span>
+        <span className="text-sm text-gray-800 dark:text-gray-200 break-words flex items-center gap-2">
+          {(typeof readValue === 'string' || typeof readValue === 'number') ? <CopyOnClick value={readValue as string | number} /> : readValue}
+          <LockBadge field={field} />
+        </span>
+      </div>
+    );
+  };
+
   const fmtRange = (min?: number | null, max?: number | null): string | null => {
     if (min == null && max == null) return null;
     if (min == null) return `до ${max} см`;
@@ -536,7 +692,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
   const hasGalleryColumn = true;
   // Характеристики живуть у правій колонці ПОРУЧ із фото (заповнюють її висоту) — 2 колонки.
   const charCols = 'grid-cols-2';
-  const hasAnySize = !!(p && (p.sizeeu || (p as any).size_letter || p.measurementscm || p.dimensions || derivedSizes.length > 0));
+  const hasAnySize = !!(p && (p.sizeeu || (p as any).size_letter || p.measurementscm || p.dimensions || (p as any).geometric_shape || derivedSizes.length > 0));
   // «Справжній» розмір (EU/буквений/похідні/СМ) — БЕЗ габаритів. Якщо є лише габарити
   // (сумки), заголовок «Розмір» зайвий над самотнім чипом «Габарити» → ховаємо його.
   const hasRealSize = !!(p && (p.sizeeu || (p as any).size_letter || p.measurementscm || derivedSizes.length > 0));
@@ -896,7 +1052,15 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                         {((p as any).reserved_count ?? 0) > 1 ? `·${(p as any).reserved_count}` : ''}
                       </span>
                     )}
-                    {(p as any).condition_name && <Tag color="blue" style={{ margin: 0 }}>{(p as any).condition_name}</Tag>}
+                    {/* Відображуваний стан-чіп = ПОТОЧНИЙ стан (current_condition_name),
+                        узгоджено з колонкою «Стан» у таблиці. Редагування «Поточного стану»
+                        нижче одразу відображається тут. Журнальний «Початковий стан»
+                        (condition_name) лишається read-only і не змінюється. */}
+                    {((p as any).current_condition_name || (p as any).condition_name) && (
+                      <Tag color="blue" style={{ margin: 0 }}>
+                        {(p as any).current_condition_name || (p as any).condition_name}
+                      </Tag>
+                    )}
                     {(() => {
                       const total = p.quantity ?? 0;
                       const avail = p.available_qty ?? total;
@@ -923,6 +1087,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                           { field: 'size_letter', label: 'Буквений' },
                           { field: 'measurementscm', label: 'СМ' },
                           { field: 'dimensions', label: 'Габарити' },
+                          { field: 'geometric_shape', label: 'Геом. форма' },
                         ] as const).map(({ field, label }) => (
                           <div key={field} className="flex flex-col gap-1">
                             <span className="text-[10px] text-gray-400 dark:text-gray-500 font-medium flex items-center gap-1">{label}<LockDot field={field} /></span>
@@ -939,8 +1104,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                           </div>
                         )}
                         {(p as any).size_letter && (
-                          <div className="flex flex-col items-center px-3 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50 min-w-[58px]">
-                            <span className="text-[10px] text-gray-400 dark:text-gray-500 font-medium">Буквений</span>
+                          <div className="flex flex-col items-center justify-center px-3 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50 min-w-[58px]">
                             <span className="text-sm font-semibold text-gray-800 dark:text-gray-100">{(p as any).size_letter}</span>
                           </div>
                         )}
@@ -962,6 +1126,12 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                             <span className="text-sm font-semibold text-gray-800 dark:text-gray-100">{p.dimensions}</span>
                           </div>
                         )}
+                        {(p as any).geometric_shape && (
+                          <div className="flex flex-col items-center px-3 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50 min-w-[58px]">
+                            <span className="text-[10px] text-gray-400 dark:text-gray-500 font-medium">Форма</span>
+                            <span className="text-sm font-semibold text-gray-800 dark:text-gray-100">{(p as any).geometric_shape}</span>
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>
@@ -971,41 +1141,66 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                   <div className="mt-3 border-t border-gray-100 dark:border-gray-800 pt-4">
                     <div className="text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500 mb-3 font-medium">Характеристики</div>
                     <div className={`grid ${charCols} gap-x-6 gap-y-3`}>
-                    <RoCell label="Бренд" value={formatBrandName((p as any).brand_name)} />
-                    <EditCell field="model" label="Модель" />
-                    <RoCell label="Тип" value={(p as any).type_name} />
-                    <RoCell label="Підтип" value={(p as any).subtype_name} />
-                    <RoCell label="Стиль" value={(p as any).style_name} />
-                    <RoCell label="Стать" value={(p as any).gender_name} />
-                    <EditCell field="season" label="Сезон" />
-                    <RoCell label="Колір" value={(p as any).color_name} />
-                    <EditCell field="width" label="Ширина" />
-                    <EditCell field="current_condition_name" lockField="current_conditionid" label="Стан" />
-                    <EditCell field="marking" label="Маркування" />
-                    <EditCell field="year" label="Рік" type="number" />
-                    <EditCell field="clonednumbers" label="Клони" />
+                    {classSelect({ field: 'brandid', label: 'Бренд', options: (filterOpts?.brands ?? []) as any, readValue: formatBrandName((p as any).brand_name) })}
+                    {EditCell({ field: 'model', label: 'Модель' })}
+                    {EditCell({ field: 'collection', label: 'Колекція' })}
+                    {classSelect({ field: 'typeid', label: 'Тип', options: (filterOpts?.types ?? []) as any, readValue: (p as any).type_name })}
+                    {classSelect({ field: 'subtypeid', label: 'Підтип', options: (subtypeOptions) as any, readValue: (p as any).subtype_name })}
+                    {classSelect({ field: 'styleid', label: 'Стиль', options: (filterOpts?.styles ?? []) as any, readValue: (p as any).style_name })}
+                    {classSelect({ field: 'genderid', label: 'Стать', options: (filterOpts?.genders ?? []) as any, readValue: (p as any).gender_name })}
+                    {EditCell({ field: 'season', label: 'Сезон' })}
+                    {EditCell({ field: 'color_name', lockField: 'colorid', label: 'Колір' })}
+                    {EditCell({ field: 'width', label: 'Ширина' })}
+                    {EditCell({ field: 'current_condition_name', lockField: 'current_conditionid', label: 'Поточний стан' })}
+                    {/* «Початковий стан» (журнальний condition_name) показуємо ЛИШЕ коли він
+                        відрізняється від поточного — інакше дубль однакового значення поряд
+                        виглядає як баг. Журнальне значення лишається read-only. */}
+                    {(p as any).condition_name
+                      && (p as any).condition_name !== (p as any).current_condition_name && (
+                      <RoCell label="Початковий стан" value={(p as any).condition_name} />
+                    )}
+                    {EditCell({ field: 'marking', label: 'Маркування' })}
+                    {EditCell({ field: 'gtin', label: 'GTIN' })}
+                    {EditCell({ field: 'year', label: 'Рік', type: 'number' })}
+                    {EditCell({ field: 'clonednumbers', label: 'Клони' })}
                     <RoCell label="Завоз" value={p.dateadded} />
                     <RoCell label="У базі з" value={p.created_at ? new Date(p.created_at).toLocaleDateString('uk-UA') : null} />
                   </div>
 
-                  {/* Матеріали — ЗАВЖДИ першим підрозділом (згорнуто за замовчуванням) */}
-                  {p.materials && p.materials.length > 0 && (
+                  {/* Матеріали — ЗАВЖДИ першим підрозділом (згорнуто за замовчуванням).
+                      У edit-режимі — інпут на кожну позицію (CSV назв через кому). */}
+                  {(editMode || (p.materials && p.materials.length > 0)) && (
                     <CollapsibleSection id="materials" title="Матеріали">
                       <div className={`grid ${charCols} gap-x-6 gap-y-3`}>
-                        {(() => {
-                          const posLabels: Record<string, string> = {
-                            upper: 'Верх', middle: 'Середина', insole: 'Устілка', sole: 'Підошва', membrane: 'Мембрана',
-                          };
-                          const grouped = new Map<string, string[]>();
-                          for (const mat of p.materials!) {
-                            const label = posLabels[mat.position] || mat.position;
-                            if (!grouped.has(label)) grouped.set(label, []);
-                            grouped.get(label)!.push(mat.materialname || String(mat.material_id));
-                          }
-                          return Array.from(grouped.entries()).map(([pos, names]) => (
-                            <RoCell key={pos} label={pos} value={names.join(', ')} />
-                          ));
-                        })()}
+                        {editMode ? (
+                          MATERIAL_POSITIONS.map(({ pos, label }) => (
+                            <div key={pos} className="flex flex-col gap-1 min-w-0">
+                              <span className="text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500 font-medium">{label}</span>
+                              <input
+                                type="text"
+                                value={materialDrafts[pos] ?? ''}
+                                onChange={(e) => setMaterialDrafts((d) => ({ ...d, [pos]: e.target.value }))}
+                                placeholder="напр. шкіра, замша"
+                                className={inputCls}
+                              />
+                            </div>
+                          ))
+                        ) : (
+                          (() => {
+                            const posLabels: Record<string, string> = {
+                              upper: 'Верх', middle: 'Середина', insole: 'Устілка', sole: 'Підошва', membrane: 'Мембрана',
+                            };
+                            const grouped = new Map<string, string[]>();
+                            for (const mat of p.materials!) {
+                              const label = posLabels[mat.position] || mat.position;
+                              if (!grouped.has(label)) grouped.set(label, []);
+                              grouped.get(label)!.push(mat.materialname || String(mat.material_id));
+                            }
+                            return Array.from(grouped.entries()).map(([pos, names]) => (
+                              <RoCell key={pos} label={pos} value={names.join(', ')} />
+                            ));
+                          })()
+                        )}
                       </div>
                     </CollapsibleSection>
                   )}
@@ -1019,23 +1214,31 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                     p.measurements_pot_min != null || p.measurements_sleeve_min != null) && (
                     <CollapsibleSection id="other" title="Інше">
                       <div className={`grid ${charCols} gap-x-6 gap-y-3`}>
-                        <RoCell label="Тип підошви" value={p.sole_type_name} />
-                        <EditCell field="sole_color_name" lockField="sole_colorid" label="Колір підошви" />
-                        <RoCell label="Форма носка" value={p.toe_shape_name} />
-                        <RoCell label="Застібка" value={p.fastening_type_name} />
-                        <EditCell field="lace_type_name" lockField="lacetypeid" label="Тип шнурівки" />
-                        <RoCell label="Підкладка" value={p.lining_name} />
-                        <EditCell field="heel_type_name" lockField="heeltypeid" label="Тип каблука" />
-                        <EditCell field="technology_name" lockField="technologyid" label="Технології" />
-                        <EditCell field="packaging_name" lockField="packagingid" label="Пакування" />
-                        <RoCell label="Висота" value={fmtRange(p.measurements_height_min, p.measurements_height_max)} />
-                        <RoCell label="Підошва" value={fmtRange(p.measurements_sole_thickness_min, p.measurements_sole_thickness_max)} />
-                        <RoCell label="Каблук" value={fmtRange(p.measurements_heel_min, p.measurements_heel_max)} />
-                        <RoCell label="Довжина" value={fmtRange(p.measurements_length_min, p.measurements_length_max)} />
-                        <RoCell label="Груди (н/о)" value={fmtRange(p.measurements_pog_min, p.measurements_pog_max)} />
-                        <RoCell label="Бедра (н/о)" value={fmtRange(p.measurements_pob_min, p.measurements_pob_max)} />
-                        <RoCell label="Талія (н/о)" value={fmtRange(p.measurements_pot_min, p.measurements_pot_max)} />
-                        <RoCell label="Рукав" value={fmtRange(p.measurements_sleeve_min, p.measurements_sleeve_max)} />
+                        {EditCell({ field: 'sole_type_name', lockField: 'soletypeid', label: 'Тип підошви' })}
+                        {EditCell({ field: 'sole_color_name', lockField: 'sole_colorid', label: 'Колір підошви' })}
+                        {EditCell({ field: 'toe_shape_name', lockField: 'toeshapeid', label: 'Форма носка' })}
+                        {EditCell({ field: 'fastening_type_name', lockField: 'fasteningtypeid', label: 'Застібка' })}
+                        {EditCell({ field: 'lace_type_name', lockField: 'lacetypeid', label: 'Тип шнурівки' })}
+                        {EditCell({ field: 'lining_name', lockField: 'liningid', label: 'Підкладка' })}
+                        {EditCell({ field: 'heel_type_name', lockField: 'heeltypeid', label: 'Тип каблука' })}
+                        {EditCell({ field: 'technology_name', lockField: 'technologyid', label: 'Технології' })}
+                        {EditCell({ field: 'packaging_name', lockField: 'packagingid', label: 'Пакування' })}
+                        {MEASUREMENTS.map(({ name, label, minKey, maxKey }) => (
+                          editMode ? (
+                            <div key={name} className="flex flex-col gap-1 min-w-0">
+                              <span className="text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500 font-medium">{label}</span>
+                              <input
+                                type="text"
+                                value={measurementDrafts[name] ?? ''}
+                                onChange={(e) => setMeasurementDrafts((d) => ({ ...d, [name]: e.target.value }))}
+                                placeholder="напр. 26 або 25-27"
+                                className={inputCls}
+                              />
+                            </div>
+                          ) : (
+                            <RoCell key={name} label={label} value={fmtRange((p as any)[minKey], (p as any)[maxKey])} />
+                          )
+                        ))}
                       </div>
                     </CollapsibleSection>
                   )}

@@ -1,0 +1,128 @@
+{
+ "New": {
+  "sheetId": 996339690,
+  "header": [
+   "Номер",
+   "Номера-клони",
+   "Вид",
+   "Підвид",
+   "Стиль",
+   "Бренд",
+   "Модель",
+   "Маркування",
+   "Рік",
+   "Стать",
+   "Сезон",
+   "Колір",
+   "Опис",
+   "Верх",
+   "Середина",
+   "Підкладка",
+   "Устілка",
+   "Мембрана",
+   "Підошва",
+   "Тип підошви",
+   "Форма носка",
+   "Застібка",
+   "Країна-виробник",
+   "Країна-власник",
+   "Розмір",
+   "Буквений",
+   "Груди (н/о)",
+   "Талія (н/о)",
+   "Бедра (н/о)",
+   "Рукав",
+   "Довжина",
+   "Ширина",
+   "Габарити",
+   "СМ",
+   "Висота",
+   "Товщина підошви",
+   "Підбор",
+   "Ціна",
+   "Стара ціна",
+   "Статус",
+   "Стан",
+   "Поточний стан",
+   "Екстра примітка",
+   "",
+   "",
+   "",
+   "Інформація про завоз"
+  ],
+  "columnGroups": [
+   {
+    "range": {
+     "sheetId": 996339690,
+     "dimension": "COLUMNS",
+     "startIndex": 1,
+     "endIndex": 2
+    },
+    "depth": 1
+   },
+   {
+    "range": {
+     "sheetId": 996339690,
+     "dimension": "COLUMNS",
+     "startIndex": 3,
+     "endIndex": 5
+    },
+    "depth": 1
+   },
+   {
+    "range": {
+     "sheetId": 996339690,
+     "dimension": "COLUMNS",
+     "startIndex": 7,
+     "endIndex": 9
+    },
+    "depth": 1
+   },
+   {
+    "range": {
+     "sheetId": 996339690,
+     "dimension": "COLUMNS",
+     "startIndex": 13,
+     "endIndex": 22
+    },
+    "depth": 1
+   },
+   {
+    "range": {
+     "sheetId": 996339690,
+     "dimension": "COLUMNS",
+     "startIndex": 26,
+     "endIndex": 31
+    },
+    "depth": 1
+   },
+   {
+    "range": {
+     "sheetId": 996339690,
+     "dimension": "COLUMNS",
+     "startIndex": 34,
+     "endIndex": 37
+    },
+    "depth": 1
+   },
+   {
+    "range": {
+     "sheetId": 996339690,
+     "dimension": "COLUMNS",
+     "startIndex": 38,
+     "endIndex": 39
+    },
+    "depth": 1
+   },
+   {
+    "range": {
+     "sheetId": 996339690,
+     "dimension": "COLUMNS",
+     "startIndex": 46,
+     "endIndex": 55
+    },
+    "depth": 1
+   }
+  ]
+ }
+}
