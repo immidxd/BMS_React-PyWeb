@@ -421,7 +421,11 @@ class ProductList(BaseModel):
     is_reserved: bool = False         # активна бронь і товар ще не повністю проданий
     pnum_dup_brands: int = 0
     pending_candidates_count: int = 0  # merge-candidate UX badge
-    
+    is_rostovka: bool = False          # набір розмірів (маркер у списку)
+    published_tg: bool = False         # є published-пост у Telegram
+    published_olx: bool = False        # є active/limited оголошення на OLX
+    has_photo: bool = False            # має ≥1 фото (локально/Drive)
+
     class Config:
         from_attributes = True
 

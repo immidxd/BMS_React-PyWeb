@@ -143,6 +143,11 @@ export interface Product {
 
     // Rostovka detection: quantity>1, OR (n) suffix variant, OR has (n) child
     is_rostovka?: boolean;
+
+    // Маркери рядка
+    published_tg?: boolean;    // опубліковано в Telegram
+    published_olx?: boolean;   // опубліковано на OLX
+    has_photo?: boolean;       // має ≥1 фото
 }
 
 export interface ProductListResponse {

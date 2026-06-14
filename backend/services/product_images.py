@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import re
+import time
 import logging
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,7 +19,10 @@ from urllib.parse import quote
 logger = logging.getLogger(__name__)
 
 # ── Config ────────────────────────────────────────────────────────────────────
-DEFAULT_IMAGES_DIR = os.path.expanduser("~/Downloads/Бізнес/Товар/Взуття")
+# Корінь усіх фото товару. Усередині — категорійні підпапки (Взуття, Сумки,
+# Одяг, Аксесуари, Інше). Скануємо корінь + усі підпапки одного рівня (так само,
+# як Drive-індекс), інакше фото сумок/одягу були б невидимі локально.
+DEFAULT_IMAGES_DIR = os.path.expanduser("~/Downloads/Бізнес/Товар")
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".heic", ".bmp"}
 URL_PREFIX = "/product-images"  # match StaticFiles mount in app/main.py
 
@@ -124,37 +128,57 @@ def _sort_key(filename: str, target: str) -> tuple:
     return (1, 0, base.lower())
 
 
-def _list_local_only(target: str) -> List[ImageEntry]:
-    """Локальні фото (без дедуплікації)."""
-    images_dir = get_images_dir()
-    if not os.path.isdir(images_dir):
-        logger.debug(f"Images dir not found: {images_dir}")
-        return []
-
-    matched: List[str] = []
+def _scan_dir_for(directory: str, target: str) -> List[str]:
+    """Імена файлів-картинок у `directory` (без рекурсії), що матчать товар."""
+    found: List[str] = []
     try:
-        for entry in os.scandir(images_dir):
+        for entry in os.scandir(directory):
             if not entry.is_file():
                 continue
             ext = os.path.splitext(entry.name)[1].lower()
             if ext not in IMAGE_EXTENSIONS:
                 continue
             if _matches_productnumber(entry.name, target):
-                matched.append(entry.name)
+                found.append(entry.name)
     except OSError as e:
-        logger.warning(f"Failed to scan images dir {images_dir}: {e}")
+        logger.warning(f"Failed to scan images dir {directory}: {e}")
+    return found
+
+
+def _list_local_only(target: str) -> List[ImageEntry]:
+    """Локальні фото (без дедуплікації).
+
+    Сканує корінь + усі категорійні підпапки одного рівня (Взуття, Сумки, …).
+    URL зберігає відносний шлях, щоб StaticFiles-маунт на корені віддав файл
+    із потрібної підпапки (`/product-images/Сумки/Ф4079_01.JPG`).
+    """
+    images_dir = get_images_dir()
+    if not os.path.isdir(images_dir):
+        logger.debug(f"Images dir not found: {images_dir}")
         return []
 
-    matched.sort(key=lambda fn: _sort_key(fn, target))
+    # (basename, відносний шлях від кореня) — relpath потрібен для URL.
+    matched: List[tuple] = [(fn, fn) for fn in _scan_dir_for(images_dir, target)]
+    try:
+        for entry in os.scandir(images_dir):
+            if entry.is_dir():
+                for fn in _scan_dir_for(entry.path, target):
+                    matched.append((fn, os.path.join(entry.name, fn)))
+    except OSError as e:
+        logger.warning(f"Failed to scan subfolders of {images_dir}: {e}")
+
+    # Сортуємо за іменем файлу (натуральний порядок усередині kind).
+    matched.sort(key=lambda t: _sort_key(t[0], target))
     return [
         ImageEntry(
             filename=fn,
-            url=f"{URL_PREFIX}/{quote(fn)}",
+            # quote зберігає '/' за замовчуванням → шлях лишається валідним.
+            url=f"{URL_PREFIX}/{quote(relpath)}",
             index=i,
             is_defect=_is_defect_filename(fn, target),
             kind=_classify(fn, target),
         )
-        for i, fn in enumerate(matched)
+        for i, (fn, relpath) in enumerate(matched)
     ]
 
 
@@ -225,3 +249,83 @@ def list_images(productnumber: str) -> List[ImageEntry]:
         ImageEntry(filename=e.filename, url=e.url, index=i, is_defect=e.is_defect, kind=e.kind)
         for i, e in enumerate(merged_sorted)
     ]
+
+
+# ── Масовий індикатор «чи є фото» для списку товарів ───────────────────────────
+# Сканувати папку/Drive на КОЖЕН рядок (3000+ товарів) надто дорого. Замість
+# цього один раз будуємо множину «номерів, що мають ≥1 фото» і кешуємо її.
+# Ключ = провідний токен імені файлу (до першого `_`/`.`/пробілу, `-` лишається
+# частиною номера) у lowercase — узгоджено з матчингом `list_images`, тож
+# `pnum.lower() in set` ⇔ list_images(pnum) поверне ≥1 фото (для звичайних
+# номерів без внутрішніх пробілів).
+_PHOTO_SET_CACHE: dict = {"set": frozenset(), "ts": 0.0, "valid": False}
+_PHOTO_SET_TTL = float(os.environ.get("PRODUCT_PHOTO_SET_TTL", "300"))
+
+
+def _pnum_token_from_filename(filename: str) -> Optional[str]:
+    """Провідний токен номера з імені файлу (lowercase). `-` НЕ розділювач."""
+    base = os.path.splitext(filename)[0]
+    m = re.match(r"^#?([^\s_.#]+)", base)
+    return m.group(1).strip().lower() if m else None
+
+
+def get_photo_pnum_set(force: bool = False) -> frozenset:
+    """Множина normalized-lowercase номерів, що мають ≥1 фото (локально ∪ Drive).
+    Кешується на `PRODUCT_PHOTO_SET_TTL` сек. Drive береться лише з вже-прогрітого
+    індексу (без блокуючого скану), тож виклик у списку товарів дешевий."""
+    now = time.time()
+    if not force and _PHOTO_SET_CACHE["valid"] and (now - _PHOTO_SET_CACHE["ts"]) < _PHOTO_SET_TTL:
+        return _PHOTO_SET_CACHE["set"]
+
+    result: set = set()
+    images_dir = get_images_dir()
+    if os.path.isdir(images_dir):
+        scan_dirs = [images_dir]
+        try:
+            for entry in os.scandir(images_dir):
+                if entry.is_dir():
+                    scan_dirs.append(entry.path)
+        except OSError as e:
+            logger.warning(f"photo-set: failed to list subfolders of {images_dir}: {e}")
+        for d in scan_dirs:
+            try:
+                for entry in os.scandir(d):
+                    if not entry.is_file():
+                        continue
+                    if os.path.splitext(entry.name)[1].lower() not in IMAGE_EXTENSIONS:
+                        continue
+                    tok = _pnum_token_from_filename(entry.name)
+                    if tok:
+                        result.add(tok)
+            except OSError:
+                continue
+
+    # Drive — лише вже закешований індекс (не форсимо скан).
+    try:
+        from backend.services.product_images_drive import get_cached_drive_pnums
+    except ImportError:
+        try:
+            from services.product_images_drive import get_cached_drive_pnums
+        except ImportError:
+            get_cached_drive_pnums = None  # type: ignore
+    if get_cached_drive_pnums is not None:
+        try:
+            result.update(get_cached_drive_pnums())
+        except Exception as e:
+            logger.debug(f"photo-set: drive pnums unavailable: {e}")
+
+    frozen = frozenset(result)
+    _PHOTO_SET_CACHE.update(set=frozen, ts=now, valid=True)
+    return frozen
+
+
+def product_has_photo(productnumber: Optional[str], photo_set: Optional[frozenset] = None) -> bool:
+    """Чи має товар фото (за номером). `photo_set` можна передати ззовні, щоб не
+    тягати кеш на кожен рядок."""
+    if not productnumber:
+        return False
+    key = productnumber.strip().lstrip("#").strip().lower()
+    if not key:
+        return False
+    ps = photo_set if photo_set is not None else get_photo_pnum_set()
+    return key in ps

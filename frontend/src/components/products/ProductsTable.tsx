@@ -23,7 +23,7 @@ import { Product } from '../../types/product';
 import type { TableProps } from 'antd';
 import ProductDetailsModal from './ProductDetailsModal';
 import MergeCandidatesModal from './MergeCandidatesModal';
-import { LinkOutlined, LockFilled } from '@ant-design/icons';
+import { LinkOutlined, LockFilled, PictureOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import { productService } from '../../services/productService';
 import { CopyOnClick, UnknownIf, isUnknownValue, BrandName, getProductDisplayStatus } from '../common/displayHelpers';
@@ -42,6 +42,44 @@ const TableContainer = styled.div`
     margin-top: 16px;
     position: relative;
 `;
+
+// Логотип Telegram (paper-plane) — інлайн SVG, фарбується currentColor.
+const TelegramGlyph: React.FC<{ size?: number }> = ({ size = 14 }) => (
+    <svg viewBox="0 0 24 24" width={size} height={size} fill="currentColor" aria-hidden focusable="false">
+        <path d="M9.04 15.47 8.7 20.2c.46 0 .66-.2.9-.43l2.16-2.06 4.48 3.28c.82.45 1.4.22 1.62-.76l2.94-13.8c.27-1.22-.44-1.7-1.24-1.4L2.2 9.9c-1.2.46-1.18 1.13-.2 1.43l4.4 1.37 10.2-6.43c.48-.3.92-.13.56.17z"/>
+    </svg>
+);
+
+// Маркер OLX — компактний пілл «OLX» у фірмовому темно-бірюзовому (#002F34).
+// Вордмарк краще читається пілом, ніж лінійною іконкою, на дрібному масштабі.
+const OlxGlyph: React.FC<{ size?: number }> = ({ size = 11 }) => (
+    <span style={{
+        fontSize: size - 3, fontWeight: 800, lineHeight: 1, color: '#fff',
+        background: '#002F34', borderRadius: 3, padding: '1.5px 2.5px',
+        letterSpacing: '0.2px', display: 'inline-flex', alignItems: 'center',
+    }}>OLX</span>
+);
+
+// Соц-маркери рядка (інлайн, на одній лінії): Telegram + OLX. Пиняться
+// absolute-left у комірці «Номер» → висоту рядка/ширину колонки не чіпають.
+// Рендеримо лише наявні; якщо жодного — нічого.
+const RowIndicators: React.FC<{ publishedTg?: boolean; publishedOlx?: boolean }> = ({ publishedTg, publishedOlx }) => {
+    if (!publishedTg && !publishedOlx) return null;
+    return (
+        <span className="inline-flex items-center gap-1 leading-none select-none shrink-0">
+            {publishedTg && (
+                <Tooltip title="Опубліковано в Telegram">
+                    <span style={{ color: '#229ED9', display: 'inline-flex' }}><TelegramGlyph size={11} /></span>
+                </Tooltip>
+            )}
+            {publishedOlx && (
+                <Tooltip title="Опубліковано на OLX">
+                    <span style={{ display: 'inline-flex' }}><OlxGlyph size={11} /></span>
+                </Tooltip>
+            )}
+        </span>
+    );
+};
 
 const TableActions = styled(Row)`
     margin-bottom: 16px;
@@ -103,7 +141,7 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
     const [mergeId, setMergeId] = useState<number | null>(null);
     const [mergeOpen, setMergeOpen] = useState<boolean>(false);
     // Контекстне меню керування колонками (тільки на шапці таблиці)
-    const storageKey = 'products_table_columns_v3';
+    const storageKey = 'products_table_columns_v4';
     const menuRef = useRef<HTMLDivElement | null>(null);
     const [menuOpen, setMenuOpen] = useState(false);
     const [menuPos, setMenuPos] = useState<{x:number;y:number}>({x:0,y:0});
@@ -156,7 +194,7 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
         // 8.1, 8.2
         { id: 'oldprice', title: 'Стара ціна', optional: true },
         { id: 'quantity', title: 'К-сть (заг.)', optional: true },
-        { id: 'available_qty', title: 'В наявності', optional: false },
+        { id: 'available_qty', title: 'В наявності', optional: true },
         // 9
         { id: 'status_name', title: 'Статус', optional: false },
         // 10 — основна колонка "Стан" відображає current_conditionid (актуальний стан).
@@ -270,18 +308,17 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
             render: (id: number) => <CopyOnClick value={id} className="bms-mono text-xs" />,
         },
         productnumber: {
-            title: 'Номер', dataIndex: 'productnumber', key: 'productnumber', width: 64,
+            title: 'Номер', dataIndex: 'productnumber', key: 'productnumber', width: 74,
             render: (text: string, record: Product) => {
                 const label = (text || '').replace(/^#/, '');
                 if (isUnknownValue(label)) {
                     return (
-                        <div className="flex flex-col gap-0.5 items-center">
+                        <div className="flex items-center justify-center gap-1.5">
+                            <RowIndicators publishedTg={(record as any).published_tg} publishedOlx={(record as any).published_olx} />
                             <UnknownIf value={label} className="text-xs font-medium" />
-                            {record.is_rostovka && (
-                                <Tooltip title={`Ростовка — набір розмірів (${record.quantity} од.)`}>
-                                    <span className="inline-flex items-center gap-0.5 px-1 py-0 rounded text-[9px] font-semibold bg-purple-100 text-purple-700 border border-purple-200 w-fit cursor-help">▤ Рост.</span>
-                                </Tooltip>
-                            )}
+                            <span className="invisible" aria-hidden="true">
+                                <RowIndicators publishedTg={(record as any).published_tg} publishedOlx={(record as any).published_olx} />
+                            </span>
                         </div>
                     );
                 }
@@ -306,13 +343,12 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
                     />
                 );
                 return (
-                    <div className="flex flex-col gap-0.5 items-center">
+                    <div className="flex items-center justify-center gap-1.5">
+                        <RowIndicators publishedTg={(record as any).published_tg} publishedOlx={(record as any).published_olx} />
                         {numberCell}
-                        {record.is_rostovka && (
-                            <Tooltip title={`Ростовка — набір розмірів (${record.quantity} од.)`}>
-                                <span className="inline-flex items-center gap-0.5 px-1 py-0 rounded text-[9px] font-semibold bg-purple-100 text-purple-700 border border-purple-200 w-fit cursor-help">▤ Рост.</span>
-                            </Tooltip>
-                        )}
+                        <span className="invisible" aria-hidden="true">
+                            <RowIndicators publishedTg={(record as any).published_tg} publishedOlx={(record as any).published_olx} />
+                        </span>
                     </div>
                 );
             },
@@ -434,7 +470,21 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
                 );
             } },
         condition_name: { title: 'Початковий стан', dataIndex: 'condition_name', key: 'condition_name', width: 120 },
-        current_condition_name: { title: 'Стан', dataIndex: 'current_condition_name', key: 'current_condition_name', width: 75 },
+        current_condition_name: { title: 'Стан', dataIndex: 'current_condition_name', key: 'current_condition_name', width: 110,
+            render: (text: string, record: Product) => (
+                // Стан по центру + маркер «є фото» пришпилений до правого краю
+                // комірки (absolute, з невеликим відступом) — це найправіша
+                // колонка, тож іконка лягає в край таблиці й не заважає тексту.
+                <div className="relative w-full flex items-center justify-center">
+                    <span className="text-xs">{text}</span>
+                    {(record as any).has_photo && (
+                        <Tooltip title="Є фото">
+                            <PictureOutlined className="absolute" style={{ right: 10, top: '50%', transform: 'translateY(-50%)', fontSize: 12, color: '#94a3b8' }} />
+                        </Tooltip>
+                    )}
+                </div>
+            ),
+        },
         style_name: { title: 'Стиль', dataIndex: 'style_name', key: 'style_name', width: 110 },
         season: { title: 'Сезон', dataIndex: 'season', key: 'season', width: 150,
             render: (v: string) => {
@@ -545,9 +595,14 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
         }
     };
 
+    // Тимчасово вимкнено колонку виділення рядків (чекбокси) — поки не
+    // використовується. Поставити true, щоб повернути bulk-виділення
+    // (масова видимість угорі працює лише коли є виділені рядки).
+    const ENABLE_ROW_SELECTION = false;
     const rowSelection = {
         selectedRowKeys,
         onChange: (keys: React.Key[]) => onSelectedRowKeysChange(keys),
+        columnWidth: 36,
     };
 
     // Циклічна навігація між картками в межах поточного списку (всі активні
@@ -604,7 +659,7 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
                     columns={columns}
                     dataSource={products.items}
                     rowKey="id"
-                    rowSelection={rowSelection}
+                    rowSelection={ENABLE_ROW_SELECTION ? rowSelection : undefined}
                     pagination={false}
                     loading={loading}
                     onRow={(record: Product) => {

@@ -919,3 +919,118 @@ async def relink_publications(db: Session = Depends(get_db)):
         logger.error(f"Relink error: {e}")
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# OLX (read-only v1) — офіційний OLX API, OAuth2. Дзеркало Telegram-флоу.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Relink OLX-оголошень до products за номером (без size-стадії — OLX-оголошення
+# зазвичай одне на номер). Форм-пріоритет #Ф > Ф > # > raw, найстаріший товар.
+_RELINK_OLX_SQL = """
+WITH best AS (
+    SELECT DISTINCT ON (oa.id)
+        oa.id AS oa_id,
+        p.id  AS p_id
+    FROM olx_adverts oa
+    JOIN products p ON p.productnumber IN (
+        oa.product_number_raw,
+        'Ф'  || oa.product_number_raw,
+        '#Ф' || oa.product_number_raw,
+        '#'  || oa.product_number_raw
+    )
+    WHERE oa.product_number_raw IS NOT NULL AND oa.product_number_raw <> ''
+    ORDER BY oa.id,
+        CASE p.productnumber
+            WHEN '#Ф' || oa.product_number_raw THEN 1
+            WHEN 'Ф'  || oa.product_number_raw THEN 2
+            WHEN '#'  || oa.product_number_raw THEN 3
+            WHEN oa.product_number_raw         THEN 4
+            ELSE 5
+        END,
+        p.id
+)
+UPDATE olx_adverts oa
+SET product_id = best.p_id
+FROM best
+WHERE oa.id = best.oa_id
+  AND (oa.product_id IS NULL OR oa.product_id <> best.p_id)
+"""
+
+
+def _olx():
+    try:
+        from services import olx_service
+    except ImportError:
+        from backend.services import olx_service
+    return olx_service
+
+
+@router.get("/api/publications/olx/status")
+async def olx_status(db: Session = Depends(get_db)):
+    """Статус OLX-інтеграції: налаштовано / авторизовано / лічильники."""
+    return _olx().get_status(db)
+
+
+@router.get("/api/publications/olx/oauth/start")
+async def olx_oauth_start():
+    """Повертає URL авторизації OLX — фронт відкриває його у браузері."""
+    olx = _olx()
+    if not olx.is_configured():
+        raise HTTPException(
+            status_code=400,
+            detail="OLX не налаштовано. Додай OLX_CLIENT_ID та OLX_CLIENT_SECRET у .env",
+        )
+    return {"authorize_url": olx.build_authorize_url()}
+
+
+@router.get("/api/publications/olx/oauth/callback")
+async def olx_oauth_callback(
+    code: Optional[str] = Query(None),
+    error: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+):
+    """Callback від OLX: міняє code на токени. Повертає просту HTML-сторінку."""
+    from fastapi.responses import HTMLResponse
+    if error:
+        return HTMLResponse(f"<h3>OLX авторизація відхилена: {error}</h3>", status_code=400)
+    if not code:
+        return HTMLResponse("<h3>OLX: відсутній code у callback</h3>", status_code=400)
+    try:
+        _olx().exchange_code(db, code)
+    except Exception as e:
+        logger.error(f"OLX oauth callback failed: {e}")
+        return HTMLResponse(f"<h3>OLX: помилка обміну токена</h3><pre>{e}</pre>", status_code=500)
+    return HTMLResponse(
+        "<h3>✅ OLX підключено. Можна закрити це вікно й повернутись у BMS.</h3>"
+    )
+
+
+@router.post("/api/publications/sync-olx")
+async def sync_olx(db: Session = Depends(get_db)):
+    """Синхронізувати оголошення OLX + relink до товарів."""
+    olx = _olx()
+    result = olx.sync_adverts(db)
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("error", "OLX sync failed"))
+    try:
+        r = db.execute(text(_RELINK_OLX_SQL))
+        db.commit()
+        result["auto_relinked"] = r.rowcount
+    except Exception as re:
+        db.rollback()
+        logger.warning(f"OLX post-sync relink failed: {re}")
+    return result
+
+
+@router.post("/api/publications/relink-olx")
+async def relink_olx(db: Session = Depends(get_db)):
+    """Перелінкувати OLX-оголошення до товарів за номером (без мережі)."""
+    try:
+        r = db.execute(text(_RELINK_OLX_SQL))
+        db.commit()
+        return {"success": True, "rows_affected": r.rowcount}
+    except Exception as e:
+        db.rollback()
+        logger.error(f"OLX relink error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

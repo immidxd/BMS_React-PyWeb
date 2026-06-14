@@ -259,6 +259,13 @@ def get_drive_index_stats() -> dict:
     }
 
 
+def get_cached_drive_pnums() -> set:
+    """Ключі вже-закешованого Drive-індексу (normalized lowercase pnum) БЕЗ
+    блокуючого скану. Для масового lookup «чи є фото» у списку товарів —
+    жодних мережевих викликів, лише те що вже прогріто (prewarm/перегляд карток)."""
+    return set(_index_state.get("by_pnum") or {})
+
+
 # ── Public API ────────────────────────────────────────────────────────────────
 def list_drive_images_for(target_normalized: str) -> List[DriveImageEntry]:
     """Знайти фото товару в Drive за normalized productnumber (без #, lowercase).

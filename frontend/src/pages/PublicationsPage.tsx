@@ -521,6 +521,48 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
     }
   };
 
+  // OLX: одноразова авторизація (OAuth) — відкриває сторінку OLX у новому вікні.
+  const handleOlxConnect = async () => {
+    try {
+      const res = await fetch('/api/publications/olx/oauth/start');
+      const data = await res.json();
+      if (!res.ok) {
+        setSyncAllMsg(`❌ OLX: ${data.detail || `HTTP ${res.status}`}`);
+        return;
+      }
+      window.open(data.authorize_url, '_blank', 'noopener');
+      setSyncAllMsg('🔗 Відкрито сторінку авторизації OLX. Після підтвердження повернись і натисни «Синхронізувати OLX».');
+    } catch (e: any) {
+      setSyncAllMsg(`❌ OLX: ${e.message || 'Помилка'}`);
+    }
+  };
+
+  // OLX: синхронізувати оголошення + перепов'язати до товарів.
+  const handleOlxSync = async () => {
+    if (syncingAll) return;
+    setSyncingAll(true);
+    setSyncAllMsg(null);
+    try {
+      const res = await fetch('/api/publications/sync-olx', { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok) {
+        setSyncAllMsg(`❌ OLX: ${data.detail || `HTTP ${res.status}`}`);
+      } else {
+        setSyncAllMsg(
+          `✅ OLX: ${data.total || 0} оголошень, ${data.created || 0} нових, ` +
+          `${data.linked || 0} прив'язано, ${data.auto_relinked || 0} перепов'язано.`
+        );
+        fetchItems();
+        fetchStats();
+        setTimeout(() => setSyncAllMsg(null), 6000);
+      }
+    } catch (e: any) {
+      setSyncAllMsg(`❌ OLX: ${e.message || 'Помилка'}`);
+    } finally {
+      setSyncingAll(false);
+    }
+  };
+
   const handleUnpublish = async (productId: number) => {
     if (!window.confirm('Зняти з публікації? Пост буде переслано у WORKSHOP (архів) і видалено з усіх каналів/гілок.')) return;
     setUnpublishing(productId);
@@ -678,6 +720,22 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
               title="Просканувати конкретний канал за username (для нових/ad-hoc)"
             >
               📡 Один канал
+            </button>
+            <button
+              onClick={handleOlxConnect}
+              className="px-3 py-1.5 text-xs bg-gray-100 hover:bg-gray-200 dark:bg-gray-700 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-200 rounded transition-colors"
+              title="Одноразова авторизація OLX (OAuth). Потрібні OLX_CLIENT_ID/SECRET у .env"
+            >
+              🔌 OLX: підключити
+            </button>
+            <button
+              onClick={handleOlxSync}
+              disabled={syncingAll}
+              className="px-3 py-1.5 text-sm text-white rounded transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+              style={{ backgroundColor: '#002F34' }}
+              title="Підтягнути власні оголошення OLX і прив'язати до товарів за номером"
+            >
+              {syncingAll ? '⏳ OLX…' : '🔄 Синхронізувати OLX'}
             </button>
           </div>
         </div>

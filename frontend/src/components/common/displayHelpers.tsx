@@ -252,3 +252,19 @@ export function getProductDisplayStatus(p: ProductStatusInput): { text: string; 
     // 5) Default — непродано.
     return { text: 'Непродано', color: 'green' };
 }
+
+// ── Колір чипа «Стан» товару за значенням ───────────────────────────────────
+// Новий → зелений, Хороший → синій, Легковживаний → жовтий,
+// Вживаний → помаранчевий, Пошкоджений → червоний. Невідоме → сірий.
+// color — назва кольору antd <Tag>.
+export function getConditionColor(condition?: string | null): string {
+    const c = (condition || '').trim().toLowerCase();
+    switch (c) {
+        case 'новий':         return 'green';
+        case 'хороший':       return 'blue';
+        case 'легковживаний': return 'gold';   // жовтий
+        case 'вживаний':      return 'orange';
+        case 'пошкоджений':   return 'red';
+        default:              return 'default';
+    }
+}

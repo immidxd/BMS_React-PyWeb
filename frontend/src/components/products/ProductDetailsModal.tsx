@@ -3,7 +3,7 @@ import { productService } from '../../services/productService';
 import type { Product, ProductFilters } from '../../types/product';
 import { Tag, Spin, Image } from 'antd';
 import { CloseOutlined, PictureOutlined, LeftOutlined, RightOutlined, WarningOutlined, EditOutlined, CheckOutlined } from '@ant-design/icons';
-import { CopyOnClick, formatBrandName, getProductDisplayStatus } from '../common/displayHelpers';
+import { CopyOnClick, formatBrandName, getProductDisplayStatus, getConditionColor } from '../common/displayHelpers';
 
 interface Props {
   productId: number | null;
@@ -950,6 +950,17 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                       </button>
                     )}
 
+                    {/* Є реальні фото, але офіційних нема й донор не заданий —
+                        дозволяємо прив'язати студійні з іншого товару (як у порожньому
+                        випадку, але тут фото вже є — лише без офіційних). */}
+                    {allImages.length > 0 && officialCount === 0 && !(p as any).official_photos_from && (
+                      <button type="button"
+                        onClick={() => { setPhotoSrcDraft(''); setEditingPhotoSrc(true); }}
+                        className="self-start text-[12px] text-blue-600 dark:text-blue-400 hover:underline">
+                        📷 Підтягнути студійні фото з іншого товару…
+                      </button>
+                    )}
+
                     {/* Thumbnails */}
                     {images.length > 1 && (
                       <div className="flex gap-2 overflow-x-auto py-1.5 -mx-1 px-1">
@@ -1052,7 +1063,10 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                         нижче одразу відображається тут. Журнальний «Початковий стан»
                         (condition_name) лишається read-only і не змінюється. */}
                     {((p as any).current_condition_name || (p as any).condition_name) && (
-                      <Tag color="blue" style={{ margin: 0 }}>
+                      <Tag
+                        color={getConditionColor((p as any).current_condition_name || (p as any).condition_name)}
+                        style={{ margin: 0 }}
+                      >
                         {(p as any).current_condition_name || (p as any).condition_name}
                       </Tag>
                     )}

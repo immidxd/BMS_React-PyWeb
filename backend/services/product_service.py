@@ -166,7 +166,16 @@ def get_products(
                        SELECT 1 FROM products p2
                        WHERE p2.productnumber = p.productnumber || '(1)'
                    )
-               ) AS is_rostovka
+               ) AS is_rostovka,
+               -- Опубліковано в Telegram. Пост лінкується до ОДНОГО товару-рядка
+               -- (publications matcher обирає один best product на пост), але один
+               -- пост покриває ВСЮ ростовку (всі розміри спільного номера). Тож
+               -- маркер вмикаємо для всіх рядків номера, якщо хоч один sibling
+               -- має published-пост → tgpub (за нормалізованим productnumber).
+               (tgpub.pnum IS NOT NULL) AS published_tg,
+               -- Опубліковано на OLX (active/limited оголошення) — той самий
+               -- принцип «за номером» (одне оголошення покриває всю ростовку).
+               (olxpub.pnum IS NOT NULL) AS published_olx
         FROM products p
         LEFT JOIN types t ON p.typeid = t.id
         LEFT JOIN brands b ON p.brandid = b.id  
@@ -240,6 +249,21 @@ def get_products(
             WHERE status = 'pending'
             GROUP BY new_product_id
         ) mc ON mc.new_product_id = p.id
+        LEFT JOIN (
+            -- Номери (без #), що мають ≥1 published-пост у TG. Один пост → ВСЯ
+            -- ростовка номера вважається опублікованою (всі розміри в одному пості).
+            SELECT DISTINCT TRIM(LEADING '#' FROM p2.productnumber) AS pnum
+            FROM telegram_posts tp2
+            JOIN products p2 ON p2.id = tp2.product_id
+            WHERE tp2.tg_status = 'published' AND p2.productnumber IS NOT NULL
+        ) tgpub ON tgpub.pnum = TRIM(LEADING '#' FROM p.productnumber)
+        LEFT JOIN (
+            -- Номери (без #), що мають ≥1 active/limited оголошення на OLX.
+            SELECT DISTINCT TRIM(LEADING '#' FROM p2.productnumber) AS pnum
+            FROM olx_adverts oa
+            JOIN products p2 ON p2.id = oa.product_id
+            WHERE oa.status IN ('active', 'limited') AND p2.productnumber IS NOT NULL
+        ) olxpub ON olxpub.pnum = TRIM(LEADING '#' FROM p.productnumber)
         """
         
         where_conditions = []
@@ -570,7 +594,18 @@ def get_products(
         
         # Execute query
         rows = db.execute(text(base_sql), params).fetchall()
-        
+
+        # Множина номерів з фото — будуємо ОДИН раз на сторінку (не на рядок).
+        try:
+            from services.product_images import get_photo_pnum_set, product_has_photo
+        except ImportError:
+            from backend.services.product_images import get_photo_pnum_set, product_has_photo
+        try:
+            _photo_set = get_photo_pnum_set()
+        except Exception as _pe:
+            logger.warning(f"get_products: photo-set unavailable: {_pe}")
+            _photo_set = frozenset()
+
         # Convert rows to dictionaries using _mapping (safe regardless of column order)
         items = []
         for row in rows:
@@ -658,6 +693,9 @@ def get_products(
                 'pnum_dup_brands': m.get('pnum_dup_brands', 0),
                 'pending_candidates_count': int(m.get('pending_candidates_count') or 0),
                 'is_rostovka': bool(m.get('is_rostovka', False)),
+                'published_tg': bool(m.get('published_tg', False)),
+                'published_olx': bool(m.get('published_olx', False)),
+                'has_photo': product_has_photo(m.get('productnumber'), _photo_set),
             }
             items.append(product_dict)
         
