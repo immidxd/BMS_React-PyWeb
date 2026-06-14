@@ -135,6 +135,7 @@ export interface Product {
     // Computed from order_items
     sold_count?: number;
     available_qty?: number;
+    order_count?: number;      // всього замовлень (будь-який статус) — для детекту застарілого знімку «Продано»
     reserved_count?: number;   // Підтверджено без Оплачено = бронь
     is_reserved?: boolean;     // активна бронь, товар ще не повністю проданий
     pnum_dup_brands?: number;

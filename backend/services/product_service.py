@@ -145,6 +145,11 @@ def get_products(
                scol.colorname as sole_color_name,
                COALESCE(sold.sold_count, 0) AS sold_count,
                GREATEST(COALESCE(p.quantity, 0) - COALESCE(sold.sold_count, 0), 0) AS available_qty,
+               -- Скільки взагалі замовлень на товар (будь-який статус). Потрібно щоб
+               -- відрізнити «застарілий знімок Продано» (замовлення є, але всі в не-
+               -- продажному стані Обмін/Відміна → sold_count<qty) від легітимного
+               -- неформального продажу (замовлень нема зовсім → знімку довіряємо).
+               (SELECT COUNT(*) FROM order_items oi_oc WHERE oi_oc.product_id = p.id) AS order_count,
                -- «Заброньовано»: є активна бронь (Підтверджено без Оплачено) і товар
                -- ще не повністю проданий. Оверлей над «Непродано» — НЕ змінює sold/available.
                COALESCE(reserved.reserved_count, 0) AS reserved_count,
@@ -468,7 +473,21 @@ def get_products(
                 # без формального замовлення).
                 where_conditions.append("""(
                     GREATEST(COALESCE(p.quantity, 0) - COALESCE(sold.sold_count, 0), 0) > 0
-                    AND (s.statusname IS NULL OR s.statusname NOT IN ('Продано', 'Подаровано', 'Повернуто'))
+                    AND (
+                        s.statusname IS NULL
+                        OR s.statusname NOT IN ('Продано', 'Подаровано', 'Повернуто')
+                        -- Застарілий знімок «Продано/Подаровано», який спростовують
+                        -- реальні замовлення (вони існують, але всі в не-продажному
+                        -- стані: Обмін/Відміна/тощо → sold_count<qty) — товар фактично
+                        -- в наявності, тож показуємо його серед непроданих.
+                        -- «Повернуто» лишаємо схованим; неформальний продаж без
+                        -- замовлень (order_items нема) теж лишаємо схованим.
+                        OR (
+                            s.statusname IN ('Продано', 'Подаровано')
+                            AND COALESCE(sold.sold_count, 0) < COALESCE(NULLIF(p.quantity, 0), 1)
+                            AND EXISTS (SELECT 1 FROM order_items oi_uns WHERE oi_uns.product_id = p.id)
+                        )
+                    )
                 )""")
 
             if filters.only_problematic:
@@ -633,6 +652,7 @@ def get_products(
                 'sole_color_name': m.get('sole_color_name'),
                 'sold_count': m.get('sold_count', 0),
                 'available_qty': m.get('available_qty'),
+                'order_count': int(m.get('order_count') or 0),
                 'reserved_count': int(m.get('reserved_count') or 0),
                 'is_reserved': bool(m.get('is_reserved', False)),
                 'pnum_dup_brands': m.get('pnum_dup_brands', 0),
@@ -993,6 +1013,21 @@ def update_product(db: Session, product_id: int, product: schemas.ProductUpdate)
                     if applied:
                         _merge_lock(sib, applied)
 
+            # official_photos_from — МОДЕЛЬ-РІВНЕВЕ поле: студійні фото однакові для
+            # всієї ростовки. Прив'язку (чи її очищення), зроблену на одному записі,
+            # поширюємо на ВСІ записи того ж productnumber, щоб користувач не мусив
+            # повторювати її для кожного розміру. НЕ в LOCKABLE_PRODUCT_FIELDS — це
+            # app-internal поле (нема колонки в журналі, парсер його не чіпає), тому
+            # пропагуємо явно тут, окремо від lock/write-back механіки.
+            if "official_photos_from" in update_data:
+                opf_val = update_data["official_photos_from"]
+                opf_siblings = db.query(models.Product).filter(
+                    models.Product.productnumber == db_product.productnumber,
+                    models.Product.id != db_product.id,
+                ).all()
+                for sib in opf_siblings:
+                    sib.official_photos_from = opf_val
+
             # Заміри (per-item) — парс рядка-діапазону → *_min/*_max на товарі.
             # НЕ пропагуються на сиблінгів (унікальні на розмір). Захист від
             # парсера — NULL-only guard у _apply_new_fields_and_materials; write-back
@@ -1192,6 +1227,9 @@ def get_product_with_relations(db: Session, product_id: int) -> Optional[Dict[st
                    scol.colorname as sole_color_name,
                    COALESCE(sold.sold_count, 0) AS sold_count,
                    GREATEST(COALESCE(p.quantity, 0) - COALESCE(sold.sold_count, 0), 0) AS available_qty,
+                   -- див. коментар у get_products: відрізняє застарілий знімок «Продано»
+                   -- від легітимного неформального продажу без замовлень.
+                   (SELECT COUNT(*) FROM order_items oi_oc WHERE oi_oc.product_id = p.id) AS order_count,
                    COALESCE(reserved.reserved_count, 0) AS reserved_count,
                    (COALESCE(reserved.reserved_count, 0) > 0
                         AND COALESCE(sold.sold_count, 0) < COALESCE(NULLIF(p.quantity, 0), 1)) AS is_reserved,

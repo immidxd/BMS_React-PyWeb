@@ -196,3 +196,59 @@ export const PaymentStatusBadge: React.FC<{ name?: string | null }> = ({ name })
         </span>
     );
 };
+
+// ── Статус товару «Продано/Непродано» — ЄДИНЕ джерело для всього UI ──────────
+//
+// Чому окремий хелпер: `products.statusid` (поле `status_name`) — це заморожений
+// знімок, який пише лише `sync_product_statuses` під час парсингу. Між парсингами
+// журнал замовлень змінюється (Підтверджено→Обмін/Відміна), а знімок «висить» →
+// товар показується «Продано», хоча фактично в наявності. Тому продаж рахуємо
+// НАЖИВО з `sold_count`/`quantity` (вони обчислюються з реальних замовлень при
+// кожному запиті), а знімку довіряємо лише там, де живих даних немає.
+//
+// Правило:
+//   1. sold_count >= quantity (є реальні продажі) → «Продано» (або «Подаровано»).
+//   2. Знімок=Продано/Подаровано, АЛЕ є замовлення і всі вони не-продажні
+//      (order_count>0, sold<qty) → знімок застарілий → «Непродано».
+//   3. Знімок=Продано/Подаровано БЕЗ жодного замовлення → довіряємо знімку
+//      (легітимний неформальний продаж без формального ордера).
+//   4. «Повернуто»/«Пошкоджений» — журнальні стани, не виводяться з sold_count →
+//      довіряємо знімку.
+//   5. Решта → «Непродано».
+export interface ProductStatusInput {
+    sold_count?: number | null;
+    quantity?: number | null;
+    status_name?: string | null;
+    order_count?: number | null;
+}
+
+// color — назва кольору antd <Tag>
+export function getProductDisplayStatus(p: ProductStatusInput): { text: string; color: string } {
+    const sold = p.sold_count ?? 0;
+    const qty = p.quantity ?? 0;
+    const orders = p.order_count ?? 0;
+    const staticStatus = (p.status_name || '').trim();
+
+    // 1) Фактично спожитий реальними замовленнями.
+    if (sold > 0 && qty > 0 && sold >= qty) {
+        return staticStatus === 'Подаровано'
+            ? { text: 'Подаровано', color: 'purple' }
+            : { text: 'Продано', color: 'red' };
+    }
+
+    // 2) Застарілий знімок, який спростовують реальні замовлення.
+    const staleSold =
+        (staticStatus === 'Продано' || staticStatus === 'Подаровано') &&
+        orders > 0 && sold < qty;
+
+    // 3-4) Журнальні фінальні стани (коли знімок НЕ застарілий).
+    if (!staleSold) {
+        if (staticStatus === 'Подаровано') return { text: 'Подаровано', color: 'purple' };
+        if (staticStatus === 'Продано')    return { text: 'Продано', color: 'red' };
+        if (staticStatus === 'Повернуто')  return { text: 'Повернуто', color: 'orange' };
+        if (staticStatus === 'Пошкоджений') return { text: 'Пошкоджений', color: 'volcano' };
+    }
+
+    // 5) Default — непродано.
+    return { text: 'Непродано', color: 'green' };
+}

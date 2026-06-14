@@ -26,7 +26,7 @@ import MergeCandidatesModal from './MergeCandidatesModal';
 import { LinkOutlined, LockFilled } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import { productService } from '../../services/productService';
-import { CopyOnClick, UnknownIf, isUnknownValue, BrandName } from '../common/displayHelpers';
+import { CopyOnClick, UnknownIf, isUnknownValue, BrandName, getProductDisplayStatus } from '../common/displayHelpers';
 // Pagination is rendered at page level
 
 // Column configuration type
@@ -405,30 +405,9 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
             } },
         status_name: { title: 'Статус', key: 'status_name', width: 110,
             render: (_: any, record: Product) => {
-                const sold = record.sold_count ?? 0;
-                const qty = record.quantity ?? 0;
-                // Журнал — джерело істини. Статус з аркуша має пріоритет.
-                // Перевизначаємо лише коли він порожній/невідомий,
-                // або коли фактичні продажі вже перевершили заявлене ('Продано').
-                const FINAL = new Set(['Продано', 'Подаровано', 'Повернуто', 'Пошкоджений']);
-                const staticStatus = record.status_name || '';
-                let displayStatus: string;
-                if (FINAL.has(staticStatus)) {
-                    displayStatus = staticStatus;
-                } else if (sold > 0 && qty > 0 && sold >= qty) {
-                    displayStatus = 'Продано';
-                } else {
-                    // 'Непродано', '', NULL → усі вважаємо непроданими (це default-стан).
-                    displayStatus = 'Непродано';
-                }
-                const colorMap: Record<string, string> = {
-                    'Непродано':   'green',
-                    'Продано':     'red',
-                    'Подаровано':  'purple',
-                    'Повернуто':   'orange',
-                    'Пошкоджений': 'volcano',
-                };
-                const color = colorMap[displayStatus] || 'default';
+                // Єдине джерело статусу: живий sold_count з фолбеком на знімок
+                // лише там, де живих даних нема (див. getProductDisplayStatus).
+                const { text: displayStatus, color } = getProductDisplayStatus(record);
                 // «Бронь» (Підтверджено без оплати) — мінімалістичний чорний силует замка
                 // ПОРЯД зі статусом (не під ним). Не показуємо для фінальних статусів.
                 const showReserved = !!record.is_reserved && displayStatus === 'Непродано';

@@ -3,7 +3,7 @@ import { productService } from '../../services/productService';
 import type { Product, ProductFilters } from '../../types/product';
 import { Tag, Spin, Image } from 'antd';
 import { CloseOutlined, PictureOutlined, LeftOutlined, RightOutlined, WarningOutlined, EditOutlined, CheckOutlined } from '@ant-design/icons';
-import { CopyOnClick, formatBrandName } from '../common/displayHelpers';
+import { CopyOnClick, formatBrandName, getProductDisplayStatus } from '../common/displayHelpers';
 
 interface Props {
   productId: number | null;
@@ -493,14 +493,9 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
 
   const status = useMemo(() => {
     if (!p) return { text: '', color: 'default' };
-    const sold = p.sold_count ?? 0;
-    const qty = p.quantity ?? 0;
-    const staticStatus = (p as any).status_name || '';
-    if (staticStatus === 'Подаровано') return { text: 'Подаровано', color: 'purple' };
-    if (sold > 0 && sold >= qty && qty > 0) return { text: 'Продано', color: 'red' };
-    if (sold > 0 && sold < qty) return { text: 'Непродано', color: 'green' };
-    if (staticStatus === 'Непродано') return { text: 'Непродано', color: 'green' };
-    return { text: staticStatus || 'Не вказано', color: staticStatus ? 'geekblue' : 'default' };
+    // Єдине джерело статусу (спільне з таблицею): живий sold_count, знімок —
+    // лише фолбек де живих даних нема. Див. getProductDisplayStatus.
+    return getProductDisplayStatus(p);
   }, [p]);
 
   // Розміри в інших системах (UA/USA/UK) — обчислені, без колонки в аркуші → read-only.
