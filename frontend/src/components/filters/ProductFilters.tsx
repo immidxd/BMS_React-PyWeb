@@ -75,7 +75,10 @@ function genderKind(name: string): 'female' | 'male' | 'unisex' {
 // їх у чорний); тут лише bg-blue-50/border-blue-500/ring — вони безпечні.
 const GENDER_ACTIVE_TINT: Record<'female' | 'male' | 'unisex', string> = {
   female: 'bg-pink-50 dark:bg-pink-900/30 text-pink-600 dark:text-pink-300 border-pink-400 ring-1 ring-pink-300',
-  male:   'bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-300 border-blue-500 ring-1 ring-blue-400',
+  // ⚠️ Arbitrary hex, НЕ blue-* — App.css перефарбовує іменовані blue-класи
+  // (bg-blue-50/text-blue-600/dark:bg-blue-900/30) у брендовий чорний → синій
+  // «гас» у сірий. Hex обходить це. Див. feedback_tailwind_blue_override.
+  male:   'bg-[#EFF6FF] dark:bg-[#1E3A8A4D] text-[#2563EB] dark:text-[#93C5FD] border-[#60A5FA] ring-1 ring-[#93C5FD]',
   unisex: 'bg-gray-100 dark:bg-gray-600/40 text-gray-700 dark:text-gray-200 border-gray-400 ring-1 ring-gray-300',
 };
 

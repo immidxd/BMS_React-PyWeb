@@ -21,6 +21,7 @@ OAuth2-флоу (одноразова авторизація продавця):
 from __future__ import annotations
 
 import os
+import re
 import json
 import logging
 from datetime import datetime, timedelta, timezone
@@ -231,25 +232,26 @@ def _parse_dt(val: Optional[str]) -> Optional[datetime]:
     return None
 
 
-def _extract_number(advert: dict) -> Optional[str]:
-    """Витягнути #Ф-номер з оголошення (external_id → title → description).
-    Повертає raw (цифри без Ф) — як telegram product_number_raw."""
-    try:
-        from services.telegram_service import extract_product_numbers
-    except ImportError:
-        from backend.services.telegram_service import extract_product_numbers
+# Тільки Ф-номер: `#Ф3298` / `Ф3298` / `ф3298-2`. БЕЗ загального `#xxxx`-фолбеку —
+# в описах OLX повно сторонніх хештегів/модельних кодів (напр. Funko `#961`), що
+# давало б хибні лінки. Capture зберігає лише цифри (як telegram product_number_raw).
+_OLX_NUM_RE = re.compile(r'#?[Фф](\d{1,6}(?:-\d+)?)')
 
-    # 1) Якщо колись проставлятимемо власний external_id = productnumber
+
+def _extract_number(advert: dict) -> Optional[str]:
+    """Витягнути Ф-номер з оголошення. external_id (інтенційне поле) — гнучко;
+    title/description — строго Ф-патерн. Повертає raw (цифри без Ф)."""
+    # 1) external_id — якщо самі проставимо ref (напр. '#Ф3298' або 'Ф3298')
     ext = (advert.get("external_id") or "").strip()
     if ext:
-        nums = extract_product_numbers(ext)
-        if nums:
-            return nums[0]
-    # 2) Заголовок
+        m = _OLX_NUM_RE.search(ext)
+        if m:
+            return m.group(1)
+    # 2) Заголовок/опис — лише явний Ф-номер
     for field in ("title", "description"):
-        nums = extract_product_numbers(advert.get(field) or "")
-        if nums:
-            return nums[0]
+        m = _OLX_NUM_RE.search(advert.get(field) or "")
+        if m:
+            return m.group(1)
     return None
 
 

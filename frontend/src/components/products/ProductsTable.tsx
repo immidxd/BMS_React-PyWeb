@@ -50,15 +50,26 @@ const TelegramGlyph: React.FC<{ size?: number }> = ({ size = 14 }) => (
     </svg>
 );
 
-// Маркер OLX — компактний пілл «OLX» у фірмовому темно-бірюзовому (#002F34).
-// Вордмарк краще читається пілом, ніж лінійною іконкою, на дрібному масштабі.
-const OlxGlyph: React.FC<{ size?: number }> = ({ size = 11 }) => (
-    <span style={{
-        fontSize: size - 3, fontWeight: 800, lineHeight: 1, color: '#fff',
-        background: '#002F34', borderRadius: 3, padding: '1.5px 2.5px',
-        letterSpacing: '0.2px', display: 'inline-flex', alignItems: 'center',
-    }}>OLX</span>
-);
+// Маркер OLX — власний лого (перефарбований у темно-смарагдовий
+// `/media-logos/olx-mark-emerald.png`). Якщо картинка не завантажиться —
+// запасний текстовий піл «OLX», щоб рядок ніколи не «ламався».
+const OlxGlyph: React.FC<{ size?: number }> = ({ size = 13 }) => {
+    const [failed, setFailed] = React.useState(false);
+    if (failed) {
+        return (
+            <span style={{
+                fontSize: size - 4, fontWeight: 800, lineHeight: 1, color: '#fff',
+                background: '#064E3B', borderRadius: 3, padding: '1.5px 2.5px',
+                letterSpacing: '0.2px', display: 'inline-flex', alignItems: 'center',
+            }}>OLX</span>
+        );
+    }
+    return (
+        <img src="/media-logos/olx-mark-emerald.png" alt="OLX"
+            style={{ height: size, width: 'auto', display: 'block' }}
+            onError={() => setFailed(true)} />
+    );
+};
 
 // Соц-маркери рядка (інлайн, на одній лінії): Telegram + OLX. Пиняться
 // absolute-left у комірці «Номер» → висоту рядка/ширину колонки не чіпають.
