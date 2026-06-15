@@ -232,43 +232,49 @@ def _parse_dt(val: Optional[str]) -> Optional[datetime]:
     return None
 
 
-# Тільки Ф-номер: `#Ф3298` / `Ф3298` / `ф3298-2`. БЕЗ загального `#xxxx`-фолбеку —
-# в описах OLX повно сторонніх хештегів/модельних кодів (напр. Funko `#961`), що
-# давало б хибні лінки. Capture зберігає лише цифри (як telegram product_number_raw).
-_OLX_NUM_RE = re.compile(r'#?[Фф](\d{1,6}(?:-\d+)?)')
+# Номери товарів НЕ лише `#Ф…`: у БД ~38% Ф, ~40% інші літери (`#Р1`,`#У889`,
+# `#Т3219`), ~30% голі цифри (`#1155`). Майже всі з `#`-префіксом. Тому ловимо
+# БУДЬ-ЯКИЙ `#`-токен (опц. 1-3 літери + цифри + опц. `-N`), а також Ф-номер
+# навіть без `#`. Capture зберігає літеру (на відміну від telegram-регексу).
+# Хибні кандидати (сторонні хештеги типу Funko `#961`, модельні коди) відсіює
+# _resolve_product_id — лінкуємо ЛИШЕ те, що збігається з реальним товаром.
+_OLX_HASH_RE = re.compile(
+    r'#\s*([A-Za-zА-Яа-яЁёІіЇїЄєҐґ]{0,3}\d{1,6}(?:-\d+)?)', re.UNICODE)
+_OLX_F_RE = re.compile(
+    r'(?<![0-9A-Za-zА-Яа-яЁёІіЇїЄєҐґ])([Фф]\d{1,6}(?:-\d+)?)', re.UNICODE)
 
 
-def _extract_number(advert: dict) -> Optional[str]:
-    """Витягнути Ф-номер з оголошення. external_id (інтенційне поле) — гнучко;
-    title/description — строго Ф-патерн. Повертає raw (цифри без Ф)."""
-    # 1) external_id — якщо самі проставимо ref (напр. '#Ф3298' або 'Ф3298')
-    ext = (advert.get("external_id") or "").strip()
-    if ext:
-        m = _OLX_NUM_RE.search(ext)
-        if m:
-            return m.group(1)
-    # 2) Заголовок/опис — лише явний Ф-номер
-    for field in ("title", "description"):
-        m = _OLX_NUM_RE.search(advert.get(field) or "")
-        if m:
-            return m.group(1)
-    return None
+def _extract_candidates(advert: dict) -> List[str]:
+    """Усі ймовірні номери з external_id+title+description. Літерні — раніше за
+    голі цифри (менше хибних збігів зі сторонніми #цифрами). Дедуп, порядок збережено."""
+    text_all = " ".join(
+        p for p in (advert.get("external_id"), advert.get("title"), advert.get("description")) if p
+    )
+    cands: List[str] = [m.group(1) for m in _OLX_HASH_RE.finditer(text_all)]
+    cands += [m.group(1) for m in _OLX_F_RE.finditer(text_all)]
+    seen, uniq = set(), []
+    for c in cands:
+        k = c.lower()
+        if k not in seen:
+            seen.add(k)
+            uniq.append(c)
+    uniq.sort(key=lambda c: c[:1].isdigit())  # літерні (False) перші
+    return uniq
 
 
 def _resolve_product_id(db: Session, raw: Optional[str]) -> Optional[int]:
-    """Лінк до products за номером (усі форми #Ф/Ф/#/raw) — як у telegram."""
+    """Лінк до products за номером (усі форми #Ф/Ф/#/raw). Ф-форми лише для
+    голих цифр (бо опис міг мати `#4111`, а товар = `#Ф4111`)."""
     if not raw:
         return None
+    forms = {raw, f"#{raw}"}
+    if raw[:1].isdigit():               # голі цифри → спробувати і Ф-форми
+        forms |= {f"Ф{raw}", f"#Ф{raw}"}
     row = db.execute(text("""
         SELECT id FROM products
-        WHERE productnumber IN (:raw, :f, :hf, :h)
+        WHERE productnumber = ANY(:forms)
         ORDER BY id LIMIT 1
-    """), {
-        "raw": raw,
-        "f": f"Ф{raw}",
-        "hf": f"#Ф{raw}",
-        "h": f"#{raw}",
-    }).fetchone()
+    """), {"forms": list(forms)}).fetchone()
     return row[0] if row else None
 
 
@@ -278,8 +284,15 @@ def _upsert_advert(db: Session, advert: dict) -> Tuple[bool, bool]:
     if olx_id is None:
         return (False, False)
 
-    raw = _extract_number(advert)
-    product_id = _resolve_product_id(db, raw)
+    # Перебираємо кандидатів (літерні перші) — лінкуємо до ПЕРШОГО, що збігся
+    # з реальним товаром. Якщо жоден — лишаємо перший кандидат як raw (unlinked).
+    cands = _extract_candidates(advert)
+    raw, product_id = (cands[0] if cands else None), None
+    for cand in cands:
+        pid = _resolve_product_id(db, cand)
+        if pid:
+            raw, product_id = cand, pid
+            break
 
     price_obj = advert.get("price") or {}
     price = price_obj.get("value") if isinstance(price_obj, dict) else None

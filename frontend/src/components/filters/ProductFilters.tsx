@@ -82,6 +82,53 @@ const GENDER_ACTIVE_TINT: Record<'female' | 'male' | 'unisex', string> = {
   unisex: 'bg-gray-100 dark:bg-gray-600/40 text-gray-700 dark:text-gray-200 border-gray-400 ring-1 ring-gray-300',
 };
 
+// Майданчики публікації — фільтр «де опубліковано». Чіпи = ІКОНКИ (без тексту),
+// стиль як у статі/кольору. Розширюваний: додати Instagram = +1 рядок тут +
+// файл іконки в /media-logos/ + (бек) гілка в published_on. key збігається з
+// бек-значеннями ('telegram'|'olx'). icon — файл у public/media-logos/.
+const PUBLICATION_PLATFORMS: { key: string; label: string; icon: string }[] = [
+  { key: 'telegram', label: 'Telegram', icon: '/media-logos/telegram-logo.png' },
+  { key: 'olx',      label: 'OLX',      icon: '/media-logos/olx-mark-emerald.png' },
+  // { key: 'instagram', label: 'Instagram', icon: '/media-logos/instagram.png' },
+];
+
+// Чіп майданчика: іконка (повний колір коли активний, приглушена коли ні),
+// з текстовим фолбеком якщо файл іконки ще не доданий.
+function PlatformChip({ platform, active, onClick }: {
+  platform: { key: string; label: string; icon: string }; active: boolean; onClick: () => void;
+}) {
+  const [imgFailed, setImgFailed] = useState(false);
+  return (
+    <button
+      type="button"
+      title={platform.label}
+      aria-label={platform.label}
+      aria-pressed={active}
+      onClick={onClick}
+      className={[
+        "flex-1 min-w-[52px] flex items-center justify-center py-2 rounded-md border transition-all",
+        active
+          ? "bg-gray-100 dark:bg-gray-600/40 border-gray-800 dark:border-gray-300 ring-1 ring-gray-300"
+          : "bg-white dark:bg-gray-700 border-gray-200 dark:border-gray-600 hover:border-gray-400",
+      ].join(" ")}
+    >
+      {imgFailed ? (
+        <span className={`text-xs font-medium ${active ? 'text-gray-900 dark:text-gray-100' : 'text-gray-500 dark:text-gray-400'}`}>
+          {platform.label}
+        </span>
+      ) : (
+        <img
+          src={platform.icon}
+          alt={platform.label}
+          onError={() => setImgFailed(true)}
+          style={{ height: 18, width: 'auto' }}
+          className={active ? '' : 'opacity-40 grayscale'}
+        />
+      )}
+    </button>
+  );
+}
+
 function SearchInput({ value, onChange, placeholder }: { value: string; onChange: (v: string) => void; placeholder?: string }) {
   return (
     <div className="relative mb-2">
@@ -608,7 +655,7 @@ const ProductFiltersPanel: React.FC<ProductFiltersPanelProps> = ({ filters, sele
 
       {/* Стать — лаконічні чіпи з піктограмами (без тексту) */}
       {filters.genders?.length > 0 && (
-        <FilterSection title={SECTION_LABELS.genders} badge={countActive('genderids')}>
+        <FilterSection title={SECTION_LABELS.genders} badge={countActive('genderids')} defaultOpen>
           <div className="flex gap-1.5">
             {filters.genders.map(gender => {
               const isActive = ((selectedFilters as any).genderids || []).includes(gender.id);
@@ -640,6 +687,7 @@ const ProductFiltersPanel: React.FC<ProductFiltersPanelProps> = ({ filters, sele
       <FilterSection
         title={SECTION_LABELS.colors}
         badge={(selectedFilters.color_group_ids?.length || 0) + (selectedFilters.colorids?.length || 0)}
+        defaultOpen
       >
         {/* Базові кольори — динамічні квадратні чіпи-зразки з лічильником.
             Не більше 2 рядків (10 шт.); решта — за «Показати більше». Вибрані
@@ -741,6 +789,31 @@ const ProductFiltersPanel: React.FC<ProductFiltersPanelProps> = ({ filters, sele
         )}
       </FilterSection>
 
+      {/* Публікації — де опубліковано товар (іконки майданчиків, multi-select OR) */}
+      <FilterSection
+        title="Публікації"
+        badge={((selectedFilters as any).published_on?.length) || 0}
+        defaultOpen
+      >
+        <div className="flex gap-1.5">
+          {PUBLICATION_PLATFORMS.map(pl => {
+            const active = (((selectedFilters as any).published_on || []) as string[]).includes(pl.key);
+            return (
+              <PlatformChip
+                key={pl.key}
+                platform={pl}
+                active={active}
+                onClick={() => {
+                  const cur = (((selectedFilters as any).published_on || []) as string[]);
+                  const next = active ? cur.filter(k => k !== pl.key) : [...cur, pl.key];
+                  onFilterChange({ ...selectedFilters, published_on: next.length ? next : undefined } as any);
+                }}
+              />
+            );
+          })}
+        </div>
+      </FilterSection>
+
       {/* Стан */}
       {filters.conditions?.length > 0 && (
         <FilterSection title={SECTION_LABELS.conditions} badge={countActive('conditionids')}>
@@ -822,8 +895,10 @@ const ProductFiltersPanel: React.FC<ProductFiltersPanelProps> = ({ filters, sele
       {/* Статус */}
       {filters.statuses?.length > 0 && (
         <FilterSection title={SECTION_LABELS.statuses} badge={countActive('statusids')}>
+          {/* «Пошкоджений» — це СТАН, а не статус (аномалія в таблиці statuses);
+              ховаємо з опцій фільтра. Дані не чіпаємо. */}
           <MultiCheckList
-            items={filters.statuses}
+            items={filters.statuses.filter(s => (s.name || '').trim() !== 'Пошкоджений')}
             selected={(selectedFilters as any).statusids || []}
             onToggle={toggle('statusids')}
             maxVisible={10}

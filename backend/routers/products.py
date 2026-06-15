@@ -50,6 +50,7 @@ async def get_products(
     color_group_ids: Optional[List[int]] = Query(None),
     statusids: Optional[List[int]] = Query(None),
     conditionids: Optional[List[int]] = Query(None),
+    published_on: Optional[List[str]] = Query(None, description="Де опубліковано: telegram|olx"),
     # Нові фільтри
     styleid: Optional[int] = Query(None),
     styleids: Optional[List[int]] = Query(None),
@@ -110,6 +111,7 @@ async def get_products(
             color_group_ids=color_group_ids,
             statusids=statusids,
             conditionids=conditionids,
+            published_on=published_on,
             styleid=styleid,
             styleids=styleids,
             current_conditionid=current_conditionid,

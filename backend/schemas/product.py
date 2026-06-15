@@ -458,6 +458,8 @@ class ProductFilter(BaseModel):
     color_group_ids: Optional[List[int]] = None
     statusids: Optional[List[int]] = None
     conditionids: Optional[List[int]] = None
+    # Публікації: фільтр «де опубліковано» (telegram | olx | ...). OR-семантика.
+    published_on: Optional[List[str]] = None
     # Нові фільтри: стиль, поточний стан, сезон, ширина
     styleid: Optional[int] = None
     styleids: Optional[List[int]] = None

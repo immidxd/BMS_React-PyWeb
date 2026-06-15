@@ -321,6 +321,17 @@ def _build_product_where(filters: Optional["schemas.ProductFilter"]) -> tuple:
             where_conditions.append("p.statusid = ANY(:statusids)")
             params['statusids'] = filters.statusids
 
+        # Публікації: «де опубліковано» — реюз tgpub/olxpub join-ів (вони в base_sql,
+        # отже доступні і в count_sql, що обгортає base_sql). OR між обраними.
+        if getattr(filters, 'published_on', None):
+            _pub = []
+            if 'telegram' in filters.published_on:
+                _pub.append("tgpub.pnum IS NOT NULL")
+            if 'olx' in filters.published_on:
+                _pub.append("olxpub.pnum IS NOT NULL")
+            if _pub:
+                where_conditions.append("(" + " OR ".join(_pub) + ")")
+
         if filters.conditionids:
             where_conditions.append(
                 "COALESCE(p.current_conditionid, p.conditionid) = ANY(:conditionids)"
