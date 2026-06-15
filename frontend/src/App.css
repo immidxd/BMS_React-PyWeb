@@ -565,6 +565,13 @@ select option {
 .ant-table-tbody > tr:hover:not(.bms-conflict-row) > td {
   background: var(--bms-hover) !important;
 }
+/* Колонка «Номер»: тісні бокові відступи — прибираємо зайве пусте місце з боків
+   (контент центрований із маркерами; широкі 12px-падінги марнували простір). */
+.ant-table-thead > tr > th.bms-col-num,
+.ant-table-tbody > tr > td.bms-col-num {
+  padding-left: 4px !important;
+  padding-right: 4px !important;
+}
 .ant-table-cell-fix-left, .ant-table-cell-fix-right {
   background: var(--bms-surface) !important;
 }

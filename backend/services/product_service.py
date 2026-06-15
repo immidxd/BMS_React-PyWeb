@@ -106,6 +106,396 @@ def _expand_sizes_for_filters(raw_sizes: List[str]) -> List[str]:
     return [s for _, s in nums] + texts
 
 
+# Спільний FROM+JOIN блок для товарних запитів — повний список (get_products) і
+# фасети (get_available_sizes). Тримаємо в ОДНОМУ місці, щоб WHERE-умови, які
+# посилаються на аліаси (s.statusname, sold.sold_count, dup.dup_brands, b.brandname
+# у пошуку тощо), завжди мали відповідні JOIN-и в обох запитах.
+_PRODUCT_FROM_SQL = """
+        FROM products p
+        LEFT JOIN types t ON p.typeid = t.id
+        LEFT JOIN brands b ON p.brandid = b.id
+        LEFT JOIN statuses s ON p.statusid = s.id
+        LEFT JOIN colors c ON p.colorid = c.id
+        LEFT JOIN conditions cond ON p.conditionid = cond.id
+        LEFT JOIN conditions cur_cond ON p.current_conditionid = cur_cond.id
+        LEFT JOIN genders g ON p.genderid = g.id
+        LEFT JOIN subtypes st ON p.subtypeid = st.id
+        LEFT JOIN styles sty ON p.styleid = sty.id
+        LEFT JOIN sole_types sol ON p.soletypeid = sol.id
+        LEFT JOIN toe_shapes tsh ON p.toeshapeid = tsh.id
+        LEFT JOIN fastening_types fst ON p.fasteningtypeid = fst.id
+        LEFT JOIN linings lin ON p.liningid = lin.id
+        LEFT JOIN heel_types ht ON p.heeltypeid = ht.id
+        LEFT JOIN lace_types lt ON p.lacetypeid = lt.id
+        LEFT JOIN packaging_types pk ON p.packagingid = pk.id
+        LEFT JOIN technologies tech ON p.technologyid = tech.id
+        LEFT JOIN colors scol ON p.sole_colorid = scol.id
+        LEFT JOIN (
+            SELECT oi.product_id,
+                   GREATEST(
+                     COUNT(*) FILTER (WHERE o.order_status_id = 7
+                                        OR (o.order_status_id = 1 AND o.payment_status_id = 1))
+                     - COUNT(*) FILTER (WHERE o.order_status_id = 9),
+                   0) AS sold_count
+            FROM order_items oi
+            JOIN orders o ON o.id = oi.order_id
+            WHERE oi.product_id IS NOT NULL
+              AND o.order_status_id IN (1, 7, 9)
+            GROUP BY oi.product_id
+        ) sold ON sold.product_id = p.id
+        LEFT JOIN (
+            SELECT oi.product_id, COUNT(*) AS reserved_count
+            FROM order_items oi
+            JOIN orders o ON o.id = oi.order_id
+            WHERE oi.product_id IS NOT NULL
+              AND o.order_status_id = 1
+              AND o.payment_status_id IS DISTINCT FROM 1
+            GROUP BY oi.product_id
+        ) reserved ON reserved.product_id = p.id
+        LEFT JOIN (
+            SELECT productnumber, COUNT(DISTINCT COALESCE(brandid, 0)) AS dup_brands
+            FROM products
+            GROUP BY productnumber
+            HAVING COUNT(DISTINCT COALESCE(brandid, 0)) > 1
+        ) dup ON dup.productnumber = p.productnumber
+        LEFT JOIN deliveries d ON p.deliveryid = d.id
+        LEFT JOIN suppliers sup ON d.supplier_id = sup.id
+        LEFT JOIN (
+            SELECT oi.product_id, MAX(o.order_date) AS last_sale_date
+            FROM order_items oi
+            JOIN orders o ON o.id = oi.order_id
+            WHERE oi.product_id IS NOT NULL
+              AND (o.order_status_id = 7
+                   OR (o.order_status_id = 1 AND o.payment_status_id = 1))
+            GROUP BY oi.product_id
+        ) last_sale ON last_sale.product_id = p.id
+        LEFT JOIN (
+            SELECT new_product_id, COUNT(*) AS pending_count
+            FROM merge_candidates
+            WHERE status = 'pending'
+            GROUP BY new_product_id
+        ) mc ON mc.new_product_id = p.id
+        LEFT JOIN (
+            SELECT DISTINCT TRIM(LEADING '#' FROM p2.productnumber) AS pnum
+            FROM telegram_posts tp2
+            JOIN products p2 ON p2.id = tp2.product_id
+            WHERE tp2.tg_status = 'published' AND p2.productnumber IS NOT NULL
+        ) tgpub ON tgpub.pnum = TRIM(LEADING '#' FROM p.productnumber)
+        LEFT JOIN (
+            SELECT DISTINCT TRIM(LEADING '#' FROM p2.productnumber) AS pnum
+            FROM olx_adverts oa
+            JOIN products p2 ON p2.id = oa.product_id
+            WHERE oa.status IN ('active', 'limited') AND p2.productnumber IS NOT NULL
+        ) olxpub ON olxpub.pnum = TRIM(LEADING '#' FROM p.productnumber)
+        """
+
+
+def _build_product_where(filters: Optional["schemas.ProductFilter"]) -> tuple:
+    """Будує список WHERE-умов + параметри для товарних запитів.
+
+    Винесено зі get_products, щоб ту саму фільтрацію переюзати у фасетах
+    (get_available_sizes) — інакше логіка фільтрів розповзлась би по двох
+    місцях. Див. feedback_filter_params_chain.
+    """
+    where_conditions: list = []
+    params: dict = {}
+
+    if filters:
+        if filters.search:
+            _LAT2CYR = str.maketrans({
+                'A':'А','B':'В','C':'С','E':'Е','H':'Н','I':'І','K':'К',
+                'M':'М','O':'О','P':'Р','T':'Т','X':'Х','Y':'У',
+                'a':'а','b':'в','c':'с','e':'е','h':'н','i':'і','k':'к',
+                'm':'м','o':'о','p':'р','t':'т','x':'х','y':'у',
+            })
+            _bases = {filters.search, filters.search.translate(_LAT2CYR)}
+            _variants = set()
+            for _b in _bases:
+                _variants.update({_b, _b.lower(), _b.upper(), _b.capitalize()})
+            search_patterns = [f"%{v}%" for v in _variants]
+            where_conditions.append("""
+                (p.productnumber  ILIKE ANY(:search_patterns) OR
+                 p.clonednumbers  ILIKE ANY(:search_patterns) OR
+                 p.model          ILIKE ANY(:search_patterns) OR
+                 p.description    ILIKE ANY(:search_patterns) OR
+                 p.marking        ILIKE ANY(:search_patterns) OR
+                 p.gtin           ILIKE ANY(:search_patterns) OR
+                 p.collection     ILIKE ANY(:search_patterns) OR
+                 p.extranote      ILIKE ANY(:search_patterns) OR
+                 b.brandname      ILIKE ANY(:search_patterns) OR
+                 t.typename       ILIKE ANY(:search_patterns) OR
+                 c.colorname      ILIKE ANY(:search_patterns) OR
+                 g.gendername     ILIKE ANY(:search_patterns) OR
+                 cond.conditionname ILIKE ANY(:search_patterns) OR
+                 s.statusname     ILIKE ANY(:search_patterns))
+            """)
+            params['search_patterns'] = search_patterns
+
+        # Single ID filters
+        if filters.typeid and not filters.typeids:
+            where_conditions.append("p.typeid = :typeid")
+            params['typeid'] = filters.typeid
+
+        if filters.subtypeid and not filters.subtypeids:
+            where_conditions.append("p.subtypeid = :subtypeid")
+            params['subtypeid'] = filters.subtypeid
+
+        if filters.brandid and not filters.brandids:
+            where_conditions.append("p.brandid = :brandid")
+            params['brandid'] = filters.brandid
+
+        if filters.genderid and not filters.genderids:
+            where_conditions.append("p.genderid = :genderid")
+            params['genderid'] = filters.genderid
+
+        if filters.colorid and not filters.colorids:
+            where_conditions.append("p.colorid = :colorid")
+            params['colorid'] = filters.colorid
+
+        if filters.statusid and not filters.statusids:
+            where_conditions.append("p.statusid = :statusid")
+            params['statusid'] = filters.statusid
+
+        if filters.conditionid and not filters.conditionids:
+            where_conditions.append(
+                "COALESCE(p.current_conditionid, p.conditionid) = :conditionid"
+            )
+            params['conditionid'] = filters.conditionid
+
+        if getattr(filters, "styleid", None) and not getattr(filters, "styleids", None):
+            where_conditions.append("p.styleid = :styleid")
+            params['styleid'] = filters.styleid
+        if getattr(filters, "styleids", None):
+            where_conditions.append("p.styleid = ANY(:styleids)")
+            params['styleids'] = filters.styleids
+        if getattr(filters, "current_conditionid", None) and not getattr(filters, "current_conditionids", None):
+            where_conditions.append("p.current_conditionid = :current_conditionid")
+            params['current_conditionid'] = filters.current_conditionid
+        if getattr(filters, "current_conditionids", None):
+            where_conditions.append("p.current_conditionid = ANY(:current_conditionids)")
+            params['current_conditionids'] = filters.current_conditionids
+        if getattr(filters, "seasons", None):
+            where_conditions.append(
+                "string_to_array(regexp_replace(COALESCE(p.season, ''), "
+                "'\\s*,\\s*', ',', 'g'), ',') && :seasons_arr"
+            )
+            params['seasons_arr'] = [s.strip() for s in filters.seasons if s and s.strip()]
+        if getattr(filters, "widths", None):
+            where_conditions.append("p.width = ANY(:widths)")
+            params['widths'] = filters.widths
+
+        # Multi-ID filters (arrays)
+        _type_or = []
+        if filters.typeids:
+            _type_or.append("p.typeid = ANY(:typeids)")
+            params['typeids'] = filters.typeids
+        if filters.subtypeids:
+            _type_or.append("p.subtypeid = ANY(:subtypeids)")
+            params['subtypeids'] = filters.subtypeids
+        if _type_or:
+            where_conditions.append("(" + " OR ".join(_type_or) + ")")
+
+        if filters.brandids:
+            where_conditions.append("p.brandid = ANY(:brandids)")
+            params['brandids'] = filters.brandids
+
+        if filters.genderids:
+            where_conditions.append("p.genderid = ANY(:genderids)")
+            params['genderids'] = filters.genderids
+
+        if filters.colorids:
+            where_conditions.append("p.colorid = ANY(:colorids)")
+            params['colorids'] = filters.colorids
+
+        if hasattr(filters, 'color_group_ids') and filters.color_group_ids:
+            where_conditions.append("""
+                EXISTS (
+                    SELECT 1 FROM color_group_members cgm
+                    WHERE cgm.color_id = p.colorid
+                    AND cgm.group_id = ANY(:color_group_ids)
+                )
+            """)
+            params['color_group_ids'] = filters.color_group_ids
+
+        if filters.statusids:
+            where_conditions.append("p.statusid = ANY(:statusids)")
+            params['statusids'] = filters.statusids
+
+        if filters.conditionids:
+            where_conditions.append(
+                "COALESCE(p.current_conditionid, p.conditionid) = ANY(:conditionids)"
+            )
+            params['conditionids'] = filters.conditionids
+
+        # Price range
+        if filters.min_price is not None:
+            where_conditions.append("p.price >= :min_price")
+            params['min_price'] = filters.min_price
+
+        if filters.max_price is not None:
+            where_conditions.append("p.price <= :max_price")
+            params['max_price'] = filters.max_price
+
+        # Measurements CM range filter
+        if getattr(filters, 'min_measurementscm', None) is not None:
+            where_conditions.append("p.measurementscm_max >= :min_cm")
+            params['min_cm'] = filters.min_measurementscm
+        if getattr(filters, 'max_measurementscm', None) is not None:
+            where_conditions.append("p.measurementscm_min <= :max_cm")
+            params['max_cm'] = filters.max_measurementscm
+
+        # Size EU range filter (min/max)
+        if filters.min_sizeeu is not None or filters.max_sizeeu is not None:
+            lo = filters.min_sizeeu if filters.min_sizeeu is not None else 0
+            hi = filters.max_sizeeu if filters.max_sizeeu is not None else 999
+            params['sz_lo'] = lo
+            params['sz_hi'] = hi
+            where_conditions.append("""(
+                (p.sizeeu ~ '^[0-9]+([.,][0-9]+)?$'
+                 AND CAST(replace(p.sizeeu, ',', '.') AS numeric) BETWEEN :sz_lo AND :sz_hi)
+                OR
+                (p.sizeeu ~ '^[0-9]+[.,]?[0-9]*-[0-9]+[.,]?[0-9]*$'
+                 AND CAST(split_part(p.sizeeu, '-', 1) AS numeric) <= :sz_hi
+                 AND CAST(split_part(p.sizeeu, '-', 2) AS numeric) >= :sz_lo)
+            )""")
+
+        # Size EU filter (multi-select of WHOLE sizes) — BMS bucket semantics.
+        # обраний цілий N ↔ розмір товару x, де N-0.5 < x < N+1
+        # (N, N.3, N.5 → лише N; N.6/N.7 → і N, і N+1). Діапазони ("39-43") — overlap.
+        if filters.sizeeu:
+            size_clauses = []
+            for i, s in enumerate(filters.sizeeu):
+                try:
+                    n = float(s)
+                except (ValueError, TypeError):
+                    continue
+                p_lo = f"sz_b_lo_{i}"
+                p_hi = f"sz_b_hi_{i}"
+                p_n = f"sz_b_n_{i}"
+                params[p_lo] = n - 0.5
+                params[p_hi] = n + 1
+                params[p_n] = n
+                size_clauses.append(f"""(
+                    (p.sizeeu ~ '^[0-9]+([.,][0-9]+)?$'
+                     AND CAST(replace(p.sizeeu, ',', '.') AS numeric) > :{p_lo}
+                     AND CAST(replace(p.sizeeu, ',', '.') AS numeric) < :{p_hi})
+                    OR
+                    (p.sizeeu ~ '^[0-9]+[.,]?[0-9]*-[0-9]+[.,]?[0-9]*$'
+                     AND CAST(replace(split_part(p.sizeeu, '-', 1), ',', '.') AS numeric) <= :{p_n}
+                     AND CAST(replace(split_part(p.sizeeu, '-', 2), ',', '.') AS numeric) >= :{p_n})
+                )""")
+            if size_clauses:
+                where_conditions.append("(" + " OR ".join(size_clauses) + ")")
+
+        if filters.size_letter:
+            where_conditions.append("p.size_letter = ANY(:size_letter)")
+            params['size_letter'] = filters.size_letter
+
+        if filters.with_stock_only:
+            where_conditions.append("p.quantity > 0")
+
+        if filters.only_unsold:
+            where_conditions.append("""(
+                GREATEST(COALESCE(p.quantity, 0) - COALESCE(sold.sold_count, 0), 0) > 0
+                AND (
+                    s.statusname IS NULL
+                    OR s.statusname NOT IN ('Продано', 'Подаровано', 'Повернуто')
+                    OR (
+                        s.statusname IN ('Продано', 'Подаровано')
+                        AND COALESCE(sold.sold_count, 0) < COALESCE(NULLIF(p.quantity, 0), 1)
+                        AND EXISTS (SELECT 1 FROM order_items oi_uns WHERE oi_uns.product_id = p.id)
+                    )
+                )
+            )""")
+
+        if filters.only_problematic:
+            where_conditions.append("""(
+                p.productnumber IS NULL
+                OR p.productnumber = '???'
+                OR p.productnumber LIKE '???\\_%'
+                OR p.productnumber LIKE '__tmp_rename\\_%'
+                OR p.typeid IS NULL
+                OR p.price IS NULL OR p.price = 0
+                OR COALESCE(sold.sold_count, 0) > COALESCE(p.quantity, 0)
+                OR COALESCE(dup.dup_brands, 0) > 1
+            )""")
+
+        if filters.only_rostovka:
+            where_conditions.append("""(
+                p.quantity > 1
+                OR LOWER(COALESCE(p.extranote, '')) LIKE '%ростовка%'
+                OR p.productnumber ~ '^.+\\([0-9]+\\)$'
+                OR EXISTS (
+                    SELECT 1 FROM products p_sib
+                    WHERE p_sib.productnumber = p.productnumber || '(1)'
+                )
+            )""")
+
+        if filters.shipment_id:
+            where_conditions.append("p.deliveryid = :shipment_id")
+            params["shipment_id"] = filters.shipment_id
+
+    return where_conditions, params
+
+
+def get_available_sizes(
+    db: Session,
+    filters: Optional["schemas.ProductFilter"] = None,
+) -> List[str]:
+    """Distinct EU-розміри, наявні в поточному відфільтрованому наборі (фасет).
+
+    Сам розмірний фільтр (sizeeu/min/max) ВИКЛЮЧАЄТЬСЯ з обчислення — щоб сітка
+    показувала всі досяжні за іншими фільтрами розміри (стандартний faceted
+    search): вибрані лишаються вибірними, можна додавати/прибирати без скидання.
+    Фронт сам згортає у цілі та ховає <14.
+    """
+    from sqlalchemy import text
+    import copy as _copy
+
+    f = _copy.copy(filters) if filters is not None else None
+    if f is not None:
+        f.sizeeu = None
+        f.min_sizeeu = None
+        f.max_sizeeu = None
+
+    where_conditions, params = _build_product_where(f)
+    sql = "SELECT DISTINCT p.sizeeu " + _PRODUCT_FROM_SQL
+    if where_conditions:
+        sql += " WHERE " + " AND ".join(where_conditions)
+    rows = db.execute(text(sql), params).fetchall()
+    return [r[0] for r in rows if r[0]]
+
+
+def get_available_color_groups(
+    db: Session,
+    filters: Optional["schemas.ProductFilter"] = None,
+) -> List[Dict[str, int]]:
+    """Кольорові групи (id + count товарів), наявні в поточному відфільтрованому
+    наборі (фасет). Сам кольоровий фільтр (colorids/color_group_ids) ВИКЛЮЧАЄТЬСЯ
+    — щоб чіпи показували всі досяжні за іншими фільтрами кольори і лишались
+    вибірними. Дзеркало get_available_sizes для кольору.
+    """
+    from sqlalchemy import text
+    import copy as _copy
+
+    f = _copy.copy(filters) if filters is not None else None
+    if f is not None:
+        f.colorids = None
+        f.color_group_ids = None
+
+    where_conditions, params = _build_product_where(f)
+    sql = (
+        "SELECT cgm.group_id AS id, COUNT(DISTINCT p.id) AS cnt "
+        + _PRODUCT_FROM_SQL
+        + " JOIN color_group_members cgm ON cgm.color_id = p.colorid "
+    )
+    if where_conditions:
+        sql += " WHERE " + " AND ".join(where_conditions)
+    sql += " GROUP BY cgm.group_id"
+    rows = db.execute(text(sql), params).fetchall()
+    return [{"id": r[0], "count": r[1]} for r in rows]
+
+
 def get_products(
     db: Session,
     skip: int = 0,
@@ -266,286 +656,7 @@ def get_products(
         ) olxpub ON olxpub.pnum = TRIM(LEADING '#' FROM p.productnumber)
         """
         
-        where_conditions = []
-        params = {}
-        
-        if filters:
-            if filters.search:
-                # Latin → Cyrillic confusables: щоб "A1248" латиниця знаходила
-                # "А1248" кирилицю в clonednumbers (BMS-конвент: номери кириличні).
-                _LAT2CYR = str.maketrans({
-                    'A':'А','B':'В','C':'С','E':'Е','H':'Н','I':'І','K':'К',
-                    'M':'М','O':'О','P':'Р','T':'Т','X':'Х','Y':'У',
-                    'a':'а','b':'в','c':'с','e':'е','h':'н','i':'і','k':'к',
-                    'm':'м','o':'о','p':'р','t':'т','x':'х','y':'у',
-                })
-                # ⚠️ Cyrillic case-insensitive search: у цій БД (C collation) ILIKE/LOWER
-                # НЕ складають регістр кирилиці ('Сітка' ILIKE '%сітк%' = FALSE), тож
-                # звичайний ILIKE ловив лише точний регістр — варто було браузеру
-                # автокапіталізувати «сітк»→«Сітк» на blur, і пошук мовчки порожнів.
-                # Python .lower()/.upper()/.capitalize() кирилицю обробляють → будуємо
-                # набір регістрових варіантів (для raw + Lat→Cyr) і матчимо ILIKE ANY.
-                # Див. feedback_ilike_exact_match.
-                _bases = {filters.search, filters.search.translate(_LAT2CYR)}
-                _variants = set()
-                for _b in _bases:
-                    _variants.update({_b, _b.lower(), _b.upper(), _b.capitalize()})
-                search_patterns = [f"%{v}%" for v in _variants]
-                where_conditions.append("""
-                    (p.productnumber  ILIKE ANY(:search_patterns) OR
-                     p.clonednumbers  ILIKE ANY(:search_patterns) OR
-                     p.model          ILIKE ANY(:search_patterns) OR
-                     p.description    ILIKE ANY(:search_patterns) OR
-                     p.marking        ILIKE ANY(:search_patterns) OR
-                     p.gtin           ILIKE ANY(:search_patterns) OR
-                     p.collection     ILIKE ANY(:search_patterns) OR
-                     p.extranote      ILIKE ANY(:search_patterns) OR
-                     b.brandname      ILIKE ANY(:search_patterns) OR
-                     t.typename       ILIKE ANY(:search_patterns) OR
-                     c.colorname      ILIKE ANY(:search_patterns) OR
-                     g.gendername     ILIKE ANY(:search_patterns) OR
-                     cond.conditionname ILIKE ANY(:search_patterns) OR
-                     s.statusname     ILIKE ANY(:search_patterns))
-                """)
-                params['search_patterns'] = search_patterns
-                
-            # Single ID filters
-            if filters.typeid and not filters.typeids:
-                where_conditions.append("p.typeid = :typeid")
-                params['typeid'] = filters.typeid
-
-            if filters.subtypeid and not filters.subtypeids:
-                where_conditions.append("p.subtypeid = :subtypeid")
-                params['subtypeid'] = filters.subtypeid
-
-            if filters.brandid and not filters.brandids:
-                where_conditions.append("p.brandid = :brandid")
-                params['brandid'] = filters.brandid
-
-            if filters.genderid and not filters.genderids:
-                where_conditions.append("p.genderid = :genderid")
-                params['genderid'] = filters.genderid
-
-            if filters.colorid and not filters.colorids:
-                where_conditions.append("p.colorid = :colorid")
-                params['colorid'] = filters.colorid
-
-            if filters.statusid and not filters.statusids:
-                where_conditions.append("p.statusid = :statusid")
-                params['statusid'] = filters.statusid
-
-            # Legacy filter "Стан" (conditionid) тепер фільтрує по current_conditionid:
-            # "Стан" у UI означає актуальний стан товару (current_conditionid),
-            # а conditionid у БД зберігає лише оригінальний стан при завезенні.
-            if filters.conditionid and not filters.conditionids:
-                where_conditions.append(
-                    "COALESCE(p.current_conditionid, p.conditionid) = :conditionid"
-                )
-                params['conditionid'] = filters.conditionid
-
-            # Нові фільтри
-            if getattr(filters, "styleid", None) and not getattr(filters, "styleids", None):
-                where_conditions.append("p.styleid = :styleid")
-                params['styleid'] = filters.styleid
-            if getattr(filters, "styleids", None):
-                where_conditions.append("p.styleid = ANY(:styleids)")
-                params['styleids'] = filters.styleids
-            if getattr(filters, "current_conditionid", None) and not getattr(filters, "current_conditionids", None):
-                where_conditions.append("p.current_conditionid = :current_conditionid")
-                params['current_conditionid'] = filters.current_conditionid
-            if getattr(filters, "current_conditionids", None):
-                where_conditions.append("p.current_conditionid = ANY(:current_conditionids)")
-                params['current_conditionids'] = filters.current_conditionids
-            if getattr(filters, "seasons", None):
-                # Multi-value season: products.season може містити CSV
-                # ('Демі, Єврозима'). Розбиваємо в Postgres-масив і шукаємо
-                # перетин з фільтром (&&). Це коректно ловить ОБИДВА варіанти:
-                # фільтр 'Демі' знайде і 'Демі', і 'Демі, Єврозима'.
-                where_conditions.append(
-                    "string_to_array(regexp_replace(COALESCE(p.season, ''), "
-                    "'\\s*,\\s*', ',', 'g'), ',') && :seasons_arr"
-                )
-                params['seasons_arr'] = [s.strip() for s in filters.seasons if s and s.strip()]
-            if getattr(filters, "widths", None):
-                where_conditions.append("p.width = ANY(:widths)")
-                params['widths'] = filters.widths
-
-            # Multi-ID filters (arrays) — use ANY(:arr)
-            # Тип + Підвид: об'єднуємо через OR (один фільтр на UI)
-            _type_or = []
-            if filters.typeids:
-                _type_or.append("p.typeid = ANY(:typeids)")
-                params['typeids'] = filters.typeids
-            if filters.subtypeids:
-                _type_or.append("p.subtypeid = ANY(:subtypeids)")
-                params['subtypeids'] = filters.subtypeids
-            if _type_or:
-                where_conditions.append("(" + " OR ".join(_type_or) + ")")
-
-            if filters.brandids:
-                where_conditions.append("p.brandid = ANY(:brandids)")
-                params['brandids'] = filters.brandids
-
-            if filters.genderids:
-                where_conditions.append("p.genderid = ANY(:genderids)")
-                params['genderids'] = filters.genderids
-
-            if filters.colorids:
-                where_conditions.append("p.colorid = ANY(:colorids)")
-                params['colorids'] = filters.colorids
-
-            # Фільтр по кольоровій групі (базовий колір)
-            if hasattr(filters, 'color_group_ids') and filters.color_group_ids:
-                where_conditions.append("""
-                    EXISTS (
-                        SELECT 1 FROM color_group_members cgm
-                        WHERE cgm.color_id = p.colorid
-                        AND cgm.group_id = ANY(:color_group_ids)
-                    )
-                """)
-                params['color_group_ids'] = filters.color_group_ids
-
-            if filters.statusids:
-                where_conditions.append("p.statusid = ANY(:statusids)")
-                params['statusids'] = filters.statusids
-
-            if filters.conditionids:
-                # "Стан" multi-фільтр → теж по поточному стану (з fallback на оригінальний)
-                where_conditions.append(
-                    "COALESCE(p.current_conditionid, p.conditionid) = ANY(:conditionids)"
-                )
-                params['conditionids'] = filters.conditionids
-
-            # Price range
-            if filters.min_price is not None:
-                where_conditions.append("p.price >= :min_price")
-                params['min_price'] = filters.min_price
-
-            if filters.max_price is not None:
-                where_conditions.append("p.price <= :max_price")
-                params['max_price'] = filters.max_price
-
-            # Measurements CM range filter
-            if getattr(filters, 'min_measurementscm', None) is not None:
-                where_conditions.append("p.measurementscm_max >= :min_cm")
-                params['min_cm'] = filters.min_measurementscm
-            if getattr(filters, 'max_measurementscm', None) is not None:
-                where_conditions.append("p.measurementscm_min <= :max_cm")
-                params['max_cm'] = filters.max_measurementscm
-
-            # Size EU range filter (min/max) — takes priority over multi-select if both are provided
-            if filters.min_sizeeu is not None or filters.max_sizeeu is not None:
-                lo = filters.min_sizeeu if filters.min_sizeeu is not None else 0
-                hi = filters.max_sizeeu if filters.max_sizeeu is not None else 999
-                params['sz_lo'] = lo
-                params['sz_hi'] = hi
-                where_conditions.append("""(
-                    -- Exact numeric size within [lo, hi]
-                    (p.sizeeu ~ '^[0-9]+([.,][0-9]+)?$'
-                     AND CAST(replace(p.sizeeu, ',', '.') AS numeric) BETWEEN :sz_lo AND :sz_hi)
-                    OR
-                    -- Range size like '36-37', '38-39': overlaps with [lo, hi]
-                    (p.sizeeu ~ '^[0-9]+[.,]?[0-9]*-[0-9]+[.,]?[0-9]*$'
-                     AND CAST(split_part(p.sizeeu, '-', 1) AS numeric) <= :sz_hi
-                     AND CAST(split_part(p.sizeeu, '-', 2) AS numeric) >= :sz_lo)
-                )""")
-
-            # Size EU filter (multi-select) — also matches range sizes
-            if filters.sizeeu:
-                # Exact match for selected sizes
-                # PLUS range match: product "39-43" matches filter "41"
-                numeric_vals = []
-                for s in filters.sizeeu:
-                    try:
-                        numeric_vals.append(float(s))
-                    except (ValueError, TypeError):
-                        pass
-                if numeric_vals:
-                    # Build individual range checks for each numeric size
-                    range_checks = []
-                    for i, v in enumerate(numeric_vals):
-                        pname = f"sz_num_{i}"
-                        range_checks.append(f"""(
-                            CAST(split_part(p.sizeeu, '-', 1) AS numeric) <= :{pname}
-                            AND CAST(split_part(p.sizeeu, '-', 2) AS numeric) >= :{pname}
-                        )""")
-                        params[pname] = v
-                    range_sql = " OR ".join(range_checks)
-                    where_conditions.append(f"""(
-                        p.sizeeu = ANY(:sizeeu)
-                        OR (
-                            p.sizeeu ~ '^[0-9]+\\.?[0-9]*-[0-9]+\\.?[0-9]*$'
-                            AND ({range_sql})
-                        )
-                    )""")
-                else:
-                    where_conditions.append("p.sizeeu = ANY(:sizeeu)")
-                params['sizeeu'] = filters.sizeeu
-
-            if filters.size_letter:
-                where_conditions.append("p.size_letter = ANY(:size_letter)")
-                params['size_letter'] = filters.size_letter
-
-            if filters.with_stock_only:
-                where_conditions.append("p.quantity > 0")
-
-            if filters.only_unsold:
-                # "Тільки непродані" = є залишок (quantity - sold_count > 0)
-                # ТА status з Журналу не є фінальним (Продано/Подаровано/Повернуто).
-                # Журнал — джерело істини: якщо там стоїть "Продано" — товар не показуємо
-                # навіть коли немає запису в order_items (це валідний кейс — товар відданий
-                # без формального замовлення).
-                where_conditions.append("""(
-                    GREATEST(COALESCE(p.quantity, 0) - COALESCE(sold.sold_count, 0), 0) > 0
-                    AND (
-                        s.statusname IS NULL
-                        OR s.statusname NOT IN ('Продано', 'Подаровано', 'Повернуто')
-                        -- Застарілий знімок «Продано/Подаровано», який спростовують
-                        -- реальні замовлення (вони існують, але всі в не-продажному
-                        -- стані: Обмін/Відміна/тощо → sold_count<qty) — товар фактично
-                        -- в наявності, тож показуємо його серед непроданих.
-                        -- «Повернуто» лишаємо схованим; неформальний продаж без
-                        -- замовлень (order_items нема) теж лишаємо схованим.
-                        OR (
-                            s.statusname IN ('Продано', 'Подаровано')
-                            AND COALESCE(sold.sold_count, 0) < COALESCE(NULLIF(p.quantity, 0), 1)
-                            AND EXISTS (SELECT 1 FROM order_items oi_uns WHERE oi_uns.product_id = p.id)
-                        )
-                    )
-                )""")
-
-            if filters.only_problematic:
-                where_conditions.append("""(
-                    p.productnumber IS NULL
-                    OR p.productnumber = '???'
-                    OR p.productnumber LIKE '???\\_%'
-                    OR p.productnumber LIKE '__tmp_rename\\_%'
-                    OR p.typeid IS NULL
-                    OR p.price IS NULL OR p.price = 0
-                    OR COALESCE(sold.sold_count, 0) > COALESCE(p.quantity, 0)
-                    OR COALESCE(dup.dup_brands, 0) > 1
-                )""")
-
-            if filters.only_rostovka:
-                # Ростовка = набір розмірів:
-                # 1) quantity > 1 (кілька одиниць/розмірів в одному записі)
-                # 2) extranote містить "ростовка" (явна мітка)
-                # 3) productnumber з (n) суфіксом (варіанти, розбиті по рядках)
-                # 4) базовий продукт з (n) дочірнім записом
-                where_conditions.append("""(
-                    p.quantity > 1
-                    OR LOWER(COALESCE(p.extranote, '')) LIKE '%ростовка%'
-                    OR p.productnumber ~ '^.+\\([0-9]+\\)$'
-                    OR EXISTS (
-                        SELECT 1 FROM products p_sib
-                        WHERE p_sib.productnumber = p.productnumber || '(1)'
-                    )
-                )""")
-
-            if filters.shipment_id:
-                where_conditions.append("p.deliveryid = :shipment_id")
-                params["shipment_id"] = filters.shipment_id
-        
+        where_conditions, params = _build_product_where(filters)
         # Build WHERE clause
         if where_conditions:
             base_sql += " WHERE " + " AND ".join(where_conditions)

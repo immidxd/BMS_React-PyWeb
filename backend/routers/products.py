@@ -170,6 +170,74 @@ async def get_product_filters(db: Session = Depends(get_db)):
         logger.error(f"Error getting product filters: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Помилка при отриманні фільтрів: {str(e)}")
 
+
+@router.get("/api/products/available-facets")
+async def get_available_facets(
+    search: Optional[str] = Query(None),
+    typeid: Optional[int] = Query(None),
+    subtypeid: Optional[int] = Query(None),
+    brandid: Optional[int] = Query(None),
+    genderid: Optional[int] = Query(None),
+    colorid: Optional[int] = Query(None),
+    statusid: Optional[int] = Query(None),
+    conditionid: Optional[int] = Query(None),
+    typeids: Optional[List[int]] = Query(None),
+    subtypeids: Optional[List[int]] = Query(None),
+    brandids: Optional[List[int]] = Query(None),
+    genderids: Optional[List[int]] = Query(None),
+    colorids: Optional[List[int]] = Query(None),
+    color_group_ids: Optional[List[int]] = Query(None),
+    statusids: Optional[List[int]] = Query(None),
+    conditionids: Optional[List[int]] = Query(None),
+    styleid: Optional[int] = Query(None),
+    styleids: Optional[List[int]] = Query(None),
+    current_conditionid: Optional[int] = Query(None),
+    current_conditionids: Optional[List[int]] = Query(None),
+    seasons: Optional[List[str]] = Query(None),
+    widths: Optional[List[str]] = Query(None),
+    min_price: Optional[float] = Query(None, ge=0),
+    max_price: Optional[float] = Query(None, ge=0),
+    min_measurementscm: Optional[float] = Query(None),
+    max_measurementscm: Optional[float] = Query(None),
+    size_letter: Optional[List[str]] = Query(None),
+    is_visible: Optional[bool] = Query(None),
+    with_stock_only: Optional[bool] = Query(None),
+    only_unsold: Optional[bool] = Query(None),
+    only_problematic: Optional[bool] = Query(None),
+    only_rostovka: Optional[bool] = Query(None),
+    shipment_id: Optional[int] = Query(None),
+    db: Session = Depends(get_db),
+):
+    """Динамічні фасети: EU-розміри ТА кольорові групи, наявні в поточному
+    відфільтрованому наборі.
+
+    Кожен фасет виключає СВІЙ фільтр (faceted search) — тож сітка розмірів і чіпи
+    кольорів адаптуються під інші активні фільтри/пошук, миттєво звужуючись, але
+    лишаються вибірними.
+    """
+    try:
+        filters = schemas.ProductFilter(
+            search=search,
+            typeid=typeid, subtypeid=subtypeid, brandid=brandid, genderid=genderid,
+            colorid=colorid, statusid=statusid, conditionid=conditionid,
+            typeids=typeids, subtypeids=subtypeids, brandids=brandids, genderids=genderids,
+            colorids=colorids, color_group_ids=color_group_ids, statusids=statusids,
+            conditionids=conditionids, styleid=styleid, styleids=styleids,
+            current_conditionid=current_conditionid, current_conditionids=current_conditionids,
+            seasons=seasons, widths=widths, min_price=min_price, max_price=max_price,
+            min_measurementscm=min_measurementscm, max_measurementscm=max_measurementscm,
+            size_letter=size_letter, is_visible=is_visible, with_stock_only=with_stock_only,
+            only_unsold=only_unsold, only_problematic=only_problematic,
+            only_rostovka=only_rostovka, shipment_id=shipment_id,
+        )
+        return {
+            "eu": product_service.get_available_sizes(db, filters),
+            "color_groups": product_service.get_available_color_groups(db, filters),
+        }
+    except Exception as e:
+        logger.error(f"Error getting available facets: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Помилка при отриманні фасетів: {str(e)}")
+
 @router.get("/api/products/{product_id}/images")
 async def get_product_images(
     product_id: int = Path(..., ge=1, description="ID товару"),

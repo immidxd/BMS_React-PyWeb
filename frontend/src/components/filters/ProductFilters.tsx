@@ -6,6 +6,12 @@ interface ProductFiltersPanelProps {
   filters: ProductFilters;
   selectedFilters: ProductFilter;
   onFilterChange: (filters: ProductFilter) => void;
+  // Динамічний фасет: EU-розміри, наявні в поточному відфільтрованому наборі.
+  // Якщо передано — сітка розмірів адаптується під поточний стан; інакше
+  // (undefined/null) береться глобальний список з filters.size_ranges.eu.
+  availableEuSizes?: string[] | null;
+  // Динамічний фасет кольорів: кольорові групи (id+count), наявні зараз.
+  availableColorGroups?: { id: number; count: number }[] | null;
 }
 
 type SectionKey = 'types' | 'brands' | 'genders' | 'colors' | 'conditions' | 'statuses' | 'price';
@@ -18,6 +24,59 @@ const SECTION_LABELS: Record<SectionKey, string> = {
   conditions: 'Стан',
   statuses: 'Статус',
   price: 'Діапазон цін',
+};
+
+// Класичні символи статі (Venus ♀ / Mars ♂ / поєднаний ⚥) — лаконічні,
+// інтуїтивно зрозумілі, без тексту (назва в tooltip/aria-label).
+function GenderGlyph({ kind }: { kind: 'female' | 'male' | 'unisex' }) {
+  const common = {
+    viewBox: '0 0 24 24', width: 20, height: 20, fill: 'none',
+    stroke: 'currentColor', strokeWidth: 2, strokeLinecap: 'round' as const,
+    strokeLinejoin: 'round' as const, 'aria-hidden': true, focusable: 'false' as const,
+  };
+  if (kind === 'female') {
+    return (
+      <svg {...common}>
+        <circle cx="12" cy="8" r="5" />
+        <line x1="12" y1="13" x2="12" y2="21" />
+        <line x1="9" y1="18" x2="15" y2="18" />
+      </svg>
+    );
+  }
+  if (kind === 'male') {
+    return (
+      <svg {...common}>
+        <circle cx="10" cy="14" r="5" />
+        <line x1="13.8" y1="10.2" x2="19" y2="5" />
+        <polyline points="14.5 5 19 5 19 9.5" />
+      </svg>
+    );
+  }
+  return (
+    <svg {...common}>
+      <circle cx="11" cy="13" r="4" />
+      <line x1="11" y1="17" x2="11" y2="21.5" />
+      <line x1="8.5" y1="19.2" x2="13.5" y2="19.2" />
+      <line x1="13.9" y1="10.1" x2="18" y2="6" />
+      <polyline points="14.7 6 18 6 18 9.3" />
+    </svg>
+  );
+}
+
+function genderKind(name: string): 'female' | 'male' | 'unisex' {
+  const n = (name || '').toLowerCase();
+  if (n.startsWith('жін')) return 'female';
+  if (n.startsWith('чол')) return 'male';
+  return 'unisex';
+}
+
+// Активний чіп статі — легкий тематичний відтінок: рожевий (жін), синій (чол),
+// сірий (унісекс). bg-blue-500/600/700 НЕ використовуємо (App.css перефарбовує
+// їх у чорний); тут лише bg-blue-50/border-blue-500/ring — вони безпечні.
+const GENDER_ACTIVE_TINT: Record<'female' | 'male' | 'unisex', string> = {
+  female: 'bg-pink-50 dark:bg-pink-900/30 text-pink-600 dark:text-pink-300 border-pink-400 ring-1 ring-pink-300',
+  male:   'bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-300 border-blue-500 ring-1 ring-blue-400',
+  unisex: 'bg-gray-100 dark:bg-gray-600/40 text-gray-700 dark:text-gray-200 border-gray-400 ring-1 ring-gray-300',
 };
 
 function SearchInput({ value, onChange, placeholder }: { value: string; onChange: (v: string) => void; placeholder?: string }) {
@@ -142,13 +201,16 @@ function MultiCheckList({
 // Offset for subtype-only IDs to avoid collision with type IDs in combined list
 const SUBTYPE_OFFSET = 1_000_000;
 
-const ProductFiltersPanel: React.FC<ProductFiltersPanelProps> = ({ filters, selectedFilters, onFilterChange }) => {
+const ProductFiltersPanel: React.FC<ProductFiltersPanelProps> = ({ filters, selectedFilters, onFilterChange, availableEuSizes, availableColorGroups }) => {
   const [priceMin, setPriceMin] = useState<string>(
     selectedFilters.min_price !== undefined ? String(selectedFilters.min_price) : ''
   );
   const [priceMax, setPriceMax] = useState<string>(
     selectedFilters.max_price !== undefined ? String(selectedFilters.max_price) : ''
   );
+  // «Показати більше» для сітки EU-розмірів і кольорів
+  const [euShowAll, setEuShowAll] = useState(false);
+  const [colorShowAll, setColorShowAll] = useState(false);
 
   // ─── Combined type + subtype list (deduplicated by name) ───
   const typeSubtypeMap = useMemo(() => {
@@ -253,16 +315,57 @@ const ProductFiltersPanel: React.FC<ProductFiltersPanelProps> = ({ filters, sele
     + (selectedFilters.size_letter?.length || 0)
     + (selectedFilters.min_measurementscm !== undefined || selectedFilters.max_measurementscm !== undefined ? 1 : 0);
 
+  // Цілі EU-розміри для сітки. Дробові (39.5, 39.6…) не показуємо окремими
+  // комірками — кожна дробова частина «приписана» до цілого за BMS-конвентом:
+  //   .3 (⅓) / .5 (½) → належать до нижнього цілого;
+  //   .6 (⅔) / .7      → належать і до нижнього, і до верхнього (spill вгору).
+  // Бекенд за обраним цілим N матчить усі товари з розміром у (N-0.5, N+1).
   const euSizes = useMemo(() => {
-    const raw = filters.size_ranges?.eu || [];
-    return Array.from(new Set(raw)).sort((a, b) => parseFloat(a) - parseFloat(b));
-  }, [filters.size_ranges]);
+    // Динамічний фасет (availableEuSizes) має пріоритет — сітка показує лише
+    // розміри, реально наявні в поточному наборі. Фолбек — глобальний список.
+    const raw = (availableEuSizes != null ? availableEuSizes : filters.size_ranges?.eu) || [];
+    const wholes = new Set<number>();
+    for (const s of raw) {
+      const x = parseFloat(s);
+      if (!isFinite(x)) continue;
+      const lower = Math.floor(x);
+      wholes.add(lower);
+      if (x - lower > 0.5) wholes.add(lower + 1); // .6/.7 «піднімаються» до наступного
+    }
+    // Вже вибрані розміри лишаємо в сітці завжди — навіть якщо фасет звузив набір
+    // (інакше не було б як зняти вибір). Вони цілі (вибираються лише з сітки).
+    for (const s of (selectedFilters.sizeeu || [])) {
+      const x = parseFloat(s);
+      if (isFinite(x)) wholes.add(Math.floor(x));
+    }
+    // Розміри < 14 не є взуттєвими EU (EU стартує ~16 навіть для немовлят).
+    // Значення 6–13 — це чужі системи (US/UK), що потрапили в колонку EU помилково.
+    // Ховаємо їх із сітки, щоб не плутати. Реальний фікс — деривація EU зі СМ при парсингу.
+    const MIN_PLAUSIBLE_EU = 14;
+    return Array.from(wholes)
+      .filter(n => n >= MIN_PLAUSIBLE_EU)
+      .sort((a, b) => a - b)
+      .map(String);
+  }, [filters.size_ranges, availableEuSizes, selectedFilters.sizeeu]);
 
   const letterSizes = useMemo(() => {
     // Backend повертає вже відсортовано (XS,S,M,L,XL,XXL,…); тут просто dedup на всяк
     const raw = (filters as any).size_letters || [];
     return Array.from(new Set(raw)) as string[];
   }, [filters]);
+
+  // Динамічні кольорові чіпи: показуємо лише групи, наявні в поточному наборі
+  // (availableColorGroups), із живим лічильником; вибрані лишаємо завжди. Без
+  // фасета (null) — глобальний список filters.color_groups з власним count.
+  const colorGroupsToShow = useMemo(() => {
+    const all = filters.color_groups || [];
+    if (availableColorGroups == null) return all;
+    const countById = new Map(availableColorGroups.map(g => [g.id, g.count]));
+    const selected = new Set(selectedFilters.color_group_ids || []);
+    return all
+      .filter(cg => countById.has(cg.id) || selected.has(cg.id))
+      .map(cg => ({ ...cg, count: countById.get(cg.id) ?? 0 }));
+  }, [filters.color_groups, availableColorGroups, selectedFilters.color_group_ids]);
 
   return (
     <div className="flex flex-col gap-0 text-sm">
@@ -277,7 +380,7 @@ const ProductFiltersPanel: React.FC<ProductFiltersPanelProps> = ({ filters, sele
 
       {/* Тип (об'єднано: види + підвиди, дедупліковано по назві) */}
       {typeSubtypeMap.items.length > 0 && (
-        <FilterSection title={SECTION_LABELS.types} badge={typeFilterBadge} defaultOpen>
+        <FilterSection title={SECTION_LABELS.types} badge={typeFilterBadge}>
           <MultiCheckList
             items={typeSubtypeMap.items}
             selected={combinedTypeSelection}
@@ -288,7 +391,7 @@ const ProductFiltersPanel: React.FC<ProductFiltersPanelProps> = ({ filters, sele
 
       {/* Бренд */}
       {filters.brands?.length > 0 && (
-        <FilterSection title={SECTION_LABELS.brands} badge={countActive('brandids')} defaultOpen>
+        <FilterSection title={SECTION_LABELS.brands} badge={countActive('brandids')}>
           <MultiCheckList
             items={filters.brands}
             selected={(selectedFilters as any).brandids || []}
@@ -297,15 +400,236 @@ const ProductFiltersPanel: React.FC<ProductFiltersPanelProps> = ({ filters, sele
         </FilterSection>
       )}
 
-      {/* Стать */}
-      {filters.genders?.length > 0 && (
-        <FilterSection title={SECTION_LABELS.genders} badge={countActive('genderids')} defaultOpen>
-          <MultiCheckList
-            items={filters.genders}
-            selected={(selectedFilters as any).genderids || []}
-            onToggle={toggle('genderids')}
-            maxVisible={10}
+      {/* ─────────── Розміри (одразу після Бренду) ─────────── */}
+
+      {/* Розмір (EU) — сітка комірок */}
+      {euSizes.length > 0 && (() => {
+        const EU_VISIBLE = 12;
+        const rangeActive = selectedFilters.min_sizeeu !== undefined || selectedFilters.max_sizeeu !== undefined;
+        const selectedEu = selectedFilters.sizeeu || [];
+        const visibleSizes = euShowAll ? euSizes : euSizes.slice(0, EU_VISIBLE);
+        return (
+          <FilterSection
+            title="Розмір (EU)"
+            badge={selectedEu.length + (rangeActive ? 1 : 0)}
+            defaultOpen
+          >
+            <div className="grid grid-cols-4 gap-1.5">
+              {visibleSizes.map(size => {
+                const isActive = selectedEu.includes(size);
+                return (
+                  <button
+                    key={size}
+                    type="button"
+                    onClick={() => {
+                      const next = isActive ? selectedEu.filter(s => s !== size) : [...selectedEu, size];
+                      onFilterChange({
+                        ...selectedFilters,
+                        sizeeu: next.length ? next : undefined,
+                        min_sizeeu: undefined,
+                        max_sizeeu: undefined,
+                      });
+                    }}
+                    className={[
+                      "py-1.5 text-xs rounded-md border text-center transition-colors",
+                      isActive
+                        ? "bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-300 border-blue-500 ring-1 ring-blue-400 font-medium"
+                        : "bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-200 border-gray-200 dark:border-gray-600 hover:border-blue-400 hover:text-blue-600 dark:hover:text-blue-400",
+                    ].join(" ")}
+                  >{size}</button>
+                );
+              })}
+            </div>
+
+            {euSizes.length > EU_VISIBLE && (
+              <button
+                type="button"
+                onClick={() => setEuShowAll(s => !s)}
+                className="mt-2 w-full flex items-center justify-center gap-1 text-xs font-medium text-blue-500 hover:text-blue-600 transition-colors"
+              >
+                {euShowAll ? 'Згорнути' : `Показати більше (${euSizes.length - EU_VISIBLE})`}
+                <svg className={`w-3.5 h-3.5 transition-transform ${euShowAll ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                </svg>
+              </button>
+            )}
+
+            {selectedEu.length > 0 && (
+              <button
+                type="button"
+                onClick={() => onFilterChange({ ...selectedFilters, sizeeu: undefined })}
+                className="mt-1 w-full py-0.5 text-[10px] text-gray-400 hover:text-red-500 hover:underline transition-colors"
+              >
+                Очистити вибрані
+              </button>
+            )}
+
+            {/* Або діапазон */}
+            <div className="mt-3 pt-2 border-t border-gray-100 dark:border-gray-700">
+              <div className="text-[10px] text-gray-400 mb-1 uppercase tracking-wider">Або діапазон:</div>
+              <div className="flex items-center gap-1.5">
+                <input
+                  type="number"
+                  step="0.5"
+                  min="10"
+                  max="60"
+                  placeholder="Від"
+                  value={selectedFilters.min_sizeeu ?? ''}
+                  onChange={e => {
+                    const v = e.target.value ? parseFloat(e.target.value) : undefined;
+                    onFilterChange({ ...selectedFilters, min_sizeeu: v, sizeeu: undefined });
+                  }}
+                  className="w-full border border-gray-200 dark:border-gray-600 rounded px-2 py-1 text-xs bg-white dark:bg-gray-700 text-gray-800 dark:text-gray-200 focus:outline-none focus:border-blue-400"
+                />
+                <span className="text-gray-400 text-xs flex-shrink-0">—</span>
+                <input
+                  type="number"
+                  step="0.5"
+                  min="10"
+                  max="60"
+                  placeholder="До"
+                  value={selectedFilters.max_sizeeu ?? ''}
+                  onChange={e => {
+                    const v = e.target.value ? parseFloat(e.target.value) : undefined;
+                    onFilterChange({ ...selectedFilters, max_sizeeu: v, sizeeu: undefined });
+                  }}
+                  className="w-full border border-gray-200 dark:border-gray-600 rounded px-2 py-1 text-xs bg-white dark:bg-gray-700 text-gray-800 dark:text-gray-200 focus:outline-none focus:border-blue-400"
+                />
+                {rangeActive && (
+                  <button
+                    type="button"
+                    onClick={() => onFilterChange({ ...selectedFilters, min_sizeeu: undefined, max_sizeeu: undefined })}
+                    className="flex-shrink-0 text-gray-400 hover:text-red-500 transition-colors text-sm leading-none"
+                    title="Скинути діапазон"
+                  >×</button>
+                )}
+              </div>
+            </div>
+          </FilterSection>
+        );
+      })()}
+
+      {/* Буквений розмір (XS / S / M / L / XL / XXL / ...) */}
+      {letterSizes.length > 0 && (
+        <FilterSection
+          title="Буквений розмір"
+          badge={selectedFilters.size_letter?.length || 0}
+        >
+          <div className="flex flex-wrap gap-1.5">
+            {letterSizes.map(letter => {
+              const isActive = selectedFilters.size_letter?.includes(letter) || false;
+              return (
+                <button
+                  key={letter}
+                  type="button"
+                  onClick={() => {
+                    const cur = selectedFilters.size_letter || [];
+                    const next = isActive
+                      ? cur.filter(x => x !== letter)
+                      : [...cur, letter];
+                    onFilterChange({
+                      ...selectedFilters,
+                      size_letter: next.length > 0 ? next : undefined,
+                    });
+                  }}
+                  className={[
+                    "min-w-[42px] px-2.5 py-1 text-xs rounded border transition-colors",
+                    isActive
+                      ? "bg-blue-500 text-white border-blue-500 dark:bg-blue-600 dark:border-blue-600"
+                      : "bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-200 border-gray-200 dark:border-gray-600 hover:border-blue-400",
+                  ].join(" ")}
+                >
+                  {letter}
+                </button>
+              );
+            })}
+            {selectedFilters.size_letter && selectedFilters.size_letter.length > 0 && (
+              <button
+                type="button"
+                onClick={() => onFilterChange({ ...selectedFilters, size_letter: undefined })}
+                className="ml-1 text-[10px] text-gray-400 hover:text-red-500 hover:underline transition-colors"
+              >
+                Очистити
+              </button>
+            )}
+          </div>
+        </FilterSection>
+      )}
+
+      {/* Розмір в СМ (довжина стопи) */}
+      <FilterSection
+        title="Розмір в СМ"
+        badge={selectedFilters.min_measurementscm !== undefined || selectedFilters.max_measurementscm !== undefined ? 1 : 0}
+      >
+        <div className="flex items-center gap-1.5">
+          <input
+            type="number"
+            step="0.5"
+            min="10"
+            max="40"
+            placeholder="Від"
+            value={selectedFilters.min_measurementscm ?? ''}
+            onChange={e => {
+              const v = e.target.value ? parseFloat(e.target.value) : undefined;
+              onFilterChange({ ...selectedFilters, min_measurementscm: v });
+            }}
+            className="w-full border border-gray-200 dark:border-gray-600 rounded px-2 py-1 text-xs bg-white dark:bg-gray-700 text-gray-800 dark:text-gray-200 focus:outline-none focus:border-blue-400"
           />
+          <span className="text-gray-400 text-xs flex-shrink-0">—</span>
+          <input
+            type="number"
+            step="0.5"
+            min="10"
+            max="40"
+            placeholder="До"
+            value={selectedFilters.max_measurementscm ?? ''}
+            onChange={e => {
+              const v = e.target.value ? parseFloat(e.target.value) : undefined;
+              onFilterChange({ ...selectedFilters, max_measurementscm: v });
+            }}
+            className="w-full border border-gray-200 dark:border-gray-600 rounded px-2 py-1 text-xs bg-white dark:bg-gray-700 text-gray-800 dark:text-gray-200 focus:outline-none focus:border-blue-400"
+          />
+          {(selectedFilters.min_measurementscm !== undefined || selectedFilters.max_measurementscm !== undefined) && (
+            <button
+              type="button"
+              onClick={() => onFilterChange({ ...selectedFilters, min_measurementscm: undefined, max_measurementscm: undefined })}
+              className="flex-shrink-0 text-gray-400 hover:text-red-500 transition-colors text-sm leading-none"
+              title="Скинути"
+            >×</button>
+          )}
+        </div>
+        <p className="text-[10px] text-gray-400 mt-1">довжина стопи/виробу в см</p>
+      </FilterSection>
+
+      {/* ──────────────────────────────────────────────────── */}
+
+      {/* Стать — лаконічні чіпи з піктограмами (без тексту) */}
+      {filters.genders?.length > 0 && (
+        <FilterSection title={SECTION_LABELS.genders} badge={countActive('genderids')}>
+          <div className="flex gap-1.5">
+            {filters.genders.map(gender => {
+              const isActive = ((selectedFilters as any).genderids || []).includes(gender.id);
+              const kind = genderKind(gender.name);
+              return (
+                <button
+                  key={gender.id}
+                  type="button"
+                  title={gender.name}
+                  aria-label={gender.name}
+                  aria-pressed={isActive}
+                  onClick={() => toggle('genderids')(gender.id, !isActive)}
+                  className={[
+                    "flex-1 min-w-[52px] flex items-center justify-center py-2 rounded-md border transition-colors",
+                    isActive
+                      ? GENDER_ACTIVE_TINT[kind]
+                      : "bg-white dark:bg-gray-700 text-gray-500 dark:text-gray-300 border-gray-200 dark:border-gray-600 hover:border-gray-400 hover:text-gray-700 dark:hover:text-gray-200",
+                  ].join(" ")}
+                >
+                  <GenderGlyph kind={kind} />
+                </button>
+              );
+            })}
+          </div>
         </FilterSection>
       )}
 
@@ -313,36 +637,64 @@ const ProductFiltersPanel: React.FC<ProductFiltersPanelProps> = ({ filters, sele
       <FilterSection
         title={SECTION_LABELS.colors}
         badge={(selectedFilters.color_group_ids?.length || 0) + (selectedFilters.colorids?.length || 0)}
-        defaultOpen
       >
-        {/* Базові кольори — чіпи */}
-        {filters.color_groups && filters.color_groups.length > 0 && (
-          <div className="flex flex-wrap gap-1.5 mb-2">
-            {filters.color_groups.map((cg: ColorGroup) => {
-              const isActive = (selectedFilters.color_group_ids || []).includes(cg.id);
-              const isWhite = cg.hex?.toLowerCase() === '#ffffff';
-              return (
+        {/* Базові кольори — динамічні квадратні чіпи-зразки з лічильником.
+            Не більше 2 рядків (10 шт.); решта — за «Показати більше». Вибрані
+            понад ліміт завжди лишаються видимими (щоб було як зняти). */}
+        {colorGroupsToShow.length > 0 && (() => {
+          const COLOR_VISIBLE = 10; // 2 ряди × 5 колонок
+          const selectedSet = new Set(selectedFilters.color_group_ids || []);
+          const base = colorShowAll ? colorGroupsToShow : colorGroupsToShow.slice(0, COLOR_VISIBLE);
+          const extraSelected = colorShowAll
+            ? []
+            : colorGroupsToShow.slice(COLOR_VISIBLE).filter(cg => selectedSet.has(cg.id));
+          const visible = [...base, ...extraSelected];
+          const hiddenCount = colorGroupsToShow.length - base.length;
+          return (
+            <div className="mb-2">
+              <div className="grid grid-cols-5 gap-2">
+                {visible.map((cg: ColorGroup) => {
+                  const isActive = selectedSet.has(cg.id);
+                  const isWhite = cg.hex?.toLowerCase() === '#ffffff';
+                  return (
+                    <div key={cg.id} className="flex flex-col items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => toggleColorGroup(cg.id)}
+                        title={`${cg.name} (${cg.count})`}
+                        aria-label={cg.name}
+                        aria-pressed={isActive}
+                        style={{ backgroundColor: cg.hex || '#ccc' }}
+                        className={[
+                          "w-11 h-11 rounded-lg transition-all",
+                          isActive
+                            ? "ring-2 ring-offset-2 ring-blue-500 ring-offset-white dark:ring-offset-gray-800"
+                            : "ring-1 ring-black/10 hover:ring-black/30 dark:ring-white/15 dark:hover:ring-white/40",
+                          isWhite ? "border border-gray-300" : "",
+                        ].join(" ")}
+                      />
+                      <span className={`text-[11px] tabular-nums ${isActive ? 'text-blue-600 dark:text-blue-400 font-medium' : 'text-gray-500 dark:text-gray-400'}`}>
+                        {cg.count}×
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+              {hiddenCount > 0 && (
                 <button
-                  key={cg.id}
                   type="button"
-                  onClick={() => toggleColorGroup(cg.id)}
-                  title={`${cg.name} (${cg.count})`}
-                  className={`inline-flex items-center gap-1 px-2 py-1 rounded-full text-[11px] font-medium transition-all border ${
-                    isActive
-                      ? 'ring-2 ring-blue-400 border-blue-400 bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300'
-                      : 'border-gray-200 dark:border-gray-600 hover:border-gray-400 text-gray-600 dark:text-gray-300 hover:text-gray-800'
-                  }`}
+                  onClick={() => setColorShowAll(s => !s)}
+                  className="mt-2 w-full flex items-center justify-center gap-1 text-xs font-medium text-blue-500 hover:text-blue-600 transition-colors"
                 >
-                  <span
-                    className={`inline-block w-3 h-3 rounded-full flex-shrink-0 ${isWhite ? 'border border-gray-300' : ''}`}
-                    style={{ backgroundColor: cg.hex || '#ccc' }}
-                  />
-                  <span className="truncate max-w-[80px]">{cg.name}</span>
+                  {colorShowAll ? 'Згорнути' : `Показати більше (${hiddenCount})`}
+                  <svg className={`w-3.5 h-3.5 transition-transform ${colorShowAll ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                  </svg>
                 </button>
-              );
-            })}
-          </div>
-        )}
+              )}
+            </div>
+          );
+        })()}
 
         {/* Пошук конкретного відтінку */}
         {filters.colors?.length > 0 && (
@@ -388,7 +740,7 @@ const ProductFiltersPanel: React.FC<ProductFiltersPanelProps> = ({ filters, sele
 
       {/* Стан */}
       {filters.conditions?.length > 0 && (
-        <FilterSection title={SECTION_LABELS.conditions} badge={countActive('conditionids')} defaultOpen>
+        <FilterSection title={SECTION_LABELS.conditions} badge={countActive('conditionids')}>
           <MultiCheckList
             items={filters.conditions}
             selected={(selectedFilters as any).conditionids || []}
@@ -475,184 +827,6 @@ const ProductFiltersPanel: React.FC<ProductFiltersPanelProps> = ({ filters, sele
           />
         </FilterSection>
       )}
-
-      {/* Розмір EU */}
-      {euSizes.length > 0 && (
-        <FilterSection
-          title="Розмір (EU)"
-          badge={(selectedFilters.sizeeu?.length || 0) + (selectedFilters.min_sizeeu !== undefined || selectedFilters.max_sizeeu !== undefined ? 1 : 0)}
-        >
-          <div className="space-y-2">
-            {/* Діапазон розмірів */}
-            <div>
-              <div className="text-[10px] text-gray-400 mb-1 uppercase tracking-wider">Діапазон:</div>
-              <div className="flex items-center gap-1.5">
-                <input
-                  type="number"
-                  step="0.5"
-                  min="10"
-                  max="60"
-                  placeholder="Від"
-                  value={selectedFilters.min_sizeeu ?? ''}
-                  onChange={e => {
-                    const v = e.target.value ? parseFloat(e.target.value) : undefined;
-                    onFilterChange({ ...selectedFilters, min_sizeeu: v, sizeeu: undefined });
-                  }}
-                  className="w-full border border-gray-200 dark:border-gray-600 rounded px-2 py-1 text-xs bg-white dark:bg-gray-700 text-gray-800 dark:text-gray-200 focus:outline-none focus:border-blue-400"
-                />
-                <span className="text-gray-400 text-xs flex-shrink-0">—</span>
-                <input
-                  type="number"
-                  step="0.5"
-                  min="10"
-                  max="60"
-                  placeholder="До"
-                  value={selectedFilters.max_sizeeu ?? ''}
-                  onChange={e => {
-                    const v = e.target.value ? parseFloat(e.target.value) : undefined;
-                    onFilterChange({ ...selectedFilters, max_sizeeu: v, sizeeu: undefined });
-                  }}
-                  className="w-full border border-gray-200 dark:border-gray-600 rounded px-2 py-1 text-xs bg-white dark:bg-gray-700 text-gray-800 dark:text-gray-200 focus:outline-none focus:border-blue-400"
-                />
-                {(selectedFilters.min_sizeeu !== undefined || selectedFilters.max_sizeeu !== undefined) && (
-                  <button
-                    type="button"
-                    onClick={() => onFilterChange({ ...selectedFilters, min_sizeeu: undefined, max_sizeeu: undefined })}
-                    className="flex-shrink-0 text-gray-400 hover:text-red-500 transition-colors text-sm leading-none"
-                    title="Скинути діапазон"
-                  >×</button>
-                )}
-              </div>
-            </div>
-
-            {/* Або конкретні розміри */}
-            {(selectedFilters.min_sizeeu === undefined && selectedFilters.max_sizeeu === undefined) && (
-              <div>
-                <div className="text-[10px] text-gray-400 mb-1 uppercase tracking-wider">Або конкретні розміри:</div>
-                <Select
-                  mode="multiple"
-                  allowClear
-                  showSearch
-                  placeholder="Оберіть розміри..."
-                  value={selectedFilters.sizeeu || []}
-                  onChange={(values: string[]) => {
-                    onFilterChange({ ...selectedFilters, sizeeu: values.length > 0 ? values : undefined });
-                  }}
-                  options={euSizes.map(size => ({ label: size, value: size }))}
-                  style={{ width: '100%' }}
-                  maxTagCount={4}
-                  maxTagPlaceholder={(omitted) => `+${omitted.length}...`}
-                  size="small"
-                  filterOption={(input, option) =>
-                    (option?.label as string)?.toLowerCase().includes(input.toLowerCase()) ?? false
-                  }
-                />
-                {selectedFilters.sizeeu && selectedFilters.sizeeu.length > 0 && (
-                  <button
-                    type="button"
-                    onClick={() => onFilterChange({ ...selectedFilters, sizeeu: undefined })}
-                    className="mt-1 w-full py-0.5 text-[10px] text-gray-400 hover:text-red-500 hover:underline transition-colors"
-                  >
-                    Очистити
-                  </button>
-                )}
-              </div>
-            )}
-          </div>
-        </FilterSection>
-      )}
-
-      {/* Буквений розмір (XS / S / M / L / XL / XXL / ...) */}
-      {letterSizes.length > 0 && (
-        <FilterSection
-          title="Буквений розмір"
-          badge={selectedFilters.size_letter?.length || 0}
-        >
-          <div className="flex flex-wrap gap-1.5">
-            {letterSizes.map(letter => {
-              const isActive = selectedFilters.size_letter?.includes(letter) || false;
-              return (
-                <button
-                  key={letter}
-                  type="button"
-                  onClick={() => {
-                    const cur = selectedFilters.size_letter || [];
-                    const next = isActive
-                      ? cur.filter(x => x !== letter)
-                      : [...cur, letter];
-                    onFilterChange({
-                      ...selectedFilters,
-                      size_letter: next.length > 0 ? next : undefined,
-                    });
-                  }}
-                  className={[
-                    "min-w-[42px] px-2.5 py-1 text-xs rounded border transition-colors",
-                    isActive
-                      ? "bg-blue-500 text-white border-blue-500 dark:bg-blue-600 dark:border-blue-600"
-                      : "bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-200 border-gray-200 dark:border-gray-600 hover:border-blue-400",
-                  ].join(" ")}
-                >
-                  {letter}
-                </button>
-              );
-            })}
-            {selectedFilters.size_letter && selectedFilters.size_letter.length > 0 && (
-              <button
-                type="button"
-                onClick={() => onFilterChange({ ...selectedFilters, size_letter: undefined })}
-                className="ml-1 text-[10px] text-gray-400 hover:text-red-500 hover:underline transition-colors"
-              >
-                Очистити
-              </button>
-            )}
-          </div>
-        </FilterSection>
-      )}
-
-      {/* СМ (довжина стопи) */}
-      <FilterSection
-        title="Розмір в СМ"
-        badge={selectedFilters.min_measurementscm !== undefined || selectedFilters.max_measurementscm !== undefined ? 1 : 0}
-      >
-        <div className="flex items-center gap-1.5">
-          <input
-            type="number"
-            step="0.5"
-            min="10"
-            max="40"
-            placeholder="Від"
-            value={selectedFilters.min_measurementscm ?? ''}
-            onChange={e => {
-              const v = e.target.value ? parseFloat(e.target.value) : undefined;
-              onFilterChange({ ...selectedFilters, min_measurementscm: v });
-            }}
-            className="w-full border border-gray-200 dark:border-gray-600 rounded px-2 py-1 text-xs bg-white dark:bg-gray-700 text-gray-800 dark:text-gray-200 focus:outline-none focus:border-blue-400"
-          />
-          <span className="text-gray-400 text-xs flex-shrink-0">—</span>
-          <input
-            type="number"
-            step="0.5"
-            min="10"
-            max="40"
-            placeholder="До"
-            value={selectedFilters.max_measurementscm ?? ''}
-            onChange={e => {
-              const v = e.target.value ? parseFloat(e.target.value) : undefined;
-              onFilterChange({ ...selectedFilters, max_measurementscm: v });
-            }}
-            className="w-full border border-gray-200 dark:border-gray-600 rounded px-2 py-1 text-xs bg-white dark:bg-gray-700 text-gray-800 dark:text-gray-200 focus:outline-none focus:border-blue-400"
-          />
-          {(selectedFilters.min_measurementscm !== undefined || selectedFilters.max_measurementscm !== undefined) && (
-            <button
-              type="button"
-              onClick={() => onFilterChange({ ...selectedFilters, min_measurementscm: undefined, max_measurementscm: undefined })}
-              className="flex-shrink-0 text-gray-400 hover:text-red-500 transition-colors text-sm leading-none"
-              title="Скинути"
-            >×</button>
-          )}
-        </div>
-        <p className="text-[10px] text-gray-400 mt-1">довжина стопи/виробу в см</p>
-      </FilterSection>
 
       {/* Ціна */}
       <FilterSection

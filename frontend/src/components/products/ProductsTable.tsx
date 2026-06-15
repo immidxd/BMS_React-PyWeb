@@ -308,7 +308,9 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
             render: (id: number) => <CopyOnClick value={id} className="bms-mono text-xs" />,
         },
         productnumber: {
-            title: 'Номер', dataIndex: 'productnumber', key: 'productnumber', width: 74,
+            title: 'Номер', dataIndex: 'productnumber', key: 'productnumber', width: 56,
+            onCell: () => ({ className: 'bms-col-num' }),
+            onHeaderCell: () => ({ className: 'bms-col-num' } as any),
             render: (text: string, record: Product) => {
                 const label = (text || '').replace(/^#/, '');
                 if (isUnknownValue(label)) {

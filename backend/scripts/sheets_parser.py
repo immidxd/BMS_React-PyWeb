@@ -59,7 +59,7 @@ BATCH_CHUNK = int(os.getenv("PARSER_BATCH_CHUNK", "50"))  # sheets per batch rea
 #
 # Bump PARSER_VERSION whenever the orders parsing logic changes in a way that
 # would produce different output for the same input → forces a full reparse.
-PARSER_VERSION = 5  # v5: +Проміжна підошва (material midsole) і реструктуризація shoe-блоку журналу
+PARSER_VERSION = 6  # v6: деривація EU-розміру зі СМ коли в «Розмір» лежить чужа US/UK нумерація (+sizeusa)
 HASH_SKIP_ENABLED = os.getenv("PARSER_HASH_SKIP", "1") != "0"
 
 # ── Layer C: whole-file change gate ───────────────────────────────────────────
@@ -1328,6 +1328,34 @@ def _normalize_size(val: str) -> str:
     return s
 
 
+def _derive_eu_from_foreign_size(size_val: str, cm_val: str) -> tuple:
+    """Деривує справжній EU-розмір, якщо в колонці «Розмір» лежить чужа
+    (US/UK) нумерація замість європейської.
+
+    Сигнал «чуже»: числовий розмір < 14 (взуттєвий EU стартує ~16 навіть для
+    немовлят) ПЛЮС адекватна доросла довжина стопи 18–35 см у колонці «СМ».
+    Реальні дитячі EU (cm<18) і дорослі EU (size≥14) НЕ чіпаємо; зіпсовані cm
+    (напр. 350) відсікаються верхньою межею 35.
+
+    EU = (см + 1.5) × 1.5, округлення до 0.5 (фізично-обґрунтовано, знімає
+    неоднозначність US-чол/жін). Оригінальне число повертаємо як US-розмір.
+
+    Повертає (eu_size_str, usa_size_str); usa порожній, якщо деривації не було.
+    """
+    if not size_val or not cm_val:
+        return size_val, ""
+    try:
+        eu_num = float(size_val.replace(",", "."))
+        cm_num = float(cm_val.replace(",", "."))
+    except (ValueError, TypeError):
+        return size_val, ""  # діапазони/нечислові — пропускаємо
+    if eu_num >= 14 or not (18.0 <= cm_num <= 35.0):
+        return size_val, ""
+    derived = round(((cm_num + 1.5) * 1.5) * 2) / 2
+    eu_str = str(int(derived)) if derived == int(derived) else str(derived)
+    return eu_str, size_val
+
+
 _GENDER_MAP = {
     'жіноча': 'Жіноча',
     'жіночий': 'Жіноча',
@@ -2311,6 +2339,9 @@ def _parse_products_sheet(
                 letter_val = _letter_from_size
                 size_val   = ""
         cm_val     = _normalize_size(col(row, "СМ"))
+        # Чужа (US/UK) нумерація в колонці «Розмір» → деривуємо EU зі СМ,
+        # оригінал зберігаємо як US (usa_val). Реальні EU не чіпаються.
+        size_val, usa_val = _derive_eu_from_foreign_size(size_val, cm_val)
         price_val  = col(row, "Ціна")
         oldprice_val = col(row, "Стара ціна") if "Стара ціна" in header else ""
         desc_val   = col(row, "Опис") if "Опис" in header else ""
@@ -2723,6 +2754,7 @@ def _parse_products_sheet(
                     price                 = price_float,
                     oldprice              = oldprice_float,
                     sizeeu                = size_val or None,
+                    sizeusa               = usa_val or None,
                     size_letter           = letter_val or None,
                     measurementscm        = cm_val or None,
                     measurementscm_min              = cm_min,
@@ -2816,6 +2848,7 @@ def _parse_products_sheet(
                     price                 = price_float,
                     oldprice              = oldprice_float,
                     sizeeu                = size_val or None,
+                    sizeusa               = usa_val or None,
                     size_letter           = letter_val or None,
                     measurementscm        = cm_val or None,
                     measurementscm_min              = cm_min,
@@ -2978,6 +3011,7 @@ def _parse_products_sheet(
                             price                 = price_float,
                             oldprice              = oldprice_float,
                             sizeeu                = size_val or None,
+                            sizeusa               = usa_val or None,
                             size_letter           = letter_val or None,
                             measurementscm        = cm_val or None,
                             measurements_length_min         = length_min,
@@ -3116,6 +3150,7 @@ def _parse_products_sheet(
                         price                 = price_float,
                         oldprice              = oldprice_float,
                         sizeeu                = size_val or None,
+                        sizeusa               = usa_val or None,
                         size_letter           = letter_val or None,
                         measurementscm        = cm_val or None,
                         measurements_length_min         = length_min,
@@ -4442,6 +4477,8 @@ def _parse_workspace_sheet(
                 letter_val = _letter_from_size
                 size_val   = ""
         cm_val     = _normalize_size(col(row, "СМ"))
+        # Чужа (US/UK) нумерація в колонці «Розмір» → деривуємо EU зі СМ.
+        size_val, usa_val = _derive_eu_from_foreign_size(size_val, cm_val)
         price_val  = col(row, "Ціна")
         oldprice_val = col(row, "Стара ціна") if "Стара ціна" in header else ""
         desc_val   = col(row, "Опис") or col(row, "Екстра примітка")
@@ -4677,6 +4714,7 @@ def _parse_workspace_sheet(
                     price                 = price_float,
                     oldprice              = oldprice_float,
                     sizeeu                = size_val or None,
+                    sizeusa               = usa_val or None,
                     size_letter           = letter_val or None,
                     measurementscm        = cm_val or None,
                     measurementscm_min              = cm_min,

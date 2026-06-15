@@ -213,6 +213,34 @@ export const productService = {
             console.error('Error fetching product filters:', error);
             throw error;
         }
+    },
+
+    /**
+     * Динамічні фасети: EU-розміри ТА кольорові групи, наявні в поточному
+     * відфільтрованому наборі. Приймає ті самі фільтри, що й getProducts
+     * (свій фільтр кожен фасет ігнорує на бекенді).
+     */
+    async getAvailableFacets(
+        params: Record<string, any> = {}, signal?: AbortSignal
+    ): Promise<{ eu: string[]; colorGroups: { id: number; count: number }[] }> {
+        try {
+            const queryParams = new URLSearchParams();
+            Object.entries(params).forEach(([key, value]) => {
+                if (value === undefined || value === null) return;
+                if (Array.isArray(value)) {
+                    value.forEach((v: any) => queryParams.append(key, String(v)));
+                } else {
+                    queryParams.append(key, String(value));
+                }
+            });
+            const response = await axios.get<{ eu: string[]; color_groups: { id: number; count: number }[] }>(
+                `${API_URL}/available-facets?${queryParams.toString()}`, { signal }
+            );
+            return { eu: response.data?.eu || [], colorGroups: response.data?.color_groups || [] };
+        } catch (error) {
+            console.error('Error fetching available facets:', error);
+            return { eu: [], colorGroups: [] };
+        }
     }
 };
 

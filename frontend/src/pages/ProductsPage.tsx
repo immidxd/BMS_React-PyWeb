@@ -40,6 +40,11 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
   const [searchInsights, setSearchInsights] = useState<any>(null);
   const abortRef = useRef<AbortController | null>(null);
   const fetchIdRef = useRef(0);
+  // Динамічні фасети (розміри + кольори), наявні в поточному відфільтрованому
+  // наборі. null = ще не завантажено (панель тоді бере глобальний список).
+  const [availableEuSizes, setAvailableEuSizes] = useState<string[] | null>(null);
+  const [availableColorGroups, setAvailableColorGroups] = useState<{ id: number; count: number }[] | null>(null);
+  const facetsAbortRef = useRef<AbortController | null>(null);
             
   // Effect to react to global search changes and fetch insights
   useEffect(() => {
@@ -135,6 +140,49 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
     }
   };
 
+  // Фасети розмірів+кольорів: ті самі фільтри, що й для товарів, БЕЗ пагінації/
+  // сорту (свій фільтр кожен фасет ігнорує на бекенді — щоб показувати всі
+  // досяжні за іншими фільтрами значення).
+  const fetchAvailableFacets = async () => {
+    if (facetsAbortRef.current) facetsAbortRef.current.abort();
+    const controller = new AbortController();
+    facetsAbortRef.current = controller;
+    const params: Record<string, any> = {
+      search: currentSearchTerm && currentSearchTerm.trim() ? currentSearchTerm.trim() : undefined,
+      only_unsold: onlyUnsold || undefined,
+      only_problematic: onlyProblematic || undefined,
+      only_rostovka: onlyRostovka || undefined,
+      shipment_id: selectedShipmentId,
+      is_visible: visibleOnly ? true : (selectedFilters.is_visible || undefined),
+      min_price: selectedFilters.min_price,
+      max_price: selectedFilters.max_price,
+    };
+    const appendIds = (key: string, ids?: number[]) => { if (ids && ids.length > 0) params[key] = ids; };
+    appendIds('typeids', selectedFilters.typeids);
+    appendIds('subtypeids', selectedFilters.subtypeids);
+    appendIds('brandids', selectedFilters.brandids);
+    appendIds('genderids', selectedFilters.genderids);
+    appendIds('colorids', selectedFilters.colorids);
+    appendIds('color_group_ids', selectedFilters.color_group_ids);
+    appendIds('statusids', selectedFilters.statusids);
+    appendIds('conditionids', selectedFilters.conditionids);
+    appendIds('styleids', (selectedFilters as any).styleids);
+    appendIds('current_conditionids', (selectedFilters as any).current_conditionids);
+    if ((selectedFilters as any).seasons?.length > 0) params['seasons'] = (selectedFilters as any).seasons;
+    if ((selectedFilters as any).widths?.length > 0) params['widths'] = (selectedFilters as any).widths;
+    if ((selectedFilters as any).size_letter?.length > 0) params['size_letter'] = (selectedFilters as any).size_letter;
+    if (selectedFilters.min_measurementscm !== undefined) params['min_measurementscm'] = selectedFilters.min_measurementscm;
+    if (selectedFilters.max_measurementscm !== undefined) params['max_measurementscm'] = selectedFilters.max_measurementscm;
+    try {
+      const facets = await productService.getAvailableFacets(params, controller.signal);
+      setAvailableEuSizes(facets.eu);
+      setAvailableColorGroups(facets.colorGroups);
+    } catch (err: any) {
+      if (err?.name === 'CanceledError' || err?.code === 'ERR_CANCELED') return;
+      // м'яка деградація: лишаємо попередні списки
+    }
+  };
+
   const handleRefresh = () => { setIsRefreshing(true); fetchProducts().finally(() => setIsRefreshing(false)); };
 
   const handleResetFilters = () => {
@@ -149,6 +197,11 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
   };
     
     useEffect(() => { fetchProducts(); }, [page, perPage, currentSearchTerm, selectedFilters, onlyUnsold, onlyProblematic, onlyRostovka, selectedShipmentId, visibleOnly, sortBy, sortDir]);
+
+    // Динамічний фасет розмірів — оновлюємо при зміні будь-якого «звужуючого»
+    // фільтра/пошуку (без page/sort: вони не впливають на наявні розміри).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    useEffect(() => { fetchAvailableFacets(); }, [currentSearchTerm, selectedFilters, onlyUnsold, onlyProblematic, onlyRostovka, selectedShipmentId, visibleOnly]);
 
     // Auto-refresh products when parsing completes — через ref на АКТУАЛЬНИЙ
     // fetchProducts. Інакше listener із порожніми deps захоплює stale-замикання з
@@ -264,6 +317,8 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
           <ProductFiltersPanel
             filters={filtersMeta}
             selectedFilters={selectedFilters}
+            availableEuSizes={availableEuSizes}
+            availableColorGroups={availableColorGroups}
             onFilterChange={(f) => { setSelectedFilters(f); setPage(1); }}
           />
         ) : (
