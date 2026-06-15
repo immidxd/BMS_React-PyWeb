@@ -345,6 +345,47 @@ async def _publications_sync_cycle() -> None:
             pass
 
 
+# ── Auto-sync OLX adverts ─────────────────────────────────────────────────────
+# Незалежний від Telegram (TG може бути не налаштований). No-op якщо OLX не
+# сконфігуровано/не авторизовано. Блокуючі HTTP-запити OLX — у thread executor,
+# щоб не стопорити event loop. refresh-токен оновлюється всередині sync_adverts.
+async def _olx_sync_cycle() -> None:
+    import asyncio
+
+    def _run():
+        try:
+            from services import olx_service
+            from models.database import SessionLocal
+            from routers.publications import _RELINK_OLX_SQL
+        except ImportError:
+            from backend.services import olx_service
+            from backend.models.database import SessionLocal
+            from backend.routers.publications import _RELINK_OLX_SQL
+        from sqlalchemy import text as _sql_text
+        if not olx_service.is_configured():
+            return
+        db = SessionLocal()
+        try:
+            res = olx_service.sync_adverts(db)
+            if res.get("ok"):
+                try:
+                    r = db.execute(_sql_text(_RELINK_OLX_SQL))
+                    db.commit()
+                    logger.info(f"OLX-sync: {res} relinked={r.rowcount}")
+                except Exception as re:
+                    db.rollback()
+                    logger.warning(f"OLX-relink failed: {re}")
+            else:
+                logger.info(f"OLX-sync skipped: {res.get('error')}")
+        finally:
+            db.close()
+
+    try:
+        await asyncio.get_event_loop().run_in_executor(None, _run)
+    except Exception as e:
+        logger.warning(f"OLX-sync failed: {e}")
+
+
 @app.on_event("startup")
 async def _auto_startup_publications_refresh():
     """Initial sync at startup + periodic loop every N seconds."""
@@ -354,20 +395,22 @@ async def _auto_startup_publications_refresh():
     # Configurable via env (default 30 minutes)
     period_sec = int(os.getenv("PUBLICATIONS_SYNC_PERIOD_SEC", "1800"))
 
+    async def _run_all_cycles():
+        # Telegram + OLX — кожен у власному try, щоб збій одного не блокував інший.
+        for label, fn in (("Publications", _publications_sync_cycle), ("OLX", _olx_sync_cycle)):
+            try:
+                await fn()
+            except Exception as e:
+                logger.warning(f"{label}-sync cycle failed: {e}")
+
     async def _initial_then_periodic():
         # Initial run: wait 15s for the rest of the app to come up
         await asyncio.sleep(15)
-        try:
-            await _publications_sync_cycle()
-        except Exception as e:
-            logger.warning(f"Publications-sync initial cycle failed: {e}")
+        await _run_all_cycles()
         # Periodic loop
         while True:
             await asyncio.sleep(period_sec)
-            try:
-                await _publications_sync_cycle()
-            except Exception as e:
-                logger.warning(f"Publications-sync periodic cycle failed: {e}")
+            await _run_all_cycles()
 
     asyncio.create_task(_initial_then_periodic())
 
