@@ -213,11 +213,11 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
   // Фото вантажимо ОКРЕМО від товару. Спінер галереї тримаємо лише до soft-таймауту:
   // якщо Drive відповідає довго — показуємо плейсхолдер, але запит триває й фото
   // зʼявляться коли доїдуть. Картку це ніколи не блокує.
-  const loadImages = React.useCallback(async () => {
+  const loadImages = React.useCallback(async (silent = false) => {
     if (!productId) return;
-    setImagesLoading(true);
+    if (!silent) setImagesLoading(true);
     let settled = false;
-    const timer = setTimeout(() => { if (!settled) setImagesLoading(false); }, IMAGE_SOFT_TIMEOUT_MS);
+    const timer = silent ? null : setTimeout(() => { if (!settled) setImagesLoading(false); }, IMAGE_SOFT_TIMEOUT_MS);
     try {
       const res = await productService.getProductImages(productId);
       if (!settled) settled = true;
@@ -226,8 +226,8 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
       console.error('Failed to load images', e);
     } finally {
       settled = true;
-      clearTimeout(timer);
-      setImagesLoading(false);
+      if (timer) clearTimeout(timer);
+      if (!silent) setImagesLoading(false);
     }
   }, [productId]);
 
@@ -238,13 +238,58 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     () => allImages.filter((i) => (i.kind ?? 'official') === 'official'),
     [allImages]
   );
+  // filename → image (для рендеру за порядком mgrOrder під час drag)
+  const imgByName = useMemo(() => {
+    const m = new Map<string, GalleryImage>();
+    officialImages.forEach((i) => m.set(i.filename, i));
+    return m;
+  }, [officialImages]);
+
+  // Локальний порядок (для живого optimistic-перетягування). Синхронізуємо із
+  // сервером, але НЕ під час активного drag (інакше «стрибало» б назад).
+  const [mgrOrder, setMgrOrder] = useState<string[]>([]);
+  const draggingRef = React.useRef(false);
+  const tileRefs = React.useRef<Map<string, HTMLDivElement>>(new Map());
+  const prevRects = React.useRef<Map<string, DOMRect>>(new Map());
+
+  useEffect(() => {
+    if (draggingRef.current) return;
+    const next = officialImages.map((i) => i.filename);
+    setMgrOrder((cur) => (cur.join('') === next.join('') ? cur : next));
+  }, [officialImages]);
+
+  // FLIP-анімація: плавне ковзання плиток у нові позиції при зміні mgrOrder.
+  React.useLayoutEffect(() => {
+    const prev = prevRects.current;
+    mgrOrder.forEach((fn) => {
+      const el = tileRefs.current.get(fn);
+      if (!el) return;
+      const nr = el.getBoundingClientRect();
+      const old = prev.get(fn);
+      if (old) {
+        const dx = old.left - nr.left, dy = old.top - nr.top;
+        if (dx || dy) {
+          el.animate(
+            [{ transform: `translate(${dx}px, ${dy}px)` }, { transform: 'translate(0,0)' }],
+            { duration: 200, easing: 'cubic-bezier(0.2,0,0,1)' }
+          );
+        }
+      }
+    });
+    const nextRects = new Map<string, DOMRect>();
+    mgrOrder.forEach((fn) => {
+      const el = tileRefs.current.get(fn);
+      if (el) nextRects.set(fn, el.getBoundingClientRect());
+    });
+    prevRects.current = nextRects;
+  }, [mgrOrder]);
 
   const handleAddPhotos = React.useCallback(async (files: FileList | null) => {
     if (!productId || !files || files.length === 0) return;
     setPhotoBusy(true);
     try {
       await productService.addProductPhotos(productId, Array.from(files));
-      await loadImages();
+      await loadImages(true);
     } catch (e) { console.error('add photos failed', e); }
     finally { setPhotoBusy(false); }
   }, [productId, loadImages]);
@@ -254,7 +299,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     setPhotoBusy(true);
     try {
       await productService.deleteProductPhoto(productId, filename);
-      await loadImages();
+      await loadImages(true);
       setActiveIdx(0);
     } catch (e) { console.error('delete photo failed', e); }
     finally { setPhotoBusy(false); }
@@ -265,7 +310,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     setPhotoBusy(true);
     try {
       await productService.replaceProductPhoto(productId, filename, file);
-      await loadImages();
+      await loadImages(true);
     } catch (e) { console.error('replace photo failed', e); }
     finally { setPhotoBusy(false); }
   }, [productId, loadImages]);
@@ -275,20 +320,39 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     setPhotoBusy(true);
     try {
       await productService.reorderProductPhotos(productId, order);
-      await loadImages();
+      await loadImages(true);  // тихо — порядок уже правильний візуально
     } catch (e) { console.error('reorder photos failed', e); }
     finally { setPhotoBusy(false); }
   }, [productId, loadImages]);
 
-  // Drag-reorder: перетягуємо мініатюру dragIdx → drop на toIdx
-  const onPhotoDrop = React.useCallback((toIdx: number) => {
-    if (dragIdx === null || dragIdx === toIdx) { setDragIdx(null); return; }
-    const names = officialImages.map((i) => i.filename);
-    const [moved] = names.splice(dragIdx, 1);
-    names.splice(toIdx, 0, moved);
+  // Живе перетягування: плитки міняються місцями ПОКИ тягнеш (optimistic),
+  // FLIP анімує рух; коміт на сервер — на відпускання.
+  const onTileDragStart = React.useCallback((fn: string) => {
+    draggingRef.current = true;
+    setDragIdx(mgrOrder.indexOf(fn));
+  }, [mgrOrder]);
+
+  const onTileDragEnter = React.useCallback((fn: string) => {
+    setMgrOrder((order) => {
+      const from = dragIdx;
+      const to = order.indexOf(fn);
+      if (from === null || from < 0 || to < 0 || from === to) return order;
+      const a = [...order];
+      const [moved] = a.splice(from, 1);
+      a.splice(to, 0, moved);
+      setDragIdx(to);
+      return a;
+    });
+  }, [dragIdx]);
+
+  const onTileDragEnd = React.useCallback(() => {
+    draggingRef.current = false;
     setDragIdx(null);
-    handleReorderPhotos(names);
-  }, [dragIdx, officialImages, handleReorderPhotos]);
+    const serverOrder = officialImages.map((i) => i.filename);
+    if (mgrOrder.length && mgrOrder.join('') !== serverOrder.join('')) {
+      handleReorderPhotos(mgrOrder);
+    }
+  }, [mgrOrder, officialImages, handleReorderPhotos]);
 
   // Кожне свіже відкриття (після закриття) трактуємо як ПЕРВИННЕ (зі спінером).
   useEffect(() => { if (!open) prevIdRef.current = null; }, [open]);
@@ -1076,15 +1140,18 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                         ) : (
                           <>
                             <div className="grid grid-cols-4 sm:grid-cols-5 gap-2">
-                              {officialImages.map((img, i) => (
-                                <div key={img.filename}
+                              {mgrOrder.map((fn, i) => { const img = imgByName.get(fn); if (!img) return null; const dragging = dragIdx === i; return (
+                                <div key={fn}
+                                  ref={(el) => { if (el) tileRefs.current.set(fn, el); else tileRefs.current.delete(fn); }}
                                   draggable={!photoBusy}
-                                  onDragStart={() => setDragIdx(i)}
+                                  onDragStart={(e) => { try { e.dataTransfer.effectAllowed = 'move'; } catch {} onTileDragStart(fn); }}
+                                  onDragEnter={() => onTileDragEnter(fn)}
                                   onDragOver={(e) => e.preventDefault()}
-                                  onDrop={() => onPhotoDrop(i)}
-                                  className={`relative group/ph aspect-square rounded-lg overflow-hidden border ${i === 0 ? 'border-primary-500' : 'border-gray-200 dark:border-gray-700'} ${dragIdx === i ? 'opacity-40' : ''} cursor-grab active:cursor-grabbing`}
+                                  onDragEnd={onTileDragEnd}
+                                  onDrop={(e) => { e.preventDefault(); onTileDragEnd(); }}
+                                  className={`relative group/ph aspect-square rounded-lg overflow-hidden border bg-white dark:bg-gray-900 ${i === 0 ? 'border-primary-500' : 'border-gray-200 dark:border-gray-700'} ${dragging ? 'opacity-90 scale-105 shadow-xl ring-2 ring-primary-400 z-10' : 'shadow-sm hover:shadow-md'} transition-[box-shadow,transform] duration-150 cursor-grab active:cursor-grabbing`}
                                   title={img.filename}>
-                                  <img src={img.url} alt={img.filename} className="w-full h-full object-cover pointer-events-none" loading="lazy" />
+                                  <img src={img.url} alt={img.filename} draggable={false} className="w-full h-full object-cover pointer-events-none select-none" loading="lazy" />
                                   {i === 0 && (
                                     <span className="absolute bottom-0 inset-x-0 text-center text-[9px] bg-primary-500/90 text-white py-0.5 pointer-events-none">головне</span>
                                   )}
@@ -1103,7 +1170,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                                     </button>
                                   </div>
                                 </div>
-                              ))}
+                              ); })}
                             </div>
                             <span className="block mt-2 text-[10px] text-gray-400 dark:text-gray-500">
                               Перетягни, щоб змінити порядок (перше = головне) · 🔄 замінити · ✕ видалити
