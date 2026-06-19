@@ -59,7 +59,7 @@ BATCH_CHUNK = int(os.getenv("PARSER_BATCH_CHUNK", "50"))  # sheets per batch rea
 #
 # Bump PARSER_VERSION whenever the orders parsing logic changes in a way that
 # would produce different output for the same input → forces a full reparse.
-PARSER_VERSION = 6  # v6: деривація EU-розміру зі СМ коли в «Розмір» лежить чужа US/UK нумерація (+sizeusa)
+PARSER_VERSION = 7  # v7: order-item матчинг зберігає '-' (Ф1810-2 більше не зливається у Ф1810); форс-репарс щоб перелінкувати 265 ростовка-суфіксів
 HASH_SKIP_ENABLED = os.getenv("PARSER_HASH_SKIP", "1") != "0"
 
 # ── Layer C: whole-file change gate ───────────────────────────────────────────
@@ -4126,7 +4126,7 @@ def _parse_orders_sheet(
         # Тільки при ОДНОЗНАЧНОМУ збігу (рівно 1 кандидат), щоб не злити різні замовлення.
         if not existing_order and client_id and total_amount > 0 and product_nums:
             from datetime import timedelta as _td
-            _norm_set_current = {re.sub(r"[^\wА-ЯҐЄІЇа-яґєії]", "", p).upper() for p in product_nums if p.strip()}
+            _norm_set_current = {re.sub(r"[^\w\-А-ЯҐЄІЇа-яґєії]", "", p).upper() for p in product_nums if p.strip()}  # keep '-' (ростовка-суфікс)
             _num_items_current = len(product_nums)
             _window_lo = order_date - _td(days=7)
             _window_hi = order_date + _td(days=7)
@@ -4145,7 +4145,7 @@ def _parse_orders_sheet(
                 if len(_items) != _num_items_current:
                     continue
                 _cand_set = set(
-                    re.sub(r"[^\wА-ЯҐЄІЇа-яґєії]", "", (p.productnumber or "")).upper()
+                    re.sub(r"[^\w\-А-ЯҐЄІЇа-яґєії]", "", (p.productnumber or "")).upper()  # keep '-' (ростовка-суфікс)
                     for _, p in _items
                 )
                 if _cand_set == _norm_set_current:
@@ -4244,8 +4244,11 @@ def _parse_orders_sheet(
         _order_items_buf: list = []  # list of (product, item_price)
 
         for pnum, price in zip(product_nums, prices):
-            # Strip emoji / special chars from product number
-            pnum_clean = re.sub(r"[^\w#А-ЯҐЄІЇа-яґєії]", "", pnum).strip()
+            # Strip emoji / special chars from product number.
+            # ⚠️ KEEP '-' : it is the rostovka suffix separator (Ф1810-2). Stripping it
+            # turned "Ф1810-2" → "Ф18102" → no match → продаж приклеювався до базового
+            # «Ф1810» (або взагалі губився), а суфіксна пара лишалась «Непродано».
+            pnum_clean = re.sub(r"[^\w#\-А-ЯҐЄІЇа-яґєії]", "", pnum).strip()
             if not pnum_clean:
                 continue
 
@@ -5149,7 +5152,9 @@ def run_orders_parsing(
 
         def _cb(done, total, _ws=ws, _idx=idx):
             if progress_cb:
-                overall = int((_idx / total_sheets + done / total / total_sheets) * 100)
+                # Cap at 95: лишаємо 95→100 на пост-обробку (reconcile/sweep), щоб
+                # бар не «застопорювався» на стелі фази поки йдуть тихі фінальні кроки.
+                overall = min(95, int((_idx / total_sheets + done / total / total_sheets) * 100))
                 progress_cb(overall, f"{_ws.title}: {done}/{total}")
 
         result = _parse_orders_sheet(ws, sheet_date, session, _cb, cutoff_date, prefetched_rows=all_rows)
@@ -5172,13 +5177,19 @@ def run_orders_parsing(
     # Прибрати ghost-замовлення, що лишились від зміни набору товарів у рядку
     # (вузька сигнатура + бекап; не глобальний sweep). Після повного циклу, коли
     # відомо які ордери мають живий рядок (all_touched).
+    if progress_cb:
+        progress_cb(96, "Прибирання привидів-замовлень…")
     ghost_result = _reconcile_evolved_order_ghosts(session, all_touched)
 
     # Scoped-sweep за gid вкладки: прибирає привидів навіть з реальним статусом і
     # disjoint-набором (як #64752/#64803), яких containment-сигнатура не бачить.
+    if progress_cb:
+        progress_cb(98, "Звірка дублів по вкладках…")
     gid_ghost_result = _reconcile_orders_by_sheet_gid(session, parsed_gids, all_touched)
 
     # Order editing Phase A: restore user-locked order fields the parser overwrote
+    if progress_cb:
+        progress_cb(100, "Відновлення локів і фіналізація…")
     orders_locks_restored = _restore_order_locks(session, order_locks_snapshot)
     if orders_locks_restored:
         logger.info(f"[orders] Restored {orders_locks_restored} user-locked order field(s) after reparse")
@@ -5228,6 +5239,8 @@ def run_workspace_parsing(
     # reset=True — він видаляє всі pending-кандидати й перезаписує єдиним
     # детермінованим скорером. Тепер: та сама БД → те саме число (і після рестарту).
     scan_summary = None
+    if progress_cb:
+        progress_cb(100, "Індексація збігів (lost-scan)…")
     try:
         from services.match_finder import scan_lost_products as _scan
     except ImportError:
