@@ -44,6 +44,15 @@ class ImageEntry:
     #   <pnum>_defN.<ext>   → defect   (показується в обох галереях)
 
 
+def _file_version(abs_path: str) -> str:
+    """`?v=<hash>` із mtime+size для cache-busting при заміні фото. '' якщо нема."""
+    try:
+        st = os.stat(abs_path)
+        return f"?v={int(st.st_mtime):x}{st.st_size:x}"
+    except OSError:
+        return ""
+
+
 def _normalize_number(productnumber: str) -> str:
     """Повертає очищений номер: без `#` префіксу, trim."""
     if not productnumber:
@@ -173,7 +182,9 @@ def _list_local_only(target: str) -> List[ImageEntry]:
         ImageEntry(
             filename=fn,
             # quote зберігає '/' за замовчуванням → шлях лишається валідним.
-            url=f"{URL_PREFIX}/{quote(relpath)}",
+            # `?v=` (версія за mtime+size) бустить кеш при заміні фото під тією ж
+            # назвою — інакше immutable-кеш браузера віддавав би старе.
+            url=f"{URL_PREFIX}/{quote(relpath)}{_file_version(os.path.join(images_dir, relpath))}",
             index=i,
             is_defect=_is_defect_filename(fn, target),
             kind=_classify(fn, target),

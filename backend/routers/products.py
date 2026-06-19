@@ -1,5 +1,5 @@
 from typing import List, Optional, Dict, Any
-from fastapi import APIRouter, Depends, HTTPException, Query, Body, Path, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Body, Path, status, UploadFile, File
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 import logging
@@ -297,6 +297,137 @@ async def get_product_images(
             for img in images
         ],
     }
+
+
+def _pnum_and_category(product_id: int, db: Session):
+    """(productnumber, категорія-папка) для товару. Категорія: де вже лежать
+    фото → інакше за типом → «Інше»."""
+    try:
+        from services.photo_manager import resolve_category
+    except ImportError:
+        from backend.services.photo_manager import resolve_category
+    product = db.query(models.Product).filter(models.Product.id == product_id).first()
+    if not product:
+        raise HTTPException(status_code=404, detail=f"Товар з ID {product_id} не знайдено")
+    pnum = (product.productnumber or "").strip()
+    if not pnum:
+        raise HTTPException(status_code=400, detail="У товару немає номера")
+    type_name = None
+    if getattr(product, "typeid", None):
+        t = db.query(models.Type).filter(models.Type.id == product.typeid).first()
+        type_name = getattr(t, "typename", None) if t else None
+    return pnum, resolve_category(pnum, type_name)
+
+
+def _invalidate_photo_cache():
+    """Скинути кеш «чи є фото», щоб маркери в списку оновились одразу."""
+    try:
+        from services.product_images import get_photo_pnum_set
+    except ImportError:
+        from backend.services.product_images import get_photo_pnum_set
+    try:
+        get_photo_pnum_set(force=True)
+    except Exception:
+        pass
+
+
+@router.post("/api/products/{product_id}/photos")
+async def add_product_photos(
+    product_id: int = Path(..., ge=1),
+    files: List[UploadFile] = File(...),
+    db: Session = Depends(get_db),
+):
+    """Додати офіційні фото товару (multipart). Конверт у WebP → мірор + R2."""
+    import tempfile, os as _os
+    try:
+        from services.photo_manager import add_photos
+    except ImportError:
+        from backend.services.photo_manager import add_photos
+    pnum, category = _pnum_and_category(product_id, db)
+    sources = []
+    tmps = []
+    try:
+        for uf in files:
+            suffix = _os.path.splitext(uf.filename or "")[1] or ".img"
+            fd, tmp = tempfile.mkstemp(suffix=suffix)
+            with _os.fdopen(fd, "wb") as out:
+                out.write(await uf.read())
+            tmps.append(tmp)
+            sources.append((tmp, uf.filename))
+        added = add_photos(pnum, category, sources)
+    finally:
+        for t in tmps:
+            try: _os.unlink(t)
+            except OSError: pass
+    _invalidate_photo_cache()
+    return {"added": added, "category": category}
+
+
+@router.put("/api/products/{product_id}/photos/replace")
+async def replace_product_photo(
+    product_id: int = Path(..., ge=1),
+    filename: str = Query(..., description="ім'я фото, яке замінюємо"),
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+):
+    """Замінити вміст одного офіційного фото (та сама позиція, новий файл)."""
+    import tempfile, os as _os
+    try:
+        from services.photo_manager import replace_photo
+    except ImportError:
+        from backend.services.photo_manager import replace_photo
+    pnum, category = _pnum_and_category(product_id, db)
+    suffix = _os.path.splitext(file.filename or "")[1] or ".img"
+    fd, tmp = tempfile.mkstemp(suffix=suffix)
+    try:
+        with _os.fdopen(fd, "wb") as out:
+            out.write(await file.read())
+        replace_photo(pnum, category, filename, tmp)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        try: _os.unlink(tmp)
+        except OSError: pass
+    return {"replaced": filename}
+
+
+@router.put("/api/products/{product_id}/photos/reorder")
+async def reorder_product_photos(
+    product_id: int = Path(..., ge=1),
+    order: List[str] = Body(..., embed=True, description="імена у бажаному порядку"),
+    db: Session = Depends(get_db),
+):
+    """Перенумерувати офіційні фото (перше = головне) → `_01.._0N`."""
+    try:
+        from services.photo_manager import reorder_photos
+    except ImportError:
+        from backend.services.photo_manager import reorder_photos
+    pnum, category = _pnum_and_category(product_id, db)
+    try:
+        result = reorder_photos(pnum, category, order)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"order": result}
+
+
+@router.delete("/api/products/{product_id}/photos/{filename}")
+async def delete_product_photo(
+    product_id: int = Path(..., ge=1),
+    filename: str = Path(...),
+    db: Session = Depends(get_db),
+):
+    """Видалити одне офіційне фото (мірор + R2)."""
+    try:
+        from services.photo_manager import delete_photo
+    except ImportError:
+        from backend.services.photo_manager import delete_photo
+    pnum, category = _pnum_and_category(product_id, db)
+    try:
+        delete_photo(pnum, category, filename)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    _invalidate_photo_cache()
+    return {"deleted": filename}
 
 
 @router.get("/api/products/{product_id}")

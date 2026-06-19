@@ -114,6 +114,39 @@ export const productService = {
         }
     },
     
+    /** Додати офіційні фото товару (конверт у WebP + R2 на бекенді). */
+    async addProductPhotos(id: number, files: File[]): Promise<{ added: number; category: string }> {
+        const fd = new FormData();
+        files.forEach((f) => fd.append('files', f));
+        const res = await axios.post(`${API_URL}/${id}/photos`, fd, {
+            headers: { 'Content-Type': 'multipart/form-data' },
+        });
+        return res.data;
+    },
+
+    /** Замінити вміст одного фото (та сама позиція, новий файл). */
+    async replaceProductPhoto(id: number, filename: string, file: File): Promise<{ replaced: string }> {
+        const fd = new FormData();
+        fd.append('file', file);
+        const res = await axios.put(`${API_URL}/${id}/photos/replace`, fd, {
+            params: { filename },
+            headers: { 'Content-Type': 'multipart/form-data' },
+        });
+        return res.data;
+    },
+
+    /** Перенумерувати фото (перше = головне) → _01.._0N. */
+    async reorderProductPhotos(id: number, order: string[]): Promise<{ order: string[] }> {
+        const res = await axios.put(`${API_URL}/${id}/photos/reorder`, { order });
+        return res.data;
+    },
+
+    /** Видалити одне фото (мірор + R2). */
+    async deleteProductPhoto(id: number, filename: string): Promise<{ deleted: string }> {
+        const res = await axios.delete(`${API_URL}/${id}/photos/${encodeURIComponent(filename)}`);
+        return res.data;
+    },
+
     /**
      * Створити новий товар
      */

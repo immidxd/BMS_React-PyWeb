@@ -2,7 +2,7 @@ import React, { useEffect, useState, useMemo, useRef } from 'react';
 import { productService } from '../../services/productService';
 import type { Product, ProductFilters } from '../../types/product';
 import { Tag, Spin, Image } from 'antd';
-import { CloseOutlined, PictureOutlined, LeftOutlined, RightOutlined, WarningOutlined, EditOutlined, CheckOutlined } from '@ant-design/icons';
+import { CloseOutlined, PictureOutlined, LeftOutlined, RightOutlined, WarningOutlined, EditOutlined, CheckOutlined, PlusOutlined, SyncOutlined } from '@ant-design/icons';
 import { CopyOnClick, formatBrandName, getProductDisplayStatus, getConditionColor } from '../common/displayHelpers';
 
 interface Props {
@@ -136,6 +136,12 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
   const [editingField, setEditingField] = useState<string | null>(null);
   const [fieldDraft, setFieldDraft] = useState('');
   const [savingField, setSavingField] = useState(false);
+  // Менеджер фото (в editMode): додати/видалити/перейменувати(порядок)/замінити
+  const [photoBusy, setPhotoBusy] = useState(false);
+  const [dragIdx, setDragIdx] = useState<number | null>(null);
+  const addPhotoInputRef = React.useRef<HTMLInputElement | null>(null);
+  const replacePhotoInputRef = React.useRef<HTMLInputElement | null>(null);
+  const replaceTargetRef = React.useRef<string | null>(null);
   // Глобальний режим редагування: всі поля одночасно стають інпутами + «Зберегти все»
   const [editMode, setEditMode] = useState(false);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
@@ -224,6 +230,65 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
       setImagesLoading(false);
     }
   }, [productId]);
+
+  // ── Менеджер фото (editMode) ────────────────────────────────────────────
+  // Працюємо лише з ОФІЦІЙНИМИ фото (локальний мірор + R2). Реальні (Drive) і
+  // дефекти — окремі набори, тут не чіпаємо.
+  const officialImages = useMemo(
+    () => allImages.filter((i) => (i.kind ?? 'official') === 'official'),
+    [allImages]
+  );
+
+  const handleAddPhotos = React.useCallback(async (files: FileList | null) => {
+    if (!productId || !files || files.length === 0) return;
+    setPhotoBusy(true);
+    try {
+      await productService.addProductPhotos(productId, Array.from(files));
+      await loadImages();
+    } catch (e) { console.error('add photos failed', e); }
+    finally { setPhotoBusy(false); }
+  }, [productId, loadImages]);
+
+  const handleDeletePhoto = React.useCallback(async (filename: string) => {
+    if (!productId) return;
+    setPhotoBusy(true);
+    try {
+      await productService.deleteProductPhoto(productId, filename);
+      await loadImages();
+      setActiveIdx(0);
+    } catch (e) { console.error('delete photo failed', e); }
+    finally { setPhotoBusy(false); }
+  }, [productId, loadImages]);
+
+  const handleReplacePhoto = React.useCallback(async (filename: string, file: File | null) => {
+    if (!productId || !file) return;
+    setPhotoBusy(true);
+    try {
+      await productService.replaceProductPhoto(productId, filename, file);
+      await loadImages();
+    } catch (e) { console.error('replace photo failed', e); }
+    finally { setPhotoBusy(false); }
+  }, [productId, loadImages]);
+
+  const handleReorderPhotos = React.useCallback(async (order: string[]) => {
+    if (!productId || order.length === 0) return;
+    setPhotoBusy(true);
+    try {
+      await productService.reorderProductPhotos(productId, order);
+      await loadImages();
+    } catch (e) { console.error('reorder photos failed', e); }
+    finally { setPhotoBusy(false); }
+  }, [productId, loadImages]);
+
+  // Drag-reorder: перетягуємо мініатюру dragIdx → drop на toIdx
+  const onPhotoDrop = React.useCallback((toIdx: number) => {
+    if (dragIdx === null || dragIdx === toIdx) { setDragIdx(null); return; }
+    const names = officialImages.map((i) => i.filename);
+    const [moved] = names.splice(dragIdx, 1);
+    names.splice(toIdx, 0, moved);
+    setDragIdx(null);
+    handleReorderPhotos(names);
+  }, [dragIdx, officialImages, handleReorderPhotos]);
 
   // Кожне свіже відкриття (після закриття) трактуємо як ПЕРВИННЕ (зі спінером).
   useEffect(() => { if (!open) prevIdRef.current = null; }, [open]);
@@ -980,6 +1045,71 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                             )}
                           </button>
                         ))}
+                      </div>
+                    )}
+
+                    {/* Менеджер фото (лише в режимі редагування) */}
+                    {editMode && (
+                      <div className="w-full mt-1 p-3 rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50/60 dark:bg-gray-800/40">
+                        <input ref={addPhotoInputRef} type="file" accept="image/*" multiple className="hidden"
+                          onChange={(e) => { handleAddPhotos(e.target.files); e.target.value = ''; }} />
+                        <input ref={replacePhotoInputRef} type="file" accept="image/*" className="hidden"
+                          onChange={(e) => { const f = e.target.files?.[0] || null; const t = replaceTargetRef.current; if (t) handleReplacePhoto(t, f); e.target.value = ''; }} />
+
+                        <div className="flex items-center justify-between mb-2.5">
+                          <span className="text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500 font-medium">
+                            Фото товару {photoBusy && <Spin size="small" className="ml-1" />}
+                          </span>
+                          <button type="button" disabled={photoBusy}
+                            onClick={() => addPhotoInputRef.current?.click()}
+                            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[12px] bg-gray-900 text-white hover:bg-black disabled:opacity-50 transition-colors">
+                            <PlusOutlined style={{ fontSize: 11 }} /> Додати
+                          </button>
+                        </div>
+
+                        {officialImages.length === 0 ? (
+                          <div onClick={() => addPhotoInputRef.current?.click()}
+                            className="flex flex-col items-center justify-center gap-1 py-6 rounded-lg border-2 border-dashed border-gray-300 dark:border-gray-600 text-gray-400 cursor-pointer hover:border-gray-400 dark:hover:border-gray-500">
+                            <PictureOutlined style={{ fontSize: 28 }} />
+                            <span className="text-[12px]">Натисни «Додати», щоб завантажити фото</span>
+                          </div>
+                        ) : (
+                          <>
+                            <div className="grid grid-cols-4 sm:grid-cols-5 gap-2">
+                              {officialImages.map((img, i) => (
+                                <div key={img.filename}
+                                  draggable={!photoBusy}
+                                  onDragStart={() => setDragIdx(i)}
+                                  onDragOver={(e) => e.preventDefault()}
+                                  onDrop={() => onPhotoDrop(i)}
+                                  className={`relative group/ph aspect-square rounded-lg overflow-hidden border ${i === 0 ? 'border-primary-500' : 'border-gray-200 dark:border-gray-700'} ${dragIdx === i ? 'opacity-40' : ''} cursor-grab active:cursor-grabbing`}
+                                  title={img.filename}>
+                                  <img src={img.url} alt={img.filename} className="w-full h-full object-cover pointer-events-none" loading="lazy" />
+                                  {i === 0 && (
+                                    <span className="absolute bottom-0 inset-x-0 text-center text-[9px] bg-primary-500/90 text-white py-0.5 pointer-events-none">головне</span>
+                                  )}
+                                  <div className="absolute top-0.5 right-0.5 flex gap-0.5 opacity-0 group-hover/ph:opacity-100 transition-opacity">
+                                    <button type="button" disabled={photoBusy}
+                                      onClick={() => { replaceTargetRef.current = img.filename; replacePhotoInputRef.current?.click(); }}
+                                      className="w-5 h-5 inline-flex items-center justify-center rounded bg-white/90 dark:bg-gray-900/90 text-gray-700 dark:text-gray-200 hover:bg-white shadow"
+                                      title="Замінити цей файл">
+                                      <SyncOutlined style={{ fontSize: 10 }} />
+                                    </button>
+                                    <button type="button" disabled={photoBusy}
+                                      onClick={() => { if (window.confirm(`Видалити фото ${img.filename}?`)) handleDeletePhoto(img.filename); }}
+                                      className="w-5 h-5 inline-flex items-center justify-center rounded bg-white/90 dark:bg-gray-900/90 text-red-600 hover:bg-white shadow"
+                                      title="Видалити">
+                                      <CloseOutlined style={{ fontSize: 10 }} />
+                                    </button>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                            <span className="block mt-2 text-[10px] text-gray-400 dark:text-gray-500">
+                              Перетягни, щоб змінити порядок (перше = головне) · 🔄 замінити · ✕ видалити
+                            </span>
+                          </>
+                        )}
                       </div>
                     )}
 
