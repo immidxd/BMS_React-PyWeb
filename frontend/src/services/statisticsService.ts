@@ -6,6 +6,7 @@ export interface SalesPeriodData {
   items_sold: number;
   revenue: number;
   cost: number;
+  ship: number;
   profit: number;
 }
 
@@ -64,6 +65,7 @@ export interface SummaryStats {
   products_unsold: number;
   total_orders: number;
   confirmed_orders: number;
+  paid_orders: number;
   total_revenue: number;
   total_purchase_cost: number;
   total_delivery_cost: number;
@@ -107,6 +109,7 @@ export interface DeliveryListItem {
   supplier_name: string | null;
   total_pairs: number;
   purchase_cost: number;
+  cost_estimated: boolean;
   sold_count: number;
   sell_rate: number;
   revenue: number;

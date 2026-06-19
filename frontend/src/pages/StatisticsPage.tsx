@@ -320,9 +320,9 @@ const StatisticsPage: React.FC<StatisticsPageProps> = () => {
                 sub={`Продано повністю: ${fmtNum(summary.products_fully_sold)} • Частково: ${fmtNum(summary.products_partially_sold)} • Залишок: ${fmtNum(summary.products_unsold)}`}
               />
               <KpiCard
-                label="Виторг (підтверджено)"
+                label="Виторг (оплачено)"
                 value={fmtPrice(summary.total_revenue)}
-                sub={`${fmtNum(summary.confirmed_orders)} підтверджених із ${fmtNum(summary.total_orders)} активних замовлень`}
+                sub={`${fmtNum(summary.paid_orders)} оплачених із ${fmtNum(summary.confirmed_orders)} підтверджених замовлень`}
                 color="text-emerald-600"
               />
               <KpiCard
@@ -332,9 +332,9 @@ const StatisticsPage: React.FC<StatisticsPageProps> = () => {
                 color={summary.net_profit >= 0 ? 'text-indigo-600' : 'text-red-600'}
               />
               <KpiCard
-                label="Вартість залишку"
+                label="Потенц. виторг залишку"
                 value={fmtPrice(summary.unsold_inventory_cost)}
-                sub={`${fmtNum(summary.products_unsold + summary.products_partially_sold)} товарів зі стоком`}
+                sub={`${fmtNum(summary.products_unsold + summary.products_partially_sold)} товарів зі стоком (за продажною)`}
                 color="text-amber-600"
               />
             </div>
@@ -601,9 +601,9 @@ const StatisticsPage: React.FC<StatisticsPageProps> = () => {
                             {d.sell_rate}%
                           </span>
                         </td>
-                        <td className="px-3 py-2 text-right whitespace-nowrap text-amber-600" title={`Закупівля: ${fmtPrice(d.purchase_cost)} + Доставка: ${fmtPrice(d.delivery_cost)}`}>
+                        <td className="px-3 py-2 text-right whitespace-nowrap text-amber-600" title={d.cost_estimated ? `Оцінка (закупівля в журналі не вказана): ~${fmtPrice(d.purchase_cost)} + Доставка: ${fmtPrice(d.delivery_cost)}` : `Закупівля: ${fmtPrice(d.purchase_cost)} + Доставка: ${fmtPrice(d.delivery_cost)}`}>
                           {d.purchase_cost > 0
-                            ? fmtPrice(d.purchase_cost + d.delivery_cost)
+                            ? `${d.cost_estimated ? '~' : ''}${fmtPrice(d.purchase_cost + d.delivery_cost)}`
                             : <span className="text-gray-300 text-xs">—</span>}
                         </td>
                         <td className="px-3 py-2 text-right whitespace-nowrap">{fmtPrice(d.revenue)}</td>

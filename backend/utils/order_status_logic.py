@@ -120,6 +120,23 @@ def sql_in_list(ids: Iterable[int]) -> str:
     return "(" + ", ".join(str(i) for i in ids) + ")"
 
 
+def revenue_paid_where(order_alias: str = "o") -> str:
+    """SQL boolean: this order is REALISED revenue — Підтверджено AND Оплачено.
+
+    Business rule (2026-06-15): «Виторг» у статистиці рахується по фактично
+    оплачених замовленнях (payment_status_id = 1 = Оплачено), а не лише по
+    підтверджених. Різниця ~110 підтверджених-але-неоплачених замовлень.
+
+    Use everywhere a money-in / revenue figure is summed in statistics.
+    NB: client-level revenue (statistics.py /clients + ClientDetailsModal +
+    рейтинги) навмисно лишається на статусі Підтверджено — це окрема усталена
+    конвенція (confirmed = те, що клієнт зобов'язався купити), і її не можна
+    міняти в одному місці без іншого.
+    """
+    return (f"{order_alias}.order_status_id IN {sql_in_list(REVENUE_GENERATING)} "
+            f"AND {order_alias}.payment_status_id = {PAID_STATUS_ID}")
+
+
 def latest_order_status_in(pid_ref: str, ids: Iterable[int]) -> str:
     """Build a SQL boolean expression: latest order on product `pid_ref` has
     status in `ids`. `pid_ref` is a SQL fragment naming the product id column
