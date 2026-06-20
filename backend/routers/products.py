@@ -240,6 +240,24 @@ async def get_available_facets(
         logger.error(f"Error getting available facets: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Помилка при отриманні фасетів: {str(e)}")
 
+@router.get("/api/products/next-number")
+async def get_next_number(
+    prefix: str = Query("Ф", description="Літерний префікс серії (Ф/Р/Т/А/…); '' = цифрова серія"),
+    db: Session = Depends(get_db),
+):
+    """Наступний вільний номер товару (політика max+1, реал-тайм, безколізійно).
+
+    Снапшот УСІХ productnumber + clonednumbers → ніколи не дублює (вкл. ростовка-клони
+    й «дірки»). Для кнопки «Згенерувати» у вікні додавання товару (Фаза 0 write-layer).
+    Статичний роут оголошений ДО `/{product_id}` (той int-типований) — без перехоплення.
+    """
+    try:
+        return {"prefix": prefix, "number": product_service.get_next_product_number(db, prefix)}
+    except Exception as e:
+        logger.error(f"Error generating next product number: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Помилка генерації номера: {str(e)}")
+
+
 @router.get("/api/products/{product_id}/images")
 async def get_product_images(
     product_id: int = Path(..., ge=1, description="ID товару"),

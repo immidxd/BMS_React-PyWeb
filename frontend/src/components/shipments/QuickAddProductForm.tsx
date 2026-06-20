@@ -1,0 +1,296 @@
+import React, { useEffect, useMemo, useState } from 'react';
+import { productService } from '../../services/productService';
+import type { ProductFilters } from '../../types/product';
+import { addProductToDelivery, fetchNextProductNumber } from '../../services/referenceService';
+
+const inputCls =
+  'w-full rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 ' +
+  'px-2.5 py-1.5 text-sm text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-gray-400';
+
+type DLKey = 'types' | 'brands' | 'colors' | 'conditions' | 'genders' | 'styles' | 'subtypes' | 'seasons';
+interface FieldDef { key: string; label: string; number?: boolean; dl?: DLKey; }
+
+const F: Record<string, FieldDef> = {
+  type_name: { key: 'type_name', label: 'Тип', dl: 'types' },
+  brand_name: { key: 'brand_name', label: 'Бренд', dl: 'brands' },
+  model: { key: 'model', label: 'Модель' },
+  marking: { key: 'marking', label: 'Маркування' },
+  gender_name: { key: 'gender_name', label: 'Стать', dl: 'genders' },
+  color_name: { key: 'color_name', label: 'Колір', dl: 'colors' },
+  price: { key: 'price', label: 'Ціна', number: true },
+  condition_name: { key: 'condition_name', label: 'Стан', dl: 'conditions' },
+  sizeeu: { key: 'sizeeu', label: 'Розмір' },
+  dimensions: { key: 'dimensions', label: 'Габарити' },
+  size_letter: { key: 'size_letter', label: 'Буквений' },
+  measurementscm: { key: 'measurementscm', label: 'СМ' },
+  packaging_name: { key: 'packaging_name', label: 'Пакування' },
+  style_name: { key: 'style_name', label: 'Стиль', dl: 'styles' },
+  subtype_name: { key: 'subtype_name', label: 'Підтип', dl: 'subtypes' },
+  season: { key: 'season', label: 'Сезон', dl: 'seasons' },
+  collection: { key: 'collection', label: 'Колекція' },
+  gtin: { key: 'gtin', label: 'GTIN' },
+  geometric_shape: { key: 'geometric_shape', label: 'Форма' },
+  width: { key: 'width', label: 'Ширина' },
+  year: { key: 'year', label: 'Рік', number: true },
+  oldprice: { key: 'oldprice', label: 'Стара ціна', number: true },
+  description: { key: 'description', label: 'Опис' },
+  extranote: { key: 'extranote', label: 'Примітка' },
+  // Матеріали
+  material_upper: { key: 'material_upper', label: 'Верх' },
+  material_middle: { key: 'material_middle', label: 'Середина' },
+  material_sole: { key: 'material_sole', label: 'Підошва' },
+  material_midsole: { key: 'material_midsole', label: 'Проміжна' },
+  material_insole: { key: 'material_insole', label: 'Устілка' },
+  lining_name: { key: 'lining_name', label: 'Підкладка' },
+  // Деталі
+  material_membrane: { key: 'material_membrane', label: 'Мембрана' },
+  sole_type_name: { key: 'sole_type_name', label: 'Тип підошви' },
+  fastening_type_name: { key: 'fastening_type_name', label: 'Застібка' },
+  sole_color_name: { key: 'sole_color_name', label: 'Колір підошви', dl: 'colors' },
+  toe_shape_name: { key: 'toe_shape_name', label: 'Форма носка' },
+  technology_name: { key: 'technology_name', label: 'Технологія' },
+  heel_type_name: { key: 'heel_type_name', label: 'Тип каблука' },
+  lace_type_name: { key: 'lace_type_name', label: 'Тип шнурівки' },
+  height: { key: 'height', label: 'Висота', number: true },
+  sole_thickness: { key: 'sole_thickness', label: 'Товщина підошви', number: true },
+  // Одягові виміри
+  chest: { key: 'chest', label: 'Груди (н/о)', number: true },
+  waist: { key: 'waist', label: 'Талія (н/о)', number: true },
+  hips: { key: 'hips', label: 'Бедра (н/о)', number: true },
+  sleeve: { key: 'sleeve', label: 'Рукав', number: true },
+  length: { key: 'length', label: 'Довжина', number: true },
+};
+
+type Cat = 'shoe' | 'bag' | 'suitcase' | 'clothing';
+type HubView = 'root' | 'materials' | 'details';
+
+const SUBHUBS: Record<Exclude<HubView, 'root'>, { label: string; fields: string[] }> = {
+  materials: { label: 'Матеріали', fields: ['material_upper', 'material_middle', 'material_sole', 'material_midsole', 'material_insole', 'lining_name'] },
+  details: { label: 'Деталі', fields: ['material_membrane', 'sole_type_name', 'fastening_type_name', 'sole_color_name', 'toe_shape_name', 'technology_name', 'heel_type_name', 'lace_type_name', 'height', 'sole_thickness'] },
+};
+const SUBHUB_KEYS = [...SUBHUBS.materials.fields, ...SUBHUBS.details.fields];
+const CLOTHING_MEAS = ['chest', 'waist', 'hips', 'sleeve', 'length'];
+
+function categoryOf(t?: string): Cat {
+  const s = (t || '').toLowerCase();
+  if (/валіз|чемодан/.test(s)) return 'suitcase';
+  if (/сумк|рюкзак|клатч|барсетк|борсетк|гаман|косметичк|шопер|портфел|саквояж/.test(s)) return 'bag';
+  if (/куртк|штан|джинс|футболк|сорочк|світшот|худі|плат|сукн|спідниц|шорт|пальт|кофт|светр|комбінезон|костюм|жилет|толстовк|лонгслів|майк|бомбер|вітровк|пуховик|парк|жакет|кардиган|поло|туніка|блуз|рейтуз|лосин|легінс|бермуд|сарафан/.test(s)) return 'clothing';
+  return 'shoe';
+}
+
+// Під-категорія одягу → набір вимірів у базі (штани не мають «Груди» тощо)
+function clothingSubcat(t: string): 'bottom' | 'dress' | 'top' {
+  const s = (t || '').toLowerCase();
+  if (/штан|джинс|шорт|спідниц|лосин|рейтуз|легінс|бермуд/.test(s)) return 'bottom';
+  if (/плат|сукн|комбінезон|сарафан|костюм/.test(s)) return 'dress';
+  return 'top';
+}
+
+interface Layout { cat: Cat; key: string; base: string[]; gender: boolean; hubHide: string[]; hubExtra: string[]; subhubs: boolean; }
+
+function layout(typeName?: string): Layout {
+  const cat = categoryOf(typeName);
+  if (cat === 'shoe')
+    return { cat, key: 'shoe', base: ['sizeeu'], gender: true, subhubs: true,
+      hubHide: ['dimensions', 'size_letter', 'geometric_shape', ...CLOTHING_MEAS], hubExtra: [] };
+  if (cat === 'bag')
+    return { cat, key: 'bag', base: ['dimensions'], gender: true, subhubs: false,
+      hubHide: ['sizeeu', 'measurementscm', 'size_letter', ...CLOTHING_MEAS], hubExtra: ['geometric_shape'] };
+  if (cat === 'suitcase')
+    return { cat, key: 'suitcase', base: ['size_letter', 'dimensions'], gender: false, subhubs: false,
+      hubHide: ['sizeeu', 'measurementscm', ...CLOTHING_MEAS], hubExtra: ['gender_name'] };
+  const sub = clothingSubcat(typeName || '');
+  const baseMeas = sub === 'bottom' ? ['waist', 'hips', 'length']
+    : sub === 'dress' ? ['chest', 'waist', 'hips', 'length']
+    : ['chest', 'sleeve', 'length'];
+  return { cat, key: 'clothing:' + sub, base: ['size_letter', ...baseMeas], gender: true, subhubs: false,
+    hubHide: ['sizeeu', 'measurementscm', 'dimensions', 'geometric_shape'],
+    hubExtra: CLOTHING_MEAS.filter(m => !baseMeas.includes(m)) };
+}
+
+const OPTIONAL_POOL = [
+  'packaging_name', 'style_name', 'subtype_name', 'season', 'measurementscm',
+  'collection', 'gtin', 'geometric_shape', 'width', 'dimensions', 'size_letter',
+  'year', 'oldprice', 'description', 'extranote',
+];
+const NUMBER_KEYS = new Set(['price', 'year', 'oldprice', 'height', 'sole_thickness', ...CLOTHING_MEAS]);
+const KEEP_ON_CHANGE = ['productnumber', 'brand_name', 'model', 'marking', 'gender_name', 'color_name', 'price', 'condition_name'];
+
+const baseFields = (lay: Layout): FieldDef[] => [
+  F.type_name, F.brand_name, F.model, F.marking,
+  ...(lay.gender ? [F.gender_name] : []),
+  F.color_name,
+  ...lay.base.map(k => F[k]),
+  F.price, F.condition_name,
+];
+const optionalFor = (lay: Layout): string[] =>
+  [...OPTIONAL_POOL, ...lay.hubExtra].filter(k => !lay.base.includes(k) && !lay.hubHide.includes(k));
+
+interface Props {
+  deliveryId: number;
+  onSaved: () => void;
+  filters?: ProductFilters | null;
+}
+
+const QuickAddProductForm: React.FC<Props> = ({ deliveryId, onSaved, filters: filtersProp }) => {
+  const [values, setValues] = useState<Record<string, string>>({ productnumber: '' });
+  const [extras, setExtras] = useState<string[]>([]);
+  const [hubOpen, setHubOpen] = useState(false);
+  const [hubView, setHubView] = useState<HubView>('root');
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [okFlash, setOkFlash] = useState(false);
+  const [filters, setFilters] = useState<ProductFilters | null>(filtersProp || null);
+
+  useEffect(() => {
+    if (filtersProp) { setFilters(filtersProp); return; }
+    productService.getFilters().then(setFilters).catch(() => {});
+  }, [filtersProp]);
+
+  const lay = useMemo(() => layout(values.type_name), [values.type_name]);
+  const set = (k: string, v: string) => setValues(s => ({ ...s, [k]: v }));
+
+  // Зміна типу → інший layout: анулюємо невластиві поля (лишаємо лише базові спільні).
+  const onTypeChange = (v: string) => {
+    const newLay = layout(v);
+    if (newLay.key !== lay.key) {
+      setExtras([]); setHubView('root');
+      setValues(s => {
+        const next: Record<string, string> = { type_name: v };
+        KEEP_ON_CHANGE.forEach(k => { if (s[k]) next[k] = s[k]; });
+        if (!newLay.gender) delete next.gender_name;  // напр. Валіза — без «Стать» за замовч.
+        return next;
+      });
+    } else {
+      setValues(s => ({ ...s, type_name: v }));
+    }
+  };
+
+  const dlItems = (k?: DLKey): { name: string }[] => {
+    if (!k || !filters) return [];
+    if (k === 'seasons') return (filters.seasons || []).map(s => ({ name: s }));
+    return ((filters as any)[k] || []) as { name: string }[];
+  };
+
+  const generate = async () => {
+    const typed = (values.productnumber || '').trim().replace('#', '');
+    const m = typed.match(/^([А-ЯҐЄІЇA-Za-zа-яґєії]+)/);
+    const pfx = m ? m[1].toUpperCase() : 'Ф';
+    try { set('productnumber', await fetchNextProductNumber(pfx)); } catch { /* ignore */ }
+  };
+
+  const addExtra = (key: string) => { setExtras(e => [...e, key]); setHubOpen(false); setHubView('root'); };
+  const removeExtra = (key: string) => { setExtras(e => e.filter(k => k !== key)); setValues(s => ({ ...s, [key]: '' })); };
+
+  const rootAvailable = useMemo(() => optionalFor(lay).filter(k => !extras.includes(k)), [lay, extras]);
+  const subAvailable = (v: Exclude<HubView, 'root'>) => SUBHUBS[v].fields.filter(k => !extras.includes(k));
+  const showSubhubs = lay.subhubs;
+
+  const save = async () => {
+    setError(null);
+    if (!(values.productnumber || '').trim()) { setError('Вкажіть або згенеруйте номер'); return; }
+    setSubmitting(true);
+    try {
+      const payload: any = { productnumber: values.productnumber.trim() };
+      Object.entries(values).forEach(([k, v]) => {
+        if (k === 'productnumber' || v == null || v === '') return;
+        payload[k] = NUMBER_KEYS.has(k) ? Number(v) : v;
+      });
+      await addProductToDelivery(deliveryId, payload);
+      setValues({ productnumber: '' }); setExtras([]);
+      setOkFlash(true); setTimeout(() => setOkFlash(false), 1500);
+      onSaved();
+    } catch (e: any) {
+      const st = e?.response?.status; const d = e?.response?.data?.detail;
+      if (st === 403) setError('Додавання вимкнено на бекенді (PARSER_ADD_PRODUCT=0)');
+      else if (st === 409) setError(d || 'Такий номер уже існує');
+      else setError(d || 'Не вдалося додати товар');
+    } finally { setSubmitting(false); }
+  };
+
+  const renderField = (f: FieldDef, removable = false) => (
+    <div key={f.key} className="relative">
+      <input
+        list={f.dl ? `qf-${f.dl}` : undefined}
+        type={f.number ? 'number' : 'text'}
+        value={values[f.key] || ''}
+        onChange={e => (f.key === 'type_name' ? onTypeChange(e.target.value) : set(f.key, e.target.value))}
+        placeholder={f.label}
+        className={inputCls}
+      />
+      {removable && (
+        <button type="button" onClick={() => removeExtra(f.key)} title="Прибрати поле"
+          className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-gray-300 dark:bg-gray-600 text-white text-[10px] leading-none flex items-center justify-center hover:bg-red-500">×</button>
+      )}
+    </div>
+  );
+
+  const chip = (label: string, onClick: () => void, accent = false) => (
+    <button key={label} type="button" onClick={onClick}
+      className={`px-3 py-1.5 rounded-lg text-sm border transition-all hover:scale-[1.03]
+        ${accent ? 'bg-gray-900 text-white border-gray-900 hover:bg-gray-700'
+                 : 'bg-white dark:bg-gray-700 border-gray-200 dark:border-gray-600 hover:border-gray-400 hover:bg-gray-100 dark:hover:bg-gray-600'}`}>
+      {label}
+    </button>
+  );
+
+  const hubHasContent = rootAvailable.length > 0 || (showSubhubs && SUBHUB_KEYS.some(k => !extras.includes(k)));
+
+  return (
+    <div>
+      <div className="grid grid-cols-2 md:grid-cols-6 gap-2.5">
+        <div className="flex gap-1.5 col-span-2">
+          <input value={values.productnumber || ''} onChange={e => set('productnumber', e.target.value)}
+            placeholder="Номер" className={inputCls} />
+          <button onClick={generate} type="button" title="Згенерувати наступний вільний номер"
+            className="whitespace-nowrap px-2 py-1.5 rounded-lg text-sm border border-gray-300 dark:border-gray-700 hover:bg-gray-100 dark:hover:bg-gray-700">⚡</button>
+        </div>
+        {baseFields(lay).map(f => renderField(f))}
+        {extras.map(k => renderField(F[k], true))}
+        {hubHasContent && (
+          <button type="button" onClick={() => { setHubOpen(o => !o); setHubView('root'); }}
+            className={`flex items-center justify-center gap-1 rounded-lg border border-dashed text-sm font-medium transition-colors py-1.5
+              ${hubOpen ? 'border-gray-500 text-gray-700 dark:text-gray-200 bg-gray-100 dark:bg-gray-700'
+                        : 'border-gray-300 dark:border-gray-600 text-gray-500 hover:border-gray-400 hover:text-gray-700'}`}>
+            <span className="text-lg leading-none">＋</span> ще поле
+          </button>
+        )}
+      </div>
+
+      {/* Хаб (з під-хабами Матеріали/Деталі) */}
+      <div className={`overflow-hidden transition-all duration-300 ${hubOpen ? 'max-h-72 opacity-100 mt-3' : 'max-h-0 opacity-0'}`}>
+        <div key={hubView} className="bms-fade-in flex flex-wrap items-center gap-2 p-3 rounded-xl bg-gray-50 dark:bg-gray-800/60 border border-gray-100 dark:border-gray-700">
+          {hubView !== 'root' && (
+            <button type="button" onClick={() => setHubView('root')}
+              className="px-2.5 py-1.5 rounded-lg text-sm text-gray-500 hover:text-gray-800 dark:hover:text-gray-200">‹ Назад</button>
+          )}
+          {hubView === 'root' && rootAvailable.map(k => chip(F[k].label, () => addExtra(k)))}
+          {hubView === 'root' && showSubhubs && subAvailable('materials').length > 0 && chip('Матеріали ▸', () => setHubView('materials'), true)}
+          {hubView === 'root' && showSubhubs && subAvailable('details').length > 0 && chip('Деталі ▸', () => setHubView('details'), true)}
+          {hubView !== 'root' && subAvailable(hubView).map(k => chip(F[k].label, () => addExtra(k)))}
+        </div>
+      </div>
+
+      <datalist id="qf-types">{dlItems('types').map((x, i) => <option key={i} value={x.name} />)}</datalist>
+      <datalist id="qf-brands">{dlItems('brands').map((x, i) => <option key={i} value={x.name} />)}</datalist>
+      <datalist id="qf-colors">{dlItems('colors').map((x, i) => <option key={i} value={x.name} />)}</datalist>
+      <datalist id="qf-conditions">{dlItems('conditions').map((x, i) => <option key={i} value={x.name} />)}</datalist>
+      <datalist id="qf-genders">{dlItems('genders').map((x, i) => <option key={i} value={x.name} />)}</datalist>
+      <datalist id="qf-styles">{dlItems('styles').map((x, i) => <option key={i} value={x.name} />)}</datalist>
+      <datalist id="qf-subtypes">{dlItems('subtypes').map((x, i) => <option key={i} value={x.name} />)}</datalist>
+      <datalist id="qf-seasons">{dlItems('seasons').map((x, i) => <option key={i} value={x.name} />)}</datalist>
+
+      {error && <div className="mt-2 text-sm text-red-600">{error}</div>}
+      {okFlash && <div className="mt-2 text-sm text-green-600">✓ Товар додано</div>}
+      <div className="mt-3 flex justify-end">
+        <button onClick={save} disabled={submitting}
+          className="px-4 py-1.5 rounded-lg text-sm font-medium bg-black text-white hover:bg-gray-800 disabled:opacity-50">
+          {submitting ? 'Додавання…' : 'Зберегти товар'}
+        </button>
+      </div>
+    </div>
+  );
+};
+
+export default QuickAddProductForm;

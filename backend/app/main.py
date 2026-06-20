@@ -278,6 +278,50 @@ async def _auto_startup_parse():
     asyncio.create_task(_delayed_start())
 
 
+# ── Journal change poller (near-real-time sheet→DB sync) ──────────────────────
+# Раз на JOURNAL_POLL_SEC перевіряє modifiedTime (lastUpdateTime) журналу та
+# замовлень. Якщо змінилось із минулого разу — запускає auto quick-parse (правки/
+# додавання в аркуші підхоплюються за ~хвилину без рестарту). Сам modifiedTime-чек
+# дешевий → не плодимо skip-джоби. Відкл: JOURNAL_POLLER=0.
+@app.on_event("startup")
+async def _journal_change_poller():
+    import asyncio
+    import os as _os
+    if _os.getenv("JOURNAL_POLLER", "1") == "0":
+        return
+    poll_sec = int(_os.getenv("JOURNAL_POLL_SEC", "90"))
+
+    async def _loop():
+        await asyncio.sleep(35)  # дати startup auto-parse відпрацювати першим
+        last: dict = {}
+        while True:
+            try:
+                try:
+                    from scripts.sheets_parser import get_gc, JOURNAL_ID, ORDERS_ID
+                    from routers.parsing import start_auto_full_quick
+                except ImportError:
+                    from backend.scripts.sheets_parser import get_gc, JOURNAL_ID, ORDERS_ID
+                    from backend.routers.parsing import start_auto_full_quick
+                gc = get_gc()
+                changed = False
+                for sid in (JOURNAL_ID, ORDERS_ID):
+                    try:
+                        lut = gc.open_by_key(sid).lastUpdateTime
+                    except Exception:
+                        continue
+                    if sid in last and last[sid] != lut:
+                        changed = True
+                    last[sid] = lut
+                if changed:
+                    logger.info("Journal-poller: зміну виявлено → auto quick-parse")
+                    start_auto_full_quick()
+            except Exception as e:
+                logger.warning(f"Journal-poller error: {e}")
+            await asyncio.sleep(poll_sec)
+
+    asyncio.create_task(_loop())
+
+
 # ── Auto-sync publications (Telegram) ─────────────────────────────────────────
 # Single sync cycle: scan channels → relink → recovery.
 # Triggered on startup (after 15s delay) and periodically every PERIOD seconds.

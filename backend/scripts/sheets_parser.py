@@ -5261,6 +5261,90 @@ def run_workspace_parsing(
     }
 
 
+def _reconcile_delivery_orphans(session: Session, delivery_id: int, all_rows: list) -> int:
+    """Point-wise видалення: товари БД(deliveryid), чий номер зник із вкладки аркуша
+    і БЕЗ продажів. Scoped + protect-sold + JSON-бекап. Повертає к-сть видалених."""
+    if not all_rows:
+        return 0
+    header = all_rows[0]
+    try:
+        num_idx = header.index("Номер")
+    except ValueError:
+        return 0
+
+    def _canon(s):
+        return (s or "").strip().lstrip("#").rstrip(";").strip().upper()
+
+    sheet_nums = {_canon(r[num_idx]) for r in all_rows[1:] if num_idx < len(r) and _canon(r[num_idx])}
+    rows = session.execute(
+        text("""SELECT p.id, p.productnumber FROM products p
+                WHERE p.deliveryid = :d
+                  AND NOT EXISTS (SELECT 1 FROM order_items oi WHERE oi.product_id = p.id)"""),
+        {"d": delivery_id},
+    ).fetchall()
+    orphan_ids = [r[0] for r in rows if _canon(r[1]) not in sheet_nums]
+    if not orphan_ids:
+        return 0
+    try:
+        import json as _json
+        from datetime import datetime as _dt2
+        os.makedirs(_GHOST_SWEEP_BACKUP_DIR, exist_ok=True)
+        dump = [
+            {c.name: (str(getattr(o, c.name)) if getattr(o, c.name) is not None else None)
+             for c in Product.__table__.columns}
+            for o in session.query(Product).filter(Product.id.in_(orphan_ids)).all()
+        ]
+        path = os.path.join(_GHOST_SWEEP_BACKUP_DIR,
+                            f"{_dt2.now():%Y%m%d_%H%M%S}_sync_orphans_d{delivery_id}.json")
+        with open(path, "w") as f:
+            _json.dump(dump, f, ensure_ascii=False)
+    except Exception as e:
+        logger.warning(f"[sync] orphan backup failed: {e}")
+    session.execute(text("DELETE FROM order_items WHERE product_id = ANY(:ids)"), {"ids": orphan_ids})
+    session.execute(text("DELETE FROM products WHERE id = ANY(:ids)"), {"ids": orphan_ids})
+    logger.info(f"[sync] delivery {delivery_id}: видалено {len(orphan_ids)} орфан-товар(ів)")
+    return len(orphan_ids)
+
+
+def sync_one_delivery_tab(session: Session, deliveryname: str) -> dict:
+    """⚡ Точкова синхронізація ОДНІЄЇ вкладки завозу з аркушем → БД.
+
+    Адди/правки: upsert через `_parse_products_sheet` (та сама логіка, що повний парс,
+    але лише ця вкладка). Видалення: point-wise orphan-reconcile (scoped+protect-sold+
+    бекап). Аркуш = джерело правди (writeback тримає його синхронним з in-app правками).
+    Для loading-on-open у Картці завозу — поки не пройде, картка вантажиться.
+    """
+    # Анти-конфлікт: якщо фоновий повний парс уже йде — НЕ паримо ту саму вкладку
+    # паралельно (той парс її все одно освіжить). Картка просто покаже БД.
+    busy = session.execute(
+        text("SELECT 1 FROM parsing_jobs WHERE status IN ('queued','running') LIMIT 1")
+    ).first()
+    if busy:
+        return {"skipped": True, "reason": "parse_in_progress", "added": 0, "updated": 0, "deleted": 0}
+
+    gc = get_gc()
+    sh = gc.open_by_key(JOURNAL_ID)
+    try:
+        ws = sh.worksheet(deliveryname)
+    except Exception as e:
+        raise RuntimeError(f"Вкладка '{deliveryname}' не знайдена: {e}")
+    all_rows = ws.get_all_values()
+    sheet_date = parse_date_from_sheet_title(ws.title)
+    supplier_name = parse_supplier_from_sheet_title(ws.title)
+    supplier_id = _get_or_create_supplier(session, supplier_name) if supplier_name else None
+    financials = _parse_delivery_financials(all_rows)
+    shipment_id = _get_or_create_shipment(
+        session, ws.title, sheet_date, supplier_id,
+        purchase_cost=financials["purchase_cost"], delivery_cost=financials["delivery_cost"],
+    )
+    res = _parse_products_sheet(ws, session, sheet_date, None, {}, supplier_id, shipment_id, prefetched_rows=all_rows)
+    session.flush()
+    deleted = _reconcile_delivery_orphans(session, shipment_id, all_rows) if shipment_id else 0
+    session.commit()
+    return {"shipment_id": shipment_id, "added": res.get("added", 0),
+            "updated": res.get("updated", 0), "deleted": deleted}
+
+
 def run_full_parsing(
     session: Session,
     mode: str = "quick",

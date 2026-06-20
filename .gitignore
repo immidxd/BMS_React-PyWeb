@@ -65,3 +65,6 @@ backend/scripts/journal_header_backup_*.json
 
 # Ghost-sweep backups (local)
 backend/scripts/ghost_sweep_backups/
+
+# Add-product / journal write-layer backups (local, contain product/order data)
+backend/scripts/journal_add_backups/

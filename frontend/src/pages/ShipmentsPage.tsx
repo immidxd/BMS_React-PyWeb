@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import MainLayout from '../layouts/MainLayout';
 import ShipmentsTable from '../components/shipments/ShipmentsTable';
+import CreateDeliveryModal from '../components/shipments/CreateDeliveryModal';
 
 const ShipmentsFilterPanelContent: React.FC = () => {
   return (
@@ -22,6 +23,8 @@ interface ShipmentsPageProps {
 
 const ShipmentsPage: React.FC<ShipmentsPageProps> = ({ currentSearchTerm }) => {
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [showCreate, setShowCreate] = useState(false);
+  const [reloadSignal, setReloadSignal] = useState(0);
 
   useEffect(() => {
     if (currentSearchTerm !== undefined) {
@@ -49,12 +52,26 @@ const ShipmentsPage: React.FC<ShipmentsPageProps> = ({ currentSearchTerm }) => {
     >
       <div className="p-4 bg-white dark:bg-gray-800 shadow-md rounded-lg">
         <div className="flex justify-between items-center mb-4">
-          <h1 className="text-2xl font-semibold text-gray-900 dark:text-gray-100">Поставки</h1>
-          {currentSearchTerm && <p className='text-sm text-gray-500 dark:text-gray-400'>Активний пошук: "{currentSearchTerm}"</p>}
+          <div className="flex items-center gap-3">
+            <h1 className="text-2xl font-semibold text-gray-900 dark:text-gray-100">Поставки</h1>
+            {currentSearchTerm && <p className='text-sm text-gray-500 dark:text-gray-400'>Активний пошук: "{currentSearchTerm}"</p>}
+          </div>
+          <button
+            onClick={() => setShowCreate(true)}
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium bg-black text-white hover:bg-gray-800 transition-colors"
+          >
+            <span className="text-base leading-none">＋</span> Створити завіз
+          </button>
         </div>
 
-        <ShipmentsTable />
+        <ShipmentsTable reloadSignal={reloadSignal} />
       </div>
+
+      <CreateDeliveryModal
+        open={showCreate}
+        onClose={() => setShowCreate(false)}
+        onCreated={() => setReloadSignal(s => s + 1)}
+      />
     </MainLayout>
   );
 };

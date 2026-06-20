@@ -454,6 +454,71 @@ export const updateShipment = async (id: number, data: { notes?: string; deliver
   return response.data;
 };
 
+// Створення завозу: клон вкладки «New» у журналі + рядок у deliveries (Фаза 1
+// фічі «Додати товар»). Постачальник резолвиться get-or-create за назвою на бекенді.
+// Потребує PARSER_ADD_PRODUCT=1 у запуску бекенду — інакше 403.
+export interface CreateDeliveryPayload {
+  deliverydate: string;        // ISO YYYY-MM-DD
+  supplier_name?: string;
+  supplier_id?: number;
+  purchase_cost?: number;
+  delivery_cost?: number;
+  name_override?: string;
+}
+export const createDelivery = async (payload: CreateDeliveryPayload): Promise<{
+  id: number; deliveryname: string; sheet_gid: number; deliverydate: string; supplier_id: number | null;
+}> => {
+  const response = await axios.post('/api/deliveries', payload);
+  return response.data;
+};
+
+// Додати товар у завіз (quick) — БД + рядок аркуша. Назви довідників резолвляться на бекенді.
+export interface QuickProductPayload {
+  productnumber: string;
+  type_name?: string; subtype_name?: string; style_name?: string; brand_name?: string;
+  gender_name?: string; color_name?: string; condition_name?: string; packaging_name?: string;
+  model?: string; marking?: string; season?: string; year?: number;
+  description?: string; extranote?: string; sizeeu?: string; measurementscm?: string; price?: number;
+  collection?: string; gtin?: string; oldprice?: number; geometric_shape?: string;
+  width?: string; dimensions?: string; size_letter?: string;
+  // Деталі (взуттєві lookup + виміри)
+  sole_type_name?: string; fastening_type_name?: string; toe_shape_name?: string;
+  technology_name?: string; sole_color_name?: string; lining_name?: string;
+  heel_type_name?: string; lace_type_name?: string; height?: number; sole_thickness?: number;
+  // Одягові виміри
+  chest?: number; waist?: number; hips?: number; sleeve?: number; length?: number;
+  // Матеріали (позиції)
+  material_upper?: string; material_middle?: string; material_sole?: string;
+  material_midsole?: string; material_insole?: string; material_membrane?: string;
+}
+export const addProductToDelivery = async (deliveryId: number, payload: QuickProductPayload): Promise<any> => {
+  const response = await axios.post(`/api/deliveries/${deliveryId}/products`, payload);
+  return response.data;
+};
+export const deleteProductFromDelivery = async (deliveryId: number, productId: number): Promise<any> => {
+  const response = await axios.delete(`/api/deliveries/${deliveryId}/products/${productId}`);
+  return response.data;
+};
+export const fetchNextProductNumber = async (prefix = 'Ф'): Promise<string> => {
+  const response = await axios.get(`/api/products/next-number?prefix=${encodeURIComponent(prefix)}`);
+  return response.data?.number || '';
+};
+// Звірка завозу з журналом → товари в програмі, яких нема в аркуші (без продажів).
+export const reconcileDelivery = async (deliveryId: number): Promise<{
+  orphan_ids: number[]; orphans: { id: number; productnumber: string }[];
+  protected_with_sales: number; sheet_count: number;
+}> => {
+  const response = await axios.get(`/api/deliveries/${deliveryId}/reconcile`);
+  return response.data;
+};
+// Точкова синхронізація вкладки завозу з аркушем (upsert + видалення орфанів). Для loading-on-open.
+export const syncDelivery = async (deliveryId: number): Promise<{
+  shipment_id: number; added: number; updated: number; deleted: number;
+}> => {
+  const response = await axios.post(`/api/deliveries/${deliveryId}/sync`);
+  return response.data;
+};
+
 export const fetchShipmentGroups = async (): Promise<ShipmentGroup[]> => {
   const response = await axios.get('/api/shipment-groups');
   return response.data;

@@ -834,6 +834,38 @@ def get_products(
         logger.error(f"Error getting products: {str(e)}")
         raise
 
+def get_next_product_number(db: Session, prefix: str = "Ф") -> str:
+    """Згенерувати наступний вільний номер товару для літерного префікса (політика max+1).
+
+    Реал-тайм снапшот УСІХ productnumber + clonednumbers → результат гарантовано не
+    збігається ні з чим (вкл. ростовка-клони й «дірки» від видалених). prefix='' →
+    цифрова серія без літери. Ростовка-суфікс ('-N') ігнорується для лічби бази.
+    Повертає канонічну #-форму (напр. '#Ф4114'). Політика max+1 узгоджена з користувачем
+    (2026-06-19): ніколи не перевикористовувати старі номери → нуль колізій з історією.
+    """
+    try:
+        from utils.productnumber_normalizer import normalize as _norm, _HOMOGLYPH_TO_CYR
+    except ImportError:
+        from backend.utils.productnumber_normalizer import normalize as _norm, _HOMOGLYPH_TO_CYR
+    pref = (prefix or "").strip().lstrip("#").upper().translate(_HOMOGLYPH_TO_CYR)
+    pat = re.compile(rf"^{re.escape(pref)}(\d+)(?:-\d+)?$")
+    rows = db.execute(text("SELECT productnumber, clonednumbers FROM products")).fetchall()
+    max_n = 0
+    for pn, clones in rows:
+        toks = [pn] + (re.split(r"[;,/\s]+", clones) if clones else [])
+        for tok in toks:
+            if not tok:
+                continue
+            t = tok.strip().lstrip("#").upper().translate(_HOMOGLYPH_TO_CYR)
+            m = pat.match(t)
+            if m:
+                n = int(m.group(1))
+                if n > max_n:
+                    max_n = n
+    candidate = f"{pref}{max_n + 1}"
+    return _norm(candidate) or f"#{candidate}"
+
+
 def create_product(db: Session, product: schemas.ProductCreate) -> models.Product:
     """Create a new product"""
     try:

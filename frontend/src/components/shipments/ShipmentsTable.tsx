@@ -7,6 +7,7 @@ import {
 } from '../../services/referenceService';
 import Pagination from '../common/Pagination';
 import BmsEmpty from '../common/BmsEmpty';
+import DeliveryCardModal from './DeliveryCardModal';
 
 type SortCol = 'id' | 'shipment_date' | 'supplier_name' | 'items_count' | 'total_cost' | 'created_at';
 
@@ -20,7 +21,7 @@ const fmtDate = (d: string | null) => {
 const fmtPrice = (n: number) => n.toLocaleString('uk-UA', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fmt = (n: number) => n.toLocaleString('uk-UA', { maximumFractionDigits: 0 });
 
-const ShipmentsTable: React.FC = () => {
+const ShipmentsTable: React.FC<{ reloadSignal?: number }> = ({ reloadSignal }) => {
   const [items, setItems] = useState<Shipment[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -33,6 +34,7 @@ const ShipmentsTable: React.FC = () => {
   const [groupName, setGroupName] = useState('');
   const [groups, setGroups] = useState<ShipmentGroup[]>([]);
   const [existingGroupId, setExistingGroupId] = useState<number | null>(null);
+  const [cardShipment, setCardShipment] = useState<Shipment | null>(null);
   const navigate = useNavigate();
   const location = useLocation();
 
@@ -58,7 +60,7 @@ const ShipmentsTable: React.FC = () => {
     } catch (e) { console.error(e); }
   }, []);
 
-  useEffect(() => { loadData(); }, [loadData]);
+  useEffect(() => { loadData(); }, [loadData, reloadSignal]);
   useEffect(() => { loadGroups(); }, [loadGroups]);
 
   useEffect(() => {
@@ -192,8 +194,12 @@ const ShipmentsTable: React.FC = () => {
               <tr><td colSpan={9}><BmsEmpty label="Поставок не знайдено" /></td></tr>
             ) : (
               items.map(sh => (
-                <tr key={sh.id} className={`border-b last:border-b-0 hover:bg-gray-50 ${selected.has(sh.id) ? 'bg-indigo-50' : ''}`}>
-                  <td className="px-3 py-2">
+                <tr
+                  key={sh.id}
+                  onClick={() => setCardShipment(sh)}
+                  className={`border-b last:border-b-0 hover:bg-gray-50 cursor-pointer ${selected.has(sh.id) ? 'bg-indigo-50' : ''}`}
+                >
+                  <td className="px-3 py-2" onClick={e => e.stopPropagation()}>
                     <input
                       type="checkbox"
                       checked={selected.has(sh.id)}
@@ -204,7 +210,7 @@ const ShipmentsTable: React.FC = () => {
                   <td className="px-3 py-2 text-gray-400 text-xs">{sh.id}</td>
                   <td className="px-3 py-2 text-xs tabular-nums">{fmtDate(sh.shipment_date)}</td>
                   <td className="px-3 py-2 font-medium">{sh.supplier_name || '—'}</td>
-                  <td className="px-3 py-2 text-xs text-gray-500 max-w-[180px] truncate" title={sh.sheet_name || ''}>
+                  <td className="px-3 py-2 text-xs max-w-[180px] truncate text-indigo-600 dark:text-indigo-400" title={sh.sheet_name || ''}>
                     {sh.sheet_name || '—'}
                   </td>
                   <td className="px-3 py-2 text-center">
@@ -220,7 +226,7 @@ const ShipmentsTable: React.FC = () => {
                       <span className="inline-flex items-center gap-1">
                         <span className="text-xs bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded-full">{sh.group_name}</span>
                         <button
-                          onClick={() => handleUngroup([sh.id])}
+                          onClick={e => { e.stopPropagation(); handleUngroup([sh.id]); }}
                           className="text-gray-400 hover:text-red-500 text-xs"
                           title="Видалити з групи"
                         >✕</button>
@@ -256,6 +262,12 @@ const ShipmentsTable: React.FC = () => {
         </div>
         <span />
       </div>
+
+      <DeliveryCardModal
+        shipment={cardShipment}
+        open={!!cardShipment}
+        onClose={() => setCardShipment(null)}
+      />
     </div>
   );
 };

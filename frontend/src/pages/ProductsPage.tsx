@@ -11,6 +11,7 @@ import { useEffect as ReactUseEffect } from 'react';
 import { Button } from 'antd';
 import { toast } from 'react-toastify';
 import Pagination from '../components/common/Pagination';
+import AddProductModal from '../components/shipments/AddProductModal';
 import { PlusOutlined, EyeOutlined, EyeInvisibleOutlined } from '@ant-design/icons';
 
 // Placeholder for actual filter components for Products
@@ -21,6 +22,7 @@ interface ProductsPageProps {
 
 const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [showAddProduct, setShowAddProduct] = useState(false);
   const [loading, setLoading] = useState<boolean>(true);
   const [products, setProducts] = useState<ProductListResponse>({ items: [], total: 0, page: 1, per_page: 20, pages: 1 });
   const [page, setPage] = useState<number>(1);
@@ -363,9 +365,14 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
               <option value="price_desc">Від найдорожчого</option>
               <option value="price_asc">Від найдешевшого</option>
             </select>
-            <Button type="primary" icon={<PlusOutlined />} onClick={() => navigate('/products/create')}>
+            <Button type="primary" icon={<PlusOutlined />} onClick={() => setShowAddProduct(true)}>
               Додати товар
             </Button>
+            <AddProductModal
+              open={showAddProduct}
+              onClose={() => setShowAddProduct(false)}
+              onAdded={() => fetchProducts()}
+            />
             <Button
               disabled={selectedRowKeys.length === 0}
               icon={<EyeOutlined />}
