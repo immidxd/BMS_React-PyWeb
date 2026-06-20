@@ -213,6 +213,7 @@ class ProductUpdate(BaseModel):
     lining_name: Optional[str] = None
     color_name: Optional[str] = None   # головний «Колір» (resolved → colorid server-side)
     current_condition_name: Optional[str] = None   # «Стан» (поточний стан) — per-item
+    manufacturer_country_name: Optional[str] = None   # «Виробник» (→ manufacturercountryid)
     materials: Optional[List[ProductMaterialEntry]] = None   # legacy/structured (not used by inline UI)
     # Inline-edit матеріалів по позиціях: {position: "шкіра, замша"} (CSV назв).
     # Позиція present → full-replace тієї позиції; "" → очистити; відсутня → не чіпати.

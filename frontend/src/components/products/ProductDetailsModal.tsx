@@ -4,6 +4,7 @@ import type { Product, ProductFilters } from '../../types/product';
 import { Tag, Spin, Image } from 'antd';
 import { CloseOutlined, PictureOutlined, LeftOutlined, RightOutlined, WarningOutlined, EditOutlined, CheckOutlined, PlusOutlined, SyncOutlined } from '@ant-design/icons';
 import { CopyOnClick, formatBrandName, getProductDisplayStatus, getConditionColor } from '../common/displayHelpers';
+import { hiddenFieldsForType } from './productCategory';
 
 interface Props {
   productId: number | null;
@@ -13,6 +14,9 @@ interface Props {
    *  Якщо не передано — крайові стрілки навігації не показуються. */
   onPrev?: () => void;
   onNext?: () => void;
+  /** Опц. синхронізація перед завантаженням (напр. точкова синхр. вкладки завозу),
+   *  щоб картка показала дані, що збігаються з аркушем. Виконується зі спінером. */
+  syncBeforeLoad?: () => Promise<unknown>;
 }
 
 type GalleryKind = 'official' | 'real' | 'defect';
@@ -61,6 +65,8 @@ const EDITABLE_FIELDS: { field: string; type: FieldType }[] = [
   { field: 'lace_type_name', type: 'text' },
   { field: 'technology_name', type: 'text' },
   { field: 'packaging_name', type: 'text' },
+  // Країна-виробник — FK у `countries`, edited by name.
+  { field: 'manufacturer_country_name', type: 'text' },
   // Стан (поточний стан) — per-item FK, edited by name.
   { field: 'current_condition_name', type: 'text' },
 ];
@@ -119,13 +125,13 @@ const measurementsFromProduct = (p: any): Record<string, string> => {
 // одразу — фото вантажаться окремо й «доїжджають» у фоні навіть після таймауту).
 const IMAGE_SOFT_TIMEOUT_MS = 3500;
 
-const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev, onNext }) => {
+const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev, onNext, syncBeforeLoad }) => {
   const [loading, setLoading] = useState(false);
   const [product, setProduct] = useState<Product | null>(null);
   const [allImages, setAllImages] = useState<GalleryImage[]>([]);
   const [imagesLoading, setImagesLoading] = useState(false);
   const [showDefects, setShowDefects] = useState(false);
-  const [activeKind, setActiveKind] = useState<'official' | 'real'>('official');
+  const [activeKind, setActiveKind] = useState<'official' | 'real' | 'defect'>('official');
   const [activeIdx, setActiveIdx] = useState(0);
   const [previewVisible, setPreviewVisible] = useState(false);
   // Inline-редагування «студійні фото з іншого товару» (ростовка-близнюк)
@@ -139,6 +145,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
   // Менеджер фото (в editMode): додати/видалити/перейменувати(порядок)/замінити
   const [photoBusy, setPhotoBusy] = useState(false);
   const [dragIdx, setDragIdx] = useState<number | null>(null);
+  const [moveMenuFor, setMoveMenuFor] = useState<string | null>(null);  // filename з відкритим меню «перенести»
   const addPhotoInputRef = React.useRef<HTMLInputElement | null>(null);
   const replacePhotoInputRef = React.useRef<HTMLInputElement | null>(null);
   const replaceTargetRef = React.useRef<string | null>(null);
@@ -175,7 +182,9 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
   const images = useMemo(() => {
     return allImages.filter((i) => {
       const k = (i.kind ?? 'official') as GalleryKind;
-      if (k === 'defect') return showDefects;
+      // 'defect' як активна галерея (edit-режим) → показуємо дефекти напряму;
+      // інакше дефекти — лише як оверлей ⚠ (showDefects).
+      if (k === 'defect') return showDefects || activeKind === 'defect';
       return k === activeKind;
     });
   }, [allImages, showDefects, activeKind]);
@@ -197,10 +206,19 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
   }, [showDefects, allImages, activeKind]);
 
   // Завантаження товару — картка показується одразу, НЕ чекаючи фото з Drive.
+  // ref на колбек синхронізації (stale-closure-safe) — щоб loadProduct не змінював
+  // identity щоразу (інакше re-load loop). Див. feedback_stale_closure_event_listener.
+  const syncBeforeLoadRef = useRef(syncBeforeLoad);
+  useEffect(() => { syncBeforeLoadRef.current = syncBeforeLoad; }, [syncBeforeLoad]);
+
   const loadProduct = React.useCallback(async (withSpinner = true) => {
     if (!productId) return;
     if (withSpinner) setLoading(true);
     try {
+      // На відкритті — точкова синхр. з аркушем (best-effort), щоб картка збігалась.
+      if (withSpinner && syncBeforeLoadRef.current) {
+        try { await syncBeforeLoadRef.current(); } catch { /* best-effort */ }
+      }
       const prod = await productService.getProduct(productId);
       setProduct(prod);
     } catch (e) {
@@ -234,9 +252,11 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
   // ── Менеджер фото (editMode) ────────────────────────────────────────────
   // Працюємо лише з ОФІЦІЙНИМИ фото (локальний мірор + R2). Реальні (Drive) і
   // дефекти — окремі набори, тут не чіпаємо.
+  // Менеджер фото показує фото АКТИВНОЇ галереї (official | real). Це дозволяє
+  // вантажити/перейменовувати/видаляти і реальні фото з тієї ж панелі.
   const officialImages = useMemo(
-    () => allImages.filter((i) => (i.kind ?? 'official') === 'official'),
-    [allImages]
+    () => allImages.filter((i) => (i.kind ?? 'official') === activeKind),
+    [allImages, activeKind]
   );
   // filename → image (для рендеру за порядком mgrOrder під час drag)
   const imgByName = useMemo(() => {
@@ -251,6 +271,10 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
   const draggingRef = React.useRef(false);
   const tileRefs = React.useRef<Map<string, HTMLDivElement>>(new Map());
   const prevRects = React.useRef<Map<string, DOMRect>>(new Map());
+  // Анти-bounce: остання пара (рухома плитка, плитка-ціль) + час. На межі (index 0) зміщена
+  // плитка ковзає під нерухомий курсор → миттєвий зворотний swap і плитка «не доходить».
+  // Блокуємо повтор тієї ж пари ~350мс (поки FLIP осідає). Див. живий reorder + FLIP.
+  const lastSwapRef = React.useRef<{ m: string; e: string; t: number } | null>(null);
 
   useEffect(() => {
     if (draggingRef.current) return;
@@ -288,11 +312,11 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     if (!productId || !files || files.length === 0) return;
     setPhotoBusy(true);
     try {
-      await productService.addProductPhotos(productId, Array.from(files));
+      await productService.addProductPhotos(productId, Array.from(files), activeKind);
       await loadImages(true);
     } catch (e) { console.error('add photos failed', e); }
     finally { setPhotoBusy(false); }
-  }, [productId, loadImages]);
+  }, [productId, loadImages, activeKind]);
 
   const handleDeletePhoto = React.useCallback(async (filename: string) => {
     if (!productId) return;
@@ -315,20 +339,33 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     finally { setPhotoBusy(false); }
   }, [productId, loadImages]);
 
+  // Перенести одне фото в інший набір (official/real/defect) — виправлення помилкового
+  // завантаження (напр. дефект потрапив у «Реальні»). Після — перепідтягуємо фото.
+  const handleMovePhotoKind = React.useCallback(async (filename: string, toKind: 'official' | 'real' | 'defect') => {
+    if (!productId) return;
+    setPhotoBusy(true);
+    try {
+      await productService.movePhotoOne(productId, filename, toKind);
+      await loadImages(true);
+    } catch (e) { console.error('move photo kind failed', e); }
+    finally { setPhotoBusy(false); }
+  }, [productId, loadImages]);
+
   const handleReorderPhotos = React.useCallback(async (order: string[]) => {
     if (!productId || order.length === 0) return;
     setPhotoBusy(true);
     try {
-      await productService.reorderProductPhotos(productId, order);
+      await productService.reorderProductPhotos(productId, order, activeKind);
       await loadImages(true);  // тихо — порядок уже правильний візуально
     } catch (e) { console.error('reorder photos failed', e); }
     finally { setPhotoBusy(false); }
-  }, [productId, loadImages]);
+  }, [productId, loadImages, activeKind]);
 
   // Живе перетягування: плитки міняються місцями ПОКИ тягнеш (optimistic),
   // FLIP анімує рух; коміт на сервер — на відпускання.
   const onTileDragStart = React.useCallback((fn: string) => {
     draggingRef.current = true;
+    lastSwapRef.current = null;
     setDragIdx(mgrOrder.indexOf(fn));
   }, [mgrOrder]);
 
@@ -337,8 +374,15 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
       const from = dragIdx;
       const to = order.indexOf(fn);
       if (from === null || from < 0 || to < 0 || from === to) return order;
+      const moved = order[from];
+      // Анти-bounce: не повторювати той самий swap (рухома→ціль) у вікні ~350мс — інакше
+      // на межі плитка дрижить і не доходить до 1-ї позиції. Після осідання FLIP — дозволено.
+      const now = Date.now();
+      const ls = lastSwapRef.current;
+      if (ls && ls.m === moved && ls.e === fn && now - ls.t < 350) return order;
+      lastSwapRef.current = { m: moved, e: fn, t: now };
       const a = [...order];
-      const [moved] = a.splice(from, 1);
+      a.splice(from, 1);
       a.splice(to, 0, moved);
       setDragIdx(to);
       return a;
@@ -567,6 +611,21 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     if (!hasOfficial && hasReal) setActiveKind('real');
   }, [allImages]);
 
+  // У edit-режимі для товару БЕЗ фото — стартувати з «Реальні» (типовий сценарій
+  // користувача: спершу свої фото, офіційні з'являються пізніше).
+  useEffect(() => {
+    if (!editMode) return;
+    if (allImages.length === 0) setActiveKind('real');
+  }, [editMode, allImages.length]);
+
+  // Вихід з edit-режиму на вкладці «Дефекти» → повернути read-галерею на official/real,
+  // інакше read-режим показав би порожньо (дефекти там лише оверлей ⚠).
+  useEffect(() => {
+    if (!editMode && activeKind === 'defect') {
+      setActiveKind(officialCount > 0 ? 'official' : 'real');
+    }
+  }, [editMode, activeKind, officialCount]);
+
   // Clamp activeIdx коли images повертаються чи перемикається showDefects/activeKind
   useEffect(() => {
     if (activeIdx >= images.length) setActiveIdx(Math.max(0, images.length - 1));
@@ -643,6 +702,14 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     const raw = (p?.manually_edited_fields || '').trim();
     return new Set(raw ? raw.split(',').map((s) => s.trim()).filter(Boolean) : []);
   }, [p]);
+
+  // Тип-залежна видимість полів (як у формі «Додати товар»): ховаємо в edit-режимі
+  // поля, що не доречні для категорії товару. ⚠️ Хук — ДО early return (нижче), інакше
+  // порядок хуків ламається між рендерами → Minified React error #310.
+  const hiddenFields = useMemo(
+    () => hiddenFieldsForType((p as any)?.type_name),
+    [(p as any)?.type_name]
+  );
 
   if (!open) return null;
 
@@ -736,6 +803,9 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
   // Виклик функцією вбудовує JSX без межі компонента → input зберігає фокус.
   const EditCell = ({ field, label, type = 'text', placeholder, lockField }: { field: string; label: string; type?: FieldType; placeholder?: string; lockField?: string }): React.ReactElement | null => {
     const lf = lockField ?? field;   // lock state may live on a different DB column (e.g. FK id)
+    // У edit-режимі ховаємо тип-нерелевантні поля. У read-режимі — лишаємо
+    // (бо там empty-guard сам приховає; а якщо значення є — хай користувач його бачить).
+    if (editMode && hiddenFields.has(field)) return null;
     if (editMode) {
       return (
         <div className="flex flex-col gap-1 min-w-0">
@@ -1120,13 +1190,34 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                         <input ref={replacePhotoInputRef} type="file" accept="image/*" className="hidden"
                           onChange={(e) => { const f = e.target.files?.[0] || null; const t = replaceTargetRef.current; if (t) handleReplacePhoto(t, f); e.target.value = ''; }} />
 
-                        <div className="flex items-center justify-between mb-2.5">
-                          <span className="text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500 font-medium">
+                        <div className="flex items-center justify-between mb-2.5 gap-2">
+                          <span className="text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500 font-medium whitespace-nowrap">
                             Фото товару {photoBusy && <Spin size="small" className="ml-1" />}
                           </span>
+                          {/* Перемикач куди завантажувати/чим керувати: офіційні (_NN) vs реальні (_00N) */}
+                          <div className="inline-flex rounded-md border border-gray-300 dark:border-gray-600 overflow-hidden text-[11px]">
+                            <button type="button" disabled={photoBusy}
+                              onClick={() => setActiveKind('official')}
+                              title="Студійні/каталожні фото (нумерація _01.._0N)"
+                              className={`px-2 py-1 transition-colors ${activeKind === 'official' ? 'bg-gray-900 text-white' : 'bg-white dark:bg-gray-800 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700'}`}>
+                              Офіційні
+                            </button>
+                            <button type="button" disabled={photoBusy}
+                              onClick={() => setActiveKind('real')}
+                              title="Реальні/власні фото (нумерація _001.._00N)"
+                              className={`px-2 py-1 transition-colors border-l border-gray-300 dark:border-gray-600 ${activeKind === 'real' ? 'bg-gray-900 text-white' : 'bg-white dark:bg-gray-800 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700'}`}>
+                              Реальні
+                            </button>
+                            <button type="button" disabled={photoBusy}
+                              onClick={() => setActiveKind('defect')}
+                              title="Фото дефектів (нумерація _def1.._defN)"
+                              className={`px-2 py-1 transition-colors border-l border-gray-300 dark:border-gray-600 ${activeKind === 'defect' ? 'bg-amber-500 text-white' : 'bg-white dark:bg-gray-800 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700'}`}>
+                              Дефекти
+                            </button>
+                          </div>
                           <button type="button" disabled={photoBusy}
                             onClick={() => addPhotoInputRef.current?.click()}
-                            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[12px] bg-gray-900 text-white hover:bg-black disabled:opacity-50 transition-colors">
+                            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[12px] bg-gray-900 text-white hover:bg-black disabled:opacity-50 transition-colors whitespace-nowrap">
                             <PlusOutlined style={{ fontSize: 11 }} /> Додати
                           </button>
                         </div>
@@ -1157,6 +1248,12 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                                   )}
                                   <div className="absolute top-0.5 right-0.5 flex gap-0.5 opacity-0 group-hover/ph:opacity-100 transition-opacity">
                                     <button type="button" disabled={photoBusy}
+                                      onClick={() => setMoveMenuFor((cur) => (cur === img.filename ? null : img.filename))}
+                                      className="w-5 h-5 inline-flex items-center justify-center rounded bg-white/90 dark:bg-gray-900/90 text-gray-700 dark:text-gray-200 hover:bg-white shadow text-[11px] leading-none"
+                                      title="Перенести в інший набір (Офіційні / Реальні / Дефекти)">
+                                      ⇄
+                                    </button>
+                                    <button type="button" disabled={photoBusy}
                                       onClick={() => { replaceTargetRef.current = img.filename; replacePhotoInputRef.current?.click(); }}
                                       className="w-5 h-5 inline-flex items-center justify-center rounded bg-white/90 dark:bg-gray-900/90 text-gray-700 dark:text-gray-200 hover:bg-white shadow"
                                       title="Замінити цей файл">
@@ -1169,11 +1266,27 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                                       <CloseOutlined style={{ fontSize: 10 }} />
                                     </button>
                                   </div>
+                                  {/* Міні-меню «перенести в …» — інші два набори */}
+                                  {moveMenuFor === img.filename && (
+                                    <div className="absolute top-6 right-0.5 z-20 flex flex-col rounded-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 shadow-lg overflow-hidden">
+                                      {([
+                                        { key: 'official' as const, label: 'Офіційні' },
+                                        { key: 'real' as const, label: 'Реальні' },
+                                        { key: 'defect' as const, label: 'Дефекти' },
+                                      ]).filter((k) => k.key !== activeKind).map((k) => (
+                                        <button key={k.key} type="button" disabled={photoBusy}
+                                          onClick={() => { setMoveMenuFor(null); handleMovePhotoKind(img.filename, k.key); }}
+                                          className="px-2.5 py-1 text-[11px] text-left whitespace-nowrap text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700">
+                                          → {k.label}
+                                        </button>
+                                      ))}
+                                    </div>
+                                  )}
                                 </div>
                               ); })}
                             </div>
                             <span className="block mt-2 text-[10px] text-gray-400 dark:text-gray-500">
-                              Перетягни, щоб змінити порядок (перше = головне) · 🔄 замінити · ✕ видалити
+                              Перетягни, щоб змінити порядок (перше = головне) · ⇄ перенести (Офіційні/Реальні/Дефекти) · 🔄 замінити · ✕ видалити
                             </span>
                           </>
                         )}
@@ -1294,7 +1407,9 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                           { field: 'measurementscm', label: 'СМ' },
                           { field: 'dimensions', label: 'Габарити' },
                           { field: 'geometric_shape', label: 'Геом. форма' },
-                        ] as const).map(({ field, label }) => (
+                        ] as const)
+                          .filter(({ field }) => !hiddenFields.has(field))
+                          .map(({ field, label }) => (
                           <div key={field} className="flex flex-col gap-1">
                             <span className="text-[10px] text-gray-400 dark:text-gray-500 font-medium flex items-center gap-1">{label}<LockDot field={field} /></span>
                             <input value={drafts[field] ?? ''} onChange={(e) => setDraft(field, e.target.value)} className={inputCls + ' !py-1 text-center'} />
@@ -1369,6 +1484,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                     {EditCell({ field: 'gtin', label: 'GTIN' })}
                     {EditCell({ field: 'year', label: 'Рік', type: 'number' })}
                     {EditCell({ field: 'clonednumbers', label: 'Клони' })}
+                    {EditCell({ field: 'manufacturer_country_name', lockField: 'manufacturercountryid', label: 'Виробник' })}
                     <RoCell label="Завоз" value={p.dateadded} />
                     <RoCell label="У базі з" value={p.created_at ? new Date(p.created_at).toLocaleDateString('uk-UA') : null} />
                   </div>
@@ -1379,7 +1495,9 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                     <CollapsibleSection id="materials" title="Матеріали">
                       <div className={`grid ${charCols} gap-x-6 gap-y-3`}>
                         {editMode ? (
-                          MATERIAL_POSITIONS.map(({ pos, label }) => (
+                          MATERIAL_POSITIONS
+                            .filter(({ pos }) => !hiddenFields.has(`material_${pos}`))
+                            .map(({ pos, label }) => (
                             <div key={pos} className="flex flex-col gap-1 min-w-0">
                               <span className="text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500 font-medium">{label}</span>
                               <input
@@ -1429,7 +1547,9 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                         {EditCell({ field: 'heel_type_name', lockField: 'heeltypeid', label: 'Тип каблука' })}
                         {EditCell({ field: 'technology_name', lockField: 'technologyid', label: 'Технології' })}
                         {EditCell({ field: 'packaging_name', lockField: 'packagingid', label: 'Пакування' })}
-                        {MEASUREMENTS.map(({ name, label, minKey, maxKey }) => (
+                        {MEASUREMENTS
+                          .filter(({ name }) => !(editMode && hiddenFields.has(`meas_${name}`)))
+                          .map(({ name, label, minKey, maxKey }) => (
                           editMode ? (
                             <div key={name} className="flex flex-col gap-1 min-w-0">
                               <span className="text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500 font-medium">{label}</span>

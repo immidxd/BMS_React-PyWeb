@@ -68,3 +68,4 @@ backend/scripts/ghost_sweep_backups/
 
 # Add-product / journal write-layer backups (local, contain product/order data)
 backend/scripts/journal_add_backups/
+backend/scripts/photo_kind_migration_backups/

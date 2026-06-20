@@ -233,6 +233,8 @@ WRITEBACK_FIELD_HEADERS = {
     "genderid":       "Стать",
     # Per-item FK (унікальний на пару ростовки) — журнальна колонка «Поточний стан».
     "current_conditionid": "Поточний стан",
+    # Країна-виробник (model-level) → журнальна колонка «Країна-виробник».
+    "manufacturercountryid": "Країна-виробник",
     # Матеріали — синтетичні поля material_<position> → колонки позицій (model-level).
     "material_upper":    "Верх",
     "material_middle":   "Середина",
@@ -2117,7 +2119,21 @@ def _get_or_create(session: Session, model, unique_field: str, value: str):
         db_val = getattr(row, unique_field, None)
         if db_val and db_val.strip().lower() == val_lower:
             return row
-    obj = model(**{unique_field: value})
+    # Описові довідники (sole_types, toe_shapes, ...) канон у БД з малої літери.
+    # WKWebView капіталізує перше слово автоматично — нормалізуємо, щоб не плодити
+    # «Шнурівка» поряд із «шнурівка». Бренди/типи/стать тримаємо як ввів користувач.
+    try:
+        from backend.services.product_service import LOWERCASE_LOOKUP_TABLES
+    except ImportError:
+        try:
+            from services.product_service import LOWERCASE_LOOKUP_TABLES
+        except ImportError:
+            LOWERCASE_LOOKUP_TABLES = set()
+    insert_val = value
+    tname = getattr(model, "__tablename__", "")
+    if tname in LOWERCASE_LOOKUP_TABLES and insert_val[:1].isupper():
+        insert_val = insert_val[0].lower() + insert_val[1:]
+    obj = model(**{unique_field: insert_val})
     session.add(obj)
     session.flush()
 
@@ -5316,8 +5332,13 @@ def sync_one_delivery_tab(session: Session, deliveryname: str) -> dict:
     """
     # Анти-конфлікт: якщо фоновий повний парс уже йде — НЕ паримо ту саму вкладку
     # паралельно (той парс її все одно освіжить). Картка просто покаже БД.
+    # ⚠️ Враховуємо ЛИШЕ ЖИВИЙ парс (heartbeat ≤120с). Інакше вбитий процес лишає
+    # job у 'running' назавжди → синк вічно пропускається, ручні рядки не зʼявляються.
     busy = session.execute(
-        text("SELECT 1 FROM parsing_jobs WHERE status IN ('queued','running') LIMIT 1")
+        text("""SELECT 1 FROM parsing_jobs
+                WHERE status IN ('queued','running')
+                  AND COALESCE(last_heartbeat_at, updated_at, started_at) > NOW() - INTERVAL '120 seconds'
+                LIMIT 1""")
     ).first()
     if busy:
         return {"skipped": True, "reason": "parse_in_progress", "added": 0, "updated": 0, "deleted": 0}

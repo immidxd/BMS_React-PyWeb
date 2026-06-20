@@ -50,6 +50,34 @@ _TYPE_CATEGORY = {
 
 _OFFICIAL_RE = lambda pnum: re.compile(  # noqa: E731
     rf"^#?{re.escape(pnum)}_(\d{{1,2}})$", re.IGNORECASE)
+# Реальні фото: `<pnum>_00N` — індекс ПІСЛЯ префікса `_00` (1,2,…,10,11 → _001,_002,_0010).
+_REAL_RE = lambda pnum: re.compile(  # noqa: E731
+    rf"^#?{re.escape(pnum)}_00(\d+)$", re.IGNORECASE)
+# Дефекти: `<pnum>_defN` (1-індексовані, без паддінгу → _def1, _def2, …).
+_DEFECT_RE = lambda pnum: re.compile(  # noqa: E731
+    rf"^#?{re.escape(pnum)}_def(\d+)$", re.IGNORECASE)
+
+# Підтримувані набори фото в мірорі (керовані менеджером картки).
+PHOTO_KINDS = ("official", "real", "defect")
+
+
+def _kind_re(pnum: str, kind: str):
+    """Регулярка індексу для набору фото."""
+    if kind == "real":
+        return _REAL_RE(pnum)
+    if kind == "defect":
+        return _DEFECT_RE(pnum)
+    return _OFFICIAL_RE(pnum)
+
+
+def _kind_filename(pnum: str, kind: str, idx: int) -> str:
+    """Ім'я файлу за набором та індексом (узгоджено з _kind_re і product_images._classify).
+    official → `_NN` (паддінг 2); real → `_00{idx}`; defect → `_def{idx}`."""
+    if kind == "real":
+        return f"{pnum}_00{idx}.webp"      # _001, _002, …, _0010, _0011
+    if kind == "defect":
+        return f"{pnum}_def{idx}.webp"     # _def1, _def2, …
+    return f"{pnum}_{idx:02d}.webp"        # _01, _02, …, _99
 
 
 def _norm(pnum: str) -> str:
@@ -72,15 +100,22 @@ def resolve_category(pnum: str, type_name: Optional[str] = None) -> str:
 
 def _official_files(pnum: str, category: str) -> List[Path]:
     """Офіційні webp файли товару в категорії, відсортовані за індексом."""
+    return _kind_files(pnum, category, "official")
+
+
+def _kind_files(pnum: str, category: str, kind: str) -> List[Path]:
+    """webp-файли товару в категорії потрібного `kind` ('official'|'real'|'defect'),
+    відсортовані за числовим індексом."""
     pn = _norm(pnum)
     d = MIRROR_ROOT / category
     if not d.is_dir():
         return []
+    rx = _kind_re(pn, kind)
     out = []
     for f in d.iterdir():
         if not f.is_file() or f.suffix.lower() != ".webp":
             continue
-        m = _OFFICIAL_RE(pn).match(f.stem)
+        m = rx.match(f.stem)
         if m:
             out.append((int(m.group(1)), f))
     return [f for _, f in sorted(out, key=lambda t: t[0])]
@@ -106,19 +141,28 @@ def _delete_r2(category: str, filename: str):
             logger.warning(f"R2 delete fail {key}: {e}")
 
 
-def add_photos(pnum: str, category: str, sources: List[tuple]) -> int:
-    """Додати офіційні фото. sources = [(tmp_path, _orig_name), …].
-    Конвертує у WebP-майстер, нумерує з наступного вільного індексу, синкає R2."""
+def _next_index(pnum: str, category: str, kind: str) -> int:
+    """Наступний вільний індекс у наборі (за останнім наявним файлом)."""
     pn = _norm(pnum)
-    existing = _official_files(pn, category)
-    next_idx = 1
-    if existing:
-        m = _OFFICIAL_RE(pn).match(existing[-1].stem)
-        next_idx = (int(m.group(1)) if m else len(existing)) + 1
+    existing = _kind_files(pn, category, kind)
+    if not existing:
+        return 1
+    m = _kind_re(pn, kind).match(existing[-1].stem)
+    return (int(m.group(1)) if m else len(existing)) + 1
+
+
+def add_photos(pnum: str, category: str, sources: List[tuple], kind: str = "official") -> int:
+    """Додати фото потрібного типу. sources = [(tmp_path, _orig_name), …].
+    official → `_NN`; real → `_00N`; defect → `_defN`.
+    Конвертує у WebP-майстер, нумерує з наступного вільного індексу, синкає R2."""
+    if kind not in PHOTO_KINDS:
+        raise ValueError(f"Невідомий kind: {kind!r}")
+    pn = _norm(pnum)
+    next_idx = _next_index(pn, category, kind)
     (MIRROR_ROOT / category).mkdir(parents=True, exist_ok=True)
     added = 0
     for tmp_path, _orig in sources:
-        name = f"{pn}_{next_idx:02d}.webp"
+        name = _kind_filename(pn, kind, next_idx)
         dest = MIRROR_ROOT / category / name
         convert_to_webp_master(Path(tmp_path), dest)
         _sync_one(category, dest)
@@ -128,10 +172,11 @@ def add_photos(pnum: str, category: str, sources: List[tuple]) -> int:
 
 
 def delete_photo(pnum: str, category: str, filename: str) -> bool:
-    """Видалити одне офіційне фото (мірор + R2)."""
+    """Видалити одне фото (official/real/defect) цього товару (мірор + R2)."""
     pn = _norm(pnum)
-    if not _OFFICIAL_RE(pn).match(Path(filename).stem):
-        raise ValueError("Можна видаляти лише офіційні фото цього товару")
+    stem = Path(filename).stem
+    if not any(_kind_re(pn, k).match(stem) for k in PHOTO_KINDS):
+        raise ValueError("Можна видаляти лише фото цього товару (official або real)")
     path = MIRROR_ROOT / category / filename
     if path.exists():
         path.unlink()
@@ -140,24 +185,26 @@ def delete_photo(pnum: str, category: str, filename: str) -> bool:
 
 
 def replace_photo(pnum: str, category: str, filename: str, tmp_path: str) -> str:
-    """Замінити ВМІСТ одного офіційного фото (та сама назва/позиція, новий файл).
-    Конвертує новий файл у WebP під тим самим іменем, перезаливає R2. Cache-busting
-    робить `?v=` у URL (mtime зміниться) — старе фото оновиться всюди."""
+    """Замінити ВМІСТ одного фото (та сама назва/позиція, новий файл).
+    Працює і для official, і для real. Cache-busting робить `?v=` у URL."""
     pn = _norm(pnum)
-    if not _OFFICIAL_RE(pn).match(Path(filename).stem):
-        raise ValueError("Можна замінювати лише офіційні фото цього товару")
+    stem = Path(filename).stem
+    if not (_OFFICIAL_RE(pn).match(stem) or _REAL_RE(pn).match(stem)):
+        raise ValueError("Можна замінювати лише фото цього товару (official або real)")
     dest = MIRROR_ROOT / category / filename
     convert_to_webp_master(Path(tmp_path), dest)  # перезаписує під тим самим іменем
     _sync_one(category, dest)                      # та сама R2-ключ, новий вміст
     return filename
 
 
-def reorder_photos(pnum: str, category: str, ordered_filenames: List[str]) -> List[str]:
-    """Перенумерувати офіційні фото у вказаному порядку → `_01.._0N`.
+def reorder_photos(pnum: str, category: str, ordered_filenames: List[str], kind: str = "official") -> List[str]:
+    """Перенумерувати фото у вказаному порядку (official→`_0N`, real→`_00N`, defect→`_defN`).
     Двофазне перейменування (через тимчасові імена) уникає колізій. Синкає R2."""
+    if kind not in PHOTO_KINDS:
+        raise ValueError(f"Невідомий kind: {kind!r}")
     pn = _norm(pnum)
     cat_dir = MIRROR_ROOT / category
-    current = {f.name for f in _official_files(pn, category)}
+    current = {f.name for f in _kind_files(pn, category, kind)}
     ordered = [fn for fn in ordered_filenames if fn in current]
     if set(ordered) != current:
         raise ValueError("Список для перестановки не збігається з наявними фото")
@@ -165,7 +212,7 @@ def reorder_photos(pnum: str, category: str, ordered_filenames: List[str]) -> Li
     # Фаза 1: усе → тимчасові імена (щоб не зіткнутись із цільовими)
     tmp_map = []  # (tmp_path, target_name)
     for i, old_name in enumerate(ordered, start=1):
-        target = f"{pn}_{i:02d}.webp"
+        target = _kind_filename(pn, kind, i)
         tmp = cat_dir / f"__tmp_{uuid.uuid4().hex}.webp"
         (cat_dir / old_name).rename(tmp)
         tmp_map.append((tmp, target))
@@ -181,3 +228,64 @@ def reorder_photos(pnum: str, category: str, ordered_filenames: List[str]) -> Li
     for orphan in set(ordered) - set(result):
         _delete_r2(category, orphan)
     return result
+
+
+def move_photos_kind(pnum: str, category: str, from_kind: str, to_kind: str) -> dict:
+    """Перемістити ВСІ фото товару з `from_kind` у `to_kind` (official↔real).
+    Перейменовує файли в мірорі (`_NN`↔`_00N`), видаляє старі R2-ключі і заливає нові.
+    Зберігає порядок. Повертає {moved: [..new_names..], from: [..old_names..]}."""
+    if from_kind == to_kind:
+        raise ValueError("from_kind == to_kind")
+    if from_kind not in PHOTO_KINDS or to_kind not in PHOTO_KINDS:
+        raise ValueError(f"Невідомий kind: {from_kind!r}/{to_kind!r}")
+    pn = _norm(pnum)
+    cat_dir = MIRROR_ROOT / category
+    src = _kind_files(pn, category, from_kind)
+    if not src:
+        return {"moved": [], "from": []}
+    start_idx = _next_index(pn, category, to_kind)
+    # Фаза 1: src → тимчасові імена (щоб не зіткнутись із цільовими/одне з одним)
+    tmp_map = []  # (tmp_path, target_name)
+    from_names = []
+    for i, old_path in enumerate(src):
+        from_names.append(old_path.name)
+        target = _kind_filename(pn, to_kind, start_idx + i)
+        tmp = cat_dir / f"__tmp_{uuid.uuid4().hex}.webp"
+        old_path.rename(tmp)
+        tmp_map.append((tmp, target))
+    # Фаза 2: тимчасові → фінальні + залив у R2
+    moved = []
+    for tmp, target in tmp_map:
+        tmp.rename(cat_dir / target)
+        moved.append(target)
+        _sync_one(category, cat_dir / target)
+    # Видалити старі R2-ключі (інші імена, тож не затремо щойно залите)
+    for old in from_names:
+        _delete_r2(category, old)
+    return {"moved": moved, "from": from_names}
+
+
+def move_one_photo(pnum: str, category: str, filename: str, to_kind: str) -> dict:
+    """Перенести ОДНЕ фото в інший набір (official/real/defect). Перейменовує файл
+    (наступний вільний індекс у to_kind), синкає R2, видаляє старий ключ.
+    Для виправлення помилково залитих (напр. дефект потрапив у «Реальні»)."""
+    if to_kind not in PHOTO_KINDS:
+        raise ValueError(f"Невідомий kind: {to_kind!r}")
+    pn = _norm(pnum)
+    stem = Path(filename).stem
+    cur_kind = next((k for k in PHOTO_KINDS if _kind_re(pn, k).match(stem)), None)
+    if cur_kind is None:
+        raise ValueError("Файл не належить цьому товару")
+    if cur_kind == to_kind:
+        return {"moved": filename, "from": filename, "unchanged": True}
+    cat_dir = MIRROR_ROOT / category
+    src = cat_dir / filename
+    if not src.exists():
+        raise ValueError(f"Файл {filename} не знайдено")
+    target = _kind_filename(pn, to_kind, _next_index(pn, category, to_kind))
+    tmp = cat_dir / f"__tmp_{uuid.uuid4().hex}.webp"
+    src.rename(tmp)
+    tmp.rename(cat_dir / target)
+    _sync_one(category, cat_dir / target)
+    _delete_r2(category, filename)
+    return {"moved": target, "from": filename, "from_kind": cur_kind, "to_kind": to_kind}

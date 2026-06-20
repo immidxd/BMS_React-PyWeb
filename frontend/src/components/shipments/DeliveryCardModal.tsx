@@ -91,7 +91,13 @@ const DeliveryCardModal: React.FC<Props> = ({ shipment, open, onClose }) => {
               <span>📅 {fmtDate(shipment.shipment_date)}</span>
               <span>🏷 {shipment.supplier_name || 'Без постачальника'}</span>
               <span>📦 {products.length} товарів</span>
-              {shipment.total_cost > 0 && <span>💰 {fmtPrice(shipment.total_cost)}</span>}
+              {/* Сума продажних цін товарів — live, рахується з реально завантажених,
+                  а не зі stale shipment.total_cost зі списку завозів. */}
+              {products.length > 0 && (
+                <span title="Сума продажних цін товарів цього завозу">
+                  💰 {fmtPrice(products.reduce((s, p) => s + (Number(p.price) || 0), 0))}
+                </span>
+              )}
             </div>
           </div>
           <div className="flex items-center gap-2">
@@ -172,6 +178,7 @@ const DeliveryCardModal: React.FC<Props> = ({ shipment, open, onClose }) => {
         <ProductDetailsModal
           productId={detailId}
           open={!!detailId}
+          syncBeforeLoad={() => syncDelivery(shipment.id)}
           onClose={() => { setDetailId(null); loadProducts(); }}
         />
       </div>

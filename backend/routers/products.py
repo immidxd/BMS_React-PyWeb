@@ -353,9 +353,12 @@ def _invalidate_photo_cache():
 async def add_product_photos(
     product_id: int = Path(..., ge=1),
     files: List[UploadFile] = File(...),
+    kind: str = Query("official", regex="^(official|real|defect)$",
+                      description="куди вантажити: official (_NN) або real (_00N)"),
     db: Session = Depends(get_db),
 ):
-    """Додати офіційні фото товару (multipart). Конверт у WebP → мірор + R2."""
+    """Додати фото товару (multipart). kind='official'→`_NN`; 'real'→`_00N`.
+    Конверт у WebP → мірор + R2."""
     import tempfile, os as _os
     try:
         from services.photo_manager import add_photos
@@ -372,13 +375,57 @@ async def add_product_photos(
                 out.write(await uf.read())
             tmps.append(tmp)
             sources.append((tmp, uf.filename))
-        added = add_photos(pnum, category, sources)
+        added = add_photos(pnum, category, sources, kind=kind)
     finally:
         for t in tmps:
             try: _os.unlink(t)
             except OSError: pass
     _invalidate_photo_cache()
-    return {"added": added, "category": category}
+    return {"added": added, "category": category, "kind": kind}
+
+
+@router.post("/api/products/{product_id}/photos/move-kind")
+async def move_product_photos_kind(
+    product_id: int = Path(..., ge=1),
+    from_kind: str = Query(..., regex="^(official|real|defect)$"),
+    to_kind: str = Query(..., regex="^(official|real|defect)$"),
+    db: Session = Depends(get_db),
+):
+    """Перемістити ВСІ фото товару між галереями (official↔real). Перейменовує
+    файли в мірорі + видаляє старі R2-ключі + заливає нові. Зберігає порядок."""
+    try:
+        from services.photo_manager import move_photos_kind
+    except ImportError:
+        from backend.services.photo_manager import move_photos_kind
+    pnum, category = _pnum_and_category(product_id, db)
+    try:
+        result = move_photos_kind(pnum, category, from_kind, to_kind)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    _invalidate_photo_cache()
+    return {**result, "from_kind": from_kind, "to_kind": to_kind, "category": category}
+
+
+@router.post("/api/products/{product_id}/photos/move-one")
+async def move_one_product_photo(
+    product_id: int = Path(..., ge=1),
+    filename: str = Query(..., description="ім'я файлу, який переносимо"),
+    to_kind: str = Query(..., regex="^(official|real|defect)$"),
+    db: Session = Depends(get_db),
+):
+    """Перенести ОДНЕ фото в інший набір (official/real/defect). Для виправлення
+    помилково залитих (напр. дефект потрапив у «Реальні»)."""
+    try:
+        from services.photo_manager import move_one_photo
+    except ImportError:
+        from backend.services.photo_manager import move_one_photo
+    pnum, category = _pnum_and_category(product_id, db)
+    try:
+        result = move_one_photo(pnum, category, filename, to_kind)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    _invalidate_photo_cache()
+    return {**result, "category": category}
 
 
 @router.put("/api/products/{product_id}/photos/replace")
@@ -413,19 +460,20 @@ async def replace_product_photo(
 async def reorder_product_photos(
     product_id: int = Path(..., ge=1),
     order: List[str] = Body(..., embed=True, description="імена у бажаному порядку"),
+    kind: str = Query("official", regex="^(official|real|defect)$"),
     db: Session = Depends(get_db),
 ):
-    """Перенумерувати офіційні фото (перше = головне) → `_01.._0N`."""
+    """Перенумерувати фото (перше = головне) — official→`_01.._0N`, real→`_001.._00N`."""
     try:
         from services.photo_manager import reorder_photos
     except ImportError:
         from backend.services.photo_manager import reorder_photos
     pnum, category = _pnum_and_category(product_id, db)
     try:
-        result = reorder_photos(pnum, category, order)
+        result = reorder_photos(pnum, category, order, kind=kind)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    return {"order": result}
+    return {"order": result, "kind": kind}
 
 
 @router.delete("/api/products/{product_id}/photos/{filename}")

@@ -263,6 +263,36 @@ else:
 # (немає jobId у frontend стейті). Якщо користувач вручну запустить парсинг —
 # auto-job скасується кооперативно (пріоритет manual).
 @app.on_event("startup")
+async def _reap_stale_parse_jobs():
+    """Помітити «зомбі»-джоби (status running/queued без heartbeat) як failed.
+    Killed-процес лишає parsing_jobs у 'running' назавжди → per-card sync вічно
+    пропускається (anti-conflict guard), і ручні рядки журналу не зʼявляються."""
+    try:
+        from sqlalchemy import text as _text
+        try:
+            from models.database import SessionLocal as _SL
+        except ImportError:
+            from backend.models.database import SessionLocal as _SL
+        db = _SL()
+        try:
+            res = db.execute(_text(
+                """UPDATE parsing_jobs
+                   SET status='failed',
+                       error_summary=COALESCE(error_summary,'') || ' [reaped: stale on startup]',
+                       ended_at=NOW()
+                   WHERE status IN ('queued','running')
+                     AND COALESCE(last_heartbeat_at, updated_at, started_at) < NOW() - INTERVAL '120 seconds'"""
+            ))
+            db.commit()
+            if res.rowcount:
+                logger.warning(f"Reaped {res.rowcount} stale parse job(s) on startup")
+        finally:
+            db.close()
+    except Exception as e:
+        logger.warning(f"Stale-job reaper failed: {e}")
+
+
+@app.on_event("startup")
 async def _auto_startup_parse():
     import asyncio
 

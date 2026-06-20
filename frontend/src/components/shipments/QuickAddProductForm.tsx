@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { message, notification } from 'antd';
 import { productService } from '../../services/productService';
 import type { ProductFilters } from '../../types/product';
 import { addProductToDelivery, fetchNextProductNumber } from '../../services/referenceService';
@@ -35,6 +36,7 @@ const F: Record<string, FieldDef> = {
   oldprice: { key: 'oldprice', label: 'Стара ціна', number: true },
   description: { key: 'description', label: 'Опис' },
   extranote: { key: 'extranote', label: 'Примітка' },
+  manufacturer_name: { key: 'manufacturer_name', label: 'Виробник' },
   // Матеріали
   material_upper: { key: 'material_upper', label: 'Верх' },
   material_middle: { key: 'material_middle', label: 'Середина' },
@@ -92,7 +94,7 @@ interface Layout { cat: Cat; key: string; base: string[]; gender: boolean; hubHi
 function layout(typeName?: string): Layout {
   const cat = categoryOf(typeName);
   if (cat === 'shoe')
-    return { cat, key: 'shoe', base: ['sizeeu'], gender: true, subhubs: true,
+    return { cat, key: 'shoe', base: ['sizeeu', 'measurementscm'], gender: true, subhubs: true,
       hubHide: ['dimensions', 'size_letter', 'geometric_shape', ...CLOTHING_MEAS], hubExtra: [] };
   if (cat === 'bag')
     return { cat, key: 'bag', base: ['dimensions'], gender: true, subhubs: false,
@@ -112,7 +114,7 @@ function layout(typeName?: string): Layout {
 const OPTIONAL_POOL = [
   'packaging_name', 'style_name', 'subtype_name', 'season', 'measurementscm',
   'collection', 'gtin', 'geometric_shape', 'width', 'dimensions', 'size_letter',
-  'year', 'oldprice', 'description', 'extranote',
+  'manufacturer_name', 'year', 'oldprice', 'description', 'extranote',
 ];
 const NUMBER_KEYS = new Set(['price', 'year', 'oldprice', 'height', 'sole_thickness', ...CLOTHING_MEAS]);
 const KEEP_ON_CHANGE = ['productnumber', 'brand_name', 'model', 'marking', 'gender_name', 'color_name', 'price', 'condition_name'];
@@ -189,10 +191,15 @@ const QuickAddProductForm: React.FC<Props> = ({ deliveryId, onSaved, filters: fi
 
   const save = async () => {
     setError(null);
-    if (!(values.productnumber || '').trim()) { setError('Вкажіть або згенеруйте номер'); return; }
+    const pnum = (values.productnumber || '').trim();
+    if (!pnum) {
+      setError('Вкажіть або згенеруйте номер');
+      notification.warning({ message: 'Немає номера', description: 'Вкажіть номер товару або натисніть ⚡ для генерації.', placement: 'topRight' });
+      return;
+    }
     setSubmitting(true);
     try {
-      const payload: any = { productnumber: values.productnumber.trim() };
+      const payload: any = { productnumber: pnum };
       Object.entries(values).forEach(([k, v]) => {
         if (k === 'productnumber' || v == null || v === '') return;
         payload[k] = NUMBER_KEYS.has(k) ? Number(v) : v;
@@ -200,12 +207,38 @@ const QuickAddProductForm: React.FC<Props> = ({ deliveryId, onSaved, filters: fi
       await addProductToDelivery(deliveryId, payload);
       setValues({ productnumber: '' }); setExtras([]);
       setOkFlash(true); setTimeout(() => setOkFlash(false), 1500);
+      message.success(`Товар ${pnum} додано`);
       onSaved();
     } catch (e: any) {
-      const st = e?.response?.status; const d = e?.response?.data?.detail;
-      if (st === 403) setError('Додавання вимкнено на бекенді (PARSER_ADD_PRODUCT=0)');
-      else if (st === 409) setError(d || 'Такий номер уже існує');
-      else setError(d || 'Не вдалося додати товар');
+      const st = e?.response?.status;
+      const d = e?.response?.data?.detail;
+      // Категоризація причини → заголовок + опис у попапі (і дублюємо в inline-текст).
+      let title = 'Не вдалося додати товар';
+      let desc = typeof d === 'string' ? d : '';
+      if (!e?.response) {
+        title = 'Немає зв\'язку з програмою';
+        desc = 'Бекенд не відповідає. Перевірте, що програма запущена, і спробуйте ще раз.';
+      } else if (st === 409) {
+        title = 'Такий номер уже існує';
+        desc = desc || `Товар «${pnum}» вже є в базі. Згенеруйте новий номер (⚡) або змініть його.`;
+      } else if (st === 400) {
+        title = 'Некоректні дані';
+        desc = desc || 'Перевірте заповнені поля (напр. порожній або хибний номер).';
+      } else if (st === 403) {
+        title = 'Додавання вимкнено';
+        desc = desc || 'Функцію додавання вимкнено на бекенді (PARSER_ADD_PRODUCT=0).';
+      } else if (st === 404) {
+        title = 'Завіз не знайдено';
+        desc = desc || 'Цей завіз більше не існує — оновіть сторінку.';
+      } else if (st === 502) {
+        title = 'Проблема зв\'язку з Google Sheets';
+        desc = desc || 'Товар НЕ додано через тимчасову помилку мережі. Спробуйте ще раз за кілька секунд.';
+      } else if (st === 500) {
+        title = 'Помилка збереження в базі';
+        desc = desc || 'Внутрішня помилка. Спробуйте ще раз; якщо повторюється — перезапустіть програму.';
+      }
+      setError(desc || title);
+      notification.error({ message: title, description: desc, duration: 8, placement: 'topRight' });
     } finally { setSubmitting(false); }
   };
 
@@ -218,6 +251,7 @@ const QuickAddProductForm: React.FC<Props> = ({ deliveryId, onSaved, filters: fi
         onChange={e => (f.key === 'type_name' ? onTypeChange(e.target.value) : set(f.key, e.target.value))}
         placeholder={f.label}
         className={inputCls}
+        autoCapitalize="none" autoCorrect="off" spellCheck={false}
       />
       {removable && (
         <button type="button" onClick={() => removeExtra(f.key)} title="Прибрати поле"
@@ -242,7 +276,8 @@ const QuickAddProductForm: React.FC<Props> = ({ deliveryId, onSaved, filters: fi
       <div className="grid grid-cols-2 md:grid-cols-6 gap-2.5">
         <div className="flex gap-1.5 col-span-2">
           <input value={values.productnumber || ''} onChange={e => set('productnumber', e.target.value)}
-            placeholder="Номер" className={inputCls} />
+            placeholder="Номер" className={inputCls}
+            autoCapitalize="none" autoCorrect="off" spellCheck={false} />
           <button onClick={generate} type="button" title="Згенерувати наступний вільний номер"
             className="whitespace-nowrap px-2 py-1.5 rounded-lg text-sm border border-gray-300 dark:border-gray-700 hover:bg-gray-100 dark:hover:bg-gray-700">⚡</button>
         </div>

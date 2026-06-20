@@ -477,6 +477,7 @@ export interface QuickProductPayload {
   productnumber: string;
   type_name?: string; subtype_name?: string; style_name?: string; brand_name?: string;
   gender_name?: string; color_name?: string; condition_name?: string; packaging_name?: string;
+  manufacturer_name?: string;
   model?: string; marking?: string; season?: string; year?: number;
   description?: string; extranote?: string; sizeeu?: string; measurementscm?: string; price?: number;
   collection?: string; gtin?: string; oldprice?: number; geometric_shape?: string;

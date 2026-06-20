@@ -106,6 +106,7 @@ class ProductQuickCreate(BaseModel):
     color_name: Optional[str] = None
     condition_name: Optional[str] = None     # «Стан»: Новий/Хороший/…
     packaging_name: Optional[str] = None     # «Пакування»: коробка/пакет/…
+    manufacturer_name: Optional[str] = None  # «Країна-виробник» → manufacturercountryid
     model: Optional[str] = None
     marking: Optional[str] = None
     season: Optional[str] = None
@@ -206,6 +207,8 @@ async def add_product_to_delivery(
             colorid=_rid(models.Color, "colorname", payload.color_name),
             conditionid=_rid(models.Condition, "conditionname", payload.condition_name),
             packagingid=_rid(models.PackagingType, "packagingname", payload.packaging_name),
+            manufacturercountryid=_rid(models.Country, "countryname", payload.manufacturer_name),
+            statusid=_rid(models.Status, "statusname", "Непродано"),  # новий товар = Непродано
             model=payload.model, marking=payload.marking, season=payload.season,
             year=payload.year, description=payload.description, extranote=payload.extranote,
             sizeeu=payload.sizeeu, measurementscm=payload.measurementscm,
@@ -264,6 +267,8 @@ async def add_product_to_delivery(
         "Сезон": payload.season, "Колір": payload.color_name, "Опис": payload.description,
         "Розмір": payload.sizeeu, "СМ": payload.measurementscm, "Ціна": payload.price,
         "Стан": payload.condition_name, "Пакування": payload.packaging_name,
+        "Країна-виробник": payload.manufacturer_name,
+        "Статус": "Непродано",  # новий товар за замовчуванням
         "Екстра примітка": payload.extranote,
         "Колекція": payload.collection, "GTIN": payload.gtin, "Стара ціна": payload.oldprice,
         "Геометрична форма": payload.geometric_shape, "Ширина": payload.width,
@@ -288,7 +293,21 @@ async def add_product_to_delivery(
     except Exception as e:
         db.rollback()  # товар у БД зникає — узгодженість збережена
         logger.error(f"append_product_row failed, rolled back DB: {e}")
-        raise HTTPException(status_code=502, detail=f"Не вдалося дописати рядок в аркуш: {e}")
+        # Дружнє, конкретне повідомлення для попапа на фронті.
+        msg = str(e)
+        low = msg.lower()
+        if "після" in msg and "спроб" in msg:  # JournalTransientError (вже дружній текст)
+            detail = ("⚠️ Тимчасова проблема зв'язку з Google Sheets — товар НЕ додано. "
+                      "Перевірте інтернет і натисніть «Зберегти товар» ще раз.")
+        elif any(m in low for m in ("ssl", "certificate", "connection", "max retries", "timed out", "handshake")):
+            detail = ("⚠️ Не вдалось зв'язатися з Google Sheets (мережа/SSL) — товар НЕ додано. "
+                      "Спробуйте ще раз за кілька секунд.")
+        elif "немає колонки" in msg or "не знайд" in low or "worksheet" in low:
+            detail = (f"Вкладку завозу «{deliveryname}» не знайдено в журналі або змінено її структуру. "
+                      "Оновіть сторінку / перевірте назву вкладки.")
+        else:
+            detail = f"Не вдалося дописати рядок в журнал: {msg}"
+        raise HTTPException(status_code=502, detail=detail)
 
     prod_id = prod.id
     db.commit()

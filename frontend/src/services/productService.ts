@@ -114,12 +114,30 @@ export const productService = {
         }
     },
     
-    /** Додати офіційні фото товару (конверт у WebP + R2 на бекенді). */
-    async addProductPhotos(id: number, files: File[]): Promise<{ added: number; category: string }> {
+    /** Додати фото товару (конверт у WebP + R2 на бекенді).
+     *  kind='official' → нумерація `_NN`; kind='real' → `_00N`. */
+    async addProductPhotos(id: number, files: File[], kind: 'official' | 'real' | 'defect' = 'official'): Promise<{ added: number; category: string; kind: string }> {
         const fd = new FormData();
         files.forEach((f) => fd.append('files', f));
         const res = await axios.post(`${API_URL}/${id}/photos`, fd, {
+            params: { kind },
             headers: { 'Content-Type': 'multipart/form-data' },
+        });
+        return res.data;
+    },
+
+    /** Перемістити всі фото між галереями (official/real/defect). */
+    async movePhotosKind(id: number, from_kind: 'official' | 'real' | 'defect', to_kind: 'official' | 'real' | 'defect'): Promise<{ moved: string[]; from: string[] }> {
+        const res = await axios.post(`${API_URL}/${id}/photos/move-kind`, null, {
+            params: { from_kind, to_kind },
+        });
+        return res.data;
+    },
+
+    /** Перенести ОДНЕ фото в інший набір (official/real/defect). */
+    async movePhotoOne(id: number, filename: string, to_kind: 'official' | 'real' | 'defect'): Promise<{ moved: string; from: string }> {
+        const res = await axios.post(`${API_URL}/${id}/photos/move-one`, null, {
+            params: { filename, to_kind },
         });
         return res.data;
     },
@@ -135,9 +153,9 @@ export const productService = {
         return res.data;
     },
 
-    /** Перенумерувати фото (перше = головне) → _01.._0N. */
-    async reorderProductPhotos(id: number, order: string[]): Promise<{ order: string[] }> {
-        const res = await axios.put(`${API_URL}/${id}/photos/reorder`, { order });
+    /** Перенумерувати фото (перше = головне) — official→`_01.._0N`, real→`_001.._00N`. */
+    async reorderProductPhotos(id: number, order: string[], kind: 'official' | 'real' | 'defect' = 'official'): Promise<{ order: string[] }> {
+        const res = await axios.put(`${API_URL}/${id}/photos/reorder`, { order }, { params: { kind } });
         return res.data;
     },
 

@@ -14,13 +14,53 @@
 """
 import os
 import json
+import time
 import logging
 from datetime import datetime as _dt
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Callable
 
 import gspread.utils as _gsu
 
 logger = logging.getLogger(__name__)
+
+
+class JournalTransientError(Exception):
+    """Транзієнтна помилка зв'язку з Google (SSL/мережа/429/5xx) — варто повторити."""
+
+
+# Підрядки в тексті помилки, що сигналізують про транзієнтний (мережевий) збій.
+_TRANSIENT_MARKERS = (
+    "ssl", "certificate", "max retries", "connection", "timed out", "timeout",
+    "temporarily", "503", "502", "500", "429", "rate limit", "ratelimit",
+    "broken pipe", "reset by peer", "eof occurred", "handshake",
+)
+
+
+def _is_transient(exc: Exception) -> bool:
+    s = f"{type(exc).__name__}: {exc}".lower()
+    return any(m in s for m in _TRANSIENT_MARKERS)
+
+
+def _with_retry(fn: Callable, *, attempts: int = 4, base_delay: float = 0.8, what: str = "журнал"):
+    """Виконати мережеву операцію з ретраями на транзієнтних збоях (експон. backoff).
+    Перманентні помилки (нема вкладки, нема колонки тощо) НЕ ретраяться — кидаються одразу."""
+    last = None
+    for i in range(attempts):
+        try:
+            return fn()
+        except Exception as e:  # noqa: BLE001
+            last = e
+            if not _is_transient(e):
+                raise
+            if i < attempts - 1:
+                delay = base_delay * (2 ** i)
+                logger.warning("[add] транзієнтний збій (%s), спроба %d/%d, чекаю %.1fс: %s",
+                               what, i + 1, attempts, delay, e)
+                time.sleep(delay)
+    raise JournalTransientError(
+        f"Не вдалося зв'язатися з Google Sheets після {attempts} спроб ({what}). "
+        f"Це тимчасова проблема мережі/з'єднання — спробуйте ще раз. Деталі: {last}"
+    )
 
 # Єдине джерело доступу до журналу — парсер (той самий gc/JOURNAL_ID).
 try:
@@ -103,13 +143,17 @@ def create_delivery_tab(deliveryname: str, deliverydate=None, purchase_cost=None
     БД (deliveries row) пише викликач (роутер) — тут лише аркуш.
     """
     _guard()
-    sh = _open_journal()
-    tmpl = get_template_ws(sh)
     title = (deliveryname or "").strip()
     if not title:
         raise RuntimeError("Порожня назва завозу")
 
-    existing = {w.title.strip().lower() for w in sh.worksheets()}
+    # Прелюдія (auth/open/template/список вкладок) — read-only, ретраїмо на SSL/мережі.
+    def _prelude():
+        sh = _open_journal()
+        tmpl = get_template_ws(sh)
+        existing = {w.title.strip().lower() for w in sh.worksheets()}
+        return sh, tmpl, existing
+    sh, tmpl, existing = _with_retry(_prelude, what="створення вкладки завозу")
     if title.lower() in existing and not dry_run:
         raise RuntimeError(f"Вкладка '{title}' вже існує")
 
@@ -172,35 +216,40 @@ def append_product_row(delivery_title: str, field_values: Dict[str, Any],
     Повертає {row, gid, written:{col->val}}.
     """
     _guard()
-    sh = _open_journal()
-    ws = sh.worksheet(delivery_title)
-    headers = _header_columns(ws)
-    if "Номер" not in headers:
-        raise RuntimeError(f"У вкладці '{delivery_title}' немає колонки «Номер»")
-    num_col = headers["Номер"]
 
-    # Зіставляємо значення з колонками за назвою (невідомі назви ігноруємо з логом).
-    row_idx = _first_free_product_row(ws, num_col)
-    row_vec = [""] * MAIN_COLS
-    written = {}
-    for name, val in field_values.items():
-        col = headers.get(name)
-        if not col:
-            logger.warning("[add] невідома колонка '%s' у '%s' — пропуск", name, delivery_title)
-            continue
-        if col > MAIN_COLS:
-            logger.warning("[add] колонка '%s' (col%d) поза товарним блоком — пропуск", name, col)
-            continue
-        row_vec[col - 1] = "" if val is None else str(val)
-        written[name] = row_vec[col - 1]
+    def _do() -> Dict[str, Any]:
+        sh = _open_journal()
+        ws = sh.worksheet(delivery_title)
+        headers = _header_columns(ws)
+        if "Номер" not in headers:
+            # Перманентна помилка структури — не ретраїмо.
+            raise RuntimeError(f"У вкладці '{delivery_title}' немає колонки «Номер»")
+        num_col = headers["Номер"]
 
-    if dry_run:
-        return {"row": row_idx, "gid": ws.id, "written": written, "dry_run": True}
+        # Зіставляємо значення з колонками за назвою (невідомі назви ігноруємо з логом).
+        row_idx = _first_free_product_row(ws, num_col)
+        row_vec = [""] * MAIN_COLS
+        written = {}
+        for name, val in field_values.items():
+            col = headers.get(name)
+            if not col:
+                logger.warning("[add] невідома колонка '%s' у '%s' — пропуск", name, delivery_title)
+                continue
+            if col > MAIN_COLS:
+                logger.warning("[add] колонка '%s' (col%d) поза товарним блоком — пропуск", name, col)
+                continue
+            row_vec[col - 1] = "" if val is None else str(val)
+            written[name] = row_vec[col - 1]
 
-    _backup_tab(ws, "append")
-    rng = f"{_gsu.rowcol_to_a1(row_idx, 1)}:{_gsu.rowcol_to_a1(row_idx, MAIN_COLS)}"
-    ws.batch_update([{"range": rng, "values": [row_vec]}])
-    return {"row": row_idx, "gid": ws.id, "written": written, "dry_run": False}
+        if dry_run:
+            return {"row": row_idx, "gid": ws.id, "written": written, "dry_run": True}
+
+        _backup_tab(ws, "append")
+        rng = f"{_gsu.rowcol_to_a1(row_idx, 1)}:{_gsu.rowcol_to_a1(row_idx, MAIN_COLS)}"
+        ws.batch_update([{"range": rng, "values": [row_vec]}])
+        return {"row": row_idx, "gid": ws.id, "written": written, "dry_run": False}
+
+    return _with_retry(_do, what=f"запис рядка у «{delivery_title}»")
 
 
 def read_delivery_productnumbers(delivery_title: str) -> set:

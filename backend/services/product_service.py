@@ -900,6 +900,8 @@ LOCKABLE_PRODUCT_FIELDS = {
     "typeid", "subtypeid", "styleid", "brandid", "genderid",
     # Condition (Стан/поточний стан) — PER-ITEM (not propagated to rostovka siblings).
     "current_conditionid",
+    # Країна-виробник — model-level FK → countries; edited by NAME (Виробник).
+    "manufacturercountryid",
 }
 
 # Inline-edit name field (from ProductUpdate) → (FK id column, lookup table, name column).
@@ -916,6 +918,17 @@ LOOKUP_NAME_FIELDS = {
     "lining_name":         ("liningid",       "linings",         "liningname"),
     "color_name":      ("colorid",      "colors",          "colorname"),
     "current_condition_name": ("current_conditionid", "conditions", "conditionname"),
+    "manufacturer_country_name": ("manufacturercountryid", "countries", "countryname"),
+}
+
+# Описові довідники, де канонічна форма — З МАЛОЇ літери (у БД 100% lowercase).
+# Якщо нова назва приходить капіталізованою через автокапіталізацію WKWebView
+# («Шнурівка», «Плоска», «Круглий») — нормалізуємо першу літеру до lower перед
+# INSERT, щоб не плодити різнорегістрові дублікати того самого значення.
+# Користувацька стать/тип/бренд НЕ чіпаємо (вони бувають з великої: Жіноча/Nike).
+LOWERCASE_LOOKUP_TABLES = {
+    "sole_types", "toe_shapes", "fastening_types", "lace_types", "heel_types",
+    "linings", "colors", "technologies",
 }
 
 
@@ -941,12 +954,17 @@ def _resolve_lookup_id_by_name(db: Session, table: str, name_col: str, value: st
     for rid, nm in db.execute(text(f"SELECT id, {name_col} FROM {table}")).fetchall():
         if (nm or "").strip().lower() == folded:
             return int(rid)
-    # 3) create new — preserve the user's casing
+    # 3) create new — для описових таблиць (sole_types/toe_shapes/...) канон у БД
+    #    — з малої літери, тож нормалізуємо першу літеру вниз перед INSERT, щоб не
+    #    плодити дублікатів типу «Шнурівка» поряд із «шнурівка».
+    insert_val = val
+    if table in LOWERCASE_LOOKUP_TABLES and insert_val[:1].isupper():
+        insert_val = insert_val[0].lower() + insert_val[1:]
     new_id = db.execute(
         text(f"INSERT INTO {table} ({name_col}) VALUES (:v) "
              f"ON CONFLICT ({name_col}) DO UPDATE SET {name_col} = EXCLUDED.{name_col} "
              f"RETURNING id"),
-        {"v": val},
+        {"v": insert_val},
     ).fetchone()
     return int(new_id[0]) if new_id else None
 
