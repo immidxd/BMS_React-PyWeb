@@ -1,9 +1,30 @@
 import React, { useEffect, useState, useCallback } from 'react';
+import { message, notification } from 'antd';
 import { productService } from '../../services/productService';
 import type { Product, ProductFilters } from '../../types/product';
-import { deleteProductFromDelivery, syncDelivery, type Shipment } from '../../services/referenceService';
+import {
+  deleteProductFromDelivery, syncDelivery, sortDeliveryRows, renameDeliveryProductNumber,
+  getDeliveryInfo, updateDeliveryInfo, type DeliveryInfoField, type Shipment,
+} from '../../services/referenceService';
 import QuickAddProductForm from './QuickAddProductForm';
 import ProductDetailsModal from '../products/ProductDetailsModal';
+
+// Числовий ключ сортування номера (як бекенд _pn_sort_key): (prefix, base, suffix).
+// Бекенд get_products НЕ підтримує sort_by=productnumber → сортуємо тут, у картці.
+const pnSortKey = (pn?: string): [number, string, number, number] => {
+  const s = (pn || '').trim().replace(/^#/, '').replace(/;$/, '');
+  const m = s.match(/^(\D*)(\d+)(?:-(\d+))?$/);
+  if (!m) return [1, '￿', 0, 0];
+  return [0, (m[1] || '').toUpperCase(), parseInt(m[2], 10), m[3] ? parseInt(m[3], 10) : 0];
+};
+const byNumber = (a: Product, b: Product): number => {
+  const ka = pnSortKey(a.productnumber), kb = pnSortKey(b.productnumber);
+  for (let i = 0; i < 4; i++) {
+    if (ka[i] < kb[i]) return -1;
+    if (ka[i] > kb[i]) return 1;
+  }
+  return 0;
+};
 
 // Рахований статус продажу (як у таблиці Товарів) — не сирий журнальний statusid.
 const statusOf = (p: Product): { label: string; cls: string } => {
@@ -37,13 +58,25 @@ const DeliveryCardModal: React.FC<Props> = ({ shipment, open, onClose }) => {
   const [showForm, setShowForm] = useState(false);
   const [syncInfo, setSyncInfo] = useState<string | null>(null);
   const [detailId, setDetailId] = useState<number | null>(null);
+  const [sorting, setSorting] = useState(false);
+  // Інфо-блок «Інформація про завоз»
+  const [infoOpen, setInfoOpen] = useState(false);
+  const [infoFields, setInfoFields] = useState<DeliveryInfoField[] | null>(null);
+  const [infoLoading, setInfoLoading] = useState(false);
+  const [infoEditing, setInfoEditing] = useState(false);
+  const [infoDrafts, setInfoDrafts] = useState<Record<string, string>>({});
+  const [infoSaving, setInfoSaving] = useState(false);
+  // Інлайн-редагування номера товару в списку
+  const [editNumId, setEditNumId] = useState<number | null>(null);
+  const [editNumVal, setEditNumVal] = useState('');
+  const [savingNum, setSavingNum] = useState(false);
 
   // Швидке завантаження товарів з БД (без re-sync) — для рефрешу після add/delete.
   const loadProducts = useCallback(() => {
     if (!shipment) return Promise.resolve();
     return productService
-      .getProducts({ shipment_id: shipment.id, per_page: 200, sort_by: 'productnumber', sort_dir: 'asc' })
-      .then(r => setProducts(r.items || []))
+      .getProducts({ shipment_id: shipment.id, per_page: 200 })
+      .then(r => setProducts([...(r.items || [])].sort(byNumber)))  // числовий сорт у картці
       .catch(() => setError('Помилка завантаження товарів завозу'));
   }, [shipment]);
 
@@ -64,20 +97,103 @@ const DeliveryCardModal: React.FC<Props> = ({ shipment, open, onClose }) => {
   useEffect(() => {
     if (!open || !shipment) return;
     setShowForm(false); setProducts([]); setSyncInfo(null);
+    setInfoOpen(false); setInfoFields(null); setInfoEditing(false);
     syncAndLoad();
     productService.getFilters().then(setFilters).catch(() => {});
   }, [open, shipment, syncAndLoad]);
 
   if (!open || !shipment) return null;
+  const sid = shipment.id;
 
   const removeProduct = async (p: Product) => {
     if (!window.confirm(`Видалити товар ${p.productnumber}?`)) return;
     try {
-      await deleteProductFromDelivery(shipment.id, p.id);
+      await deleteProductFromDelivery(sid, p.id);
       loadProducts();
     } catch (e: any) {
       window.alert(e?.response?.data?.detail || 'Не вдалося видалити товар');
     }
+  };
+
+  // ✎ Інлайн-редагування номера товару
+  const startNumEdit = (p: Product) => { setEditNumId(p.id); setEditNumVal((p.productnumber || '').replace(/^#/, '')); };
+  const cancelNumEdit = () => { setEditNumId(null); setEditNumVal(''); };
+  const saveNumEdit = async (p: Product) => {
+    const v = editNumVal.trim();
+    if (!v || v === (p.productnumber || '').replace(/^#/, '')) { cancelNumEdit(); return; }
+    setSavingNum(true);
+    try {
+      const r = await renameDeliveryProductNumber(sid, p.id, v);
+      if (r.renamed) message.success(`Номер змінено: ${r.old} → ${r.productnumber}`);
+      cancelNumEdit();
+      await loadProducts();
+    } catch (e: any) {
+      const st = e?.response?.status; const d = e?.response?.data?.detail;
+      notification.error({
+        message: st === 409 ? 'Конфлікт номера' : 'Не вдалося змінити номер',
+        description: d || 'Помилка', duration: 7, placement: 'topRight',
+      });
+    } finally { setSavingNum(false); }
+  };
+
+  // ⇅ Впорядкувати рядки завозу за номером (UI вже сортований; синкаємо журнал).
+  const handleSort = async () => {
+    setSorting(true);
+    try {
+      const r = await sortDeliveryRows(sid);
+      message.success(r.noop ? 'Уже впорядковано' : `Журнал упорядковано за номером (${r.reordered})`);
+      await loadProducts();
+    } catch (e: any) {
+      notification.error({ message: 'Не вдалося впорядкувати', description: e?.response?.data?.detail || 'Помилка журналу', placement: 'topRight' });
+    } finally { setSorting(false); }
+  };
+
+  // ℹ Інфо-блок: завантажити з аркуша (ліниво, при першому розкритті).
+  const loadInfo = async () => {
+    setInfoLoading(true);
+    try {
+      const r = await getDeliveryInfo(sid);
+      setInfoFields(r.fields);
+    } catch (e: any) {
+      notification.error({ message: 'Не вдалося прочитати інфо завозу', description: e?.response?.data?.detail || 'Помилка журналу', placement: 'topRight' });
+    } finally { setInfoLoading(false); }
+  };
+
+  const toggleInfo = () => {
+    const next = !infoOpen;
+    setInfoOpen(next);
+    if (next && infoFields === null) loadInfo();
+  };
+
+  const startInfoEdit = () => {
+    const d: Record<string, string> = {};
+    (infoFields || []).forEach(f => { if (f.editable) d[f.label] = f.value; });
+    setInfoDrafts(d); setInfoEditing(true);
+  };
+
+  const saveInfo = async () => {
+    const orig: Record<string, string> = {};
+    (infoFields || []).forEach(f => { if (f.editable) orig[f.label] = f.value; });
+    const changes: Record<string, string> = {};
+    Object.keys(infoDrafts).forEach(k => { if ((infoDrafts[k] ?? '') !== (orig[k] ?? '')) changes[k] = infoDrafts[k]; });
+    if (Object.keys(changes).length === 0) { setInfoEditing(false); return; }
+    setInfoSaving(true);
+    try {
+      await updateDeliveryInfo(sid, changes);
+      message.success('Інформацію про завоз збережено');
+      setInfoEditing(false);
+      await loadInfo();
+    } catch (e: any) {
+      notification.error({ message: 'Не вдалося зберегти інфо', description: e?.response?.data?.detail || 'Помилка журналу', placement: 'topRight' });
+    } finally { setInfoSaving(false); }
+  };
+
+  // ◀▶ навігація між картками товару в межах завозу (циклічно).
+  const detailIdx = detailId == null ? -1 : products.findIndex(p => p.id === detailId);
+  const gotoOffset = (off: number) => {
+    if (detailIdx < 0 || products.length === 0) return;
+    const n = products.length;
+    setDetailId(products[(detailIdx + off + n) % n].id);
   };
 
   return (
@@ -101,6 +217,16 @@ const DeliveryCardModal: React.FC<Props> = ({ shipment, open, onClose }) => {
             </div>
           </div>
           <div className="flex items-center gap-2">
+            <button onClick={toggleInfo} disabled={loading} title="Інформація про завоз"
+              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium border transition-colors disabled:opacity-50 ${infoOpen
+                ? 'border-gray-400 bg-gray-100 dark:bg-gray-700 text-gray-800 dark:text-gray-100'
+                : 'border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800'}`}>
+              ℹ Завіз
+            </button>
+            <button onClick={handleSort} disabled={loading || sorting || products.length < 2} title="Впорядкувати за номером (і в журналі)"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 disabled:opacity-50">
+              {sorting ? '…' : '⇅'} Впорядкувати
+            </button>
             <button onClick={() => setShowForm(s => !s)} disabled={loading}
               className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium bg-black text-white hover:bg-gray-800 disabled:opacity-50">
               <span className="text-base leading-none">＋</span> Додати товар
@@ -108,6 +234,49 @@ const DeliveryCardModal: React.FC<Props> = ({ shipment, open, onClose }) => {
             <button onClick={onClose} aria-label="Закрити" className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 text-2xl leading-none">×</button>
           </div>
         </div>
+
+        {/* Інфо-блок «Інформація про завоз» (collapsible, з аркуша) */}
+        {infoOpen && (
+          <div className="px-6 py-4 border-b border-gray-100 dark:border-gray-800 bg-gray-50 dark:bg-gray-800/40">
+            <div className="flex items-center justify-between mb-2.5">
+              <span className="text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500 font-medium">
+                Інформація про завоз {infoLoading && '…'}
+              </span>
+              {infoFields && !infoEditing && (
+                <button onClick={startInfoEdit}
+                  className="text-[12px] px-2.5 py-1 rounded-md border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700">✎ Редагувати</button>
+              )}
+              {infoEditing && (
+                <div className="flex items-center gap-2">
+                  <button onClick={() => setInfoEditing(false)} disabled={infoSaving}
+                    className="text-[12px] px-2.5 py-1 rounded-md text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-700">Скасувати</button>
+                  <button onClick={saveInfo} disabled={infoSaving}
+                    className="text-[12px] px-3 py-1 rounded-md bg-green-600 hover:bg-green-700 !text-white disabled:opacity-50">
+                    {infoSaving ? 'Збереження…' : '✓ Зберегти'}
+                  </button>
+                </div>
+              )}
+            </div>
+            {infoFields && infoFields.length > 0 ? (
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-x-5 gap-y-2.5">
+                {infoFields.map(f => (
+                  <div key={f.label} className="flex flex-col gap-0.5 min-w-0">
+                    <span className="text-[10px] uppercase tracking-wide text-gray-400 dark:text-gray-500 font-medium">{f.label}</span>
+                    {infoEditing && f.editable ? (
+                      <input value={infoDrafts[f.label] ?? ''} onChange={e => setInfoDrafts(d => ({ ...d, [f.label]: e.target.value }))}
+                        autoCapitalize="none" autoCorrect="off" spellCheck={false}
+                        className="w-full rounded-md border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 px-2 py-1 text-sm text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-gray-400" />
+                    ) : (
+                      <span className={`text-sm break-words ${f.value ? 'text-gray-800 dark:text-gray-100' : 'text-gray-300 dark:text-gray-600'}`}>{f.value || '—'}</span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            ) : (infoFields && !infoLoading && (
+              <div className="text-sm text-gray-400">Блок «Інформація про завоз» не знайдено в аркуші</div>
+            ))}
+          </div>
+        )}
 
         {showForm && (
           <div className="px-6 py-4 border-b border-gray-100 dark:border-gray-800 bg-gray-50 dark:bg-gray-800/40">
@@ -150,9 +319,27 @@ const DeliveryCardModal: React.FC<Props> = ({ shipment, open, onClose }) => {
                     {products.map(p => {
                       const st = statusOf(p);
                       return (
-                      <tr key={p.id} onClick={() => setDetailId(p.id)}
+                      <tr key={p.id} onClick={() => { if (editNumId !== p.id) setDetailId(p.id); }}
                         className="border-b last:border-b-0 border-gray-50 dark:border-gray-800/50 hover:bg-gray-50 dark:hover:bg-gray-800/40 cursor-pointer">
-                        <td className="px-2 py-2 font-medium tabular-nums">{p.productnumber}</td>
+                        <td className="px-2 py-2 font-medium tabular-nums">
+                          {editNumId === p.id ? (
+                            <input autoFocus value={editNumVal}
+                              onClick={e => e.stopPropagation()}
+                              onChange={e => setEditNumVal(e.target.value)}
+                              onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); saveNumEdit(p); } if (e.key === 'Escape') cancelNumEdit(); }}
+                              onBlur={() => saveNumEdit(p)}
+                              disabled={savingNum}
+                              autoCapitalize="none" autoCorrect="off" spellCheck={false}
+                              className="w-24 rounded border border-gray-400 dark:border-gray-500 bg-white dark:bg-gray-800 px-1.5 py-0.5 text-sm focus:outline-none focus:ring-2 focus:ring-gray-400" />
+                          ) : (
+                            <span className="group/num inline-flex items-center gap-1">
+                              {p.productnumber}
+                              <button title="Редагувати номер"
+                                onClick={e => { e.stopPropagation(); startNumEdit(p); }}
+                                className="opacity-0 group-hover/num:opacity-100 text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 text-xs transition-opacity">✎</button>
+                            </span>
+                          )}
+                        </td>
                         <td className="px-2 py-2">{p.type_name || '—'}</td>
                         <td className="px-2 py-2">{p.brand_name || '—'}</td>
                         <td className="px-2 py-2 text-gray-600 dark:text-gray-300 max-w-[200px] truncate" title={p.model || ''}>{p.model || '—'}</td>
@@ -178,7 +365,9 @@ const DeliveryCardModal: React.FC<Props> = ({ shipment, open, onClose }) => {
         <ProductDetailsModal
           productId={detailId}
           open={!!detailId}
-          syncBeforeLoad={() => syncDelivery(shipment.id)}
+          syncBeforeLoad={() => syncDelivery(sid)}
+          onPrev={products.length > 1 ? () => gotoOffset(-1) : undefined}
+          onNext={products.length > 1 ? () => gotoOffset(1) : undefined}
           onClose={() => { setDetailId(null); loadProducts(); }}
         />
       </div>

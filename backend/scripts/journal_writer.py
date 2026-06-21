@@ -305,3 +305,208 @@ def delete_product_row(delivery_title: str, productnumber: str,
     ranges = [f"{_gsu.rowcol_to_a1(r, 1)}:{_gsu.rowcol_to_a1(r, MAIN_COLS)}" for r in rows]
     ws.batch_clear(ranges)
     return {"rows": rows, "gid": ws.id, "dry_run": False}
+
+
+# ── Сортування рядків завозу за номером (Фіча 1) ──────────────────────────────
+import re as _re
+
+
+def _pn_sort_key(pnum: str, original_idx: int):
+    """Ключ сортування номера: (prefix, base_int, suffix_int, original_idx).
+    Узгоджено з get_next_product_number: `<prefix><base>(-<suffix>)?`. Ростовка-суфікс
+    тримає пари поряд (Ф1810 перед Ф1810-2). Непарсовані → в кінець (стабільно)."""
+    s = (pnum or "").strip().lstrip("#").rstrip(";").strip()
+    m = _re.match(r"^(\D*)(\d+)(?:-(\d+))?$", s)
+    if not m:
+        return (1, "￿", 0, 0, original_idx)  # непарсовані — в кінець
+    prefix = (m.group(1) or "").upper()
+    base = int(m.group(2))
+    suffix = int(m.group(3)) if m.group(3) else 0
+    return (0, prefix, base, suffix, original_idx)
+
+
+def reorder_delivery_rows(delivery_title: str, dry_run: bool = False) -> Dict[str, Any]:
+    """Впорядкувати ТОВАРНІ рядки вкладки за номером (зростання) — переписує лише
+    cols 1..MAIN_COLS у відсортованому порядку. Блок «Завоз» (col56+) НЕ чіпає
+    (інші колонки). НІКОЛИ delete_rows. Бекап + retry. Повертає {reordered, gid}."""
+    _guard()
+
+    def _do() -> Dict[str, Any]:
+        sh = _open_journal()
+        ws = sh.worksheet(delivery_title)
+        headers = _header_columns(ws)
+        num_col = headers.get("Номер")
+        if not num_col:
+            raise RuntimeError(f"У вкладці '{delivery_title}' немає колонки «Номер»")
+
+        all_vals = ws.get_all_values()
+        # Товарні рядки = рядки > HEADER_ROW із непорожнім «Номер». Зберігаємо cols 1..52.
+        product_rows = []  # (original_idx, row_vec[0..51])
+        occupied_rows = []  # фактичні номери рядків аркуша, що були зайняті
+        for r_i, row in enumerate(all_vals[HEADER_ROW:], start=HEADER_ROW + 1):
+            cell = row[num_col - 1] if num_col - 1 < len(row) else ""
+            if cell and cell.strip():
+                vec = [(row[c] if c < len(row) else "") for c in range(MAIN_COLS)]
+                product_rows.append((cell, vec, len(product_rows)))
+                occupied_rows.append(r_i)
+
+        if len(product_rows) <= 1:
+            return {"reordered": len(product_rows), "gid": ws.id, "noop": True}
+
+        ordered = sorted(product_rows, key=lambda t: _pn_sort_key(t[0], t[2]))
+        if [t[2] for t in ordered] == list(range(len(product_rows))):
+            return {"reordered": len(product_rows), "gid": ws.id, "noop": True}  # вже відсортовано
+
+        if dry_run:
+            return {"reordered": len(product_rows), "gid": ws.id,
+                    "order": [t[0] for t in ordered], "dry_run": True}
+
+        _backup_tab(ws, "reorder")
+        # Пишемо відсортовані cols1-52 у рядки 2..(2+P-1) одним батчем.
+        start = HEADER_ROW + 1
+        end = start + len(ordered) - 1
+        rng = f"{_gsu.rowcol_to_a1(start, 1)}:{_gsu.rowcol_to_a1(end, MAIN_COLS)}"
+        values = [t[1] for t in ordered]
+        updates = [{"range": rng, "values": values}]
+        ws.batch_update(updates)
+        # Очистити «хвіст» (рядки, що були зайняті, але тепер за межами P) — cols1-52.
+        tail = [r for r in occupied_rows if r > end]
+        if tail:
+            ws.batch_clear([f"{_gsu.rowcol_to_a1(r,1)}:{_gsu.rowcol_to_a1(r,MAIN_COLS)}" for r in tail])
+        return {"reordered": len(ordered), "gid": ws.id, "dry_run": False}
+
+    return _with_retry(_do, what=f"сортування «{delivery_title}»")
+
+
+# ── Інфо-блок «Інформація про завоз» (Фіча 4) ─────────────────────────────────
+# Редаговані поля (allowlist): лише користувацький ввід. Формули/статистику не чіпаємо.
+INFO_EDITABLE_LABELS = [
+    "Дата завозу", "Сума", "Сума доставки", "Промокод", "Коментар",
+    "Очікувана к-сть речей", "Статус", "Писав",
+]
+
+
+def _find_label_cell(all_vals, label: str, min_col: int = MAIN_COLS):
+    """(row_idx, col_idx) 1-based комірки з ТОЧНОЮ назвою label (перше входження).
+
+    ⚠️ Шукаємо ЛИШЕ у зоні блоку «Завоз» (col > min_col=MAIN_COLS=52). Інакше лейбли
+    на кшталт «Статус»/«Коментар» збіглися б із ЗАГОЛОВКАМИ товарних колонок (рядок 1,
+    cols 1..52) → читали/писали б не ту комірку (зіпсувало б заголовок товару)."""
+    lab = label.strip().lower()
+    for r_i, row in enumerate(all_vals, start=1):
+        for c_i, cell in enumerate(row, start=1):
+            if c_i <= min_col:
+                continue
+            if str(cell).strip().lower() == lab:
+                return r_i, c_i
+    return None, None
+
+
+def rename_product_row(delivery_title: str, old_number: str, new_number: str,
+                       size_hint: Optional[str] = None, dry_run: bool = False) -> Dict[str, Any]:
+    """Перейменувати «Номер» рядка товару в журналі (old→new).
+    Single рядок → перейменувати. Ростовка (кілька рядків одного номера) → звузити за
+    розміром (size_hint проти «Розмір»/«Буквений»/«СМ»); якщо все одно неоднозначно —
+    {ambiguous}. Бекап + retry. НІКОЛИ не чіпає інші рядки/блок."""
+    _guard()
+
+    def _canon(s: str) -> str:
+        return (s or "").strip().lstrip("#").rstrip(";").strip().upper()
+
+    def _do() -> Dict[str, Any]:
+        sh = _open_journal()
+        ws = sh.worksheet(delivery_title)
+        headers = _header_columns(ws)
+        num_col = headers.get("Номер")
+        if not num_col:
+            raise RuntimeError(f"У вкладці '{delivery_title}' немає колонки «Номер»")
+        all_vals = ws.get_all_values()
+        target = _canon(old_number)
+        rows = [r_i for r_i, row in enumerate(all_vals[HEADER_ROW:], start=HEADER_ROW + 1)
+                if _canon(row[num_col - 1] if num_col - 1 < len(row) else "") == target]
+        if not rows:
+            return {"renamed": 0, "not_found": True, "gid": ws.id}
+        if len(rows) > 1 and size_hint:
+            size_cols = [headers[h] for h in ("Розмір", "Буквений", "СМ") if h in headers]
+            sh_c = str(size_hint).strip().lower()
+            narrowed = [r for r in rows if any(
+                (all_vals[r - 1][c - 1].strip().lower() if c - 1 < len(all_vals[r - 1]) else "") == sh_c
+                for c in size_cols)]
+            if len(narrowed) == 1:
+                rows = narrowed
+        if len(rows) > 1:
+            return {"renamed": 0, "ambiguous": True, "rows": rows, "gid": ws.id}
+        if dry_run:
+            return {"renamed": 1, "row": rows[0], "gid": ws.id, "dry_run": True}
+        _backup_tab(ws, "rename")
+        a1 = _gsu.rowcol_to_a1(rows[0], num_col)
+        ws.batch_update([{"range": a1, "values": [[new_number]]}], value_input_option="USER_ENTERED")
+        return {"renamed": 1, "row": rows[0], "gid": ws.id}
+
+    return _with_retry(_do, what=f"перейменування номера у «{delivery_title}»")
+
+
+def read_delivery_info_block(delivery_title: str) -> Dict[str, Any]:
+    """Прочитати редаговані поля блоку «Інформація про завоз» (label→значення-праворуч).
+    Формула-комірки → editable=False (захист від клоберу `Всього`/`К-сть речей`)."""
+    sh = _open_journal()
+    ws = sh.worksheet(delivery_title)
+    all_vals = ws.get_all_values()
+    formulas = ws.get_all_values(value_render_option="FORMULA")
+
+    def _val_at(rows, r, c):
+        if r is None:
+            return ""
+        rr = rows[r - 1] if r - 1 < len(rows) else []
+        return rr[c - 1] if c - 1 < len(rr) else ""
+
+    fields = []
+    for label in INFO_EDITABLE_LABELS:
+        r, c = _find_label_cell(all_vals, label)
+        if r is None:
+            continue
+        value = _val_at(all_vals, r, c + 1)
+        raw = _val_at(formulas, r, c + 1)
+        is_formula = isinstance(raw, str) and raw.startswith("=")
+        fields.append({"label": label, "value": value, "editable": not is_formula})
+    return {"title": delivery_title, "gid": ws.id, "fields": fields}
+
+
+def update_delivery_info_block(delivery_title: str, changes: Dict[str, Any],
+                               dry_run: bool = False) -> Dict[str, Any]:
+    """Записати значення (label→cell-праворуч) для полів з allowlist. Пропускає
+    формула-комірки. Бекап + retry. changes = {label: value}."""
+    _guard()
+    allowed = {l for l in INFO_EDITABLE_LABELS}
+
+    def _do() -> Dict[str, Any]:
+        sh = _open_journal()
+        ws = sh.worksheet(delivery_title)
+        all_vals = ws.get_all_values()
+        formulas = ws.get_all_values(value_render_option="FORMULA")
+        updates, written, skipped = [], {}, []
+        for label, value in changes.items():
+            if label not in allowed:
+                skipped.append({"label": label, "reason": "not_editable"})
+                continue
+            r, c = _find_label_cell(all_vals, label)
+            if r is None:
+                skipped.append({"label": label, "reason": "not_found"})
+                continue
+            frow = formulas[r - 1] if r - 1 < len(formulas) else []
+            raw = frow[c] if c < len(frow) else ""  # комірка праворуч (0-based c == col c+1)
+            if isinstance(raw, str) and raw.startswith("="):
+                skipped.append({"label": label, "reason": "formula"})
+                continue
+            a1 = _gsu.rowcol_to_a1(r, c + 1)
+            new_str = "" if value is None else str(value)
+            updates.append({"range": a1, "values": [[new_str]]})
+            written[label] = new_str
+        if dry_run:
+            return {"written": written, "skipped": skipped, "gid": ws.id, "dry_run": True}
+        if updates:
+            _backup_tab(ws, "info")
+            ws.batch_update(updates, value_input_option="USER_ENTERED")
+        return {"written": written, "skipped": skipped, "gid": ws.id, "dry_run": False}
+
+    return _with_retry(_do, what=f"інфо-блок «{delivery_title}»")

@@ -179,6 +179,9 @@ export interface ProductFilters {
     styles?: ReferenceItem[];
     seasons?: string[];
     widths?: string[];
+    // Довідники-характеристики для автодоповнення (назви): sole_types/toe_shapes/
+    // fastening_types/lace_types/heel_types/linings/technologies/packagings/materials.
+    lookups?: Record<string, string[]>;
     shipments: { id: number; name: string; date: string | null }[];
     price_range: {
         min_price: number;

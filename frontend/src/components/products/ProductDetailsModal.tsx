@@ -145,6 +145,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
   // Менеджер фото (в editMode): додати/видалити/перейменувати(порядок)/замінити
   const [photoBusy, setPhotoBusy] = useState(false);
   const [dragIdx, setDragIdx] = useState<number | null>(null);
+  const [overIdx, setOverIdx] = useState<number | null>(null);  // плитка-ціль під час drag
   const [moveMenuFor, setMoveMenuFor] = useState<string | null>(null);  // filename з відкритим меню «перенести»
   const addPhotoInputRef = React.useRef<HTMLInputElement | null>(null);
   const replacePhotoInputRef = React.useRef<HTMLInputElement | null>(null);
@@ -271,10 +272,6 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
   const draggingRef = React.useRef(false);
   const tileRefs = React.useRef<Map<string, HTMLDivElement>>(new Map());
   const prevRects = React.useRef<Map<string, DOMRect>>(new Map());
-  // Анти-bounce: остання пара (рухома плитка, плитка-ціль) + час. На межі (index 0) зміщена
-  // плитка ковзає під нерухомий курсор → миттєвий зворотний swap і плитка «не доходить».
-  // Блокуємо повтор тієї ж пари ~350мс (поки FLIP осідає). Див. живий reorder + FLIP.
-  const lastSwapRef = React.useRef<{ m: string; e: string; t: number } | null>(null);
 
   useEffect(() => {
     if (draggingRef.current) return;
@@ -365,38 +362,27 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
   // FLIP анімує рух; коміт на сервер — на відпускання.
   const onTileDragStart = React.useCallback((fn: string) => {
     draggingRef.current = true;
-    lastSwapRef.current = null;
-    setDragIdx(mgrOrder.indexOf(fn));
+    const i = mgrOrder.indexOf(fn);
+    setDragIdx(i);
+    setOverIdx(i);
   }, [mgrOrder]);
 
   const onTileDragEnter = React.useCallback((fn: string) => {
-    setMgrOrder((order) => {
-      const from = dragIdx;
-      const to = order.indexOf(fn);
-      if (from === null || from < 0 || to < 0 || from === to) return order;
-      const moved = order[from];
-      // Анти-bounce: не повторювати той самий swap (рухома→ціль) у вікні ~350мс — інакше
-      // на межі плитка дрижить і не доходить до 1-ї позиції. Після осідання FLIP — дозволено.
-      const now = Date.now();
-      const ls = lastSwapRef.current;
-      if (ls && ls.m === moved && ls.e === fn && now - ls.t < 350) return order;
-      lastSwapRef.current = { m: moved, e: fn, t: now };
-      const a = [...order];
-      a.splice(from, 1);
-      a.splice(to, 0, moved);
-      setDragIdx(to);
-      return a;
-    });
-  }, [dragIdx]);
+    setOverIdx(mgrOrder.indexOf(fn));  // лише підсвітка цілі, БЕЗ перестановки під час drag
+  }, [mgrOrder]);
 
-  const onTileDragEnd = React.useCallback(() => {
+  const onTileDrop = React.useCallback(() => {
     draggingRef.current = false;
-    setDragIdx(null);
+    const from = dragIdx, to = overIdx;
+    setDragIdx(null); setOverIdx(null);
+    if (from == null || to == null || from < 0 || to < 0 || from === to) return;
+    const a = [...mgrOrder];
+    const [moved] = a.splice(from, 1);
+    a.splice(to, 0, moved);
+    setMgrOrder(a);                       // ОДИН реордер на відпускання → FLIP анімує
     const serverOrder = officialImages.map((i) => i.filename);
-    if (mgrOrder.length && mgrOrder.join('') !== serverOrder.join('')) {
-      handleReorderPhotos(mgrOrder);
-    }
-  }, [mgrOrder, officialImages, handleReorderPhotos]);
+    if (a.join('') !== serverOrder.join('')) handleReorderPhotos(a);
+  }, [dragIdx, overIdx, mgrOrder, officialImages, handleReorderPhotos]);
 
   // Кожне свіже відкриття (після закриття) трактуємо як ПЕРВИННЕ (зі спінером).
   useEffect(() => { if (!open) prevIdRef.current = null; }, [open]);
@@ -1231,16 +1217,16 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                         ) : (
                           <>
                             <div className="grid grid-cols-4 sm:grid-cols-5 gap-2">
-                              {mgrOrder.map((fn, i) => { const img = imgByName.get(fn); if (!img) return null; const dragging = dragIdx === i; return (
+                              {mgrOrder.map((fn, i) => { const img = imgByName.get(fn); if (!img) return null; const dragging = dragIdx === i; const isOver = overIdx === i && dragIdx !== null && dragIdx !== i; return (
                                 <div key={fn}
                                   ref={(el) => { if (el) tileRefs.current.set(fn, el); else tileRefs.current.delete(fn); }}
                                   draggable={!photoBusy}
                                   onDragStart={(e) => { try { e.dataTransfer.effectAllowed = 'move'; } catch {} onTileDragStart(fn); }}
                                   onDragEnter={() => onTileDragEnter(fn)}
-                                  onDragOver={(e) => e.preventDefault()}
-                                  onDragEnd={onTileDragEnd}
-                                  onDrop={(e) => { e.preventDefault(); onTileDragEnd(); }}
-                                  className={`relative group/ph aspect-square rounded-lg overflow-hidden border bg-white dark:bg-gray-900 ${i === 0 ? 'border-primary-500' : 'border-gray-200 dark:border-gray-700'} ${dragging ? 'opacity-90 scale-105 shadow-xl ring-2 ring-primary-400 z-10' : 'shadow-sm hover:shadow-md'} transition-[box-shadow,transform] duration-150 cursor-grab active:cursor-grabbing`}
+                                  onDragOver={(e) => { e.preventDefault(); onTileDragEnter(fn); }}
+                                  onDragEnd={onTileDrop}
+                                  onDrop={(e) => { e.preventDefault(); onTileDrop(); }}
+                                  className={`relative group/ph aspect-square rounded-lg overflow-hidden border bg-white dark:bg-gray-900 ${i === 0 ? 'border-primary-500' : 'border-gray-200 dark:border-gray-700'} ${dragging ? 'opacity-40' : 'shadow-sm hover:shadow-md'} ${isOver ? 'ring-2 ring-primary-500 scale-105 z-10' : ''} transition-[box-shadow,transform,opacity] duration-150 cursor-grab active:cursor-grabbing`}
                                   title={img.filename}>
                                   <img src={img.url} alt={img.filename} draggable={false} className="w-full h-full object-cover pointer-events-none select-none" loading="lazy" />
                                   {i === 0 && (
@@ -1485,7 +1471,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                     {EditCell({ field: 'year', label: 'Рік', type: 'number' })}
                     {EditCell({ field: 'clonednumbers', label: 'Клони' })}
                     {EditCell({ field: 'manufacturer_country_name', lockField: 'manufacturercountryid', label: 'Виробник' })}
-                    <RoCell label="Завоз" value={p.dateadded} />
+                    <RoCell label="Завоз" value={p.dateadded ? new Date(p.dateadded).toLocaleDateString('uk-UA') : null} />
                     <RoCell label="У базі з" value={p.created_at ? new Date(p.created_at).toLocaleDateString('uk-UA') : null} />
                   </div>
 

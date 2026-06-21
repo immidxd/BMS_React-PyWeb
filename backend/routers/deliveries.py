@@ -360,6 +360,84 @@ async def delete_product_from_delivery(
     return {"deleted": product_id}
 
 
+class NumberUpdate(BaseModel):
+    productnumber: str
+
+
+@router.put("/api/deliveries/{delivery_id}/products/{product_id}/number")
+async def rename_product_number(
+    delivery_id: int = Path(..., ge=1),
+    product_id: int = Path(..., ge=1),
+    payload: NumberUpdate = Body(...),
+    db: Session = Depends(get_db),
+):
+    """Перейменувати номер товару прямо зі списку завозу. Дедуп-перевірка (дубль →
+    409), гард продажів (409), запис у БД + аркуш (як gate: збій аркуша → відкат БД)."""
+    try:
+        from scripts.journal_writer import rename_product_row, ADD_PRODUCT_ENABLED
+        from services.product_service import check_number_conflict
+        from utils.productnumber_normalizer import normalize as _norm_pn
+    except ImportError:
+        from backend.scripts.journal_writer import rename_product_row, ADD_PRODUCT_ENABLED
+        from backend.services.product_service import check_number_conflict
+        from backend.utils.productnumber_normalizer import normalize as _norm_pn
+
+    if not ADD_PRODUCT_ENABLED:
+        raise HTTPException(status_code=403, detail="Редагування вимкнено (PARSER_ADD_PRODUCT=0)")
+
+    p = db.execute(text("""SELECT p.productnumber, p.deliveryid, p.sizeeu, p.size_letter,
+                                  p.brandid, p.model, d.deliveryname
+                           FROM products p LEFT JOIN deliveries d ON d.id = p.deliveryid
+                           WHERE p.id = :pid"""), {"pid": product_id}).mappings().first()
+    if not p:
+        raise HTTPException(status_code=404, detail="Товар не знайдено")
+    if p["deliveryid"] != delivery_id:
+        raise HTTPException(status_code=400, detail="Товар не належить цьому завозу")
+
+    old = p["productnumber"]
+    new_norm = _norm_pn(payload.productnumber) or (payload.productnumber or "").strip()
+    if not new_norm:
+        raise HTTPException(status_code=400, detail="Порожній номер")
+
+    def _canon(s):
+        return (s or "").strip().lstrip("#").rstrip(";").strip().upper()
+    if _canon(new_norm) == _canon(old):
+        return {"renamed": False, "productnumber": old, "note": "без змін"}
+
+    # Гард продажів — переіменування проданого розсинхронізує матчинг замовлень.
+    sold = db.execute(text("SELECT COUNT(*) FROM order_items WHERE product_id = :pid"), {"pid": product_id}).scalar()
+    if sold:
+        raise HTTPException(status_code=409, detail="Товар має продажі — зміна номера заборонена")
+
+    # Дедуп: номер не має збігатися з ІНШИМ товаром (productnumber/clonednumbers).
+    # Ростовка-близнюк (той самий бренд+модель, інший розмір) — НЕ дубль.
+    conflict = check_number_conflict(
+        db, new_norm, exclude_id=product_id,
+        rostovka_ref={"brandid": p["brandid"], "model": p["model"],
+                      "sizeeu": p["sizeeu"], "size_letter": p["size_letter"]},
+    )
+    if conflict:
+        raise HTTPException(status_code=409,
+                            detail=f"Номер «{new_norm}» вже зайнятий іншим товаром ({conflict['productnumber']})")
+
+    # Оновити БД (не комітимо), тоді аркуш як gate.
+    db.execute(text("UPDATE products SET productnumber = :n WHERE id = :i"), {"n": new_norm, "i": product_id})
+    if p["deliveryname"]:
+        try:
+            res = rename_product_row(p["deliveryname"], old, new_norm,
+                                     size_hint=(p["sizeeu"] or p["size_letter"]))
+        except Exception as e:
+            db.rollback()
+            logger.error(f"rename_product_row failed: {e}")
+            raise HTTPException(status_code=502, detail=_journal_err_detail(e, p["deliveryname"]))
+        if res.get("ambiguous"):
+            db.rollback()
+            raise HTTPException(status_code=409,
+                                detail=f"Ростовка: кілька рядків з номером «{old}» — уточніть вручну в журналі")
+    db.commit()
+    return {"renamed": True, "productnumber": new_norm, "old": old}
+
+
 @router.get("/api/deliveries/{delivery_id}/reconcile")
 async def reconcile_delivery(delivery_id: int = Path(..., ge=1), db: Session = Depends(get_db)):
     """Звірка завозу з журналом (read-only): товари в БД(deliveryid), яких НЕМА у
@@ -422,6 +500,116 @@ async def sync_delivery(delivery_id: int = Path(..., ge=1), db: Session = Depend
         db.rollback()
         logger.error(f"sync_delivery failed: {e}")
         raise HTTPException(status_code=502, detail=f"Не вдалося синхронізувати з журналом: {e}")
+
+
+def _journal_err_detail(e: Exception, deliveryname: str) -> str:
+    """Дружнє повідомлення для попапа (як у add-товару)."""
+    msg = str(e); low = msg.lower()
+    if "після" in msg and "спроб" in msg:
+        return "⚠️ Тимчасова проблема зв'язку з Google Sheets — спробуйте ще раз за кілька секунд."
+    if any(m in low for m in ("ssl", "certificate", "connection", "max retries", "timed out", "handshake")):
+        return "⚠️ Не вдалось зв'язатися з Google Sheets (мережа/SSL) — спробуйте ще раз."
+    if "немає колонки" in msg or "не знайд" in low or "worksheet" in low:
+        return f"Вкладку «{deliveryname}» не знайдено або змінено її структуру."
+    return f"Помилка журналу: {msg}"
+
+
+@router.post("/api/deliveries/{delivery_id}/sort-rows")
+async def sort_delivery_rows(delivery_id: int = Path(..., ge=1), db: Session = Depends(get_db)):
+    """⇅ Впорядкувати товарні рядки вкладки за номером (зростання) — і в журналі.
+    Переписує лише cols1-52; блок «Завоз» недоторканий."""
+    try:
+        from scripts.journal_writer import reorder_delivery_rows
+    except ImportError:
+        from backend.scripts.journal_writer import reorder_delivery_rows
+    d = db.execute(text("SELECT deliveryname FROM deliveries WHERE id=:i"), {"i": delivery_id}).mappings().first()
+    if not d:
+        raise HTTPException(status_code=404, detail="Завіз не знайдено")
+    try:
+        return reorder_delivery_rows(d["deliveryname"])
+    except Exception as e:
+        logger.error(f"sort_delivery_rows failed: {e}")
+        raise HTTPException(status_code=502, detail=_journal_err_detail(e, d["deliveryname"]))
+
+
+@router.get("/api/deliveries/{delivery_id}/info")
+async def get_delivery_info(delivery_id: int = Path(..., ge=1), db: Session = Depends(get_db)):
+    """Редаговані поля блоку «Інформація про завоз» з аркуша (label→значення)."""
+    try:
+        from scripts.journal_writer import read_delivery_info_block
+    except ImportError:
+        from backend.scripts.journal_writer import read_delivery_info_block
+    d = db.execute(text("SELECT deliveryname FROM deliveries WHERE id=:i"), {"i": delivery_id}).mappings().first()
+    if not d:
+        raise HTTPException(status_code=404, detail="Завіз не знайдено")
+    try:
+        return read_delivery_info_block(d["deliveryname"])
+    except Exception as e:
+        logger.error(f"get_delivery_info failed: {e}")
+        raise HTTPException(status_code=502, detail=_journal_err_detail(e, d["deliveryname"]))
+
+
+# Поле інфо-блоку → колонка `deliveries` (дзеркало в БД для відомих полів).
+_INFO_DB_COLUMNS = {
+    "Дата завозу": ("deliverydate", "date"),
+    "Сума": ("purchase_cost", "float"),
+    "Сума доставки": ("delivery_cost", "float"),
+    "Коментар": ("description", "text"),
+}
+
+
+@router.put("/api/deliveries/{delivery_id}/info")
+async def update_delivery_info(delivery_id: int = Path(..., ge=1),
+                               payload: Dict[str, Any] = Body(...),
+                               db: Session = Depends(get_db)):
+    """Записати редаговані поля інфо-блоку в аркуш + дзеркалити відомі в БД.
+    payload = {label: value}. Промокод/Очікувана/Статус — журнал-only."""
+    try:
+        from scripts.journal_writer import update_delivery_info_block
+    except ImportError:
+        from backend.scripts.journal_writer import update_delivery_info_block
+    d = db.execute(text("SELECT deliveryname FROM deliveries WHERE id=:i"), {"i": delivery_id}).mappings().first()
+    if not d:
+        raise HTTPException(status_code=404, detail="Завіз не знайдено")
+    changes = {k: v for k, v in payload.items() if isinstance(k, str)}
+    try:
+        res = update_delivery_info_block(d["deliveryname"], changes)
+    except Exception as e:
+        logger.error(f"update_delivery_info failed: {e}")
+        raise HTTPException(status_code=502, detail=_journal_err_detail(e, d["deliveryname"]))
+    # Дзеркало у БД для відомих полів (best-effort; журнал — джерело правди).
+    db_sets, db_params = [], {"i": delivery_id}
+    for label, (col, typ) in _INFO_DB_COLUMNS.items():
+        if label not in changes:
+            continue
+        raw = changes[label]
+        if typ == "float":
+            try:
+                import re as _re2
+                cleaned = _re2.sub(r"[^\d.,]", "", str(raw)).replace(",", ".")
+                val = float(cleaned) if cleaned else None
+            except (ValueError, TypeError):
+                val = None
+        elif typ == "date":
+            val = None
+            for fmt in ("%d.%m.%Y", "%Y-%m-%d", "%d/%m/%Y"):
+                try:
+                    val = datetime.strptime(str(raw).strip(), fmt).date(); break
+                except (ValueError, TypeError):
+                    continue
+        else:
+            val = (str(raw).strip() or None)
+        db_sets.append(f"{col} = :{col}")
+        db_params[col] = val
+    if db_sets:
+        try:
+            db.execute(text(f"UPDATE deliveries SET {', '.join(db_sets)} WHERE id=:i"), db_params)
+            db.commit()
+        except Exception as e:
+            db.rollback()
+            logger.warning(f"info DB-mirror failed (sheet ok): {e}")
+    return res
+
 
 @router.get("/api/deliveries")
 async def get_deliveries(

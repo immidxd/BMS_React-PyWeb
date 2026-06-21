@@ -3,6 +3,46 @@ import { message, notification } from 'antd';
 import { productService } from '../../services/productService';
 import type { ProductFilters } from '../../types/product';
 import { addProductToDelivery, fetchNextProductNumber } from '../../services/referenceService';
+import {
+  getDeliveryDefaults, getDeliveryDefaultsRaw, setDeliveryDefault, clearDeliveryDefault, clearAllDeliveryDefaults,
+  getGlobalDefaults, setGlobalDefault, clearGlobalDefault, clearAllGlobalDefaults,
+} from './deliveryDefaults';
+import AutoCompleteInput from './AutoCompleteInput';
+
+// Правила-імплікації: додавання поля авто-додає повʼязане з дефолт-значенням (редаговано).
+// Напр. «Тип шнурівки» → «Застібка»=шнурівка (взуття зі шнурівкою застібається шнурками).
+const IMPLICATIONS: Record<string, Record<string, string>> = {
+  lace_type_name: { fastening_type_name: 'шнурівка' },
+};
+
+// Поле → джерело варіантів для автодоповнення (з ProductFilters).
+const refNames = (arr?: { name: string }[]) => (arr || []).map(x => x.name);
+const OPT_FROM_FILTERS: Record<string, (f: ProductFilters) => string[]> = {
+  type_name: f => refNames(f.types as any),
+  brand_name: f => refNames(f.brands as any),
+  color_name: f => refNames(f.colors as any),
+  sole_color_name: f => refNames(f.colors as any),
+  condition_name: f => refNames(f.conditions as any),
+  gender_name: f => refNames(f.genders as any),
+  style_name: f => refNames(f.styles as any),
+  subtype_name: f => refNames(f.subtypes as any),
+  season: f => f.seasons || [],
+  manufacturer_name: f => refNames(f.countries as any),
+  packaging_name: f => f.lookups?.packagings || [],
+  sole_type_name: f => f.lookups?.sole_types || [],
+  toe_shape_name: f => f.lookups?.toe_shapes || [],
+  fastening_type_name: f => f.lookups?.fastening_types || [],
+  lace_type_name: f => f.lookups?.lace_types || [],
+  heel_type_name: f => f.lookups?.heel_types || [],
+  lining_name: f => f.lookups?.linings || [],
+  technology_name: f => f.lookups?.technologies || [],
+  material_upper: f => f.lookups?.materials || [],
+  material_middle: f => f.lookups?.materials || [],
+  material_sole: f => f.lookups?.materials || [],
+  material_midsole: f => f.lookups?.materials || [],
+  material_insole: f => f.lookups?.materials || [],
+  material_membrane: f => f.lookups?.materials || [],
+};
 
 const inputCls =
   'w-full rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 ' +
@@ -73,6 +113,16 @@ const SUBHUBS: Record<Exclude<HubView, 'root'>, { label: string; fields: string[
 const SUBHUB_KEYS = [...SUBHUBS.materials.fields, ...SUBHUBS.details.fields];
 const CLOTHING_MEAS = ['chest', 'waist', 'hips', 'sleeve', 'length'];
 
+// Поля, придатні як «дефолт на лот» (класифікація + деталі; БЕЗ унікальних per-item:
+// номер/розмір/ціна/модель/маркування/виміри тощо).
+const DEFAULTABLE_KEYS = [
+  'type_name', 'subtype_name', 'brand_name', 'style_name', 'gender_name', 'color_name',
+  'condition_name', 'season', 'packaging_name', 'manufacturer_name', 'width', 'geometric_shape',
+  'lining_name', 'sole_type_name', 'fastening_type_name', 'sole_color_name', 'toe_shape_name',
+  'technology_name', 'heel_type_name', 'lace_type_name',
+  'material_upper', 'material_middle', 'material_sole', 'material_midsole', 'material_insole', 'material_membrane',
+];
+
 function categoryOf(t?: string): Cat {
   const s = (t || '').toLowerCase();
   if (/валіз|чемодан/.test(s)) return 'suitcase';
@@ -136,7 +186,9 @@ interface Props {
 }
 
 const QuickAddProductForm: React.FC<Props> = ({ deliveryId, onSaved, filters: filtersProp }) => {
-  const [values, setValues] = useState<Record<string, string>>({ productnumber: '' });
+  const [values, setValues] = useState<Record<string, string>>(
+    () => ({ productnumber: '', ...getDeliveryDefaults(deliveryId) })
+  );
   const [extras, setExtras] = useState<string[]>([]);
   const [hubOpen, setHubOpen] = useState(false);
   const [hubView, setHubView] = useState<HubView>('root');
@@ -144,11 +196,29 @@ const QuickAddProductForm: React.FC<Props> = ({ deliveryId, onSaved, filters: fi
   const [error, setError] = useState<string | null>(null);
   const [okFlash, setOkFlash] = useState(false);
   const [filters, setFilters] = useState<ProductFilters | null>(filtersProp || null);
+  const [showDefaults, setShowDefaults] = useState(false);
+  const [defTick, setDefTick] = useState(0);  // ре-рендер при зміні дефолтів
+  const [pickKey, setPickKey] = useState('');   // обране поле в панелі дефолтів
+  const [pickVal, setPickVal] = useState('');
+  const [defScope, setDefScope] = useState<'global' | 'delivery'>('global');  // куди додавати дефолт
 
   useEffect(() => {
     if (filtersProp) { setFilters(filtersProp); return; }
     productService.getFilters().then(setFilters).catch(() => {});
   }, [filtersProp]);
+
+  // Підставити дефолти завозу у форму (productnumber завжди порожній). Optional-поля
+  // з дефолтів показуємо як extras, щоб користувач бачив підставлене значення.
+  const applyDefaults = React.useCallback(() => {
+    const d = getDeliveryDefaults(deliveryId);
+    setValues({ productnumber: '', ...d });
+    const lay2 = layout(d.type_name);
+    const baseKeys = new Set(baseFields(lay2).map(f => f.key));
+    setExtras(Object.keys(d).filter(k => F[k] && !baseKeys.has(k)));
+  }, [deliveryId]);
+
+  // Перезастосувати при зміні завозу або редагуванні дефолтів.
+  useEffect(() => { applyDefaults(); /* eslint-disable-next-line */ }, [deliveryId, defTick]);
 
   const lay = useMemo(() => layout(values.type_name), [values.type_name]);
   const set = (k: string, v: string) => setValues(s => ({ ...s, [k]: v }));
@@ -182,7 +252,25 @@ const QuickAddProductForm: React.FC<Props> = ({ deliveryId, onSaved, filters: fi
     try { set('productnumber', await fetchNextProductNumber(pfx)); } catch { /* ignore */ }
   };
 
-  const addExtra = (key: string) => { setExtras(e => [...e, key]); setHubOpen(false); setHubView('root'); };
+  // Варіанти автодоповнення для поля (порожньо → звичайний інпут без підказок).
+  const optionsFor = React.useCallback(
+    (key: string): string[] => (filters ? (OPT_FROM_FILTERS[key]?.(filters) || []) : []),
+    [filters]
+  );
+
+  const addExtra = (key: string) => {
+    const imp = IMPLICATIONS[key] || {};
+    const impKeys = Object.keys(imp);
+    setExtras(e => {
+      const ne = e.includes(key) ? [...e] : [...e, key];
+      impKeys.forEach(k => { if (!ne.includes(k)) ne.push(k); });  // авто-додати повʼязані
+      return ne;
+    });
+    if (impKeys.length) {
+      setValues(s => { const ns = { ...s }; for (const [k, v] of Object.entries(imp)) if (!ns[k]) ns[k] = v; return ns; });
+    }
+    setHubOpen(false); setHubView('root');
+  };
   const removeExtra = (key: string) => { setExtras(e => e.filter(k => k !== key)); setValues(s => ({ ...s, [key]: '' })); };
 
   const rootAvailable = useMemo(() => optionalFor(lay).filter(k => !extras.includes(k)), [lay, extras]);
@@ -205,7 +293,7 @@ const QuickAddProductForm: React.FC<Props> = ({ deliveryId, onSaved, filters: fi
         payload[k] = NUMBER_KEYS.has(k) ? Number(v) : v;
       });
       await addProductToDelivery(deliveryId, payload);
-      setValues({ productnumber: '' }); setExtras([]);
+      applyDefaults();  // скид форми, але дефолти лишаються підставленими (лот-за-лотом)
       setOkFlash(true); setTimeout(() => setOkFlash(false), 1500);
       message.success(`Товар ${pnum} додано`);
       onSaved();
@@ -242,23 +330,37 @@ const QuickAddProductForm: React.FC<Props> = ({ deliveryId, onSaved, filters: fi
     } finally { setSubmitting(false); }
   };
 
-  const renderField = (f: FieldDef, removable = false) => (
+  const renderField = (f: FieldDef, removable = false) => {
+    const opts = optionsFor(f.key);
+    const onVal = (v: string) => (f.key === 'type_name' ? onTypeChange(v) : set(f.key, v));
+    return (
     <div key={f.key} className="relative">
-      <input
-        list={f.dl ? `qf-${f.dl}` : undefined}
-        type={f.number ? 'number' : 'text'}
-        value={values[f.key] || ''}
-        onChange={e => (f.key === 'type_name' ? onTypeChange(e.target.value) : set(f.key, e.target.value))}
-        placeholder={f.label}
-        className={inputCls}
-        autoCapitalize="none" autoCorrect="off" spellCheck={false}
-      />
+      {opts.length > 0 ? (
+        <AutoCompleteInput
+          value={values[f.key] || ''}
+          options={opts}
+          placeholder={f.label}
+          className={inputCls}
+          onChange={onVal}
+          onPick={onVal}
+        />
+      ) : (
+        <input
+          type={f.number ? 'number' : 'text'}
+          value={values[f.key] || ''}
+          onChange={e => onVal(e.target.value)}
+          placeholder={f.label}
+          className={inputCls}
+          autoCapitalize="none" autoCorrect="off" spellCheck={false}
+        />
+      )}
       {removable && (
         <button type="button" onClick={() => removeExtra(f.key)} title="Прибрати поле"
           className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-gray-300 dark:bg-gray-600 text-white text-[10px] leading-none flex items-center justify-center hover:bg-red-500">×</button>
       )}
     </div>
-  );
+    );
+  };
 
   const chip = (label: string, onClick: () => void, accent = false) => (
     <button key={label} type="button" onClick={onClick}
@@ -316,9 +418,88 @@ const QuickAddProductForm: React.FC<Props> = ({ deliveryId, onSaved, filters: fi
       <datalist id="qf-subtypes">{dlItems('subtypes').map((x, i) => <option key={i} value={x.name} />)}</datalist>
       <datalist id="qf-seasons">{dlItems('seasons').map((x, i) => <option key={i} value={x.name} />)}</datalist>
 
+      {/* Панель «Дефолти» — глобальні (📌 усі завози) + по-завозу */}
+      {showDefaults && (() => {
+        const globalD = getGlobalDefaults();
+        const perD = getDeliveryDefaultsRaw(deliveryId);
+        const gKeys = Object.keys(globalD);
+        const pKeys = Object.keys(perD).filter(k => !(k in globalD)); // по-завозу, що не дублюють глобальні
+        const removeKey = (k: string) => {
+          if (k in perD) clearDeliveryDefault(deliveryId, k); else clearGlobalDefault(k);
+          setDefTick(t => t + 1);
+        };
+        const chip = (k: string, val: string, isGlobal: boolean) => (
+          <span key={k} className={`inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[12px] border ${isGlobal
+            ? 'bg-white dark:bg-gray-800 border-amber-300 dark:border-amber-700' : 'bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600'}`}>
+            {isGlobal && <span title="Для всіх завозів">📌</span>}
+            <b className="font-medium">{F[k]?.label || k}:</b> {val}
+            <button type="button" onClick={() => removeKey(k)} className="ml-0.5 text-gray-400 hover:text-red-500">×</button>
+          </span>
+        );
+        return (
+          <div className="mt-3 p-3 rounded-xl bg-amber-50 dark:bg-amber-900/15 border border-amber-200 dark:border-amber-800/40">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-[12px] font-medium text-amber-800 dark:text-amber-300">
+                Дефолти — підставляються в кожен новий лот (📌 = для всіх завозів)
+              </span>
+              {(gKeys.length > 0 || pKeys.length > 0) && (
+                <button type="button" onClick={() => { clearAllGlobalDefaults(); clearAllDeliveryDefaults(deliveryId); setDefTick(t => t + 1); }}
+                  className="text-[11px] text-amber-700 dark:text-amber-400 hover:underline">Очистити всі</button>
+              )}
+            </div>
+            {(gKeys.length > 0 || pKeys.length > 0) && (
+              <div className="flex flex-wrap gap-1.5 mb-2.5">
+                {gKeys.map(k => chip(k, globalD[k], true))}
+                {pKeys.map(k => chip(k, perD[k], false))}
+              </div>
+            )}
+            <div className="flex flex-wrap items-center gap-2">
+              {/* Куди додавати: для всіх завозів (глоб.) чи лише цей */}
+              <div className="inline-flex rounded-lg border border-amber-300 dark:border-amber-700 overflow-hidden text-[11px]">
+                <button type="button" onClick={() => setDefScope('global')}
+                  className={`px-2 py-1.5 ${defScope === 'global' ? 'bg-amber-200 dark:bg-amber-800/50 text-amber-900 dark:text-amber-200' : 'text-amber-700 dark:text-amber-400'}`}>📌 Усі завози</button>
+                <button type="button" onClick={() => setDefScope('delivery')}
+                  className={`px-2 py-1.5 border-l border-amber-300 dark:border-amber-700 ${defScope === 'delivery' ? 'bg-amber-200 dark:bg-amber-800/50 text-amber-900 dark:text-amber-200' : 'text-amber-700 dark:text-amber-400'}`}>Цей завіз</button>
+              </div>
+              <select value={pickKey} onChange={e => { setPickKey(e.target.value); setPickVal(''); }}
+                className={inputCls + ' max-w-[160px]'}>
+                <option value="">— поле —</option>
+                {DEFAULTABLE_KEYS.filter(k => F[k]).map(k => <option key={k} value={k}>{F[k].label}</option>)}
+              </select>
+              {pickKey && optionsFor(pickKey).length > 0 ? (
+                <div className="w-[160px]">
+                  <AutoCompleteInput value={pickVal} options={optionsFor(pickKey)} placeholder="значення"
+                    className={inputCls} onChange={setPickVal} />
+                </div>
+              ) : (
+                <input value={pickVal} onChange={e => setPickVal(e.target.value)}
+                  placeholder="значення" disabled={!pickKey}
+                  autoCapitalize="none" autoCorrect="off" spellCheck={false}
+                  className={inputCls + ' max-w-[160px]'} />
+              )}
+              <button type="button" disabled={!pickKey || !pickVal.trim()}
+                onClick={() => {
+                  if (defScope === 'global') setGlobalDefault(pickKey, pickVal.trim());
+                  else setDeliveryDefault(deliveryId, pickKey, pickVal.trim());
+                  setPickKey(''); setPickVal(''); setDefTick(t => t + 1);
+                }}
+                className="px-3 py-1.5 rounded-lg text-sm border border-amber-300 dark:border-amber-700 text-amber-800 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-900/30 disabled:opacity-40">
+                Додати дефолт
+              </button>
+            </div>
+          </div>
+        );
+      })()}
+
       {error && <div className="mt-2 text-sm text-red-600">{error}</div>}
       {okFlash && <div className="mt-2 text-sm text-green-600">✓ Товар додано</div>}
-      <div className="mt-3 flex justify-end">
+      <div className="mt-3 flex items-center justify-between">
+        <button type="button" onClick={() => setShowDefaults(s => !s)}
+          className={`px-3 py-1.5 rounded-lg text-sm border transition-colors ${showDefaults || Object.keys(getDeliveryDefaults(deliveryId)).length > 0
+            ? 'border-amber-300 dark:border-amber-700 text-amber-800 dark:text-amber-300 bg-amber-50 dark:bg-amber-900/15'
+            : 'border-gray-300 dark:border-gray-600 text-gray-500 hover:text-gray-700'}`}>
+          ⚙ Дефолти{(() => { const n = Object.keys(getDeliveryDefaults(deliveryId)).length; return n > 0 ? ` · ${n}` : ''; })()}
+        </button>
         <button onClick={save} disabled={submitting}
           className="px-4 py-1.5 rounded-lg text-sm font-medium bg-black text-white hover:bg-gray-800 disabled:opacity-50">
           {submitting ? 'Додавання…' : 'Зберегти товар'}

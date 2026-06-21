@@ -1128,8 +1128,19 @@ def _apply_new_fields_and_materials(
         _apply_product_materials(session, prod.id, materials_parsed, source)
 
 
-def _resolve_material_id(session, name: str) -> Optional[int]:
-    """Look up canonical material_id by lowercased name. None if unknown — caller logs."""
+def _looks_like_material(s: str) -> bool:
+    """Чи схоже на матеріал (а не на сміття/число/ціну). Хоча б 2 літери, ≤60 символів."""
+    import re as _re
+    if not s or len(s) > 60:
+        return False
+    letters = _re.sub(r"[^A-Za-zА-Яа-яҐЄІЇґєії]", "", s)
+    return len(letters) >= 2
+
+
+def _resolve_material_id(session, name: str, create: bool = True) -> Optional[int]:
+    """Look up canonical material_id by lowercased name. Якщо нема — GET-OR-CREATE
+    (вільнотекстові матеріали користувача типу «плотний текстиль» зберігаємо як новий
+    канон-матеріал, щоб лінкувалися й переживали re-parse). Сміття/числа — None."""
     if not name:
         return None
     key = name.strip().lower()
@@ -1143,6 +1154,19 @@ def _resolve_material_id(session, name: str) -> Optional[int]:
         {"n": key},
     ).first()
     mid = int(row[0]) if row else None
+    if mid is None and create and _looks_like_material(key):
+        try:
+            ins = session.execute(
+                _sql("INSERT INTO materials (materialname) VALUES (:n) RETURNING id"),
+                {"n": key},
+            ).first()
+            mid = int(ins[0]) if ins else None
+            session.flush()
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[materials] get-or-create failed for {key!r}: {e}")
+            mid = session.execute(
+                _sql("SELECT id FROM materials WHERE materialname = :n LIMIT 1"), {"n": key},
+            ).scalar()
     if mid is not None:
         _materials_cache[key] = mid
     return mid

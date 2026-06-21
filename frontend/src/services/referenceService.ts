@@ -520,6 +520,42 @@ export const syncDelivery = async (deliveryId: number): Promise<{
   return response.data;
 };
 
+// Перейменувати номер товару зі списку завозу (дедуп-перевірка на бекенді → 409 при дублі).
+export const renameDeliveryProductNumber = async (
+  deliveryId: number, productId: number, productnumber: string
+): Promise<{ renamed: boolean; productnumber: string; old?: string; note?: string }> => {
+  const response = await axios.put(
+    `/api/deliveries/${deliveryId}/products/${productId}/number`, { productnumber }
+  );
+  return response.data;
+};
+
+// ⇅ Впорядкувати товарні рядки вкладки за номером (і в журналі).
+export const sortDeliveryRows = async (deliveryId: number): Promise<{
+  reordered: number; noop?: boolean;
+}> => {
+  const response = await axios.post(`/api/deliveries/${deliveryId}/sort-rows`);
+  return response.data;
+};
+
+export interface DeliveryInfoField { label: string; value: string; editable: boolean; }
+
+// Редаговані поля блоку «Інформація про завоз» з аркуша.
+export const getDeliveryInfo = async (deliveryId: number): Promise<{
+  title: string; gid: number; fields: DeliveryInfoField[];
+}> => {
+  const response = await axios.get(`/api/deliveries/${deliveryId}/info`);
+  return response.data;
+};
+
+// Записати поля інфо-блоку (label→value) в аркуш + дзеркало у БД.
+export const updateDeliveryInfo = async (
+  deliveryId: number, changes: Record<string, string>
+): Promise<{ written: Record<string, string>; skipped: { label: string; reason: string }[] }> => {
+  const response = await axios.put(`/api/deliveries/${deliveryId}/info`, changes);
+  return response.data;
+};
+
 export const fetchShipmentGroups = async (): Promise<ShipmentGroup[]> => {
   const response = await axios.get('/api/shipment-groups');
   return response.data;

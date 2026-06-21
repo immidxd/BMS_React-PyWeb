@@ -866,6 +866,49 @@ def get_next_product_number(db: Session, prefix: str = "Ф") -> str:
     return _norm(candidate) or f"#{candidate}"
 
 
+def check_number_conflict(db: Session, number: str, exclude_id: Optional[int] = None,
+                          rostovka_ref: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+    """Чи зайнятий `number` ІНШИМ товаром (productnumber або clonednumbers)?
+    Повертає {id, productnumber} конфліктного товару або None.
+
+    ⚠️ РОСТОВКА ≠ дубль: якщо передано `rostovka_ref` (бренд/модель/розмір товару, який
+    переіменовують) і збіжний товар = ТОЙ САМИЙ бренд+модель, але ІНШИЙ розмір — це
+    легітимна ростовка (один номер на кілька розмірів), НЕ конфлікт. Той самий розмір під
+    одним номером = справжній дубль → конфлікт. Homoglyph-fold (Lat→Cyr), регістронезалежно."""
+    try:
+        from utils.productnumber_normalizer import _HOMOGLYPH_TO_CYR
+    except ImportError:
+        from backend.utils.productnumber_normalizer import _HOMOGLYPH_TO_CYR
+
+    def _canon(s: str) -> str:
+        return (s or "").strip().lstrip("#").rstrip(";").strip().upper().translate(_HOMOGLYPH_TO_CYR)
+
+    def _s(x) -> str:
+        return str(x).strip().lower() if x is not None else ""
+
+    target = _canon(number)
+    if not target:
+        return None
+    rows = db.execute(
+        text("SELECT id, productnumber, clonednumbers, brandid, model, sizeeu, size_letter "
+             "FROM products WHERE id != :ex"),
+        {"ex": exclude_id if exclude_id is not None else -1}).fetchall()
+    for pid, pn, clones, brandid, model, sizeeu, size_letter in rows:
+        toks = [pn] + (re.split(r"[;,/\s]+", clones) if clones else [])
+        if not any(tok and _canon(tok) == target for tok in toks):
+            continue
+        # Збіг номера. Перевіряємо, чи це ростовка-близнюк (не дубль).
+        if rostovka_ref is not None:
+            same_brand = brandid == rostovka_ref.get("brandid")          # None==None ок
+            model_ok = _s(model) == _s(rostovka_ref.get("model"))         # обидва порожні = ок
+            diff_size = (_s(sizeeu) != _s(rostovka_ref.get("sizeeu"))) or \
+                        (_s(size_letter) != _s(rostovka_ref.get("size_letter")))
+            if same_brand and model_ok and diff_size:
+                continue  # легітимна ростовка — не конфлікт
+        return {"id": int(pid), "productnumber": pn}
+    return None
+
+
 def create_product(db: Session, product: schemas.ProductCreate) -> models.Product:
     """Create a new product"""
     try:
@@ -926,9 +969,11 @@ LOOKUP_NAME_FIELDS = {
 # («Шнурівка», «Плоска», «Круглий») — нормалізуємо першу літеру до lower перед
 # INSERT, щоб не плодити різнорегістрові дублікати того самого значення.
 # Користувацька стать/тип/бренд НЕ чіпаємо (вони бувають з великої: Жіноча/Nike).
+# ⚠️ technologies НЕ включаємо — це власні назви (SOFTFOAM+, BOOST, Gore-Tex, GEL),
+# лоуеркейс зіпсував би їх ('sOFTFOAM+'). Так само materials лишаємо як ввів користувач.
 LOWERCASE_LOOKUP_TABLES = {
     "sole_types", "toe_shapes", "fastening_types", "lace_types", "heel_types",
-    "linings", "colors", "technologies",
+    "linings", "colors",
 }
 
 
@@ -1398,6 +1443,25 @@ def get_product_filters(db: Session) -> Dict[str, Any]:
                 "  WHERE size_letter IS NOT NULL AND size_letter != '' "
                 ") s ORDER BY ord"
             )).fetchall()],
+        }
+        # Довідники-характеристики для автодоповнення у формі додавання (назви).
+        def _names(table: str, col: str):
+            try:
+                return [r[0] for r in db.execute(text(
+                    f"SELECT {col} FROM {table} WHERE {col} IS NOT NULL AND btrim({col}) <> '' ORDER BY {col}"
+                )).fetchall()]
+            except Exception:
+                return []
+        result["lookups"] = {
+            "sole_types":      _names("sole_types", "soletypename"),
+            "toe_shapes":      _names("toe_shapes", "toeshapename"),
+            "fastening_types": _names("fastening_types", "fasteningtypename"),
+            "lace_types":      _names("lace_types", "lacetypename"),
+            "heel_types":      _names("heel_types", "heeltypename"),
+            "linings":         _names("linings", "liningname"),
+            "technologies":    _names("technologies", "technologyname"),
+            "packagings":      _names("packaging_types", "packagingname"),
+            "materials":       _names("materials", "materialname"),
         }
         logger.debug("Retrieved filters via raw SQL")
         return result

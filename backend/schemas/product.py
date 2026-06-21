@@ -505,6 +505,10 @@ class FilterOptions(BaseModel):
     price_range: Dict[str, float] = {"min_price": 0, "max_price": 0}
     size_ranges: Dict[str, List[str]] = {}
     size_letters: List[str] = []
+    # Списки значень довідників-характеристик для автодоповнення у формі додавання
+    # (sole_types/toe_shapes/fastening_types/lace_types/heel_types/linings/technologies/
+    # packagings/materials). Ключ → список назв.
+    lookups: Dict[str, List[str]] = {}
 
 # Schema for Product filters
 class ProductFilters(BaseModel):
