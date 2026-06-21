@@ -534,19 +534,56 @@ async def sort_delivery_rows(delivery_id: int = Path(..., ge=1), db: Session = D
 
 @router.get("/api/deliveries/{delivery_id}/info")
 async def get_delivery_info(delivery_id: int = Path(..., ge=1), db: Session = Depends(get_db)):
-    """Редаговані поля блоку «Інформація про завоз» з аркуша (label→значення)."""
+    """Редаговані поля блоку «Інформація про завоз» з аркуша (label→значення).
+    Авто-логіка: «Дата початку» (час старту запису = created_at) проставляється, якщо
+    порожня; «Дата завершення» — час «зараз», якщо к-сть товарів досягла «Очікувана
+    к-сть речей». Обидві лишаються редагованими."""
     try:
-        from scripts.journal_writer import read_delivery_info_block
+        from scripts.journal_writer import read_delivery_info_block, update_delivery_info_block
     except ImportError:
-        from backend.scripts.journal_writer import read_delivery_info_block
-    d = db.execute(text("SELECT deliveryname FROM deliveries WHERE id=:i"), {"i": delivery_id}).mappings().first()
+        from backend.scripts.journal_writer import read_delivery_info_block, update_delivery_info_block
+    d = db.execute(text("SELECT deliveryname, created_at FROM deliveries WHERE id=:i"),
+                   {"i": delivery_id}).mappings().first()
     if not d:
         raise HTTPException(status_code=404, detail="Завіз не знайдено")
     try:
-        return read_delivery_info_block(d["deliveryname"])
+        info = read_delivery_info_block(d["deliveryname"])
     except Exception as e:
         logger.error(f"get_delivery_info failed: {e}")
         raise HTTPException(status_code=502, detail=_journal_err_detail(e, d["deliveryname"]))
+
+    by_label = {f["label"]: f for f in info.get("fields", [])}
+    items_count = db.execute(text("SELECT COUNT(*) FROM products WHERE deliveryid=:i"),
+                             {"i": delivery_id}).scalar() or 0
+    auto: Dict[str, str] = {}
+    # «Дата початку» — час початку запису (created_at завозу), якщо ще порожня.
+    if not (by_label.get("Дата початку", {}).get("value") or "").strip():
+        started = d["created_at"]
+        if started:
+            try:
+                auto["Дата початку"] = started.strftime("%d.%m.%Y %H:%M")
+            except Exception:
+                auto["Дата початку"] = str(started)
+    # «Дата завершення» — час «зараз», якщо к-сть досягла очікуваної (і ще порожня).
+    if not (by_label.get("Дата завершення", {}).get("value") or "").strip():
+        expected_raw = (by_label.get("Очікувана к-сть речей", {}).get("value") or "").strip()
+        import re as _re3
+        m = _re3.search(r"\d+", expected_raw)
+        expected = int(m.group()) if m else 0
+        if expected > 0 and items_count >= expected:
+            from datetime import datetime as _dt2
+            auto["Дата завершення"] = _dt2.now().strftime("%d.%m.%Y %H:%M")
+    if auto:
+        try:
+            update_delivery_info_block(d["deliveryname"], auto)
+            for lbl, v in auto.items():  # відобразити одразу у відповіді
+                if lbl in by_label:
+                    by_label[lbl]["value"] = v
+                else:
+                    info["fields"].append({"label": lbl, "value": v, "editable": True})
+        except Exception as e:
+            logger.warning(f"info auto-fill write failed (best-effort): {e}")
+    return info
 
 
 # Поле інфо-блоку → колонка `deliveries` (дзеркало в БД для відомих полів).

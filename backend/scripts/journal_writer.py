@@ -382,8 +382,11 @@ def reorder_delivery_rows(delivery_title: str, dry_run: bool = False) -> Dict[st
 # Редаговані поля (allowlist): лише користувацький ввід. Формули/статистику не чіпаємо.
 INFO_EDITABLE_LABELS = [
     "Дата завозу", "Сума", "Сума доставки", "Промокод", "Коментар",
-    "Очікувана к-сть речей", "Статус", "Писав",
+    "Очікувана к-сть речей", "Статус", "Писав", "Дата початку", "Дата завершення",
 ]
+# Лейбли, які можна СТВОРИТИ у блоці, якщо їх там ще нема (нові поля — пишемо у вільний
+# рядок колонки-лейблів блоку). Решта — лише якщо лейбл уже існує в шаблоні.
+INFO_CREATABLE_LABELS = {"Дата початку", "Дата завершення"}
 
 
 def _find_label_cell(all_vals, label: str, min_col: int = MAIN_COLS):
@@ -446,9 +449,34 @@ def rename_product_row(delivery_title: str, old_number: str, new_number: str,
     return _with_retry(_do, what=f"перейменування номера у «{delivery_title}»")
 
 
+def _block_label_col(all_vals) -> Optional[int]:
+    """Колонка-лейблів блоку «Завоз» (де живуть «Дата завозу»/«Сума»/«Статус»…) — 1-based.
+    Визначаємо за наявним лейблом, щоб не хардкодити col63."""
+    for anchor in ("Дата завозу", "Сума", "Статус", "Промокод"):
+        r, c = _find_label_cell(all_vals, anchor)
+        if c is not None:
+            return c
+    return None
+
+
+def _first_free_block_row(all_vals, label_col: int) -> Optional[int]:
+    """Перший вільний рядок у колонці-лейблів блоку (де і лейбл, і значення-праворуч порожні).
+    Шукаємо в межах ~30 рядків (блок невеликий)."""
+    max_r = min(len(all_vals), 30)
+    for r in range(2, max_r + 1):
+        row = all_vals[r - 1] if r - 1 < len(all_vals) else []
+        lab = (row[label_col - 1].strip() if label_col - 1 < len(row) else "")
+        val = (row[label_col].strip() if label_col < len(row) else "")
+        if not lab and not val:
+            return r
+    # якщо все зайнято в межах 30 — додати після
+    return min(len(all_vals), 30) + 1
+
+
 def read_delivery_info_block(delivery_title: str) -> Dict[str, Any]:
     """Прочитати редаговані поля блоку «Інформація про завоз» (label→значення-праворуч).
-    Формула-комірки → editable=False (захист від клоберу `Всього`/`К-сть речей`)."""
+    Формула-комірки → editable=False (захист від клоберу `Всього`/`К-сть речей`).
+    Поля, яких ще нема в блоці (Дата початку/завершення) — повертаємо з value='' editable=True."""
     sh = _open_journal()
     ws = sh.worksheet(delivery_title)
     all_vals = ws.get_all_values()
@@ -464,6 +492,9 @@ def read_delivery_info_block(delivery_title: str) -> Dict[str, Any]:
     for label in INFO_EDITABLE_LABELS:
         r, c = _find_label_cell(all_vals, label)
         if r is None:
+            # Нове поле (Дата початку/завершення) — ще нема в блоці: показуємо порожнім.
+            if label in INFO_CREATABLE_LABELS:
+                fields.append({"label": label, "value": "", "editable": True})
             continue
         value = _val_at(all_vals, r, c + 1)
         raw = _val_at(formulas, r, c + 1)
@@ -491,7 +522,26 @@ def update_delivery_info_block(delivery_title: str, changes: Dict[str, Any],
                 continue
             r, c = _find_label_cell(all_vals, label)
             if r is None:
-                skipped.append({"label": label, "reason": "not_found"})
+                # Нове поле — створюємо лейбл у вільному рядку блоку (тільки creatable).
+                if label not in INFO_CREATABLE_LABELS:
+                    skipped.append({"label": label, "reason": "not_found"})
+                    continue
+                lc = _block_label_col(all_vals)
+                fr = _first_free_block_row(all_vals, lc) if lc else None
+                if not lc or not fr:
+                    skipped.append({"label": label, "reason": "no_free_block_row"})
+                    continue
+                # лейбл у колонку-лейблів + значення праворуч
+                updates.append({"range": _gsu.rowcol_to_a1(fr, lc), "values": [[label]]})
+                new_str = "" if value is None else str(value)
+                updates.append({"range": _gsu.rowcol_to_a1(fr, lc + 1), "values": [[new_str]]})
+                written[label] = new_str
+                # позначимо рядок зайнятим у локальній копії (на випадок 2-х нових за раз)
+                while len(all_vals) < fr:
+                    all_vals.append([])
+                while len(all_vals[fr - 1]) <= lc:
+                    all_vals[fr - 1].append("")
+                all_vals[fr - 1][lc - 1] = label
                 continue
             frow = formulas[r - 1] if r - 1 < len(formulas) else []
             raw = frow[c] if c < len(frow) else ""  # комірка праворуч (0-based c == col c+1)
