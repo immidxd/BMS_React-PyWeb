@@ -5,6 +5,7 @@ import { Tag, Spin, Image } from 'antd';
 import { CloseOutlined, PictureOutlined, LeftOutlined, RightOutlined, WarningOutlined, EditOutlined, CheckOutlined, PlusOutlined, SyncOutlined } from '@ant-design/icons';
 import { CopyOnClick, formatBrandName, getProductDisplayStatus, getConditionColor } from '../common/displayHelpers';
 import { hiddenFieldsForType } from './productCategory';
+import { taskManager, emitProductPhotosChanged } from '../../services/taskManager';
 
 interface Props {
   productId: number | null;
@@ -211,21 +212,29 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
   // identity щоразу (інакше re-load loop). Див. feedback_stale_closure_event_listener.
   const syncBeforeLoadRef = useRef(syncBeforeLoad);
   useEffect(() => { syncBeforeLoadRef.current = syncBeforeLoad; }, [syncBeforeLoad]);
+  // Завжди свіжий productId — guard, щоб фон-синк не записав дані після навігації геть.
+  const curPidRef = useRef(productId);
+  curPidRef.current = productId;
 
   const loadProduct = React.useCallback(async (withSpinner = true) => {
     if (!productId) return;
+    const pid = productId;
     if (withSpinner) setLoading(true);
     try {
-      // На відкритті — точкова синхр. з аркушем (best-effort), щоб картка збігалась.
-      if (withSpinner && syncBeforeLoadRef.current) {
-        try { await syncBeforeLoadRef.current(); } catch { /* best-effort */ }
-      }
-      const prod = await productService.getProduct(productId);
-      setProduct(prod);
+      const prod = await productService.getProduct(pid);  // МИТТЄВО з БД (не блокуємо на аркуші)
+      if (curPidRef.current === pid) setProduct(prod);
     } catch (e) {
       console.error('Failed to load product', e);
     } finally {
       if (withSpinner) setLoading(false);
+    }
+    // Точкова синхр. з аркушем — У ФОНІ (best-effort). Картку не блокує; якщо аркуш
+    // відрізняється — тихо перезавантажуємо. Guard curPidRef — проти навігації геть.
+    if (withSpinner && syncBeforeLoadRef.current) {
+      Promise.resolve(syncBeforeLoadRef.current())
+        .then(() => (curPidRef.current === pid ? productService.getProduct(pid) : null))
+        .then(prod => { if (prod && curPidRef.current === pid) setProduct(prod); })
+        .catch(() => { /* best-effort */ });
     }
   }, [productId]);
 
@@ -305,15 +314,21 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     prevRects.current = nextRects;
   }, [mgrOrder]);
 
-  const handleAddPhotos = React.useCallback(async (files: FileList | null) => {
+  const handleAddPhotos = React.useCallback((files: FileList | null) => {
     if (!productId || !files || files.length === 0) return;
+    const pid = productId;
+    const kind = activeKind;
+    const arr = Array.from(files);  // знімок ДО скиду input.value
     setPhotoBusy(true);
-    try {
-      await productService.addProductPhotos(productId, Array.from(files), activeKind);
-      await loadImages(true);
-    } catch (e) { console.error('add photos failed', e); }
-    finally { setPhotoBusy(false); }
-  }, [productId, loadImages, activeKind]);
+    // Фонова задача — завантаження доробиться навіть якщо закрити картку.
+    taskManager.run(`Завантаження ${arr.length} фото`, () => productService.addProductPhotos(pid, arr, kind), {
+      successMsg: `Завантажено ${arr.length} фото`,
+      onSuccess: () => emitProductPhotosChanged(pid),
+    })
+      .then(() => { if (curPidRef.current === pid) loadImages(true); })
+      .catch(() => { /* помилку показав taskManager */ })
+      .finally(() => { if (curPidRef.current === pid) setPhotoBusy(false); });
+  }, [productId, activeKind, loadImages]);
 
   const handleDeletePhoto = React.useCallback(async (filename: string) => {
     if (!productId) return;
@@ -573,19 +588,26 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     }
 
     if (Object.keys(payload).length === 0) { cancelEditMode(); return; }
+    const pid = productId;
+    const pnum = (product?.productnumber || '').replace(/^#/, '');
     setSavingAll(true);
     setSaveError(null);
     try {
-      await productService.updateProduct(productId, payload as any);
+      // Фонова задача: збереження доробиться навіть якщо закрити картку; сповіщення — уніфіковані.
+      await taskManager.run(`Редагування ${pnum || 'товару'}`, () => productService.updateProduct(pid, payload as any), {
+        successMsg: `Зміни ${pnum} збережено`,
+        errorMsg: `Редагування ${pnum}`,
+      });
+      if (curPidRef.current !== pid) return;  // картку закрили/перейшли — задача завершилась у фоні
       await loadProduct(false);
       setEditMode(false);
       setDrafts({});
     } catch (e: any) {
-      console.error('Failed to save all', e);
+      if (curPidRef.current !== pid) return;  // попап показав taskManager
       const detail = e?.response?.data?.detail;
       setSaveError(typeof detail === 'string' ? detail : 'Не вдалося зберегти зміни');
     } finally {
-      setSavingAll(false);
+      if (curPidRef.current === pid) setSavingAll(false);
     }
   };
 

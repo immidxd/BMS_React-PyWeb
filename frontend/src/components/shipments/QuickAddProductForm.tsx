@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { message, notification } from 'antd';
+import { notification } from 'antd';
 import { productService } from '../../services/productService';
+import { taskManager, emitDeliveryChanged } from '../../services/taskManager';
 import type { ProductFilters } from '../../types/product';
 import { addProductToDelivery, fetchNextProductNumber } from '../../services/referenceService';
 import {
@@ -206,6 +207,11 @@ const QuickAddProductForm: React.FC<Props> = ({ deliveryId, onSaved, filters: fi
   const [pickVal, setPickVal] = useState('');
   const [defScope, setDefScope] = useState<'global' | 'delivery'>('global');  // куди додавати дефолт
 
+  // mounted-guard: задача додавання живе у taskManager (доробиться попри закриття форми);
+  // локальний UI (скид/онсейв) чіпаємо лише якщо форма ще змонтована.
+  const mountedRef = React.useRef(true);
+  useEffect(() => () => { mountedRef.current = false; }, []);
+
   useEffect(() => {
     if (filtersProp) { setFilters(filtersProp); return; }
     productService.getFilters().then(setFilters).catch(() => {});
@@ -309,6 +315,14 @@ const QuickAddProductForm: React.FC<Props> = ({ deliveryId, onSaved, filters: fi
   };
   const removeExtra = (key: string) => { setExtras(e => e.filter(k => k !== key)); setValues(s => ({ ...s, [key]: '' })); };
 
+  // Очистити ВСЕ введене → чиста форма (БЕЗ підстановки дефолтів) для заповнення з нуля.
+  const clearForm = () => {
+    setValues({ productnumber: '' });
+    setExtras([]);
+    setError(null);
+    setHubOpen(false); setHubView('root');
+  };
+
   const rootAvailable = useMemo(() => optionalFor(lay).filter(k => !extras.includes(k)), [lay, extras]);
   const subAvailable = (v: Exclude<HubView, 'root'>) => SUBHUBS[v].fields.filter(k => !extras.includes(k));
   const showSubhubs = lay.subhubs;
@@ -321,49 +335,30 @@ const QuickAddProductForm: React.FC<Props> = ({ deliveryId, onSaved, filters: fi
       notification.warning({ message: 'Немає номера', description: 'Вкажіть номер товару або натисніть ⚡ для генерації.', placement: 'topRight' });
       return;
     }
+    const payload: any = { productnumber: pnum };
+    Object.entries(values).forEach(([k, v]) => {
+      if (k === 'productnumber' || v == null || v === '') return;
+      payload[k] = NUMBER_KEYS.has(k) ? Number(v) : v;
+    });
     setSubmitting(true);
     try {
-      const payload: any = { productnumber: pnum };
-      Object.entries(values).forEach(([k, v]) => {
-        if (k === 'productnumber' || v == null || v === '') return;
-        payload[k] = NUMBER_KEYS.has(k) ? Number(v) : v;
+      // Фонова задача: доробиться навіть якщо закрити картку/перемкнути вкладку.
+      // Сповіщення (успіх/помилка) — уніфіковані, від taskManager (центр процесів).
+      await taskManager.run(`Додавання товару ${pnum}`, () => addProductToDelivery(deliveryId, payload), {
+        successMsg: `Товар ${pnum} додано`,
+        errorMsg: `Додавання ${pnum}`,
+        onSuccess: () => emitDeliveryChanged(deliveryId),  // картка (якщо відкрита) оновить список
       });
-      await addProductToDelivery(deliveryId, payload);
-      applyDefaults();  // скид форми, але дефолти лишаються підставленими (лот-за-лотом)
+      if (!mountedRef.current) return;  // форму закрили — задача завершилась у фоні + сповіщення
+      applyDefaults();  // скид форми (дефолти лишаються підставленими — лот-за-лотом)
       setOkFlash(true); setTimeout(() => setOkFlash(false), 1500);
-      message.success(`Товар ${pnum} додано`);
       onSaved();
     } catch (e: any) {
-      const st = e?.response?.status;
-      const d = e?.response?.data?.detail;
-      // Категоризація причини → заголовок + опис у попапі (і дублюємо в inline-текст).
-      let title = 'Не вдалося додати товар';
-      let desc = typeof d === 'string' ? d : '';
-      if (!e?.response) {
-        title = 'Немає зв\'язку з програмою';
-        desc = 'Бекенд не відповідає. Перевірте, що програма запущена, і спробуйте ще раз.';
-      } else if (st === 409) {
-        title = 'Такий номер уже існує';
-        desc = desc || `Товар «${pnum}» вже є в базі. Згенеруйте новий номер (⚡) або змініть його.`;
-      } else if (st === 400) {
-        title = 'Некоректні дані';
-        desc = desc || 'Перевірте заповнені поля (напр. порожній або хибний номер).';
-      } else if (st === 403) {
-        title = 'Додавання вимкнено';
-        desc = desc || 'Функцію додавання вимкнено на бекенді (PARSER_ADD_PRODUCT=0).';
-      } else if (st === 404) {
-        title = 'Завіз не знайдено';
-        desc = desc || 'Цей завіз більше не існує — оновіть сторінку.';
-      } else if (st === 502) {
-        title = 'Проблема зв\'язку з Google Sheets';
-        desc = desc || 'Товар НЕ додано через тимчасову помилку мережі. Спробуйте ще раз за кілька секунд.';
-      } else if (st === 500) {
-        title = 'Помилка збереження в базі';
-        desc = desc || 'Внутрішня помилка. Спробуйте ще раз; якщо повторюється — перезапустіть програму.';
-      }
-      setError(desc || title);
-      notification.error({ message: title, description: desc, duration: 8, placement: 'topRight' });
-    } finally { setSubmitting(false); }
+      if (!mountedRef.current) return;  // попап про помилку вже показав taskManager
+      setError(e?.response?.data?.detail || 'Не вдалося додати товар');  // лишаємо дані для виправлення
+    } finally {
+      if (mountedRef.current) setSubmitting(false);
+    }
   };
 
   const renderField = (f: FieldDef, removable = false) => {
@@ -530,12 +525,19 @@ const QuickAddProductForm: React.FC<Props> = ({ deliveryId, onSaved, filters: fi
       {error && <div className="mt-2 text-sm text-red-600">{error}</div>}
       {okFlash && <div className="mt-2 text-sm text-green-600">✓ Товар додано</div>}
       <div className="mt-3 flex items-center justify-between">
-        <button type="button" onClick={() => setShowDefaults(s => !s)}
-          className={`px-3 py-1.5 rounded-lg text-sm border transition-colors ${showDefaults || Object.keys(getDeliveryDefaults(deliveryId)).length > 0
-            ? 'border-amber-300 dark:border-amber-700 text-amber-800 dark:text-amber-300 bg-amber-50 dark:bg-amber-900/15'
-            : 'border-gray-300 dark:border-gray-600 text-gray-500 hover:text-gray-700'}`}>
-          ⚙ Дефолти{(() => { const n = Object.keys(getDeliveryDefaults(deliveryId)).length; return n > 0 ? ` · ${n}` : ''; })()}
-        </button>
+        <div className="flex items-center gap-2">
+          <button type="button" onClick={() => setShowDefaults(s => !s)}
+            className={`px-3 py-1.5 rounded-lg text-sm border transition-colors ${showDefaults || Object.keys(getDeliveryDefaults(deliveryId)).length > 0
+              ? 'border-amber-300 dark:border-amber-700 text-amber-800 dark:text-amber-300 bg-amber-50 dark:bg-amber-900/15'
+              : 'border-gray-300 dark:border-gray-600 text-gray-500 hover:text-gray-700'}`}>
+            ⚙ Дефолти{(() => { const n = Object.keys(getDeliveryDefaults(deliveryId)).length; return n > 0 ? ` · ${n}` : ''; })()}
+          </button>
+          {/* Чиста форма (без дефолтів) — для заповнення з нуля. */}
+          <button type="button" onClick={clearForm} title="Очистити всі поля (без підстановки дефолтів)"
+            className="px-3 py-1.5 rounded-lg text-sm border border-gray-300 dark:border-gray-600 text-gray-500 hover:text-gray-700 dark:hover:text-gray-200 hover:border-gray-400">
+            ⌫ Очистити введене
+          </button>
+        </div>
         <button onClick={save} disabled={submitting}
           className="px-4 py-1.5 rounded-lg text-sm font-medium bg-black text-white hover:bg-gray-800 disabled:opacity-50">
           {submitting ? 'Додавання…' : 'Зберегти товар'}

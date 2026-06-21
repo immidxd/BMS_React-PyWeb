@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { message, notification } from 'antd';
 import { productService } from '../../services/productService';
 import type { Product, ProductFilters } from '../../types/product';
@@ -89,6 +89,7 @@ const DeliveryCardModal: React.FC<Props> = ({ shipment, open, onClose }) => {
   const [filters, setFilters] = useState<ProductFilters | null>(null);
   const [showForm, setShowForm] = useState(false);
   const [syncInfo, setSyncInfo] = useState<string | null>(null);
+  const [bgSyncing, setBgSyncing] = useState(false);  // фоновий синк з журналом (не блокує)
   const [detailId, setDetailId] = useState<number | null>(null);
   const [sorting, setSorting] = useState(false);
   // Інфо-блок «Інформація про завоз»
@@ -116,27 +117,49 @@ const DeliveryCardModal: React.FC<Props> = ({ shipment, open, onClose }) => {
       .catch(() => setError('Помилка завантаження товарів завозу'));
   }, [shipment]);
 
-  // Відкриття картки: спершу точкова синхронізація цієї вкладки з аркушем, тоді показ.
-  const syncAndLoad = useCallback(async () => {
+  // Відкриття картки: МИТТЄВО показуємо дані з БД (швидко), а синк з журналом — у ФОНІ
+  // (stale-while-revalidate). БД майже завжди вже синхронізована (startup-парс + 90с-полер),
+  // тож блокувати показ на читанні аркуша не треба. Фоновий синк тихо оновить при розбіжності.
+  const loadFirstThenSync = useCallback(async () => {
     if (!shipment) return;
-    setLoading(true); setError(null); setSyncInfo(null);
+    setError(null);
+    setLoading(true);
+    await loadProducts();          // 1) миттєво з БД
+    setLoading(false);
+    setBgSyncing(true);            // 2) синк з журналом у фоні (не блокує перегляд/додавання)
     try {
       const r = await syncDelivery(shipment.id);
-      if (r.deleted > 0) setSyncInfo(`Синхронізовано з журналом · прибрано ${r.deleted}`);
+      const changed = (r.added || 0) + (r.updated || 0) + (r.deleted || 0) > 0;
+      if (changed) { await loadProducts(); setSyncInfo('Оновлено з журналу'); }
     } catch {
-      setSyncInfo('⚠ Не вдалось звірити з журналом — показано дані з програми');
+      setSyncInfo('⚠ Журнал недоступний — показано дані з програми');
+    } finally {
+      setBgSyncing(false);
     }
-    await loadProducts();
-    setLoading(false);
   }, [shipment, loadProducts]);
 
   useEffect(() => {
     if (!open || !shipment) return;
     setShowForm(false); setProducts([]); setSyncInfo(null);
     setInfoOpen(false); setInfoFields(null); setInfoEditing(false);
-    syncAndLoad();
+    loadFirstThenSync();
     productService.getFilters().then(setFilters).catch(() => {});
-  }, [open, shipment, syncAndLoad]);
+  }, [open, shipment, loadFirstThenSync]);
+
+  // Фонова задача (напр. додавання товару) завершилась → оновити список, якщо ця картка
+  // відкрита й це її завіз. Ref проти stale-closure (feedback_stale_closure_event_listener).
+  const loadProductsRef = useRef(loadProducts);
+  loadProductsRef.current = loadProducts;
+  useEffect(() => {
+    if (!open || !shipment) return;
+    const did = shipment.id;
+    const handler = (e: Event) => {
+      const ce = e as CustomEvent<{ deliveryId?: number }>;
+      if (ce.detail?.deliveryId === did) loadProductsRef.current();
+    };
+    window.addEventListener('bms:delivery-changed', handler as EventListener);
+    return () => window.removeEventListener('bms:delivery-changed', handler as EventListener);
+  }, [open, shipment]);
 
   if (!open || !shipment) return null;
   const sid = shipment.id;
@@ -257,6 +280,12 @@ const DeliveryCardModal: React.FC<Props> = ({ shipment, open, onClose }) => {
               <span>📅 {fmtDate(shipment.shipment_date)}</span>
               <span>🏷 {shipment.supplier_name || 'Без постачальника'}</span>
               <span>📦 {products.length} товарів</span>
+              {bgSyncing && (
+                <span className="inline-flex items-center gap-1 text-gray-400" title="Фонова синхронізація з журналом">
+                  <span className="w-3 h-3 border-2 border-gray-300 border-t-gray-500 rounded-full animate-spin" />
+                  синхронізація…
+                </span>
+              )}
               {/* Сума продажних цін товарів — live, рахується з реально завантажених,
                   а не зі stale shipment.total_cost зі списку завозів. */}
               {products.length > 0 && (
@@ -340,7 +369,7 @@ const DeliveryCardModal: React.FC<Props> = ({ shipment, open, onClose }) => {
           {loading && (
             <div className="py-24 flex flex-col items-center justify-center gap-3 text-gray-400">
               <div className="w-8 h-8 border-2 border-gray-300 border-t-gray-600 rounded-full animate-spin" />
-              <span className="text-sm">Синхронізація з журналом…</span>
+              <span className="text-sm">Завантаження…</span>
             </div>
           )}
           {!loading && (

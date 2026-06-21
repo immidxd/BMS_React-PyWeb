@@ -6,6 +6,7 @@ import GlobalStyle from './styles/GlobalStyle'; // For potential global styles
 import SearchBar from './components/common/SearchBar';
 import { ParsingDialog } from './components/ParsingDialog';
 import { ParsingStatus } from './components/ParsingStatus';
+import TaskCenter from './components/common/TaskCenter';
 import { ToastContainer, toast } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
 import './App.css';
@@ -310,11 +311,12 @@ const App: React.FC = () => {
     <Router basename={(process.env.PUBLIC_URL || '').replace(/^\/\//, '/')}> 
       <AppThemeProvider>
         <FilterPanelProvider>
-          <GlobalStyle /> 
+          <GlobalStyle />
           <ToastContainer position="top-right" newestOnTop theme="dark" />
           <Routes>
-            <Route path="/*" element={<AppContent />} /> 
+            <Route path="/*" element={<AppContent />} />
           </Routes>
+          <TaskCenter />
         </FilterPanelProvider>
       </AppThemeProvider>
     </Router>
