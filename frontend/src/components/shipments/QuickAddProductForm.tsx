@@ -142,6 +142,10 @@ function clothingSubcat(t: string): 'bottom' | 'dress' | 'top' {
 
 interface Layout { cat: Cat; key: string; base: string[]; gender: boolean; hubHide: string[]; hubExtra: string[]; subhubs: boolean; }
 
+// Спільні поля для НЕ-взуття (сумки/валізи/одяг): застібка(блискавка/магніт/замок/ґудзики),
+// підкладка, матеріал верху — у взутті вони в під-хабах, тут даємо плоскими опц. полями.
+const SOFT_GOODS_EXTRA = ['fastening_type_name', 'lining_name', 'material_upper'];
+
 function layout(typeName?: string): Layout {
   const cat = categoryOf(typeName);
   if (cat === 'shoe')
@@ -149,17 +153,19 @@ function layout(typeName?: string): Layout {
       hubHide: ['dimensions', 'size_letter', 'geometric_shape', ...CLOTHING_MEAS], hubExtra: [] };
   if (cat === 'bag')
     return { cat, key: 'bag', base: ['dimensions'], gender: true, subhubs: false,
-      hubHide: ['sizeeu', 'measurementscm', 'size_letter', ...CLOTHING_MEAS], hubExtra: ['geometric_shape'] };
+      hubHide: ['sizeeu', 'measurementscm', 'size_letter', ...CLOTHING_MEAS],
+      hubExtra: ['geometric_shape', ...SOFT_GOODS_EXTRA] };
   if (cat === 'suitcase')
     return { cat, key: 'suitcase', base: ['size_letter', 'dimensions'], gender: false, subhubs: false,
-      hubHide: ['sizeeu', 'measurementscm', ...CLOTHING_MEAS], hubExtra: ['gender_name'] };
+      hubHide: ['sizeeu', 'measurementscm', ...CLOTHING_MEAS],
+      hubExtra: ['gender_name', 'geometric_shape', ...SOFT_GOODS_EXTRA] };
   const sub = clothingSubcat(typeName || '');
   const baseMeas = sub === 'bottom' ? ['waist', 'hips', 'length']
     : sub === 'dress' ? ['chest', 'waist', 'hips', 'length']
     : ['chest', 'sleeve', 'length'];
   return { cat, key: 'clothing:' + sub, base: ['size_letter', ...baseMeas], gender: true, subhubs: false,
     hubHide: ['sizeeu', 'measurementscm', 'dimensions', 'geometric_shape'],
-    hubExtra: CLOTHING_MEAS.filter(m => !baseMeas.includes(m)) };
+    hubExtra: [...CLOTHING_MEAS.filter(m => !baseMeas.includes(m)), ...SOFT_GOODS_EXTRA] };
 }
 
 const OPTIONAL_POOL = [
@@ -212,6 +218,10 @@ const QuickAddProductForm: React.FC<Props> = ({ deliveryId, onSaved, filters: fi
   const mountedRef = React.useRef(true);
   useEffect(() => () => { mountedRef.current = false; }, []);
 
+  // Остання КАТЕГОРІЯ layout — щоб реконсиляція спрацьовувала лише на ЗМІНУ типу користувачем,
+  // а не на програмні setValues (дефолти/prefill самі ставлять extras). null = ще не визначено.
+  const layKeyRef = React.useRef<string | null>(null);
+
   useEffect(() => {
     if (filtersProp) { setFilters(filtersProp); return; }
     productService.getFilters().then(setFilters).catch(() => {});
@@ -223,6 +233,7 @@ const QuickAddProductForm: React.FC<Props> = ({ deliveryId, onSaved, filters: fi
     const d = getDeliveryDefaults(deliveryId);
     setValues({ productnumber: '', ...d });
     const lay2 = layout(d.type_name);
+    layKeyRef.current = lay2.key;  // синхр., щоб реконсиляція не стерла щойно підставлене
     const baseKeys = new Set(baseFields(lay2).map(f => f.key));
     setExtras(Object.keys(d).filter(k => F[k] && !baseKeys.has(k)));
   }, [deliveryId]);
@@ -257,6 +268,7 @@ const QuickAddProductForm: React.FC<Props> = ({ deliveryId, onSaved, filters: fi
     const merged: Record<string, string> = { ...getDeliveryDefaults(deliveryId), ...prefill };
     setValues({ ...merged, productnumber: '' });
     const lay2 = layout(merged.type_name);
+    layKeyRef.current = lay2.key;  // синхр., щоб реконсиляція не стерла prefill (крос-категорія)
     const baseKeys = new Set(baseFields(lay2).map(f => f.key));
     setExtras(Object.keys(merged).filter(k => F[k] && !baseKeys.has(k)));
     /* eslint-disable-next-line */
@@ -265,21 +277,29 @@ const QuickAddProductForm: React.FC<Props> = ({ deliveryId, onSaved, filters: fi
   const lay = useMemo(() => layout(values.type_name), [values.type_name]);
   const set = (k: string, v: string) => setValues(s => ({ ...s, [k]: v }));
 
-  // Зміна типу → інший layout: анулюємо невластиві поля (лишаємо лише базові спільні).
-  const onTypeChange = (v: string) => {
-    const newLay = layout(v);
-    if (newLay.key !== lay.key) {
-      setExtras([]); setHubView('root');
-      setValues(s => {
-        const next: Record<string, string> = { type_name: v };
-        KEEP_ON_CHANGE.forEach(k => { if (s[k]) next[k] = s[k]; });
-        if (!newLay.gender) delete next.gender_name;  // напр. Валіза — без «Стать» за замовч.
-        return next;
-      });
-    } else {
-      setValues(s => ({ ...s, type_name: v }));
-    }
-  };
+  // Зміна типу — ЛИШЕ ставимо значення. Базові поля деривуються з `lay` (перемикаються
+  // миттєво: Сумка→Габарити, без Розмір/СМ). Реконсиляція (очистка невластивих полів +
+  // extras) — в окремому ефекті нижче, тригер = ДЕРИВОВАНИЙ `lay.key` (завжди свіжий),
+  // тож спрацьовує гарантовано незалежно від шляху (typing/pick/paste/дефолти).
+  const onTypeChange = (v: string) => setValues(s => ({ ...s, type_name: v }));
+
+  // Реконсиляція при зміні КАТЕГОРІЇ (деривований lay.key — завжди свіжий): лишаємо спільні
+  // базові поля, прибираємо невластиві (size/shoe-lookups з попередньої категорії) + чистимо
+  // extras. Валіза → без «Стать». layKeyRef синхронізується дефолтами/prefill (вище), тож тут
+  // реагуємо ЛИШЕ на зміну типу користувачем.
+  useEffect(() => {
+    if (layKeyRef.current === lay.key) return;
+    layKeyRef.current = lay.key;
+    setValues(s => {
+      const next: Record<string, string> = { type_name: s.type_name };
+      KEEP_ON_CHANGE.forEach(k => { if (s[k]) next[k] = s[k]; });
+      if (!lay.gender) delete next.gender_name;
+      return next;
+    });
+    setExtras([]);
+    setHubView('root');
+    /* eslint-disable-next-line */
+  }, [lay.key]);
 
   const dlItems = (k?: DLKey): { name: string }[] => {
     if (!k || !filters) return [];

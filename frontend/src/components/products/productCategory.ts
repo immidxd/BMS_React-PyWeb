@@ -69,9 +69,11 @@ export function hiddenFieldsForType(typeName?: string | null): Set<string> {
   }
 
   // 2) Взуттєві характеристики «Інше» (Тип підошви/Форма носка/Застібка/…)
+  // ⚠️ «Застібка» (fastening) і «Підкладка» (lining) — УНІВЕРСАЛЬНІ (сумки/валізи/одяг теж
+  // мають застібку: блискавка/магніт/замок/ґудзики; та підкладку). Решта — суто взуттєві.
   const SHOE_ONLY = [
-    'sole_type_name', 'sole_color_name', 'toe_shape_name', 'fastening_type_name',
-    'lace_type_name', 'lining_name', 'heel_type_name', 'technology_name',
+    'sole_type_name', 'sole_color_name', 'toe_shape_name',
+    'lace_type_name', 'heel_type_name', 'technology_name',
   ];
   if (cat !== 'shoe') {
     for (const f of SHOE_ONLY) hidden.add(f);
