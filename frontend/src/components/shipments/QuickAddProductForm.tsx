@@ -186,6 +186,23 @@ const baseFields = (lay: Layout): FieldDef[] => [
 const optionalFor = (lay: Layout): string[] =>
   [...OPTIONAL_POOL, ...lay.hubExtra].filter(k => !lay.base.includes(k) && !lay.hubHide.includes(k));
 
+// Чи валідне поле `k` як ОПЦІЙНЕ (extra) для категорії: у пулі опційних АБО під-хаб-поле
+// (лише коли subhubs). Так shoe-only (Тип підошви/Форма носка…) НЕ потрапляють у сумки/одяг.
+const isValidExtra = (k: string, lay: Layout): boolean => {
+  if (lay.base.includes(k) || lay.hubHide.includes(k)) return false;
+  return optionalFor(lay).includes(k) || (lay.subhubs && SUBHUB_KEYS.includes(k));
+};
+// Лишити лише значення, ВЛАСТИВІ категорії (база/універсальні + валідні опційні).
+// Відсікає, напр., sole_type_name=плоска з дефолтів коли тип = «Сумка».
+const filterValuesForCat = (vals: Record<string, string>, lay: Layout): Record<string, string> => {
+  const baseKeys = new Set(baseFields(lay).map(f => f.key));
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(vals)) {
+    if (k === 'productnumber' || k === 'type_name' || baseKeys.has(k) || isValidExtra(k, lay)) out[k] = v;
+  }
+  return out;
+};
+
 interface Props {
   deliveryId: number;
   onSaved: () => void;
@@ -231,11 +248,11 @@ const QuickAddProductForm: React.FC<Props> = ({ deliveryId, onSaved, filters: fi
   // з дефолтів показуємо як extras, щоб користувач бачив підставлене значення.
   const applyDefaults = React.useCallback(() => {
     const d = getDeliveryDefaults(deliveryId);
-    setValues({ productnumber: '', ...d });
     const lay2 = layout(d.type_name);
+    const v = filterValuesForCat({ productnumber: '', ...d }, lay2);  // лише поля категорії
+    setValues(v);
     layKeyRef.current = lay2.key;  // синхр., щоб реконсиляція не стерла щойно підставлене
-    const baseKeys = new Set(baseFields(lay2).map(f => f.key));
-    setExtras(Object.keys(d).filter(k => F[k] && !baseKeys.has(k)));
+    setExtras(Object.keys(v).filter(k => F[k] && isValidExtra(k, lay2)));
   }, [deliveryId]);
 
   // Повний скид до дефолтів — ЛИШЕ при зміні завозу (нова форма).
@@ -249,14 +266,17 @@ const QuickAddProductForm: React.FC<Props> = ({ deliveryId, onSaved, filters: fi
   useEffect(() => {
     if (firstDefTick.current) { firstDefTick.current = false; return; }
     const d = getDeliveryDefaults(deliveryId);
-    setValues(cur => {
-      const next = { ...cur };
-      for (const [k, v] of Object.entries(d)) if (!next[k]) next[k] = v;  // лише порожні
-      return next;
-    });
     const lay2 = layout(valuesRef.current.type_name);
     const baseKeys = new Set(baseFields(lay2).map(f => f.key));
-    const want = Object.keys(d).filter(k => F[k] && !baseKeys.has(k) && !lay2.hubHide.includes(k));
+    setValues(cur => {
+      const next = { ...cur };
+      // доливаємо лише ПОРОЖНІ й лише поля, ВЛАСТИВІ категорії
+      for (const [k, v] of Object.entries(d)) {
+        if (!next[k] && (baseKeys.has(k) || isValidExtra(k, lay2))) next[k] = v;
+      }
+      return next;
+    });
+    const want = Object.keys(d).filter(k => F[k] && isValidExtra(k, lay2));
     setExtras(ex => Array.from(new Set([...ex, ...want])));
     /* eslint-disable-next-line */
   }, [defTick]);
@@ -265,12 +285,13 @@ const QuickAddProductForm: React.FC<Props> = ({ deliveryId, onSaved, filters: fi
   // Optional-поля з prefill показуємо як extras. Тригер — зміна prefillNonce.
   useEffect(() => {
     if (!prefillNonce || !prefill) return;
-    const merged: Record<string, string> = { ...getDeliveryDefaults(deliveryId), ...prefill };
-    setValues({ ...merged, productnumber: '' });
-    const lay2 = layout(merged.type_name);
+    const lay2 = layout(prefill.type_name || getDeliveryDefaults(deliveryId).type_name);
+    const merged = filterValuesForCat(
+      { ...getDeliveryDefaults(deliveryId), ...prefill, productnumber: '' }, lay2,
+    );
+    setValues(merged);
     layKeyRef.current = lay2.key;  // синхр., щоб реконсиляція не стерла prefill (крос-категорія)
-    const baseKeys = new Set(baseFields(lay2).map(f => f.key));
-    setExtras(Object.keys(merged).filter(k => F[k] && !baseKeys.has(k)));
+    setExtras(Object.keys(merged).filter(k => F[k] && isValidExtra(k, lay2)));
     /* eslint-disable-next-line */
   }, [prefillNonce]);
 
@@ -356,7 +377,9 @@ const QuickAddProductForm: React.FC<Props> = ({ deliveryId, onSaved, filters: fi
       return;
     }
     const payload: any = { productnumber: pnum };
-    Object.entries(values).forEach(([k, v]) => {
+    // Шлемо лише поля, ВЛАСТИВІ категорії (страховка: stray sole_type для сумки не піде).
+    const valid = filterValuesForCat(values, lay);
+    Object.entries(valid).forEach(([k, v]) => {
       if (k === 'productnumber' || v == null || v === '') return;
       payload[k] = NUMBER_KEYS.has(k) ? Number(v) : v;
     });
