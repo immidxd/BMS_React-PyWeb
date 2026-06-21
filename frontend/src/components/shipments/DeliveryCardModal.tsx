@@ -26,6 +26,38 @@ const byNumber = (a: Product, b: Product): number => {
   return 0;
 };
 
+// Товар → значення для форми додавання (дублювання). Номер НЕ копіюємо (новий).
+const productToPrefill = (p: any): Record<string, string> => {
+  const out: Record<string, string> = {};
+  const set = (k: string, v: any) => { if (v != null && String(v).trim() !== '') out[k] = String(v); };
+  set('type_name', p.type_name); set('brand_name', p.brand_name); set('model', p.model);
+  set('marking', p.marking); set('gender_name', p.gender_name); set('color_name', p.color_name);
+  set('condition_name', p.current_condition_name || p.condition_name);
+  set('season', p.season); set('style_name', p.style_name); set('subtype_name', p.subtype_name);
+  set('collection', p.collection); set('gtin', p.gtin); set('year', p.year);
+  set('price', p.price); set('oldprice', p.oldprice);
+  set('description', p.description); set('extranote', p.extranote);
+  set('width', p.width); set('geometric_shape', p.geometric_shape);
+  set('manufacturer_name', p.manufacturer_country_name); set('packaging_name', p.packaging_name);
+  set('sizeeu', p.sizeeu); set('size_letter', p.size_letter);
+  set('measurementscm', p.measurementscm); set('dimensions', p.dimensions);
+  set('sole_type_name', p.sole_type_name); set('fastening_type_name', p.fastening_type_name);
+  set('sole_color_name', p.sole_color_name); set('toe_shape_name', p.toe_shape_name);
+  set('technology_name', p.technology_name); set('heel_type_name', p.heel_type_name);
+  set('lace_type_name', p.lace_type_name); set('lining_name', p.lining_name);
+  if (Array.isArray(p.materials)) {
+    const byPos: Record<string, string[]> = {};
+    for (const m of p.materials) { (byPos[m.position] ||= []).push(m.materialname || ''); }
+    for (const pos of Object.keys(byPos)) set('material_' + pos, byPos[pos].filter(Boolean).join(', '));
+  }
+  const meas = (minKey: string, fk: string) => set(fk, p[minKey]);
+  meas('measurements_height_min', 'height'); meas('measurements_sole_thickness_min', 'sole_thickness');
+  meas('measurements_length_min', 'length'); meas('measurements_pog_min', 'chest');
+  meas('measurements_pot_min', 'waist'); meas('measurements_pob_min', 'hips');
+  meas('measurements_sleeve_min', 'sleeve');
+  return out;
+};
+
 // Рахований статус продажу (як у таблиці Товарів) — не сирий журнальний statusid.
 const statusOf = (p: Product): { label: string; cls: string } => {
   const sold = p.sold_count || 0;
@@ -70,6 +102,10 @@ const DeliveryCardModal: React.FC<Props> = ({ shipment, open, onClose }) => {
   const [editNumId, setEditNumId] = useState<number | null>(null);
   const [editNumVal, setEditNumVal] = useState('');
   const [savingNum, setSavingNum] = useState(false);
+  // Контекст-меню (right-click) + дублювання
+  const [ctx, setCtx] = useState<{ x: number; y: number; p: Product } | null>(null);
+  const [prefill, setPrefill] = useState<Record<string, string> | null>(null);
+  const [prefillNonce, setPrefillNonce] = useState(0);
 
   // Швидке завантаження товарів з БД (без re-sync) — для рефрешу після add/delete.
   const loadProducts = useCallback(() => {
@@ -112,6 +148,20 @@ const DeliveryCardModal: React.FC<Props> = ({ shipment, open, onClose }) => {
       loadProducts();
     } catch (e: any) {
       window.alert(e?.response?.data?.detail || 'Не вдалося видалити товар');
+    }
+  };
+
+  // ⧉ Дублювати товар → відкрити форму, заповнену даними (повними — через getProduct).
+  const duplicateProduct = async (p: Product) => {
+    setCtx(null);
+    try {
+      const full = await productService.getProduct(p.id).catch(() => p);
+      setPrefill(productToPrefill(full || p));
+      setPrefillNonce(n => n + 1);
+      setShowForm(true);
+      message.info(`Дублюю ${p.productnumber} — вкажіть новий номер`);
+    } catch {
+      notification.error({ message: 'Не вдалося дублювати', placement: 'topRight' });
     }
   };
 
@@ -280,7 +330,8 @@ const DeliveryCardModal: React.FC<Props> = ({ shipment, open, onClose }) => {
 
         {showForm && (
           <div className="px-6 py-4 border-b border-gray-100 dark:border-gray-800 bg-gray-50 dark:bg-gray-800/40">
-            <QuickAddProductForm deliveryId={shipment.id} onSaved={loadProducts} filters={filters} />
+            <QuickAddProductForm deliveryId={shipment.id} onSaved={loadProducts} filters={filters}
+              prefill={prefill} prefillNonce={prefillNonce} />
           </div>
         )}
 
@@ -320,6 +371,7 @@ const DeliveryCardModal: React.FC<Props> = ({ shipment, open, onClose }) => {
                       const st = statusOf(p);
                       return (
                       <tr key={p.id} onClick={() => { if (editNumId !== p.id) setDetailId(p.id); }}
+                        onContextMenu={e => { e.preventDefault(); setCtx({ x: e.clientX, y: e.clientY, p }); }}
                         className="border-b last:border-b-0 border-gray-50 dark:border-gray-800/50 hover:bg-gray-50 dark:hover:bg-gray-800/40 cursor-pointer">
                         <td className="px-2 py-2 font-medium tabular-nums">
                           {editNumId === p.id ? (
@@ -360,6 +412,22 @@ const DeliveryCardModal: React.FC<Props> = ({ shipment, open, onClose }) => {
           )}
         </div>
       </div>
+
+      {/* Контекст-меню (right-click по рядку) */}
+      {ctx && (
+        <div className="fixed inset-0 z-[60]" onMouseDown={() => setCtx(null)} onContextMenu={e => { e.preventDefault(); setCtx(null); }}>
+          <div className="absolute min-w-[170px] bg-white dark:bg-gray-800 rounded-lg shadow-2xl border border-gray-200 dark:border-gray-700 py-1 text-sm"
+            style={{ top: ctx.y, left: ctx.x }} onMouseDown={e => e.stopPropagation()}>
+            <div className="px-3 py-1 text-[11px] text-gray-400 truncate">{ctx.p.productnumber}</div>
+            <button onClick={() => duplicateProduct(ctx.p)}
+              className="w-full text-left px-3 py-1.5 hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center gap-2">⧉ Дублювати</button>
+            <button onClick={() => { setCtx(null); setDetailId(ctx.p.id); }}
+              className="w-full text-left px-3 py-1.5 hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center gap-2">↗ Відкрити картку</button>
+            <button onClick={() => { const pp = ctx.p; setCtx(null); removeProduct(pp); }}
+              className="w-full text-left px-3 py-1.5 hover:bg-red-50 dark:hover:bg-red-900/20 text-red-600 flex items-center gap-2">🗑 Видалити</button>
+          </div>
+        </div>
+      )}
 
       <div onMouseDown={e => e.stopPropagation()}>
         <ProductDetailsModal

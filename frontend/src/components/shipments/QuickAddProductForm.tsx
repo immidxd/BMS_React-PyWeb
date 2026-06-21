@@ -183,9 +183,13 @@ interface Props {
   deliveryId: number;
   onSaved: () => void;
   filters?: ProductFilters | null;
+  /** Заповнити форму даними дубльованого товару (номер лишається порожнім). */
+  prefill?: Record<string, string> | null;
+  /** Лічильник, що змінюється при кожному «Дублювати» — тригер застосування prefill. */
+  prefillNonce?: number;
 }
 
-const QuickAddProductForm: React.FC<Props> = ({ deliveryId, onSaved, filters: filtersProp }) => {
+const QuickAddProductForm: React.FC<Props> = ({ deliveryId, onSaved, filters: filtersProp, prefill, prefillNonce }) => {
   const [values, setValues] = useState<Record<string, string>>(
     () => ({ productnumber: '', ...getDeliveryDefaults(deliveryId) })
   );
@@ -217,8 +221,40 @@ const QuickAddProductForm: React.FC<Props> = ({ deliveryId, onSaved, filters: fi
     setExtras(Object.keys(d).filter(k => F[k] && !baseKeys.has(k)));
   }, [deliveryId]);
 
-  // Перезастосувати при зміні завозу або редагуванні дефолтів.
-  useEffect(() => { applyDefaults(); /* eslint-disable-next-line */ }, [deliveryId, defTick]);
+  // Повний скид до дефолтів — ЛИШЕ при зміні завозу (нова форма).
+  useEffect(() => { applyDefaults(); /* eslint-disable-next-line */ }, [deliveryId]);
+
+  // Дефолти ВІДРЕДАГОВАНО (defTick): ДОЛИВАЄМО у ПОРОЖНІ поля, НЕ чіпаючи вже введене —
+  // інакше додавання дефолту під час заповнення анулювало б усі поля.
+  const valuesRef = React.useRef(values);
+  valuesRef.current = values;
+  const firstDefTick = React.useRef(true);
+  useEffect(() => {
+    if (firstDefTick.current) { firstDefTick.current = false; return; }
+    const d = getDeliveryDefaults(deliveryId);
+    setValues(cur => {
+      const next = { ...cur };
+      for (const [k, v] of Object.entries(d)) if (!next[k]) next[k] = v;  // лише порожні
+      return next;
+    });
+    const lay2 = layout(valuesRef.current.type_name);
+    const baseKeys = new Set(baseFields(lay2).map(f => f.key));
+    const want = Object.keys(d).filter(k => F[k] && !baseKeys.has(k) && !lay2.hubHide.includes(k));
+    setExtras(ex => Array.from(new Set([...ex, ...want])));
+    /* eslint-disable-next-line */
+  }, [defTick]);
+
+  // Дублювання: заповнити форму даними товару (дефолти ⊕ prefill), номер — порожній.
+  // Optional-поля з prefill показуємо як extras. Тригер — зміна prefillNonce.
+  useEffect(() => {
+    if (!prefillNonce || !prefill) return;
+    const merged: Record<string, string> = { ...getDeliveryDefaults(deliveryId), ...prefill };
+    setValues({ ...merged, productnumber: '' });
+    const lay2 = layout(merged.type_name);
+    const baseKeys = new Set(baseFields(lay2).map(f => f.key));
+    setExtras(Object.keys(merged).filter(k => F[k] && !baseKeys.has(k)));
+    /* eslint-disable-next-line */
+  }, [prefillNonce]);
 
   const lay = useMemo(() => layout(values.type_name), [values.type_name]);
   const set = (k: string, v: string) => setValues(s => ({ ...s, [k]: v }));

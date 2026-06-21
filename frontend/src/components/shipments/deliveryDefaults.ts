@@ -3,8 +3,9 @@
  *  1) ГЛОБАЛЬНІ (📌) — діють у БУДЬ-ЯКОМУ завозі, зберігаються в localStorage
  *     (переживають перезапуск). Сід за замовчуванням: плоска підошва / шнурівка-застібка /
  *     Повсякденний стиль / круглий носок (БЕЗ типу — тип задається щоразу).
- *  2) ПО-ЗАВОЗУ — лише для конкретного завозу, у памʼяті процесу (переживають закриття
- *     вікна/перемикання вкладок; гинуть на закритті програми).
+ *  2) ПО-ЗАВОЗУ — лише для конкретного завозу, ПЕРСИСТЕНТНІ (localStorage, keyed by
+ *     deliveryId): виставлені в завозі дефолти памʼятаються й після перезапуску — коли
+ *     користувач повертається до того завозу, вони активні.
  *
  *  Ефективні дефолти = глобальні ⊕ по-завозу (по-завозу перекриває глобальні).
  *  Ключі = поля QuickAddProductForm (type_name, sole_type_name, fastening_type_name…).
@@ -53,26 +54,44 @@ export function clearGlobalDefault(key: string): void {
 }
 export function clearAllGlobalDefaults(): void { saveGlobal({}); }
 
-// ── Шар по-завозу (in-memory) ────────────────────────────────────────────────
-const store = new Map<number, Defaults>();
+// ── Шар по-завозу (localStorage, keyed by deliveryId) ────────────────────────
+const PER_KEY = 'bms_delivery_defaults';  // { [deliveryId]: Defaults }
+
+function loadPer(): Record<string, Defaults> {
+  try {
+    const raw = localStorage.getItem(PER_KEY);
+    return raw ? (JSON.parse(raw) as Record<string, Defaults>) : {};
+  } catch { return {}; }
+}
+function savePer(all: Record<string, Defaults>): void {
+  try { localStorage.setItem(PER_KEY, JSON.stringify(all)); } catch { /* недоступно */ }
+}
 
 export function getDeliveryDefaultsRaw(deliveryId: number): Defaults {
-  return { ...(store.get(deliveryId) || {}) };
+  return { ...(loadPer()[String(deliveryId)] || {}) };
 }
 export function setDeliveryDefault(deliveryId: number, key: string, value: string): void {
-  const cur = store.get(deliveryId) || {};
+  const all = loadPer();
+  const cur = all[String(deliveryId)] || {};
   if (value == null || value === '') delete cur[key]; else cur[key] = value;
-  store.set(deliveryId, cur);
+  all[String(deliveryId)] = cur;
+  savePer(all);
 }
 export function clearDeliveryDefault(deliveryId: number, key: string): void {
-  const cur = store.get(deliveryId);
+  const all = loadPer();
+  const cur = all[String(deliveryId)];
   if (!cur) return;
   delete cur[key];
-  store.set(deliveryId, cur);
+  all[String(deliveryId)] = cur;
+  savePer(all);
 }
-export function clearAllDeliveryDefaults(deliveryId: number): void { store.delete(deliveryId); }
+export function clearAllDeliveryDefaults(deliveryId: number): void {
+  const all = loadPer();
+  delete all[String(deliveryId)];
+  savePer(all);
+}
 
 // ── Ефективні (глобальні ⊕ по-завозу) ────────────────────────────────────────
 export function getDeliveryDefaults(deliveryId: number): Defaults {
-  return { ...loadGlobal(), ...(store.get(deliveryId) || {}) };
+  return { ...loadGlobal(), ...(loadPer()[String(deliveryId)] || {}) };
 }
