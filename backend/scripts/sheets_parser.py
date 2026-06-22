@@ -1827,36 +1827,77 @@ def _get_or_create_shipment(session: Session, sheet_name: str,
                              shipment_date: Optional[date],
                              supplier_id: Optional[int],
                              purchase_cost: float = 0.0,
-                             delivery_cost: float = 0.0) -> Optional[int]:
+                             delivery_cost: float = 0.0,
+                             sheet_gid: Optional[int] = None) -> Optional[int]:
     """Get or create a delivery record for a sheet. Returns delivery ID.
 
-    Dedup by deliveryname — re-parsing the same sheet reuses the delivery.
+    Dedup priority:
+      1. sheet_gid (Google's stable tab ID) — rename-safe: перейменування
+         вкладки оновлює deliveryname існуючого завозу, а не плодить дубль
+         (раніше дедуп лише за назвою → rename створював порожній завіз-сироту).
+      2. deliveryname (fallback для legacy-завозів з NULL gid) — на збігу
+         backfill-имо gid, щоб наступні rename'и вже ловились за gid.
     purchase_cost and delivery_cost are parsed from the sheet's info block.
     """
     if not sheet_name:
         return None
     from sqlalchemy import text
+
+    def _name_taken_by_other(name: str, self_id: int) -> bool:
+        return bool(session.execute(
+            text("SELECT 1 FROM deliveries WHERE deliveryname = :n AND id <> :id"),
+            {"n": name, "id": self_id}
+        ).fetchone())
+
+    row = None
+    if sheet_gid is not None:
+        row = session.execute(
+            text("SELECT id, deliveryname FROM deliveries WHERE sheet_gid = :gid"),
+            {"gid": sheet_gid}
+        ).fetchone()
+    if row:
+        # gid-match: оновити назву (rename вкладки) лише якщо вона вільна —
+        # інакше лишити стару, щоб не впертись у UNIQUE(deliveryname).
+        new_name = sheet_name if (sheet_name != row[1] and not _name_taken_by_other(sheet_name, row[0])) else row[1]
+        if new_name != row[1]:
+            logger.info(f"[shipment] gid={sheet_gid}: rename '{row[1]}' → '{new_name}'")
+        session.execute(
+            text("""UPDATE deliveries
+                    SET deliveryname = :nn,
+                        deliverydate = COALESCE(:sd, deliverydate),
+                        supplier_id = :sid,
+                        purchase_cost = CASE WHEN :pc > 0 THEN :pc ELSE purchase_cost END,
+                        delivery_cost = CASE WHEN :dc > 0 THEN :dc ELSE delivery_cost END
+                    WHERE id = :id"""),
+            {"nn": new_name, "sd": shipment_date, "sid": supplier_id,
+             "pc": purchase_cost, "dc": delivery_cost, "id": row[0]}
+        )
+        session.flush()
+        return row[0]
+
     row = session.execute(
         text("SELECT id FROM deliveries WHERE deliveryname = :sn"),
         {"sn": sheet_name}
     ).fetchone()
     if row:
-        # Update supplier_id and costs on every re-parse (values may have changed in Sheet)
+        # name-match: backfill gid (rename-safe з наступного прогону) + оновити costs.
         session.execute(
             text("""UPDATE deliveries
                     SET supplier_id = :sid,
+                        sheet_gid = COALESCE(sheet_gid, :gid),
                         purchase_cost = CASE WHEN :pc > 0 THEN :pc ELSE purchase_cost END,
                         delivery_cost = CASE WHEN :dc > 0 THEN :dc ELSE delivery_cost END
                     WHERE id = :id"""),
-            {"sid": supplier_id, "pc": purchase_cost, "dc": delivery_cost, "id": row[0]}
+            {"sid": supplier_id, "gid": sheet_gid, "pc": purchase_cost, "dc": delivery_cost, "id": row[0]}
         )
         session.flush()
         return row[0]
+
     row = session.execute(
-        text("""INSERT INTO deliveries (deliveryname, deliverydate, supplier_id, purchase_cost, delivery_cost)
-                VALUES (:sn, :sd, :sid, :pc, :dc) RETURNING id"""),
+        text("""INSERT INTO deliveries (deliveryname, deliverydate, supplier_id, purchase_cost, delivery_cost, sheet_gid)
+                VALUES (:sn, :sd, :sid, :pc, :dc, :gid) RETURNING id"""),
         {"sn": sheet_name, "sd": shipment_date, "sid": supplier_id,
-         "pc": purchase_cost, "dc": delivery_cost}
+         "pc": purchase_cost, "dc": delivery_cost, "gid": sheet_gid}
     ).fetchone()
     session.flush()
     return row[0] if row else None
@@ -4567,6 +4608,13 @@ def _parse_workspace_sheet(
         sole_color_obj = _get_or_create(session, Color, "colorname", sole_color_raw) if sole_color_raw else None
         sole_color_id  = sole_color_obj.id if sole_color_obj else None
 
+        # Bare aliases для Product(...)-конструктора CREATE-гілки (як у головному
+        # парсері рядки ~2442): без них NameError при створенні взуття у воркспейсі.
+        sole_type_id      = resolved_shoe_fk.get("soletypeid")
+        toe_shape_id      = resolved_shoe_fk.get("toeshapeid")
+        fastening_type_id = resolved_shoe_fk.get("fasteningtypeid")
+        lining_id         = resolved_shoe_fk.get("liningid")
+
         parsed_new_fields = {
             "measurementscm_min":      cm_min,             "measurementscm_max":      cm_max,
             "measurements_length_min": length_min,         "measurements_length_max": length_max,
@@ -4920,6 +4968,7 @@ def run_products_parsing(
             session, ws.title, sheet_date, supplier_id,
             purchase_cost=financials["purchase_cost"],
             delivery_cost=financials["delivery_cost"],
+            sheet_gid=ws.id,
         )
         if shipment_id:
             shipment_ids.append(shipment_id)
@@ -5381,6 +5430,7 @@ def sync_one_delivery_tab(session: Session, deliveryname: str) -> dict:
     shipment_id = _get_or_create_shipment(
         session, ws.title, sheet_date, supplier_id,
         purchase_cost=financials["purchase_cost"], delivery_cost=financials["delivery_cost"],
+        sheet_gid=ws.id,
     )
     res = _parse_products_sheet(ws, session, sheet_date, None, {}, supplier_id, shipment_id, prefetched_rows=all_rows)
     session.flush()
