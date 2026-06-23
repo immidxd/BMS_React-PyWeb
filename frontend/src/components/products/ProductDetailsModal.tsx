@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useMemo, useRef } from 'react';
 import { productService } from '../../services/productService';
 import type { Product, ProductFilters } from '../../types/product';
-import { Tag, Spin, Image } from 'antd';
+import { Tag, Spin, Image, notification } from 'antd';
 import { CloseOutlined, PictureOutlined, LeftOutlined, RightOutlined, WarningOutlined, EditOutlined, CheckOutlined, PlusOutlined, SyncOutlined } from '@ant-design/icons';
 import { CopyOnClick, formatBrandName, getProductDisplayStatus, getConditionColor } from '../common/displayHelpers';
 import { hiddenFieldsForType } from './productCategory';
@@ -321,9 +321,23 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     const arr = Array.from(files);  // знімок ДО скиду input.value
     setPhotoBusy(true);
     // Фонова задача — завантаження доробиться навіть якщо закрити картку.
+    // silentSuccess: повідомлення формуємо самі за результатом (частковий збій теж).
     taskManager.run(`Завантаження ${arr.length} фото`, () => productService.addProductPhotos(pid, arr, kind), {
-      successMsg: `Завантажено ${arr.length} фото`,
-      onSuccess: () => emitProductPhotosChanged(pid),
+      silentSuccess: true,
+      onSuccess: (res) => {
+        emitProductPhotosChanged(pid);
+        const errs = res.errors || [];
+        if (errs.length === 0) {
+          notification.success({ message: '✓ Готово', description: `Завантажено ${res.added} фото`, placement: 'bottomRight', duration: 4 });
+        } else {
+          // Частина файлів не пройшла (напр. HEIC/битий) — інші збереглись.
+          notification.warning({
+            message: `Завантажено ${res.added} з ${arr.length}`,
+            description: `Не вдалося: ${errs.map(e => e.file).join(', ')}`,
+            placement: 'bottomRight', duration: 9,
+          });
+        }
+      },
     })
       .then(() => { if (curPidRef.current === pid) loadImages(true); })
       .catch(() => { /* помилку показав taskManager */ })
@@ -767,7 +781,13 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
 
   // Згортуваний підрозділ (Матеріали/Інше). Заголовок-кнопка з шевроном; вміст
   // прихований доки користувач не розкриє. У edit-режимі завжди розгорнутий.
-  const CollapsibleSection: React.FC<{ id: string; title: string; children: React.ReactNode }> = ({ id, title, children }) => {
+  // ⚠️ ВИКЛИКАТИ ЯК ФУНКЦІЮ: {CollapsibleSection({ id, title, children })}, НЕ
+  // <CollapsibleSection/>. Оголошено всередині компонента → як JSX-елемент має
+  // нову ідентичність типу щорендера → React розмонтовує+монтує вміст на кожну
+  // клавішу → інпути характеристик (Матеріали/Інше) ГУБЛЯТЬ ФОКУС після літери.
+  // Виклик функцією вбудовує JSX без межі компонента → фокус живе. Без хуків —
+  // тож безпечно (як EditCell/classSelect). Див. feedback_inner_component_focus_loss.
+  const CollapsibleSection = ({ id, title, children }: { id: string; title: string; children: React.ReactNode }): React.ReactElement => {
     const sectionOpen = editMode || !!openSections[id];
     return (
       <div className="mt-4 pt-4 border-t border-gray-100 dark:border-gray-800">
@@ -1500,7 +1520,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                   {/* Матеріали — ЗАВЖДИ першим підрозділом (згорнуто за замовчуванням).
                       У edit-режимі — інпут на кожну позицію (CSV назв через кому). */}
                   {(editMode || (p.materials && p.materials.length > 0)) && (
-                    <CollapsibleSection id="materials" title="Матеріали">
+                    CollapsibleSection({ id: 'materials', title: 'Матеріали', children: (
                       <div className={`grid ${charCols} gap-x-6 gap-y-3`}>
                         {editMode ? (
                           MATERIAL_POSITIONS
@@ -1534,7 +1554,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                           })()
                         )}
                       </div>
-                    </CollapsibleSection>
+                    ) })
                   )}
 
                   {/* Інше — решта характеристик (взуття + усі виміри), єдиним підрозділом без
@@ -1544,7 +1564,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                     p.measurements_height_min != null || p.measurements_sole_thickness_min != null || p.measurements_heel_min != null ||
                     p.measurements_length_min != null || p.measurements_pog_min != null || p.measurements_pob_min != null ||
                     p.measurements_pot_min != null || p.measurements_sleeve_min != null) && (
-                    <CollapsibleSection id="other" title="Інше">
+                    CollapsibleSection({ id: 'other', title: 'Інше', children: (
                       <div className={`grid ${charCols} gap-x-6 gap-y-3`}>
                         {EditCell({ field: 'sole_type_name', lockField: 'soletypeid', label: 'Тип підошви' })}
                         {EditCell({ field: 'sole_color_name', lockField: 'sole_colorid', label: 'Колір підошви' })}
@@ -1574,7 +1594,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                           )
                         ))}
                       </div>
-                    </CollapsibleSection>
+                    ) })
                   )}
                   </div>{/* /Характеристики */}
                 </div>{/* /Right panel */}

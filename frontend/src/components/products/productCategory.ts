@@ -13,14 +13,17 @@
  *    - dress  (плаття/сукні/комбінез.) → груди, талія, бедра, довжина
  *    - top    (футболки, светри, …)    → груди, рукав, довжина
  */
-export type ProductCategory = 'shoe' | 'bag' | 'suitcase' | 'clothing';
+export type ProductCategory = 'shoe' | 'bag' | 'suitcase' | 'clothing' | 'accessory';
 export type ClothingSubcat = 'bottom' | 'dress' | 'top';
 
+// ⚠️ Тримати РЕГЕКСИ синхронними з QuickAddProductForm.categoryOf (дубльована логіка).
 export function categoryOf(typeName?: string | null): ProductCategory {
   const s = (typeName || '').toLowerCase();
   if (/валіз|чемодан/.test(s)) return 'suitcase';
   if (/сумк|рюкзак|клатч|барсетк|борсетк|гаман|косметичк|шопер|портфел|саквояж/.test(s)) return 'bag';
   if (/куртк|штан|джинс|футболк|сорочк|світшот|худі|плат|сукн|спідниц|шорт|пальт|кофт|светр|комбінезон|костюм|жилет|толстовк|лонгслів|майк|бомбер|вітровк|пуховик|парк|жакет|кардиган|поло|туніка|блуз|рейтуз|лосин|легінс|бермуд|сарафан/.test(s)) return 'clothing';
+  // Аксесуари (ремінь/шапка/шарф/окуляри/рукавиці…) — НЕ взуття.
+  if (/ремін|пасок|пояс|шапк|кепк|панам|берет|капелюх|бейсболк|шарф|хустк|снуд|бандан|рукавиц|рукавичк|перчатк|мітенк|окуляр|краватк|метелик|підтяжк|запонк|брелок|гетр|шкарпетк|панчох|нараменник/.test(s)) return 'accessory';
   return 'shoe';
 }
 
@@ -59,6 +62,13 @@ export function hiddenFieldsForType(typeName?: string | null): Set<string> {
     // валізи: НЕ показуємо EU/СМ/Геом. форма (розмір — буквений + габарити)
     hidden.add('sizeeu');
     hidden.add('measurementscm');
+    hidden.add('geometric_shape');
+  } else if (cat === 'accessory') {
+    // аксесуари (ремінь/шапка/шарф…): без EU/СМ, габаритів і геом. форми
+    // (розмір — буквений S/M/L або ширина)
+    hidden.add('sizeeu');
+    hidden.add('measurementscm');
+    hidden.add('dimensions');
     hidden.add('geometric_shape');
   } else {
     // одяг: НЕ показуємо EU/СМ/Габарити/Геом. форма

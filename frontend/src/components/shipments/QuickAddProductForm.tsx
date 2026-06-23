@@ -104,7 +104,7 @@ const F: Record<string, FieldDef> = {
   length: { key: 'length', label: 'Довжина', number: true },
 };
 
-type Cat = 'shoe' | 'bag' | 'suitcase' | 'clothing';
+type Cat = 'shoe' | 'bag' | 'suitcase' | 'clothing' | 'accessory';
 type HubView = 'root' | 'materials' | 'details';
 
 const SUBHUBS: Record<Exclude<HubView, 'root'>, { label: string; fields: string[] }> = {
@@ -129,6 +129,8 @@ function categoryOf(t?: string): Cat {
   if (/валіз|чемодан/.test(s)) return 'suitcase';
   if (/сумк|рюкзак|клатч|барсетк|борсетк|гаман|косметичк|шопер|портфел|саквояж/.test(s)) return 'bag';
   if (/куртк|штан|джинс|футболк|сорочк|світшот|худі|плат|сукн|спідниц|шорт|пальт|кофт|светр|комбінезон|костюм|жилет|толстовк|лонгслів|майк|бомбер|вітровк|пуховик|парк|жакет|кардиган|поло|туніка|блуз|рейтуз|лосин|легінс|бермуд|сарафан/.test(s)) return 'clothing';
+  // Аксесуари (ремінь/шапка/шарф/окуляри/рукавиці…) — НЕ взуття: без підошви/носка/шнурівки.
+  if (/ремін|пасок|пояс|шапк|кепк|панам|берет|капелюх|бейсболк|шарф|хустк|снуд|бандан|рукавиц|рукавичк|перчатк|мітенк|окуляр|краватк|метелик|підтяжк|запонк|брелок|гетр|шкарпетк|панчох|нараменник/.test(s)) return 'accessory';
   return 'shoe';
 }
 
@@ -159,6 +161,14 @@ function layout(typeName?: string): Layout {
     return { cat, key: 'suitcase', base: ['size_letter', 'dimensions'], gender: false, subhubs: false,
       hubHide: ['sizeeu', 'measurementscm', ...CLOTHING_MEAS],
       hubExtra: ['gender_name', 'geometric_shape', ...SOFT_GOODS_EXTRA] };
+  if (cat === 'accessory')
+    // Ремінь/шапка/шарф/окуляри/рукавиці: без розмірної сітки взуття та БЕЗ shoe-полів
+    // (підошва/носок/шнурівка). База мінімальна; опц. — ширина/розмір-буква + soft-goods
+    // (застібка=пряжка/підкладка/матеріал). subhubs=false ⇒ shoe-only поля не валідні
+    // як extra ⇒ відсікаються і з дефолтів (filterValuesForCat/isValidExtra).
+    return { cat, key: 'accessory', base: [], gender: true, subhubs: false,
+      hubHide: ['sizeeu', 'measurementscm', 'dimensions', ...CLOTHING_MEAS],
+      hubExtra: ['width', 'size_letter', ...SOFT_GOODS_EXTRA] };
   const sub = clothingSubcat(typeName || '');
   const baseMeas = sub === 'bottom' ? ['waist', 'hips', 'length']
     : sub === 'dress' ? ['chest', 'waist', 'hips', 'length']

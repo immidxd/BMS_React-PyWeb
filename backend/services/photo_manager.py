@@ -85,13 +85,19 @@ def _norm(pnum: str) -> str:
 
 
 def resolve_category(pnum: str, type_name: Optional[str] = None) -> str:
-    """Папка для фото товару: де вже лежать його фото → інакше за типом → «Інше»."""
+    """Папка для фото товару: де вже лежать його фото → інакше за типом → «Інше».
+
+    ⚠️ Враховуємо фото БУДЬ-ЯКОГО набору (official/real/defect), а не лише
+    офіційні. Інакше товар, у якого є лише реальні фото (`_00N`), не «знаходив»
+    своєї папки → resolve падав на тип, і delete/replace/reorder/move дивились у
+    не ту категорію (фото мовчки не видалялись). Лістинг сканує всі підпапки, тож
+    показ працював — а ось операції над файлом ні."""
     pn = _norm(pnum)
     for cat in VALID_CATEGORIES:
         d = MIRROR_ROOT / cat
         if d.is_dir():
             for f in d.iterdir():
-                if f.is_file() and _OFFICIAL_RE(pn).match(f.stem):
+                if f.is_file() and any(_kind_re(pn, k).match(f.stem) for k in PHOTO_KINDS):
                     return cat
     if type_name:
         return _TYPE_CATEGORY.get(type_name.strip().lower(), "Інше")
@@ -151,24 +157,38 @@ def _next_index(pnum: str, category: str, kind: str) -> int:
     return (int(m.group(1)) if m else len(existing)) + 1
 
 
-def add_photos(pnum: str, category: str, sources: List[tuple], kind: str = "official") -> int:
+def add_photos(pnum: str, category: str, sources: List[tuple], kind: str = "official") -> dict:
     """Додати фото потрібного типу. sources = [(tmp_path, _orig_name), …].
     official → `_NN`; real → `_00N`; defect → `_defN`.
-    Конвертує у WebP-майстер, нумерує з наступного вільного індексу, синкає R2."""
+    Конвертує у WebP-майстер, нумерує з наступного вільного індексу, синкає R2.
+
+    Стійкий по-файлово: битий/непідтримуваний файл (напр. HEIC без pillow-heif)
+    НЕ валить увесь батч — інші зберігаються, а збій повертається у `errors`.
+    Повертає {"added": <скільки збережено>, "errors": [{"file": ім'я, "reason": …}]}.
+    """
     if kind not in PHOTO_KINDS:
         raise ValueError(f"Невідомий kind: {kind!r}")
     pn = _norm(pnum)
     next_idx = _next_index(pn, category, kind)
     (MIRROR_ROOT / category).mkdir(parents=True, exist_ok=True)
     added = 0
+    errors: List[dict] = []
     for tmp_path, _orig in sources:
         name = _kind_filename(pn, kind, next_idx)
         dest = MIRROR_ROOT / category / name
-        convert_to_webp_master(Path(tmp_path), dest)
-        _sync_one(category, dest)
+        try:
+            convert_to_webp_master(Path(tmp_path), dest)
+            _sync_one(category, dest)
+        except Exception as e:  # noqa: BLE001 — один файл не має валити весь батч
+            if dest.exists():
+                try: dest.unlink()
+                except OSError: pass
+            logger.warning(f"add_photos: не вдалося додати {_orig!r}: {e}")
+            errors.append({"file": _orig or name, "reason": str(e)})
+            continue
         next_idx += 1
         added += 1
-    return added
+    return {"added": added, "errors": errors}
 
 
 def delete_photo(pnum: str, category: str, filename: str) -> bool:

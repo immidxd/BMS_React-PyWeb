@@ -39,6 +39,10 @@ lxml>=4.9.2
 selenium>=4.8.3
 webdriver-manager>=3.8.6
 
+# Image processing (фото товару → WebP-майстер; HEIC = формат iPhone)
+Pillow==12.2.0
+pillow-heif==1.4.0
+
 # Telegram integration
 telethon==1.36.0
 

@@ -49,6 +49,16 @@ except ImportError:
 
 from PIL import Image, ImageOps
 
+# HEIC/HEIF (формат iPhone за замовчуванням) Pillow не декодує без плагіна.
+# Реєструємо опенер один раз при імпорті — інакше `Image.open()` кидає
+# UnidentifiedImageError → 500 на завантаженні фото з айфона.
+try:
+    from pillow_heif import register_heif_opener
+    register_heif_opener()
+except ImportError:  # pragma: no cover - HEIC просто не підтримається
+    logging.getLogger("ingest_photos").warning(
+        "pillow-heif не встановлено — HEIC/HEIF файли не конвертуватимуться")
+
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger("ingest_photos")
 

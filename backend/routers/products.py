@@ -375,13 +375,23 @@ async def add_product_photos(
                 out.write(await uf.read())
             tmps.append(tmp)
             sources.append((tmp, uf.filename))
-        added = add_photos(pnum, category, sources, kind=kind)
+        result = add_photos(pnum, category, sources, kind=kind)
     finally:
         for t in tmps:
             try: _os.unlink(t)
             except OSError: pass
-    _invalidate_photo_cache()
-    return {"added": added, "category": category, "kind": kind}
+    added = result["added"]
+    errors = result["errors"]
+    # Жодне фото не збереглось — повертаємо причину (а не сирий 500),
+    # щоб фронт показав осмислене сповіщення (типово — HEIC/битий файл).
+    if added == 0 and errors:
+        reasons = "; ".join(f"{e['file']}: {e['reason']}" for e in errors)
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Не вдалося додати фото ({len(errors)}): {reasons}")
+    if added:
+        _invalidate_photo_cache()
+    return {"added": added, "category": category, "kind": kind, "errors": errors}
 
 
 @router.post("/api/products/{product_id}/photos/move-kind")

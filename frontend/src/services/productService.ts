@@ -116,7 +116,7 @@ export const productService = {
     
     /** Додати фото товару (конверт у WebP + R2 на бекенді).
      *  kind='official' → нумерація `_NN`; kind='real' → `_00N`. */
-    async addProductPhotos(id: number, files: File[], kind: 'official' | 'real' | 'defect' = 'official'): Promise<{ added: number; category: string; kind: string }> {
+    async addProductPhotos(id: number, files: File[], kind: 'official' | 'real' | 'defect' = 'official'): Promise<{ added: number; category: string; kind: string; errors?: { file: string; reason: string }[] }> {
         const fd = new FormData();
         files.forEach((f) => fd.append('files', f));
         const res = await axios.post(`${API_URL}/${id}/photos`, fd, {
