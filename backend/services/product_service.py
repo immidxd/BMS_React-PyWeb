@@ -987,6 +987,16 @@ def _resolve_lookup_id_by_name(db: Session, table: str, name_col: str, value: st
     val = (value or "").strip()
     if not val:
         return None
+    # Стать — рівно 3 канонічні значення. Канонізуємо ввід («Жіночі»→«Жіноча»),
+    # щоб редагування в картці не плодило дубль-стать. Незнане → None (не створюємо).
+    if table == "genders":
+        try:
+            from utils.gender_normalizer import normalize_gender
+        except ImportError:
+            from backend.utils.gender_normalizer import normalize_gender
+        val = normalize_gender(val)
+        if not val:
+            return None
     # 1) exact match (fast path; covers the common "kept the pre-filled value" case)
     row = db.execute(
         text(f"SELECT id FROM {table} WHERE TRIM({name_col}) = :v LIMIT 1"),

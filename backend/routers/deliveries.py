@@ -196,6 +196,14 @@ async def add_product_to_delivery(
         obj = _get_or_create(db, model, field, str(val).strip())
         return obj.id if obj else None
 
+    # Стать канонізуємо до 3 значень — інакше «Жіночі»/«Чоловіче»/… створили б
+    # дубль-стать (get_or_create). Незнане → None (без статі), не нова стать.
+    try:
+        from utils.gender_normalizer import normalize_gender
+    except ImportError:
+        from backend.utils.gender_normalizer import normalize_gender
+    gender_canon = normalize_gender(payload.gender_name) or None
+
     try:
         prod = models.Product(
             productnumber=pn, deliveryid=delivery_id, quantity=1,
@@ -203,7 +211,7 @@ async def add_product_to_delivery(
             subtypeid=_rid(models.Subtype, "subtypename", payload.subtype_name),
             styleid=_rid(models.Style, "stylename", payload.style_name),
             brandid=_rid(models.Brand, "brandname", payload.brand_name),
-            genderid=_rid(models.Gender, "gendername", payload.gender_name),
+            genderid=_rid(models.Gender, "gendername", gender_canon),
             colorid=_rid(models.Color, "colorname", payload.color_name),
             conditionid=_rid(models.Condition, "conditionname", payload.condition_name),
             packagingid=_rid(models.PackagingType, "packagingname", payload.packaging_name),
@@ -263,7 +271,7 @@ async def add_product_to_delivery(
     sheet_map = {
         "Номер": pn, "Вид": payload.type_name, "Підвид": payload.subtype_name,
         "Стиль": payload.style_name, "Бренд": payload.brand_name, "Модель": payload.model,
-        "Маркування": payload.marking, "Рік": payload.year, "Стать": payload.gender_name,
+        "Маркування": payload.marking, "Рік": payload.year, "Стать": gender_canon,
         "Сезон": payload.season, "Колір": payload.color_name, "Опис": payload.description,
         "Розмір": payload.sizeeu, "СМ": payload.measurementscm, "Ціна": payload.price,
         "Стан": payload.condition_name, "Пакування": payload.packaging_name,

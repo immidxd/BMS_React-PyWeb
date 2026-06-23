@@ -1513,14 +1513,14 @@ def _normalize_gender(val: str) -> str:
     'унісекс' → 'Унісекс'
     Garbage (e.g. 'чорний, сірий...') → '' (empty = skip)
     """
-    s = val.strip()
-    if not s:
-        return ""
-    canonical = _GENDER_MAP.get(s.lower())
-    if canonical:
-        return canonical
-    # If not in map, might be garbage — return empty to skip
-    return ""
+    # Єдине джерело правди — backend/utils/gender_normalizer (canonical 3 + prefix-
+    # фолбек на будь-яке закінчення). Локальний _GENDER_MAP лишено для сумісності,
+    # але резолв робить util, щоб «Жіночі»/«Чоловіче»/… не плодили дублі статей.
+    try:
+        from utils.gender_normalizer import normalize_gender
+    except ImportError:
+        from backend.utils.gender_normalizer import normalize_gender
+    return normalize_gender(val)
 
 
 def _auto_detect_gender(size_val: str, desc_val: str, extra_val: str) -> str:
