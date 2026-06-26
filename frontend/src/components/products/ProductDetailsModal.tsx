@@ -2,7 +2,7 @@ import React, { useEffect, useState, useMemo, useRef } from 'react';
 import { productService } from '../../services/productService';
 import type { Product, ProductFilters } from '../../types/product';
 import { Tag, Spin, Image, notification } from 'antd';
-import { CloseOutlined, PictureOutlined, LeftOutlined, RightOutlined, WarningOutlined, EditOutlined, CheckOutlined, PlusOutlined, SyncOutlined } from '@ant-design/icons';
+import { CloseOutlined, PictureOutlined, LeftOutlined, RightOutlined, WarningOutlined, EditOutlined, CheckOutlined, PlusOutlined, SyncOutlined, EyeOutlined, EyeInvisibleOutlined, StarFilled } from '@ant-design/icons';
 import { CopyOnClick, formatBrandName, getProductDisplayStatus, getConditionColor } from '../common/displayHelpers';
 import { hiddenFieldsForType } from './productCategory';
 import { taskManager, emitProductPhotosChanged } from '../../services/taskManager';
@@ -168,6 +168,49 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
   // розкриваються кліком. У режимі редагування завжди розгорнуті (щоб редагувати).
   const [openSections, setOpenSections] = useState<Record<string, boolean>>({});
   const toggleSection = (id: string) => setOpenSections((s) => ({ ...s, [id]: !s[id] }));
+
+  // ── Публікація в публічний інтернет-каталог (Telegram Mini App) ────────────
+  // Окремі endpoint-и (catalog_listings, ключ=productnumber → вся ростовка) →
+  // це НЕ зачіпає збереження картки. Стан вантажиться/пишеться незалежно.
+  const [catalogStatus, setCatalogStatus] = useState<{ is_published: boolean; is_featured: boolean } | null>(null);
+  const [catalogSaving, setCatalogSaving] = useState(false);
+
+  useEffect(() => {
+    if (!open || !productId) { setCatalogStatus(null); return; }
+    let cancelled = false;
+    productService.getCatalogStatus(productId)
+      .then((s) => { if (!cancelled) setCatalogStatus({ is_published: s.is_published, is_featured: s.is_featured }); })
+      .catch(() => { if (!cancelled) setCatalogStatus({ is_published: false, is_featured: false }); });
+    return () => { cancelled = true; };
+  }, [open, productId]);
+
+  const toggleCatalogPublished = async () => {
+    if (!productId || catalogSaving) return;
+    const next = !(catalogStatus?.is_published);
+    setCatalogSaving(true);
+    try {
+      const r = await productService.setCatalogStatus(productId, {
+        is_published: next,
+        is_featured: next ? (catalogStatus?.is_featured ?? false) : false,
+      });
+      setCatalogStatus({ is_published: r.is_published, is_featured: r.is_featured });
+      notification.success({ message: next ? 'Опубліковано в каталозі' : 'Знято з публікації', placement: 'bottomRight', duration: 2 });
+    } catch {
+      notification.error({ message: 'Не вдалося оновити публікацію', placement: 'bottomRight' });
+    } finally { setCatalogSaving(false); }
+  };
+
+  const toggleCatalogFeatured = async () => {
+    if (!productId || catalogSaving || !catalogStatus?.is_published) return;
+    const next = !catalogStatus.is_featured;
+    setCatalogSaving(true);
+    try {
+      const r = await productService.setCatalogStatus(productId, { is_published: true, is_featured: next });
+      setCatalogStatus({ is_published: r.is_published, is_featured: r.is_featured });
+    } catch {
+      notification.error({ message: 'Не вдалося оновити «Рекомендований»', placement: 'bottomRight' });
+    } finally { setCatalogSaving(false); }
+  };
   // Плавна навігація між картками: prevIdRef відрізняє первинне відкриття від ◀/▶;
   // loadSeqRef відкидає застарілі fetch'і при швидкому гортанні.
   const prevIdRef = useRef<number | null>(null);
@@ -1013,6 +1056,42 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                     <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-primary-100 text-primary-700 border border-primary-200 dark:bg-primary-900/30 dark:text-primary-300 dark:border-primary-700">
                       Режим редагування
                     </span>
+                  )}
+
+                  {/* Публікація в публічний інтернет-каталог (Telegram Mini App) */}
+                  {catalogStatus && (
+                    <>
+                      <button
+                        type="button"
+                        onClick={toggleCatalogPublished}
+                        disabled={catalogSaving}
+                        className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold border transition-colors disabled:opacity-50 ${
+                          catalogStatus.is_published
+                            ? 'bg-emerald-500 text-white border-emerald-600 dark:bg-emerald-600 dark:border-emerald-500'
+                            : 'bg-gray-50 text-gray-500 border-gray-200 hover:bg-gray-100 dark:bg-gray-800 dark:text-gray-400 dark:border-gray-700 dark:hover:bg-gray-700'
+                        }`}
+                        title={catalogStatus.is_published ? 'Прибрати з публічного інтернет-каталогу' : 'Показати в публічному інтернет-каталозі'}
+                      >
+                        {catalogStatus.is_published ? <EyeOutlined className="text-[11px]" /> : <EyeInvisibleOutlined className="text-[11px]" />}
+                        <span>{catalogStatus.is_published ? 'У каталозі' : 'Не в каталозі'}</span>
+                      </button>
+                      {catalogStatus.is_published && (
+                        <button
+                          type="button"
+                          onClick={toggleCatalogFeatured}
+                          disabled={catalogSaving}
+                          className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold border transition-colors disabled:opacity-50 ${
+                            catalogStatus.is_featured
+                              ? 'bg-amber-400 text-amber-950 border-amber-500 dark:bg-amber-500 dark:border-amber-400'
+                              : 'bg-gray-50 text-gray-500 border-gray-200 hover:bg-gray-100 dark:bg-gray-800 dark:text-gray-400 dark:border-gray-700 dark:hover:bg-gray-700'
+                          }`}
+                          title={catalogStatus.is_featured ? 'Прибрати «Рекомендований»' : 'Позначити «Рекомендований» (вгору каталогу)'}
+                        >
+                          <StarFilled className="text-[11px]" />
+                          <span>Рекомендований</span>
+                        </button>
+                      )}
+                    </>
                   )}
                 </div>
                 <h2 className="text-2xl font-semibold text-gray-900 dark:text-gray-50 truncate leading-tight">

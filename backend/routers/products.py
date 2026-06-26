@@ -2,6 +2,7 @@ from typing import List, Optional, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, Query, Body, Path, status, UploadFile, File
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
+from sqlalchemy import text
 import logging
 import threading
 from datetime import datetime
@@ -526,6 +527,71 @@ async def get_product(
     except Exception as e:
         logger.error(f"Error getting product {product_id}: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Помилка при отриманні товару: {str(e)}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Публікація товару в публічний інтернет-каталог (Telegram Mini App ~/Desktop/BMS_catalog).
+# Окрема additive-таблиця catalog_listings (схему products НЕ чіпаємо). Ключ =
+# productnumber → публікується вся картка/ростовка. Вітрина каталогу read-only;
+# керування публікацією — ЛИШЕ звідси (back-office). Не плутати з мертвим
+# /visibility (is_lost) — це інший, публічний канал.
+# ─────────────────────────────────────────────────────────────────────────────
+@router.get("/api/products/{product_id}/catalog", response_model=Dict[str, Any])
+async def get_product_catalog_status(
+    product_id: int = Path(..., ge=1, description="ID товару"),
+    db: Session = Depends(get_db),
+):
+    """Поточний стан публікації товару в публічному каталозі."""
+    pnum = db.execute(
+        text("SELECT productnumber FROM products WHERE id = :id"), {"id": product_id}
+    ).scalar()
+    if pnum is None:
+        raise HTTPException(status_code=404, detail=f"Товар з ID {product_id} не знайдено")
+    row = db.execute(
+        text("SELECT is_published, is_featured FROM catalog_listings WHERE productnumber = :pn"),
+        {"pn": pnum},
+    ).mappings().first()
+    return {
+        "productnumber": pnum,
+        "is_published": bool(row["is_published"]) if row else False,
+        "is_featured": bool(row["is_featured"]) if row else False,
+    }
+
+
+@router.patch("/api/products/{product_id}/catalog", response_model=Dict[str, Any])
+async def update_product_catalog_status(
+    product_id: int = Path(..., ge=1, description="ID товару"),
+    is_published: bool = Body(..., embed=True),
+    is_featured: bool = Body(False, embed=True),
+    db: Session = Depends(get_db),
+):
+    """Опублікувати/зняти товар у каталозі (+ «Рекомендований»). Upsert у
+    catalog_listings за productnumber — діє на всю картку (ростовку)."""
+    try:
+        pnum = db.execute(
+            text("SELECT productnumber FROM products WHERE id = :id"), {"id": product_id}
+        ).scalar()
+        if pnum is None:
+            raise HTTPException(status_code=404, detail=f"Товар з ID {product_id} не знайдено")
+        # «Рекомендований» має сенс лише для опублікованого товару
+        feat = bool(is_featured and is_published)
+        db.execute(text("""
+            INSERT INTO catalog_listings (productnumber, is_published, is_featured, published_at, updated_at)
+            VALUES (:pn, :pub, :feat, CASE WHEN :pub THEN now() END, now())
+            ON CONFLICT (productnumber) DO UPDATE SET
+                is_published = EXCLUDED.is_published,
+                is_featured  = EXCLUDED.is_featured,
+                published_at = COALESCE(catalog_listings.published_at, EXCLUDED.published_at),
+                updated_at   = now()
+        """), {"pn": pnum, "pub": is_published, "feat": feat})
+        db.commit()
+        return {"success": True, "productnumber": pnum, "is_published": is_published, "is_featured": feat}
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error updating catalog status {product_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Помилка при оновленні публікації: {str(e)}")
 
 @router.post("/api/products", response_model=schemas.Product, status_code=status.HTTP_201_CREATED)
 async def create_product(

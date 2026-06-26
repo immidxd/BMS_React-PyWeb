@@ -36,11 +36,17 @@ def start_backend():
         logger.error(f"Failed to start backend server: {e}")
         sys.exit(1)
 
-def wait_for_backend(max_retries=30, delay=0.5):
+def wait_for_backend(max_retries=240, delay=0.5):
     """Wait for backend server to become available.
 
     Uses 127.0.0.1 explicitly (not 'localhost') to avoid macOS IPv6 resolution
     issues where localhost → ::1 but uvicorn listens on 127.0.0.1 only.
+
+    max_retries=240 (≈120с): стартові події бекенда (Telegram pub-sync + парсинг,
+    подеколи з повторами через SSL) блокують відповідь /api/health на ~60-90с.
+    15с (старе значення) здавалося завчасно й гасило daemon-бекенд, який інакше
+    піднявся б. Збільшено, щоб лаунчер дочекався. (Прискорення старту — окремо:
+    винести блокуючу синхронізацію у фон, щоб /api/health відповідав одразу.)
     """
     for i in range(max_retries):
         try:

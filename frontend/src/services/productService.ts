@@ -233,6 +233,21 @@ export const productService = {
             throw error;
         }
     },
+
+    /**
+     * Публікація товару в публічний інтернет-каталог (Telegram Mini App).
+     * ОКРЕМІ endpoint-и (catalog_listings) — не зачіпають збереження картки.
+     * Ключ = productnumber → діє на всю картку/ростовку.
+     */
+    async getCatalogStatus(id: number): Promise<{ productnumber: string; is_published: boolean; is_featured: boolean }> {
+        const response = await axios.get(`${API_URL}/${id}/catalog`);
+        return response.data;
+    },
+
+    async setCatalogStatus(id: number, payload: { is_published: boolean; is_featured?: boolean }): Promise<{ success: boolean; productnumber: string; is_published: boolean; is_featured: boolean }> {
+        const response = await axios.patch(`${API_URL}/${id}/catalog`, payload);
+        return response.data;
+    },
     
     /**
      * Масове оновлення товарів
