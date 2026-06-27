@@ -244,6 +244,10 @@ class Order(Base):
     # після парсингу видаляв привидів: ордери цієї вкладки, що НЕ матчили жодного
     # живого рядка цього прогону. NULL = legacy (до фічі) → sweep не чіпає.
     source_sheet_gid = Column(Integer, index=True, nullable=True)
+    # Resolution-INDEPENDENT order identity = md5(sorted raw sheet product numbers).
+    # Unlike resolved order_items, never drifts with flaky product resolution → the
+    # ironclad anti-duplicate key (see compute_pnum_key + Level 1K in sheets_parser).
+    source_pnum_key = Column(String(32), index=True, nullable=True)
     # In-app edit locks (Order editing Phase A) — parser restores these on reparse
     manually_edited_fields = Column(Text, nullable=True)   # CSV: 'notes,tracking_number,...'
     manually_edited_at = Column(DateTime, nullable=True)

@@ -59,7 +59,7 @@ BATCH_CHUNK = int(os.getenv("PARSER_BATCH_CHUNK", "50"))  # sheets per batch rea
 #
 # Bump PARSER_VERSION whenever the orders parsing logic changes in a way that
 # would produce different output for the same input → forces a full reparse.
-PARSER_VERSION = 7  # v7: order-item матчинг зберігає '-' (Ф1810-2 більше не зливається у Ф1810); форс-репарс щоб перелінкувати 265 ростовка-суфіксів
+PARSER_VERSION = 9  # v9: source_pnum_key (resolution-INDEPENDENT identity) + Level 1K дедуп + анонімний sweep + Level 2N. Корінь ghost-дублів закрито: той самий рядок аркуша не створює дубль навіть при нестабільному resolution / анонімному клієнті / legacy без gid
 HASH_SKIP_ENABLED = os.getenv("PARSER_HASH_SKIP", "1") != "0"
 
 # ── Layer C: whole-file change gate ───────────────────────────────────────────
@@ -509,6 +509,27 @@ def compute_order_fingerprint(client_name: str, order_date, product_numbers) -> 
     iso = order_date.isoformat() if hasattr(order_date, "isoformat") else str(order_date)
     fp_raw = f"{(client_name or '').strip().lower()}|{iso}|{'|'.join(norm)}"
     return hashlib.md5(fp_raw.encode("utf-8")).hexdigest()
+
+
+def compute_pnum_key(product_numbers) -> str:
+    """Resolution-INDEPENDENT order identity = md5(sorted normalized RAW product
+    numbers from the sheet 'Номера товарів' cell).
+
+    Unlike the resolved order_items set, this NEVER drifts when
+    _resolve_order_product matches differently across runs (the #Ф2261 flaky-
+    resolution class) — so the same sheet row can never spawn a duplicate even
+    if product resolution is inconsistent. Keeps '-' so ростовка-суфікс
+    Ф1810-2 ≠ Ф1810, strips '#'/emoji/whitespace. Empty → '' (no key)."""
+    import hashlib
+    norm = sorted(
+        n for n in (
+            re.sub(r"[^\w\-А-ЯҐЄІЇа-яґєії]", "", p).upper()
+            for p in (product_numbers or []) if p and p.strip()
+        ) if n
+    )
+    if not norm:
+        return ""
+    return hashlib.md5("|".join(norm).encode("utf-8")).hexdigest()
 
 
 def _fmt_price(v) -> str:
@@ -4149,6 +4170,8 @@ def _parse_orders_sheet(
         # Стабільний ключ: client_name + date + sorted product nums
         # (без total_amount — він змінюється між версіями замовлення в різних вкладках)
         source_fp = compute_order_fingerprint(client_name, order_date, product_nums)
+        # Resolution-INDEPENDENT identity (does not depend on how товари розпізнались).
+        pnum_key = compute_pnum_key(product_nums)
 
         existing_order = session.query(Order).filter(
             Order.source_fingerprint == source_fp
@@ -4170,6 +4193,40 @@ def _parse_orders_sheet(
                 logger.info(
                     "Order #%d: migrated date %s → %s (was sheet_date)",
                     existing_order.id, sheet_date, order_date,
+                )
+
+        # Level 1K: Resolution-INDEPENDENT key match (the ironclad guarantee).
+        # Matches on source_pnum_key (raw sheet numbers) + total + date-window,
+        # independent of client_id AND of how товари розпізнались. This is the
+        # one identity that can't drift between runs, so it closes the residual
+        # holes the other levels share: anonymous orders + flaky resolution +
+        # legacy rows without source_sheet_gid. Unique match only (no false merge).
+        if not existing_order and pnum_key and total_amount > 0:
+            from datetime import timedelta as _tdk
+            _klo, _khi = order_date - _tdk(days=7), order_date + _tdk(days=7)
+            _kq = session.query(Order).filter(
+                Order.source_pnum_key == pnum_key,
+                Order.total_amount == total_amount,
+                Order.order_date >= _klo,
+                Order.order_date <= _khi,
+            )
+            # Scope to the same client identity (treat NULL==NULL) so two different
+            # buyers of the same items in the same window are NOT merged.
+            _kq = _kq.filter(Order.client_id.is_(None)) if client_id is None \
+                else _kq.filter(Order.client_id == client_id)
+            _kmatches = _kq.all()
+            if len(_kmatches) == 1:
+                existing_order = _kmatches[0]
+                existing_order.order_date = order_date
+                existing_order.source_fingerprint = source_fp
+                logger.info(
+                    "Order #%d: matched via resolution-independent pnum_key "
+                    "(date→%s, total=%s)", existing_order.id, order_date, total_amount,
+                )
+            elif len(_kmatches) > 1:
+                logger.warning(
+                    "pnum_key match ambiguous key=%s total=%s window=±7d: %d candidates "
+                    "— skipping merge", pnum_key[:8], total_amount, len(_kmatches),
                 )
 
         # Level 2: Client + date + total_amount + same item count
@@ -4246,6 +4303,49 @@ def _parse_orders_sheet(
                     client_id, order_date, total_amount, len(_matches),
                 )
 
+        # Level 2N: Дедуплікація АНОНІМНИХ замовлень (client_id IS NULL).
+        # ⚠️ Корінь ghost-дублів: Level 2/2.5/3 усі вимагають client_id → анонімні
+        # замовлення (порожнє ім'я клієнта) проходять лише Level 1 (точний fingerprint)
+        # та 1.5. Якщо існує легасі-ордер без fingerprint, або дата/текст-клієнта
+        # зсувається між вкладками/прогонами — fingerprint змінюється, нічого не
+        # матчить → щопрогону створюється новий дубль-близнюк (роздуває sold_count).
+        # Матчимо за вікном дат + total_amount + ІДЕНТИЧНИМ набором номерів товарів
+        # (єдина стабільна ідентичність анонімного замовлення). Лише при ОДНОЗНАЧНОМУ
+        # збігу (рівно 1 кандидат), щоб не злити різні анонімні замовлення.
+        if not existing_order and client_id is None and total_amount > 0 and product_nums:
+            from datetime import timedelta as _td2
+            _anon_set = {(_canon_pnum_for_match(p) or "").lower() for p in product_nums if p.strip()}
+            _anon_set.discard("")
+            _lo2, _hi2 = order_date - _td2(days=7), order_date + _td2(days=7)
+            _anon_cands = session.query(Order).filter(
+                Order.client_id.is_(None),
+                Order.total_amount == total_amount,
+                Order.order_date >= _lo2,
+                Order.order_date <= _hi2,
+            ).all()
+            _anon_matches = []
+            for _ac in _anon_cands:
+                _ac_nums = session.query(Product.productnumber).join(
+                    OrderItem, OrderItem.product_id == Product.id
+                ).filter(OrderItem.order_id == _ac.id).all()
+                _ac_set = {(_canon_pnum_for_match(pn or "") or "").lower() for (pn,) in _ac_nums}
+                _ac_set.discard("")
+                if _ac_set and _ac_set == _anon_set:
+                    _anon_matches.append(_ac)
+            if len(_anon_matches) == 1:
+                existing_order = _anon_matches[0]
+                existing_order.order_date = order_date
+                existing_order.source_fingerprint = source_fp
+                logger.info(
+                    "Order #%d: matched via NULL-client set-match (date→%s, total=%s) — updating",
+                    existing_order.id, order_date, total_amount,
+                )
+            elif len(_anon_matches) > 1:
+                logger.warning(
+                    "NULL-client set-match ambiguous date=%s total=%s: %d candidates — skipping merge",
+                    order_date, total_amount, len(_anon_matches),
+                )
+
         # Level 3: Fallback для старих замовлень без fingerprint
         if not existing_order:
             notes_val = combined_notes if combined_notes else None
@@ -4280,6 +4380,7 @@ def _parse_orders_sheet(
             if _sales_channel:
                 existing_order.sales_channel = _sales_channel
             existing_order.source_sheet_gid  = ws.id   # прив'язка до живої вкладки (для scoped-sweep)
+            existing_order.source_pnum_key   = pnum_key  # resolution-independent identity
             existing_order.updated_at        = datetime.utcnow()
             # Видаляємо старі items і перестворюємо нижче
             session.query(OrderItem).filter(OrderItem.order_id == existing_order.id).delete()
@@ -4301,6 +4402,7 @@ def _parse_orders_sheet(
                 sales_channel      = _sales_channel if _sales_channel else None,
                 source_fingerprint = source_fp,
                 source_sheet_gid   = ws.id,   # прив'язка до живої вкладки (для scoped-sweep)
+                source_pnum_key    = pnum_key,  # resolution-independent identity
                 created_at         = datetime.utcnow(),
             )
             session.add(order)
@@ -5036,25 +5138,28 @@ def _reconcile_evolved_order_ghosts(session: Session, touched_ids: set) -> dict:
                 r[0] for r in session.query(OrderItem.product_id)
                 .filter(OrderItem.order_id == oid).all()
             )
-        groups: dict = {}  # (client_id, order_date) -> [(oid, frozenset)]
+        # v8: групуємо і АНОНІМНІ (client_id IS NULL) — раніше їх пропускали
+        # (`if t.client_id is None: continue`), тож evolved-set ghost анонімного
+        # замовлення (як #Ф2261) не прибирався ні дедуп-рівнями, ні цим sweep.
+        # Тепер None — повноправний ключ; для нього сиблінги шукаємо з IS NULL.
+        groups: dict = {}  # (client_id|None, order_date) -> [frozenset]
         for t in touched:
-            if t.client_id is None:
-                continue
-            groups.setdefault((t.client_id, t.order_date), []).append((t.id, pidset(t.id)))
+            groups.setdefault((t.client_id, t.order_date), []).append(pidset(t.id))
 
         ghost_ids = []
-        for (cid, odate), tlist in groups.items():
-            tsets = [s for (_tid, s) in tlist if s]
+        for (cid, odate), tsets_all in groups.items():
+            tsets = [s for s in tsets_all if s]
             if not tsets:
                 continue
-            siblings = session.query(Order).filter(
-                Order.client_id == cid,
+            sib_q = session.query(Order).filter(
                 Order.order_date == odate,
                 Order.id.notin_(touched_ids),
                 Order.order_status_id.is_(None),
                 Order.source_fingerprint.isnot(None),
-            ).all()
-            for s in siblings:
+            )
+            sib_q = sib_q.filter(Order.client_id.is_(None)) if cid is None \
+                else sib_q.filter(Order.client_id == cid)
+            for s in sib_q.all():
                 sset = pidset(s.id)
                 if not sset:
                     continue
