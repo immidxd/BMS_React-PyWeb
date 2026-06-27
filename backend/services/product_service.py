@@ -131,17 +131,26 @@ _PRODUCT_FROM_SQL = """
         LEFT JOIN technologies tech ON p.technologyid = tech.id
         LEFT JOIN colors scol ON p.sole_colorid = scol.id
         LEFT JOIN (
-            SELECT oi.product_id,
-                   GREATEST(
-                     COUNT(*) FILTER (WHERE o.order_status_id = 7
-                                        OR (o.order_status_id = 1 AND o.payment_status_id = 1))
-                     - COUNT(*) FILTER (WHERE o.order_status_id = 9),
-                   0) AS sold_count
-            FROM order_items oi
-            JOIN orders o ON o.id = oi.order_id
-            WHERE oi.product_id IS NOT NULL
-              AND o.order_status_id IN (1, 7, 9)
-            GROUP BY oi.product_id
+            -- «Продано» = Подарунок(7) АБО (Підтверджено(1) І Оплачено).
+            -- Повернення(9) повертає сток у наявність ЛИШЕ коли той самий клієнт має
+            -- окремий оплачений продаж того ж товару (справжнє sold-then-returned). Якщо
+            -- повернену пару перепродали іншому — статус9 і так не входить у «продано»,
+            -- тож віднімати його = подвійний облік (фантомна наявність на проданому).
+            -- effective_returns = SUM по клієнту LEAST(оплачених_продажів, повернень).
+            SELECT pc.product_id,
+                   GREATEST(SUM(pc.paid_sold) - SUM(LEAST(pc.paid_sold, pc.returns)), 0) AS sold_count
+            FROM (
+                SELECT oi.product_id, o.client_id,
+                       COUNT(*) FILTER (WHERE o.order_status_id = 7
+                                          OR (o.order_status_id = 1 AND o.payment_status_id = 1)) AS paid_sold,
+                       COUNT(*) FILTER (WHERE o.order_status_id = 9) AS returns
+                FROM order_items oi
+                JOIN orders o ON o.id = oi.order_id
+                WHERE oi.product_id IS NOT NULL
+                  AND o.order_status_id IN (1, 7, 9)
+                GROUP BY oi.product_id, o.client_id
+            ) pc
+            GROUP BY pc.product_id
         ) sold ON sold.product_id = p.id
         LEFT JOIN (
             SELECT oi.product_id, COUNT(*) AS reserved_count
@@ -597,20 +606,24 @@ def get_products(
         LEFT JOIN technologies tech ON p.technologyid = tech.id
         LEFT JOIN colors scol ON p.sole_colorid = scol.id
         LEFT JOIN (
-            SELECT oi.product_id,
-                   -- «Продано» = Подарунок(7) АБО (Підтверджено(1) І Оплачено),
-                   -- МІНУС Повернення(9): повернений товар знову в наявності.
-                   -- payment_status_id=1 = «Оплачено». Див. utils/order_status_logic.
-                   GREATEST(
-                     COUNT(*) FILTER (WHERE o.order_status_id = 7
-                                        OR (o.order_status_id = 1 AND o.payment_status_id = 1))
-                     - COUNT(*) FILTER (WHERE o.order_status_id = 9),
-                   0) AS sold_count
-            FROM order_items oi
-            JOIN orders o ON o.id = oi.order_id
-            WHERE oi.product_id IS NOT NULL
-              AND o.order_status_id IN (1, 7, 9)
-            GROUP BY oi.product_id
+            -- «Продано» = Подарунок(7) АБО (Підтверджено(1) І Оплачено).
+            -- Повернення(9) кредитує сток назад ЛИШЕ за окремого оплаченого продажу
+            -- того ж клієнта на той самий товар; перепродаж іншому не подвоюється.
+            -- payment_status_id=1 = «Оплачено». Див. utils/order_status_logic.
+            SELECT pc.product_id,
+                   GREATEST(SUM(pc.paid_sold) - SUM(LEAST(pc.paid_sold, pc.returns)), 0) AS sold_count
+            FROM (
+                SELECT oi.product_id, o.client_id,
+                       COUNT(*) FILTER (WHERE o.order_status_id = 7
+                                          OR (o.order_status_id = 1 AND o.payment_status_id = 1)) AS paid_sold,
+                       COUNT(*) FILTER (WHERE o.order_status_id = 9) AS returns
+                FROM order_items oi
+                JOIN orders o ON o.id = oi.order_id
+                WHERE oi.product_id IS NOT NULL
+                  AND o.order_status_id IN (1, 7, 9)
+                GROUP BY oi.product_id, o.client_id
+            ) pc
+            GROUP BY pc.product_id
         ) sold ON sold.product_id = p.id
         LEFT JOIN (
             -- «Заброньовано» = Підтверджено(1) але НЕ Оплачено (payment_status_id != 1):
@@ -1542,19 +1555,24 @@ def get_product_with_relations(db: Session, product_id: int) -> Optional[Dict[st
             LEFT JOIN technologies tech ON p.technologyid = tech.id
             LEFT JOIN colors scol ON p.sole_colorid = scol.id
             LEFT JOIN (
-                SELECT oi.product_id,
-                       -- «Продано» = Подарунок(7) АБО (Підтверджено(1) І Оплачено),
-                       -- МІНУС Повернення(9): повернений товар знову в наявності.
-                       GREATEST(
-                         COUNT(*) FILTER (WHERE o.order_status_id = 7
-                                            OR (o.order_status_id = 1 AND o.payment_status_id = 1))
-                         - COUNT(*) FILTER (WHERE o.order_status_id = 9),
-                       0) AS sold_count
-                FROM order_items oi
-                JOIN orders o ON o.id = oi.order_id
-                WHERE oi.product_id IS NOT NULL
-                  AND o.order_status_id IN (1, 7, 9)
-                GROUP BY oi.product_id
+                -- «Продано» = Подарунок(7) АБО (Підтверджено(1) І Оплачено).
+                -- Повернення(9) повертає сток ЛИШЕ за окремого оплаченого продажу того ж
+                -- клієнта; перепродаж іншому — статус9 і так не в «продано», тож не
+                -- віднімаємо. effective_returns = SUM по клієнту LEAST(оплат, повернень).
+                SELECT pc.product_id,
+                       GREATEST(SUM(pc.paid_sold) - SUM(LEAST(pc.paid_sold, pc.returns)), 0) AS sold_count
+                FROM (
+                    SELECT oi.product_id, o.client_id,
+                           COUNT(*) FILTER (WHERE o.order_status_id = 7
+                                              OR (o.order_status_id = 1 AND o.payment_status_id = 1)) AS paid_sold,
+                           COUNT(*) FILTER (WHERE o.order_status_id = 9) AS returns
+                    FROM order_items oi
+                    JOIN orders o ON o.id = oi.order_id
+                    WHERE oi.product_id IS NOT NULL
+                      AND o.order_status_id IN (1, 7, 9)
+                    GROUP BY oi.product_id, o.client_id
+                ) pc
+                GROUP BY pc.product_id
             ) sold ON sold.product_id = p.id
             LEFT JOIN (
                 -- «Заброньовано» = Підтверджено(1) без Оплачено (payment != 1). Бронь.
@@ -1755,16 +1773,20 @@ def sync_product_statuses(db: Session) -> Dict[str, int]:
                       SELECT
                           p2.id,
                           COALESCE(
-                              (SELECT GREATEST(
-                                   COUNT(*) FILTER (WHERE o.order_status_id = 7
-                                                      OR (o.order_status_id = 1 AND o.payment_status_id = 1))
-                                   - COUNT(*) FILTER (WHERE o.order_status_id = 9),
-                                 0)
-                               FROM order_items oi
-                               JOIN orders o ON o.id = oi.order_id
-                               WHERE oi.product_id = p2.id
-                                 -- «Продано» = Подарунок(7) АБО (Підтверджено(1) І Оплачено), мінус Повернення(9).
-                                 AND o.order_status_id IN (1, 7, 9)), 0
+                              (SELECT GREATEST(SUM(pc.paid_sold) - SUM(LEAST(pc.paid_sold, pc.returns)), 0)
+                               FROM (
+                                   -- «Продано» = Подарунок(7) АБО (Підтв.(1) І Оплачено); Повернення(9)
+                                   -- кредитує лише за окремого оплаченого продажу того ж клієнта.
+                                   SELECT o.client_id,
+                                          COUNT(*) FILTER (WHERE o.order_status_id = 7
+                                                             OR (o.order_status_id = 1 AND o.payment_status_id = 1)) AS paid_sold,
+                                          COUNT(*) FILTER (WHERE o.order_status_id = 9) AS returns
+                                   FROM order_items oi
+                                   JOIN orders o ON o.id = oi.order_id
+                                   WHERE oi.product_id = p2.id
+                                     AND o.order_status_id IN (1, 7, 9)
+                                   GROUP BY o.client_id
+                               ) pc), 0
                           ) AS sold_count,
                           COALESCE(p2.quantity, 1) AS qty
                       FROM products p2
