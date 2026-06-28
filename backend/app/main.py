@@ -131,6 +131,17 @@ async def health_check():
     logger.debug("Health check endpoint called")
     return {"status": "ok"}
 
+# Runtime-конфіг: платформа + канал + feature-прапори. Фронтенд читає це на старті
+# й рендериться відповідно (різний UI під Windows / обмеження функцій по платформі/
+# каналу). Read-only, без побічних ефектів — лише читає опційний config.json.
+@app.get("/api/runtime-config")
+async def runtime_config():
+    try:
+        from services.runtime_config import get_runtime_config
+    except ImportError:
+        from backend.services.runtime_config import get_runtime_config
+    return get_runtime_config()
+
 # Include routers directly (no prefix needed as routes are now fully specified)
 app.include_router(products.router)
 app.include_router(clients.router, tags=["clients"])  # routes define full /api prefix

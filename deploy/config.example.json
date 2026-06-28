@@ -1,0 +1,8 @@
+{
+  "_comment": "Кладеться як config.json у теку BMS: Windows → %LOCALAPPDATA%\\BMS\\config.json; macOS → ~/Library/Application Support/BMS/config.json. Усі поля опційні. Перекриває канал і feature-прапори ДЛЯ ЦІЄЇ конкретної машини, без перезбірки.",
+  "channel": "stable",
+  "flags": {
+    "olx_publishing": false,
+    "experimental_ui": false
+  }
+}

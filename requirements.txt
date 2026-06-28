@@ -23,21 +23,20 @@ oauth2client==4.1.3
 
 # Networking
 requests==2.32.3
-aiohttp>=3.8.4
-httpx>=0.24.0
+aiohttp==3.13.5
+httpx==0.28.1
 anyio==4.9.0
 
 # Utilities
 python-dotenv==1.1.0
-python-multipart>=0.0.6
-Jinja2>=3.1.2
-MarkupSafe>=2.1.2
+python-multipart==0.0.28
+Jinja2==3.1.6
+MarkupSafe==3.0.3
 
 # Optional: For scraping/parsing functionality
-beautifulsoup4>=4.12.0
-lxml>=4.9.2
-selenium>=4.8.3
-webdriver-manager>=3.8.6
+beautifulsoup4==4.14.3
+lxml==6.1.0
+# (selenium / webdriver-manager прибрано — не використовувались у коді, роздували інсталятор)
 
 # Image processing (фото товару → WebP-майстер; HEIC = формат iPhone)
 Pillow==12.2.0
@@ -50,5 +49,5 @@ telethon==1.36.0
 APScheduler==3.10.4
 
 # Testing
-pytest>=7.3.1
-pytest-asyncio>=0.21.0
+pytest==9.0.3
+pytest-asyncio==1.3.0

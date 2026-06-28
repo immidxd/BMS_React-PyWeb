@@ -5,6 +5,7 @@ import './styles/bms-tokens.css';
 import './index.css';
 import App from './App';
 import { AppThemeProvider } from './contexts/ThemeContext';
+import { RuntimeConfigProvider } from './contexts/RuntimeConfigContext';
 import './services/axiosConfig';
 
 class RootErrorBoundary extends React.Component<{ children: React.ReactNode }, { error: Error | null }> {
@@ -44,9 +45,11 @@ root.render(
   <RootErrorBoundary>
     <React.StrictMode>
       <QueryClientProvider client={queryClient}>
-        <AppThemeProvider>
-          <App />
-        </AppThemeProvider>
+        <RuntimeConfigProvider>
+          <AppThemeProvider>
+            <App />
+          </AppThemeProvider>
+        </RuntimeConfigProvider>
       </QueryClientProvider>
     </React.StrictMode>
   </RootErrorBoundary>
