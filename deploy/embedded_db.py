@@ -78,8 +78,13 @@ def resolve_pg_bin_dir() -> Path:
     if override:
         return Path(override)
 
-    # поруч із застосунком (PyInstaller onedir кладе сюди)
-    app_dir = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent.parent))
+    # поруч із застосунком (PyInstaller onedir: postgres лежить біля BMS.exe = {app}).
+    # ⚠️ НЕ sys._MEIPASS — у PyInstaller 6 onedir це {app}\_internal, а інсталятор
+    # (installer.iss) кладе portable PG у {app}\postgres. Тож беремо теку exe.
+    if getattr(sys, "frozen", False):
+        app_dir = Path(sys.executable).resolve().parent
+    else:
+        app_dir = Path(__file__).resolve().parent.parent
     bundled = app_dir / "postgres" / "bin"
     if (bundled / _exe("pg_ctl")).exists():
         return bundled
@@ -213,6 +218,14 @@ class EmbeddedPostgres:
         logger.info("Старт PostgreSQL :%s (log → %s)", self.port, self._log_path)
         # pg_ctl start запускає демон і повертається; -w чекає готовності сам,
         # але робимо власний health-loop для надійних логів.
+        #
+        # ⚠️ Windows-deadlock: демон postgres.exe УСПАДКОВУЄ stdout/stderr від pg_ctl.
+        # Якщо ловити їх через PIPE (capture_output=True), subprocess.run чекає EOF
+        # цих пайпів — а демон тримає їх відкритими, доки ПРАЦЮЄ → .run() зависає
+        # назавжди (pg_ctl давно повернувся, postgres уже "ready", але ми не виходимо).
+        # На macOS/Linux демон закриває успадковані fd при відв'язуванні, тож там не
+        # відтворюється. Рішення: НЕ створювати пайпи — серверний вивід і так пише сам
+        # PostgreSQL у -l logfile, а діагностику дає _log_tail().
         res = subprocess.run(
             [
                 self._bin("pg_ctl"),
@@ -222,12 +235,12 @@ class EmbeddedPostgres:
                 "-w", "-t", str(int(wait_timeout)),
                 "start",
             ],
-            capture_output=True, text=True,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
         if res.returncode != 0:
-            tail = self._log_tail()
             raise EmbeddedPostgresError(
-                f"pg_ctl start failed:\n{res.stdout}\n{res.stderr}\n--- postgres.log ---\n{tail}"
+                f"pg_ctl start failed (rc={res.returncode})\n"
+                f"--- postgres.log ---\n{self._log_tail()}"
             )
         # додаткова перевірка через pg_isready
         if not self._wait_ready(wait_timeout):
