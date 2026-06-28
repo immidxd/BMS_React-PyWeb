@@ -100,12 +100,31 @@ Windows-машина (прод)
   Перевірено наскрізь на Mac через явний прапор.
 - ⚠️ Конфіги НЕ тестовані на Windows — валідація в Кроці D (див. BUILD_WINDOWS.md §6).
 
-### Крок D — складання й перевірка на Windows 10 `[ПОТРЕБУЄ Windows]`
-- Поставити Python 3.13 + Node 22 на Windows-білд-машину (або CI).
-- `pip install -r requirements.txt`, `npm ci && npm run build` (у `frontend`).
-- PyInstaller за `bms.spec` → Inno Setup за `installer.iss` → `BMS_Setup_x.y.z.exe`.
-- Перший запуск з `BMS_EMBEDDED_DB=1` + `BMS_SEED_DUMP=<дамп>`.
-- Перевірити: вікно WebView2 відкривається, дані з дампу видно, бейджа НЕМА (stable).
+### Крок D — складання й перевірка на Windows 10 `[✅ ЗРОБЛЕНО 2026-06-29 на Windows 10]`
+- ✅ Python **3.13.14** (python.org, per-user) + venv + `pip install -r requirements.txt` + PyInstaller 6.21.
+  Node НЕ ставили — перевикористали наявний `frontend/build` (статика, платформо-незалежна).
+- ✅ Portable **PostgreSQL 16.10** (EDB zip) → `deploy/staging/postgres/` (trim: без pgAdmin/StackBuilder/doc).
+  WebView2 Evergreen bootstrapper → `deploy/staging/`; Runtime на машині присутній.
+- ✅ `pyinstaller deploy/bms.spec` → `dist/BMS/BMS.exe` (265 МБ onedir, console=False).
+- ✅ `ISCC deploy/installer.iss` → `deploy/Output/BMS_Setup_0.1.0-alpha.exe` (~108 МБ).
+- ✅ **Наскрізний запуск перевірено:** BMS.exe → вбудований PG 16.10 (initdb→start) →
+  restore seed (68 таблиць, 11 404 товари) → бекенд :8000 (HTTP 200) → вікно WebView2,
+  фронтенд опитує API. Авто-вмикання embedded DB на frozen-Windows працює.
+
+**🐞 Дві Windows-only вади, знайдені й виправлені (коміт `cd3e85601`, `deploy/embedded_db.py`):**
+1. `resolve_pg_bin_dir()` брав `sys._MEIPASS` (= `{app}\_internal` у PyInstaller 6 onedir),
+   а `installer.iss` кладе PG у `{app}\postgres`. Тепер коли frozen → тека `sys.executable`.
+2. `EmbeddedPostgres.start()`: `pg_ctl start` спавнить демон, що успадковує stdout/stderr;
+   `capture_output=True` → `subprocess.run` вічно чекає EOF пайпів (демон тримає їх) = deadlock.
+   Прибрано PIPE (серверний вивід і так у `-l` logfile). На macOS не відтворювалось.
+
+**➕ Доповнено requirements (коміт `1a2e27f32`):** `google-api-python-client`, `pycountry` —
+бекенд їх імпортує (`product_images_drive.py`, `googlesheets_pars.py`), але в requirements
+їх бракувало → у frozen-білді впали б `ModuleNotFoundError`.
+
+**⚠️ ВІДКРИТЕ для cutover:** seed `db_backup_20260602_041452.sql` СТАРІШИЙ за код — немає таблиці
+`heel_types` (додана міграцією пізніше) → `/api/products` дає 500. Лікується свіжим `pg_dump`
+з Mac при реальному cutover (§6.1), який міститиме всі актуальні таблиці.
 
 ### Крок E — авто-апдейтер `[після D]`
 - GitHub Releases + `manifest.json` (версія/канал/хеш/URL).
