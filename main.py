@@ -90,18 +90,33 @@ def wait_for_backend(max_retries=240, delay=0.5):
     logger.error("Backend failed to start within expected time")
     return False
 
+def _embedded_db_enabled():
+    """Чи піднімати вбудований PostgreSQL.
+
+    Пріоритет:
+      1. Явний BMS_EMBEDDED_DB (1/true/yes | 0/false/no) — завжди виграє.
+      2. Інакше АВТО: увімкнено лише для frozen-білда (PyInstaller) на Windows —
+         там СУБД у комплекті і це і є автономний прод. На dev-Mac/Linux або при
+         запуску з вихідників — вимкнено (системний PostgreSQL, як і раніше).
+    Завдяки авто інсталятору не треба виставляти змінні середовища.
+    """
+    explicit = os.getenv("BMS_EMBEDDED_DB", "").lower()
+    if explicit in ("1", "true", "yes"):
+        return True
+    if explicit in ("0", "false", "no"):
+        return False
+    return bool(getattr(sys, "frozen", False)) and sys.platform.startswith("win")
+
 def start_embedded_db():
     """Автономний режим: підняти ВБУДОВАНИЙ PostgreSQL ПЕРЕД бекендом.
 
-    Активується лише за BMS_EMBEDDED_DB=1 (Windows-прод). На dev-Mac прапора нема →
-    функція одразу повертає None, нічого не змінюючи — використовується системний
-    PostgreSQL, як і раніше.
-
-    Параметри беруться з env (їх уже завантажив setup_environment): DB_PORT/DB_USER/
-    DB_PASSWORD/DB_NAME. На першому запуску (свіжий кластер) і за наявності
-    BMS_SEED_DUMP — відновлює стартовий дамп (cutover з Mac).
+    Вмикається за _embedded_db_enabled() (явний прапор або авто на frozen-Windows).
+    Параметри з env (їх завантажив setup_environment): DB_PORT/DB_USER/DB_PASSWORD/
+    DB_NAME. На першому запуску (свіжий кластер) відновлює seed-дамп: спершу з
+    BMS_SEED_DUMP, інакше з <BMS-теки>/seed.sql (куди його кладе інсталятор/cutover).
+    Якщо seed немає — init_db() побудує порожню схему сам (fresh-install, Крок B).
     """
-    if os.getenv("BMS_EMBEDDED_DB", "").lower() not in ("1", "true", "yes"):
+    if not _embedded_db_enabled():
         return None
 
     deploy_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "deploy")
@@ -121,15 +136,28 @@ def start_embedded_db():
     created = pg.ensure_database()
 
     if fresh or created:
+        # seed: явний BMS_SEED_DUMP → інакше стандартне <BMS-теки>/seed.sql
         seed = os.getenv("BMS_SEED_DUMP")
-        if seed and os.path.isfile(seed):
+        if not (seed and os.path.isfile(seed)):
+            default_seed = os.path.join(_bms_config_dir(), "seed.sql")
+            seed = default_seed if os.path.isfile(default_seed) else None
+        if seed:
             logger.info(f"Перший запуск: відновлюю стартовий дамп {seed}")
             pg.restore_dump(seed)
         else:
-            logger.warning(
-                "Вбудована БД порожня, BMS_SEED_DUMP не задано/не знайдено — "
-                "схеми ще немає. Вкажи дамп через BMS_SEED_DUMP для cutover."
-            )
+            # Немає seed → будуємо схему з нуля через init_db() (Крок B).
+            # Бекенд не кличе init_db на старті, тож робимо це тут, поки БД порожня.
+            logger.info("Вбудована БД порожня — будую схему через init_db()…")
+            backend_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "backend")
+            for p in (os.path.dirname(os.path.abspath(__file__)), backend_dir):
+                if p not in sys.path:
+                    sys.path.insert(0, p)
+            try:
+                from models.database import init_db  # noqa: E402
+                init_db()
+                logger.info("Схему побудовано (fresh-install)")
+            except Exception as e:  # noqa: BLE001
+                logger.error(f"init_db() на свіжій БД впав: {e}")
 
     import atexit
     atexit.register(pg.stop)  # коректна зупинка при виході

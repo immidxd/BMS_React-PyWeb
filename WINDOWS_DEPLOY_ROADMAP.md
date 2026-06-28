@@ -87,13 +87,18 @@ Windows-машина (прод)
 - Див. §5. Дає змогу ставити чисту машину без дампу.
 - Валідація: `python deploy/run_embedded_poc.py` (без `--restore`) → ≥60 таблиць зелено.
 
-### Крок C — конфіги збірки наперед (можна з Mac) `[не зроблено]`
-- `deploy/bms.spec` (PyInstaller onedir): включити `backend`, `frontend/build`,
-  `deploy/embedded_db.py`, моделі/роутери/сервіси, `.session`-логіку, hidden-imports
-  (psycopg2, telethon, gspread, PIL, pillow_heif).
-- `deploy/installer.iss` (Inno Setup): файли застосунку, `postgres/bin`,
-  bootstrap **WebView2 Runtime**, ярлик, (опц.) autostart.
-- Інструкція складання бандла: де взяти portable PG 16 (EDB zip), WebView2.
+### Крок C — конфіги збірки наперед (можна з Mac) `[✅ ЗРОБЛЕНО 2026-06-29]`
+- ✅ `deploy/bms.spec` (PyInstaller onedir): backend/deploy/frontend-build як source-Tree
+  (excludes secrets/.session/logs/tests), `collect_all` для важких 3rd-party,
+  runtime-hook розширює sys.path.
+- ✅ `deploy/pyi_rthook_bms.py` — sys.path (root+backend+deploy) у фрозен-рантаймі.
+- ✅ `deploy/installer.iss` (Inno Setup): per-user, postgres staging, WebView2
+  bootstrap з реєстр-перевіркою, ярлик/autostart, тека `%LOCALAPPDATA%\BMS`.
+- ✅ `deploy/BUILD_WINDOWS.md` — покрокова інструкція + таблиця типових збоїв.
+- ✅ main.py: вбудована БД АВТО-вмикається на frozen-Windows (`_embedded_db_enabled()`),
+  seed з `BMS_SEED_DUMP` або `<BMS>/seed.sql`; fresh-no-seed → init_db() (62 табл.).
+  Перевірено наскрізь на Mac через явний прапор.
+- ⚠️ Конфіги НЕ тестовані на Windows — валідація в Кроці D (див. BUILD_WINDOWS.md §6).
 
 ### Крок D — складання й перевірка на Windows 10 `[ПОТРЕБУЄ Windows]`
 - Поставити Python 3.13 + Node 22 на Windows-білд-машину (або CI).

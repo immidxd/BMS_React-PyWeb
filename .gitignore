@@ -72,3 +72,10 @@ backend/scripts/photo_kind_migration_backups/
 
 # Gender-merge backups (local, repoint/delete dup gender rows)
 backend/scripts/gender_merge_backups/
+
+# Windows build artifacts (PyInstaller / Inno Setup) — важкі бінарники, НЕ в git
+/dist/
+/build/
+deploy/staging/
+deploy/Output/
+*.exe
