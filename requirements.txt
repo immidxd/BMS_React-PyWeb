@@ -20,6 +20,11 @@ gspread==6.2.0
 google-auth==2.38.0
 google-auth-oauthlib==1.2.1
 oauth2client==4.1.3
+# Google Drive API — backend/services/product_images_drive.py (фото товару).
+# Раніше ставився руками на dev-Mac, але не був у requirements → впав би у frozen-білді.
+google-api-python-client==2.198.0
+# ISO-довідники країн — backend/scripts/googlesheets_pars.py (так само бракувало).
+pycountry==26.2.16
 
 # Networking
 requests==2.32.3
