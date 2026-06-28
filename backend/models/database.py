@@ -90,8 +90,24 @@ def init_db():
             conn.execute(text("alter table if exists types alter column typename type varchar(100)"))
             conn.execute(text("alter table if exists subtypes alter column subtypename type varchar(100)"))
             conn.execute(text("alter table if exists conditions alter column conditionname type varchar(100)"))
-            # phone_number varchar(20) → 255 (Google Sheets іноді містить URL замість телефону)
-            conn.execute(text("alter table if exists clients alter column phone_number type varchar(255)"))
+            # phone_number varchar(20) → 255 (Google Sheets іноді містить URL замість телефону).
+            # ⚠️ Ідемпотентно: ALTER лише коли колонка ВУЖЧА за 255. Інакше на вже
+            # розширеній БД (відновлений дамп) Postgres падає
+            # «cannot alter type of a column used in a trigger definition»
+            # (trg_clients_sync_to_contacts залежить від phone_number) і відкочує
+            # весь блок init_db. Перевірка довжини оминає зайвий ALTER → конфлікту нема.
+            conn.execute(text("""
+                DO $$
+                BEGIN
+                    IF EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_name = 'clients' AND column_name = 'phone_number'
+                          AND (character_maximum_length IS NULL OR character_maximum_length < 255)
+                    ) THEN
+                        ALTER TABLE clients ALTER COLUMN phone_number TYPE varchar(255);
+                    END IF;
+                END $$;
+            """))
             # brand_concerns — групування брендів за консерном/компанією-власником
             conn.execute(text("""CREATE TABLE IF NOT EXISTS brand_concerns (
                 id SERIAL PRIMARY KEY,

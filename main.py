@@ -144,20 +144,25 @@ def start_embedded_db():
         if seed:
             logger.info(f"Перший запуск: відновлюю стартовий дамп {seed}")
             pg.restore_dump(seed)
-        else:
-            # Немає seed → будуємо схему з нуля через init_db() (Крок B).
-            # Бекенд не кличе init_db на старті, тож робимо це тут, поки БД порожня.
-            logger.info("Вбудована БД порожня — будую схему через init_db()…")
-            backend_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "backend")
-            for p in (os.path.dirname(os.path.abspath(__file__)), backend_dir):
-                if p not in sys.path:
-                    sys.path.insert(0, p)
-            try:
-                from models.database import init_db  # noqa: E402
-                init_db()
-                logger.info("Схему побудовано (fresh-install)")
-            except Exception as e:  # noqa: BLE001
-                logger.error(f"init_db() на свіжій БД впав: {e}")
+
+        # ЗАВЖДИ синхронізуємо схему до актуальної через init_db() (idempotent):
+        #   • no-seed  → будує схему з нуля (fresh-install, Крок B);
+        #   • із seed  → ДОГАНЯЄ старіший дамп — додає таблиці/колонки, яких у ньому
+        #     бракує (напр. heel_types з пізнішої міграції), інакше /api/products → 500.
+        # Безпечно на повній БД: populate_initial_data() пропускає вже наявні довідники,
+        # ALTER/міграції — IF NOT EXISTS, backfill-и під guard. Бекенд init_db на старті
+        # не кличе, тож робимо це тут, поки БД у нашому контролі.
+        logger.info("Синхронізую схему до актуальної (init_db)…")
+        backend_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "backend")
+        for p in (os.path.dirname(os.path.abspath(__file__)), backend_dir):
+            if p not in sys.path:
+                sys.path.insert(0, p)
+        try:
+            from models.database import init_db  # noqa: E402
+            init_db()
+            logger.info("Схема актуальна")
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"init_db() при синхронізації схеми впав: {e}")
 
     import atexit
     atexit.register(pg.stop)  # коректна зупинка при виході

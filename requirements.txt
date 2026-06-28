@@ -2,6 +2,9 @@
 fastapi==0.115.12
 uvicorn==0.34.0
 starlette==0.46.1
+# WebSocket-реалізація для uvicorn — без неї WS-ендпоінти падають (WinError 10054
+# у frozen-білді), а на них тримається live прогрес-бар парсингу.
+websockets==16.0
 
 # Data validation
 pydantic==2.11.1

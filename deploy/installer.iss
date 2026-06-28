@@ -16,7 +16,7 @@
 #define AppName "BMS"
 #define AppPublisher "BMS"
 ; Версію зчитуємо з файлу VERSION у корені (тримати в синхроні)
-#define AppVersion "0.1.0-alpha"
+#define AppVersion "0.1.1-alpha"
 #define AppExe "BMS.exe"
 
 [Setup]

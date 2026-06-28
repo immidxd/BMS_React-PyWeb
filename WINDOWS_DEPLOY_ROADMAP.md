@@ -122,9 +122,18 @@ Windows-машина (прод)
 бекенд їх імпортує (`product_images_drive.py`, `googlesheets_pars.py`), але в requirements
 їх бракувало → у frozen-білді впали б `ModuleNotFoundError`.
 
-**⚠️ ВІДКРИТЕ для cutover:** seed `db_backup_20260602_041452.sql` СТАРІШИЙ за код — немає таблиці
-`heel_types` (додана міграцією пізніше) → `/api/products` дає 500. Лікується свіжим `pg_dump`
-з Mac при реальному cutover (§6.1), який міститиме всі актуальні таблиці.
+**✅ Реліз 0.1.1-alpha (2026-06-29, Mac) — закриває heel_types-проблему + WS:**
+- `main.py`: в embedded-режимі ПІСЛЯ restore теж викликається `init_db()` —
+  доганяє схему старішого дампу (idempotent). Більше не залежимо від «свіжості» дампу.
+- `database.py`: ALTER `clients.phone_number TYPE varchar(255)` зроблено ідемпотентним
+  (лише коли вужче за 255) — інакше падав на відновленому дампі через тригер
+  `trg_clients_sync_to_contacts` і відкочував увесь блок init_db.
+- `requirements.txt`: `websockets==16.0` — лікує WinError 10054, вмикає live прогрес-бар.
+- Перевірено на Mac: fresh-install 62 табл.; restore СТАРОГО дампу + init_db → догори
+  (24/24 міграції, heel_types+brand_blocklist присутні, 77 табл.).
+- ⚠️ Потребує релізного РЕБІЛДУ на Windows (PyInstaller+ISCC) щоб websockets потрапив у бандл.
+- Свіжий `pg_dump` з Mac (§6.1) усе одно бажаний для актуальних ДАНИХ (не лише схеми).
+- Нефатально: backfill `*_normalized` може пропускатись на дублях FB-URL (під guard).
 
 ### Крок E — авто-апдейтер `[після D]`
 - GitHub Releases + `manifest.json` (версія/канал/хеш/URL).
