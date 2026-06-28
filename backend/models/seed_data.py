@@ -74,21 +74,22 @@ def populate_initial_data(db: Session):
     ]
     db.add_all(order_statuses)
     
-    # Create payment statuses
+    # Create payment statuses (модель PaymentStatus має status_name, не name;
+    # колонки color_code немає — інакше TypeError на свіжій БД)
     payment_statuses = [
-        PaymentStatus(name="Оплачено", color_code="#28a745"),
-        PaymentStatus(name="Частково оплачено", color_code="#fd7e14"),
-        PaymentStatus(name="Очікує оплати", color_code="#ffc107"),
-        PaymentStatus(name="Не оплачено", color_code="#dc3545"),
+        PaymentStatus(status_name="Оплачено"),
+        PaymentStatus(status_name="Частково оплачено"),
+        PaymentStatus(status_name="Очікує оплати"),
+        PaymentStatus(status_name="Не оплачено"),
     ]
     db.add_all(payment_statuses)
-    
-    # Create delivery methods
+
+    # Create delivery methods (модель DeliveryMethod має method_name, не name)
     delivery_methods = [
-        DeliveryMethod(name="Самовивіз", color_code="#6c757d"),
-        DeliveryMethod(name="Нова пошта", color_code="#007bff"),
-        DeliveryMethod(name="Укрпошта", color_code="#fd7e14"),
-        DeliveryMethod(name="Кур'єр", color_code="#28a745"),
+        DeliveryMethod(method_name="Самовивіз"),
+        DeliveryMethod(method_name="Нова пошта"),
+        DeliveryMethod(method_name="Укрпошта"),
+        DeliveryMethod(method_name="Кур'єр"),
     ]
     db.add_all(delivery_methods)
     

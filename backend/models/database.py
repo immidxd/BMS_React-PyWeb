@@ -136,7 +136,18 @@ def init_db():
                     PRIMARY KEY (color_id, group_id)
                 )
             """))
-            # brand_blocklist — типи взуття, які помилково потрапили в бренди
+            # brand_blocklist — типи взуття, які помилково потрапили в бренди.
+            # НЕ є SQLAlchemy-моделлю → create_all її не створює. На свіжій БД
+            # таблиця існує лише у migrations/2025_08_13_001_add_brand_normalization.sql,
+            # тож створюємо ідемпотентно ТУТ, до першого INSERT (інакше init_db падає
+            # на порожній базі: UndefinedTable "brand_blocklist").
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS brand_blocklist (
+                    normalized_name text PRIMARY KEY,
+                    reason text,
+                    created_at timestamptz DEFAULT now()
+                )
+            """))
             conn.execute(text("""
                 INSERT INTO brand_blocklist (normalized_name, reason) VALUES
                     ('кросівки', 'тип взуття'), ('кросівкі', 'тип взуття'),
@@ -374,6 +385,16 @@ def init_db():
             """))
             conn.execute(text("CREATE INDEX IF NOT EXISTS idx_client_aliases_client ON client_aliases(client_id)"))
             conn.execute(text("CREATE INDEX IF NOT EXISTS idx_client_aliases_norm ON client_aliases(norm_key)"))
+            # UNIQUE (client_id, norm_key) — модель ClientAlias НЕ оголошує цей
+            # constraint, тож на свіжій БД create_all робить таблицю БЕЗ нього, а
+            # inline CREATE TABLE вище стає no-op (таблиця вже є). Без цього
+            # ON CONFLICT (client_id, norm_key) (backfill нижче + upsert парсера)
+            # падає. Унікальний індекс задовольняє ON CONFLICT-інференс; на
+            # бойовій БД ім'я вже зайняте constraint-індексом → IF NOT EXISTS no-op.
+            conn.execute(text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_client_aliases "
+                "ON client_aliases(client_id, norm_key)"
+            ))
 
             # 3) Прапорці клієнтів (підсвітка проблемних/невідповідних)
             conn.execute(text("""
@@ -398,6 +419,55 @@ def init_db():
                 "CREATE UNIQUE INDEX IF NOT EXISTS uq_client_flags_active "
                 "ON client_flags(client_id, flag_type) WHERE dismissed = FALSE"
             ))
+
+        # ── Застосувати версіоновані SQL-міграції (backend/migrations/*.sql) ─
+        # create_all + inline-DDL вище дають лише ~54 таблиці. Решта схеми
+        # (client_contacts, sheet_sync_state, merge_candidates, olx_adverts,
+        # olx_oauth, catalog_listings, unmapped_materials + сіди lookup-ів)
+        # живе у версіонованих .sql-міграціях, які НІХТО не застосовував на
+        # свіжій БД — тому автономний вузол піднімався з неповною схемою.
+        # Проганяємо їх ТУТ у порядку імені (дата-префікс = порядок історії):
+        #   • кожен файл — окрема транзакція (engine.begin),
+        #   • exec_driver_sql — сирий SQL повз bind-парсер `:` (do $$…$$, ::cast),
+        #   • помилка одного файлу логується й НЕ валить старт,
+        #   • файли ідемпотентні (IF NOT EXISTS / ON CONFLICT) → на бойовій БД
+        #     це майже no-op, повторні старти безпечні.
+        try:
+            import glob
+            mig_dir = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                "migrations",
+            )
+            sql_files = sorted(glob.glob(os.path.join(mig_dir, "*.sql")))
+            applied = 0
+            for _path in sql_files:
+                _name = os.path.basename(_path)
+                try:
+                    with open(_path, "r", encoding="utf-8") as _fh:
+                        _raw_sql = _fh.read()
+                    if not _raw_sql.strip():
+                        continue
+                    # Сирий DBAPI-cursor БЕЗ params: psycopg2 робить '%'-інтерполяцію
+                    # лише коли передано другий аргумент. Міграції містять літеральні
+                    # '%I'/'%s' (plpgsql format()), тож params НЕ передаємо — інакше
+                    # psycopg2 сприйме їх як плейсхолдери й впаде.
+                    _raw = engine.raw_connection()
+                    try:
+                        _cur = _raw.cursor()
+                        _cur.execute(_raw_sql)
+                        _raw.commit()
+                        _cur.close()
+                    except Exception:
+                        _raw.rollback()
+                        raise
+                    finally:
+                        _raw.close()
+                    applied += 1
+                except Exception as _me:  # noqa: BLE001
+                    logger.warning("SQL-міграція %s пропущена: %s", _name, _me)
+            logger.info("SQL-міграції застосовано: %d/%d", applied, len(sql_files))
+        except Exception as _e:  # noqa: BLE001
+            logger.warning("SQL migrations runner skipped: %s", _e)
 
         # ── Однократний backfill звʼязків з історії "разом з ..." ──────────
         # Idempotent: ON CONFLICT DO NOTHING/DO UPDATE; пропускає вже наявні.
