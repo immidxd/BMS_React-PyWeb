@@ -297,8 +297,17 @@ async def _auto_startup_parse():
     import asyncio
 
     async def _delayed_start():
-        # Невелика затримка щоб додаток повністю стартував і встиг ініціалізуватись
-        await asyncio.sleep(8)
+        # Затримка, щоб UI встиг завантажитись і став інтерактивним ДО старту
+        # важкого фонового парсингу (інакше «тормозить відразу після запуску»:
+        # парсинг + Drive-прогрів + Telegram-синк конкурують за GIL і пул БД).
+        # Налаштовується через AUTO_PARSE_DELAY_SEC (0 = вимкнути старт-парсинг —
+        # journal-poller усе одно підхопить зміни через ~90с).
+        import os as _os
+        _delay = int(_os.getenv("AUTO_PARSE_DELAY_SEC", "45"))
+        if _delay <= 0:
+            logger.info("Auto-parse on startup disabled (AUTO_PARSE_DELAY_SEC=0)")
+            return
+        await asyncio.sleep(_delay)
         try:
             from routers.parsing import start_auto_full_quick
             start_auto_full_quick()

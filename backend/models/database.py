@@ -27,8 +27,9 @@ engine = create_engine(
     DATABASE_URL, 
     connect_args={} if DATABASE_URL.startswith("postgresql") else {"check_same_thread": False},
     echo=False,  # Вимкнено для зменшення навантаження
-    pool_size=5,  # Основний пул з'єднань
-    max_overflow=10,  # Максимум додаткових з'єднань
+    pool_size=10,  # Основний пул з'єднань (було 5: фонові старт-джоби — парсинг,
+                   # Drive-прогрів, Telegram-синк — голодоморили UI-запити на старті)
+    max_overflow=20,  # Максимум додаткових з'єднань (було 10)
     pool_timeout=30,  # Таймаут очікування з'єднання
     pool_recycle=1800,  # Перестворювати з'єднання кожні 30 хв
     pool_pre_ping=True  # Перевіряти з'єднання перед використанням

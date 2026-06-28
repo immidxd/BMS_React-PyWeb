@@ -784,6 +784,30 @@ def _run_sheets_job(job_id: int, target: str, mode: str):
         # Колонка "В наявності" (available_qty) вже коректно показує
         # sold_count vs quantity незалежно від statusid.
 
+        # ── Аудит достовірності продажів/наявності ────────────────────────
+        # Після кожного парсингу замовлень перевіряємо інваріанти даних:
+        #   • oversold (sold_count > quantity);
+        #   • фантомні мис-лінки (notes називають інший товар, ніж прив'язаний).
+        # Так подібні баги (як #Ф2593) НЕ лишаються мовчазно непоміченими.
+        # Read-only, не валить парсинг. Деталі: scripts/integrity_audit.py.
+        if target in ("orders", "full"):
+            try:
+                from scripts.integrity_audit import audit_summary_line
+            except ImportError:
+                from backend.scripts.integrity_audit import audit_summary_line
+            try:
+                _audit = audit_summary_line()
+                if "OK:" in _audit:
+                    logger.info(_audit)
+                else:
+                    logger.warning(_audit)
+                job2 = sess.query(ParsingJob).filter(ParsingJob.id == job_id).first()
+                if job2:
+                    job2.logs_head = ((job2.logs_head or "") + "\n" + _audit)[:8000]
+                    sess.commit()
+            except Exception as _ae:
+                logger.warning(f"integrity audit skipped: {_ae}")
+
         job = sess.query(ParsingJob).filter(ParsingJob.id == job_id).first()
         if job:
             job.current_step = "done"

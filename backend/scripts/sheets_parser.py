@@ -59,7 +59,7 @@ BATCH_CHUNK = int(os.getenv("PARSER_BATCH_CHUNK", "50"))  # sheets per batch rea
 #
 # Bump PARSER_VERSION whenever the orders parsing logic changes in a way that
 # would produce different output for the same input → forces a full reparse.
-PARSER_VERSION = 9  # v9: source_pnum_key (resolution-INDEPENDENT identity) + Level 1K дедуп + анонімний sweep + Level 2N. Корінь ghost-дублів закрито: той самий рядок аркуша не створює дубль навіть при нестабільному resolution / анонімному клієнті / legacy без gid
+PARSER_VERSION = 10  # v10: + Level 0T — дедуп zero-total ордерів за pnum_key+клієнт+вікно (Level 1K/2N вимагали total>0, тож total=0 щопрогону плодив дубль). v9: source_pnum_key (resolution-INDEPENDENT identity) + Level 1K дедуп + анонімний sweep + Level 2N. Корінь ghost-дублів закрито: той самий рядок аркуша не створює дубль навіть при нестабільному resolution / анонімному клієнті / legacy без gid / zero-total
 HASH_SKIP_ENABLED = os.getenv("PARSER_HASH_SKIP", "1") != "0"
 
 # ── Layer C: whole-file change gate ───────────────────────────────────────────
@@ -4344,6 +4344,37 @@ def _parse_orders_sheet(
                 logger.warning(
                     "NULL-client set-match ambiguous date=%s total=%s: %d candidates — skipping merge",
                     order_date, total_amount, len(_anon_matches),
+                )
+
+        # Level 0T: Zero-total ордери (total_amount = 0) оминають Level 1K і 2N,
+        # бо ОБИДВА вимагають total>0 → щопрогону створюється дубль-близнюк.
+        # Матчимо за resolution-INDEPENDENT pnum_key + ТА САМА ідентичність клієнта
+        # (NULL==NULL) + вікно дат ±7д. total не дискримінує (=0), тож опора на
+        # ключ+клієнт+вікно. Лише ОДНОЗНАЧНИЙ збіг (рівно 1 кандидат) — без false-merge.
+        if not existing_order and pnum_key and total_amount == 0:
+            from datetime import timedelta as _td0
+            _0lo, _0hi = order_date - _td0(days=7), order_date + _td0(days=7)
+            _0q = session.query(Order).filter(
+                Order.source_pnum_key == pnum_key,
+                Order.total_amount == 0,
+                Order.order_date >= _0lo,
+                Order.order_date <= _0hi,
+            )
+            _0q = _0q.filter(Order.client_id.is_(None)) if client_id is None \
+                else _0q.filter(Order.client_id == client_id)
+            _0matches = _0q.all()
+            if len(_0matches) == 1:
+                existing_order = _0matches[0]
+                existing_order.order_date = order_date
+                existing_order.source_fingerprint = source_fp
+                logger.info(
+                    "Order #%d: matched via zero-total pnum_key (date→%s)",
+                    existing_order.id, order_date,
+                )
+            elif len(_0matches) > 1:
+                logger.warning(
+                    "zero-total pnum_key match ambiguous key=%s window=±7d: %d candidates "
+                    "— skipping merge", pnum_key[:8], len(_0matches),
                 )
 
         # Level 3: Fallback для старих замовлень без fingerprint
