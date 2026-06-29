@@ -76,12 +76,19 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
-# Ensure Google Sheets creds are available to parsers (single source of truth)
+# Ensure Google Sheets creds are available to parsers (single source of truth).
+# Шлях через спільний резолвер: %LOCALAPPDATA%\BMS\working_credentials.json (прод)
+# → mcp-google-sheets/ (dev-Mac). Виставлений env успадкують і парсер-subprocess'и.
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
-DEFAULT_MCP_KEY = os.path.join(PROJECT_ROOT, 'mcp-google-sheets', 'working_credentials.json')
-if not os.getenv('GOOGLE_SHEETS_CREDENTIALS_FILE') and os.path.exists(DEFAULT_MCP_KEY):
-    os.environ['GOOGLE_SHEETS_CREDENTIALS_FILE'] = DEFAULT_MCP_KEY
-    logger.info(f"GOOGLE_SHEETS_CREDENTIALS_FILE set to {DEFAULT_MCP_KEY}")
+if not os.getenv('GOOGLE_SHEETS_CREDENTIALS_FILE'):
+    try:
+        from services.runtime_config import credentials_file as _sheets_creds
+    except ImportError:
+        from backend.services.runtime_config import credentials_file as _sheets_creds
+    _sheets_key = _sheets_creds()
+    if _sheets_key:
+        os.environ['GOOGLE_SHEETS_CREDENTIALS_FILE'] = _sheets_key
+        logger.info(f"GOOGLE_SHEETS_CREDENTIALS_FILE set to {_sheets_key}")
 
 # Database initialization moved to separate script for faster startup
 logger.info("Database connection ready")

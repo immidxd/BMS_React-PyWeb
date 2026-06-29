@@ -30,10 +30,14 @@ DRIVE_ROOT_FOLDER_ID = os.environ.get(
     "PRODUCT_IMAGES_DRIVE_FOLDER_ID",
     "19fcEnUDL9G4cZagUyPs61hEIcbcT2n-d",  # "Товар"
 )
-DRIVE_CREDS_PATH = os.environ.get(
-    "GOOGLE_DRIVE_CREDS_PATH",
-    "/Users/i.malashenko/Desktop/react-fastapi-app/mcp-google-sheets/working_credentials.json",
-)
+# Шлях кредів сервіс-акаунта — через спільний резолвер (env GOOGLE_DRIVE_CREDS_PATH →
+# %LOCALAPPDATA%\BMS\working_credentials.json (прод) → mcp-google-sheets/ (dev-Mac)).
+# Раніше тут був хардкод Mac-шляху → на Windows Drive-фото мовчки вимикались.
+try:
+    from services.runtime_config import credentials_file as _creds_file
+except ImportError:
+    from backend.services.runtime_config import credentials_file as _creds_file
+DRIVE_CREDS_PATH = _creds_file("GOOGLE_DRIVE_CREDS_PATH") or ""
 DRIVE_INDEX_TTL_SEC = int(os.environ.get("PRODUCT_IMAGES_DRIVE_TTL", "900"))  # 15 хв
 # Коли rebuild впав (мережа/quota) — НЕ кешуємо порожнечу на повний TTL, лише
 # короткий retry-вікно. Інакше один збій «гасить» усі фото на 15 хв (симптом:

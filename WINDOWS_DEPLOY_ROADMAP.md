@@ -173,17 +173,24 @@ Windows-машина (прод)
 
 ## 6. Операційний CUTOVER (одноразово, при переїзді на Windows)
 
+> ✅ Code-портативність інтеграцій ВИПРАВЛЕНА (2026-06-29): Telegram-сесія, Google
+> Sheets/Drive креди тепер читаються через `runtime_config` з `%LOCALAPPDATA%\BMS`
+> (прод) → проєкт (dev). Раніше були хардкод Mac-шляхи → на Windows інтеграції мовчки
+> вимикались. Тож для повної роботи інтеграцій ДОСТАТНЬО покласти файли в BMS-теку (нижче).
+
 1. **Свіжий дамп прод-БД з Mac:**
    ```
    /Library/PostgreSQL/16/bin/pg_dump -h 127.0.0.1 -p 5432 -U postgres \
      -d bsstorage -f bms_cutover_YYYYMMDD.sql
    ```
-2. **Telegram-сесія:** скопіювати `backend/bms.session` (інакше — майстер-логін за
-   номером на Windows при першому запуску).
-3. **Google Sheets креди:** `mcp-google-sheets/working_credentials.json`
-   (або `GOOGLE_SHEETS_JSON_KEY` у secrets.env).
+   Покласти як `%LOCALAPPDATA%\BMS\seed.sql` (лаунчер відновить + init_db догори схему).
+2. **Telegram-сесія:** скопіювати робочу `backend/.telegram_session/bms.session`
+   → `%LOCALAPPDATA%\BMS\bms.session` (інакше — майстер-логін за номером).
+3. **Google Sheets/Drive креди:** `mcp-google-sheets/working_credentials.json`
+   → `%LOCALAPPDATA%\BMS\working_credentials.json` (один файл для Sheets і Drive).
 4. **Секрети:** заповнити `%LOCALAPPDATA%\BMS\secrets.env` з `deploy/secrets.env.example`.
-5. Перший запуск → `BMS_SEED_DUMP=<дамп>` відновить дані у вбудований PG.
+   Опційно перевизначити шляхи: `GOOGLE_DRIVE_CREDS_PATH`, `BMS_TELEGRAM_SESSION`.
+5. Перший запуск → дані з seed.sql + усі інтеграції підхопляться з BMS-теки.
 
 ---
 

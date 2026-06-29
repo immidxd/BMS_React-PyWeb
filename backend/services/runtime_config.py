@@ -68,6 +68,53 @@ def config_file() -> Path:
     return config_dir() / "config.json"
 
 
+# ── резолв секретів/кредів/сесій (портативність Mac ↔ Windows) ──────────────────
+# Принцип: ПРОД (Windows) тримає секрети у %LOCALAPPDATA%\BMS; DEV (Mac) — у проєкті
+# (mcp-google-sheets/, backend/.telegram_session/). Спільний код, рантайм-резолв —
+# жодних хардкод-шляхів і жодного форку версій.
+def _repo_root() -> Path:
+    # backend/services/runtime_config.py → parents[2] = корінь репо
+    return Path(__file__).resolve().parents[2]
+
+
+def credentials_file(env_var: str = "", filename: str = "working_credentials.json") -> Optional[str]:
+    """Шлях до файлу кредів сервіс-акаунта Google.
+    Пріоритет: env (якщо заданий) → %BMS%/filename → legacy mcp-google-sheets/filename.
+    У frozen-білді legacy-шляху нема → береться BMS-тека. Повертає None, якщо ніде нема.
+    """
+    if env_var:
+        v = os.getenv(env_var)
+        if v:
+            return v
+    for cand in (config_dir() / filename,
+                 _repo_root() / "mcp-google-sheets" / filename):
+        if cand.is_file():
+            return str(cand)
+    return None
+
+
+def telegram_session_prefix() -> str:
+    """Префікс шляху telethon-сесії (telethon додасть '.session').
+    Пріоритет: env BMS_TELEGRAM_SESSION → %BMS%/bms (якщо там є bms.session) →
+    legacy backend/.telegram_session/bms (dev-Mac). Для нових прод-інсталяцій —
+    дефолт у BMS-теці (створюємо за потреби).
+    """
+    env = os.getenv("BMS_TELEGRAM_SESSION")
+    if env:
+        return env
+    cfg = config_dir()
+    if (cfg / "bms.session").is_file():
+        return str(cfg / "bms")
+    legacy_dir = _repo_root() / "backend" / ".telegram_session"
+    if (legacy_dir / "bms.session").is_file():
+        return str(legacy_dir / "bms")
+    try:
+        cfg.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+    return str(cfg / "bms")
+
+
 # ── версія ─────────────────────────────────────────────────────────────────────
 def app_version() -> str:
     """Версія застосунку: env BMS_VERSION → файл VERSION у корені → 'dev'."""

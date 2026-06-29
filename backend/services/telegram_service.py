@@ -192,11 +192,19 @@ class TelegramScanner:
         import os
         try:
             from telethon import TelegramClient
-            session_dir = os.path.join(os.path.dirname(__file__), '../.telegram_session')
-            session_file = os.path.join(session_dir, self.session_name)
+            # Шлях сесії — через спільний резолвер (прод: %LOCALAPPDATA%\BMS\bms.session;
+            # dev-Mac: backend/.telegram_session/bms.session). Жодного хардкоду.
+            try:
+                from services.runtime_config import telegram_session_prefix
+            except ImportError:
+                from backend.services.runtime_config import telegram_session_prefix
+            session_file = telegram_session_prefix()
 
             if not os.path.exists(session_file + ".session"):
-                logger.error(f"Session file not found: {session_file}.session — run auth_telegram.py first")
+                logger.error(
+                    f"Session file not found: {session_file}.session — поклади bms.session "
+                    f"у %LOCALAPPDATA%\\BMS (прод) або запусти auth_telegram.py (dev)"
+                )
                 return False
 
             self.client = TelegramClient(session_file, self.api_id, self.api_hash)
