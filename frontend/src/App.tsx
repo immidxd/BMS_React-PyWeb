@@ -8,6 +8,7 @@ import { ParsingDialog } from './components/ParsingDialog';
 import { ParsingStatus } from './components/ParsingStatus';
 import TaskCenter from './components/common/TaskCenter';
 import DevBadge from './components/common/DevBadge';
+import UpdateBanner from './components/common/UpdateBanner';
 import { ToastContainer, toast } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
 import './App.css';
@@ -319,6 +320,7 @@ const App: React.FC = () => {
           </Routes>
           <TaskCenter />
           <DevBadge />
+          <UpdateBanner />
         </FilterPanelProvider>
       </AppThemeProvider>
     </Router>

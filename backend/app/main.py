@@ -142,6 +142,17 @@ async def runtime_config():
         from backend.services.runtime_config import get_runtime_config
     return get_runtime_config()
 
+# Статус оновлення (Крок E1): чи є новіша версія в каналі цієї машини.
+# Read-only — тягне manifest.json за BMS_UPDATE_MANIFEST_URL і порівнює версії.
+# Нічого не завантажує/не застосовує. Без URL → {"enabled": false}.
+@app.get("/api/update-status")
+async def update_status():
+    try:
+        from services.updater import check_for_update
+    except ImportError:
+        from backend.services.updater import check_for_update
+    return check_for_update()
+
 # Include routers directly (no prefix needed as routes are now fully specified)
 app.include_router(products.router)
 app.include_router(clients.router, tags=["clients"])  # routes define full /api prefix

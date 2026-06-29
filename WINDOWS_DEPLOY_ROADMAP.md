@@ -135,9 +135,22 @@ Windows-машина (прод)
 - Свіжий `pg_dump` з Mac (§6.1) усе одно бажаний для актуальних ДАНИХ (не лише схеми).
 - Нефатально: backfill `*_normalized` може пропускатись на дублях FB-URL (під guard).
 
-### Крок E — авто-апдейтер `[після D]`
-- GitHub Releases + `manifest.json` (версія/канал/хеш/URL).
-- Гаряче оновлення (часто): заміна `frontend/build` + backend-коду, рестарт.
+### Крок E — авто-апдейтер
+
+**E1 — ВИЯВЛЕННЯ оновлень `[✅ ЗРОБЛЕНО 2026-06-29, Mac]`**
+- `backend/services/updater.py` — тягне `manifest.json` за `BMS_UPDATE_MANIFEST_URL`,
+  порівнює версію каналу з локальною (packaging). Read-only, стійке до офлайну.
+- `/api/update-status` — ендпоінт статусу (enabled/update_available/latest/url/sha256/notes).
+- `frontend/.../UpdateBanner.tsx` — ненав'язливий банер «доступне оновлення» (dismissible),
+  показується лише коли є новіша; інакше null. Підключено в App.tsx.
+- `deploy/make_manifest.py` — генератор manifest.json (sha256+size+url) для релізу, з `--merge`.
+- Перевірено на Mac (file:// маніфест): newer→True, рівна→False, без URL→enabled:false.
+- Маніфест публікувати за стабільним URL (GitHub Releases asset / raw / R2);
+  виставити `BMS_UPDATE_MANIFEST_URL` у secrets.env прод-машини.
+
+**E2 — ЗАСТОСУВАННЯ оновлень `[не зроблено; ризикова Windows-частина]`**
+- Гаряче оновлення (часто): завантажити, звірити sha256, замінити `frontend/build` +
+  backend-код, рестарт процесу.
 - Повний `Setup.exe` (рідко): коли змінились бінарні залежності/PG.
 - **Перед будь-яким апдейтом — `pg_dump` у `%LOCALAPPDATA%\BMS\backups`.**
 - Канали: тестуєш на Mac (dev) → beta → stable (Windows).
