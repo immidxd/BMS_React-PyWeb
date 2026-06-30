@@ -236,9 +236,23 @@ def _build_product_where(filters: Optional["schemas.ProductFilter"]) -> tuple:
                  c.colorname      ILIKE ANY(:search_patterns) OR
                  g.gendername     ILIKE ANY(:search_patterns) OR
                  cond.conditionname ILIKE ANY(:search_patterns) OR
-                 s.statusname     ILIKE ANY(:search_patterns))
+                 s.statusname     ILIKE ANY(:search_patterns) OR
+                 p.brandid IN (
+                     SELECT ba.brand_id FROM brand_aliases ba
+                     JOIN unnest(CAST(:search_tokens AS text[])) AS tok ON (
+                          unaccent(lower(ba.alias_name COLLATE "und-x-icu")) = unaccent(lower(tok COLLATE "und-x-icu"))
+                       OR (length(tok) >= 4 AND unaccent(lower(ba.alias_name COLLATE "und-x-icu")) LIKE '%' || unaccent(lower(tok COLLATE "und-x-icu")) || '%')
+                       OR (length(ba.alias_name) >= 4 AND unaccent(lower(tok COLLATE "und-x-icu")) LIKE '%' || unaccent(lower(ba.alias_name COLLATE "und-x-icu")) || '%')
+                       OR (length(tok) >= 4 AND levenshtein(unaccent(lower(ba.alias_name COLLATE "und-x-icu")), unaccent(lower(tok COLLATE "und-x-icu"))) <= 1)
+                     )
+                 ))
             """)
             params['search_patterns'] = search_patterns
+            # Кирилична транслітерація бренду («найк»→Nike, «адідас»→Adidas, одрук «адидс»):
+            # резолв токенів через СПІЛЬНУ brand_aliases (та сама таблиця, що в каталозі та
+            # BMS-парсері). Лише ДОДАЄ збіги до ILIKE-блоку вище — наявна поведінка не
+            # змінюється. levenshtein≤1 — толерантність до одруків (fuzzystrmatch у БД).
+            params['search_tokens'] = [t for t in filters.search.split() if len(t) >= 2]
 
         # Single ID filters
         if filters.typeid and not filters.typeids:
