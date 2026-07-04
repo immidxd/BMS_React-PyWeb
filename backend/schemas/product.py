@@ -214,6 +214,12 @@ class ProductUpdate(BaseModel):
     color_name: Optional[str] = None   # головний «Колір» (resolved → colorid server-side)
     current_condition_name: Optional[str] = None   # «Стан» (поточний стан) — per-item
     manufacturer_country_name: Optional[str] = None   # «Виробник» (→ manufacturercountryid)
+    # Класифікація by NAME (1.4): вільний ввід з автопідказками, get-or-create
+    # на сервері (як інші *_name). subtype_name резолвиться з typeid-контекстом.
+    brand_name: Optional[str] = None
+    type_name: Optional[str] = None
+    subtype_name: Optional[str] = None
+    style_name: Optional[str] = None
     materials: Optional[List[ProductMaterialEntry]] = None   # legacy/structured (not used by inline UI)
     # Inline-edit матеріалів по позиціях: {position: "шкіра, замша"} (CSV назв).
     # Позиція present → full-replace тієї позиції; "" → очистити; відсутня → не чіпати.

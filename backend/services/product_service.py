@@ -989,6 +989,11 @@ LOOKUP_NAME_FIELDS = {
     "color_name":      ("colorid",      "colors",          "colorname"),
     "current_condition_name": ("current_conditionid", "conditions", "conditionname"),
     "manufacturer_country_name": ("manufacturercountryid", "countries", "countryname"),
+    # Класифікація (1.4): вільний ввід за назвою. subtype_name НЕ тут — йому
+    # потрібен typeid-контекст (обробляється окремо в update_product).
+    "brand_name": ("brandid", "brands", "brandname"),
+    "type_name":  ("typeid",  "types",  "typename"),
+    "style_name": ("styleid", "styles", "stylename"),
 }
 
 # Описові довідники, де канонічна форма — З МАЛОЇ літери (у БД 100% lowercase).
@@ -1049,6 +1054,26 @@ def _resolve_lookup_id_by_name(db: Session, table: str, name_col: str, value: st
         {"v": insert_val},
     ).fetchone()
     return int(new_id[0]) if new_id else None
+
+
+def _resolve_subtype_id_by_name(db: Session, value: str, typeid: Optional[int]) -> Optional[int]:
+    """subtype_name → subtypeid з typeid-контекстом. subtypename УНІКАЛЬНИЙ глобально,
+    тож наявна назва переюзається (її typeid не чіпаємо — вона вже комусь належить);
+    НОВА створюється з typeid поточного товару, щоб не плодити «сирітських» підтипів."""
+    val = (value or "").strip()
+    if not val:
+        return None
+    folded = val.lower()
+    for rid, nm in db.execute(text("SELECT id, subtypename FROM subtypes")).fetchall():
+        if (nm or "").strip().lower() == folded:
+            return int(rid)
+    new = db.execute(
+        text("INSERT INTO subtypes (subtypename, typeid) VALUES (:v, :t) "
+             "ON CONFLICT (subtypename) DO UPDATE SET subtypename = EXCLUDED.subtypename "
+             "RETURNING id"),
+        {"v": val, "t": typeid},
+    ).fetchone()
+    return int(new[0]) if new else None
 
 
 def resolve_lookup_name(db: Session, fk_field: str, fk_id: Optional[int]) -> Optional[str]:
@@ -1259,6 +1284,13 @@ def update_product(db: Session, product_id: int, product: schemas.ProductUpdate)
                 if name_key in update_data:
                     raw = update_data.pop(name_key)
                     update_data[fk_field] = _resolve_lookup_id_by_name(db, table, name_col, raw)
+
+            # Підтип — ПІСЛЯ циклу вище: type_name уже зрезолвлено в typeid, тож
+            # новий підтип створюється з коректним typeid-контекстом.
+            if "subtype_name" in update_data:
+                raw = update_data.pop("subtype_name")
+                target_typeid = update_data.get("typeid", db_product.typeid)
+                update_data["subtypeid"] = _resolve_subtype_id_by_name(db, raw, target_typeid)
 
             # Markdown: on a price DECREASE, preserve the previous price into
             # "Стара ціна" if it is empty (per user rule). Existing oldprice and

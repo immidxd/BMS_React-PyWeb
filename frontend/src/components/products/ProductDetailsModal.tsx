@@ -592,9 +592,13 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     setMaterialDrafts(groupMaterialsByPosition((product as any)?.materials));
     setMeasurementDrafts(measurementsFromProduct(product as any));
     const cd: Record<string, string> = {};
-    for (const f of ['brandid', 'typeid', 'subtypeid', 'styleid', 'genderid']) {
-      const v = (product as any)?.[f];
-      cd[f] = v == null ? '' : String(v);
+    // Стать — і далі дропдаун за id (3 канонічні значення).
+    const gid = (product as any)?.genderid;
+    cd['genderid'] = gid == null ? '' : String(gid);
+    // Бренд/Тип/Підтип/Стиль — комбобокси ЗА НАЗВОЮ (вільний ввід + підказки;
+    // сервер робить get-or-create). Драфт = поточна назва.
+    for (const f of ['brand_name', 'type_name', 'subtype_name', 'style_name']) {
+      cd[f] = String((product as any)?.[f] ?? '');
     }
     setClassDrafts(cd);
     // Дропдауни наявних значень — підвантажуємо довідник раз (лінь).
@@ -653,12 +657,18 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     }
     if (Object.keys(measChanges).length > 0) payload.measurements_edit = measChanges;
 
-    // Класифікація: лише змінені FK id (дропдаун). '' → null (очистити).
-    for (const f of ['brandid', 'typeid', 'subtypeid', 'styleid', 'genderid']) {
-      const cur = classDrafts[f] ?? '';
-      const orig = (product as any)?.[f] == null ? '' : String((product as any)[f]);
+    // Класифікація: Бренд/Тип/Підтип/Стиль — ЗА НАЗВОЮ (вільний ввід; сервер
+    // резолвить get-or-create, '' → null очищає FK). Стать — FK id (дропдаун).
+    for (const f of ['brand_name', 'type_name', 'subtype_name', 'style_name']) {
+      const cur = (classDrafts[f] ?? '').trim();
+      const orig = String((product as any)?.[f] ?? '').trim();
       if (cur === orig) continue;
-      payload[f] = cur === '' ? null : Number(cur);
+      payload[f] = cur === '' ? null : cur;
+    }
+    {
+      const cur = classDrafts['genderid'] ?? '';
+      const orig = (product as any)?.genderid == null ? '' : String((product as any).genderid);
+      if (cur !== orig) payload['genderid'] = cur === '' ? null : Number(cur);
     }
 
     if (Object.keys(payload).length === 0) { cancelEditMode(); return; }
@@ -798,11 +808,15 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
   // ── Дрібні UI-хелпери ─────────────────────────────────────────────────────────
   const inputCls = 'w-full px-2 py-1.5 text-sm rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-100 focus:outline-none focus:ring-1 focus:ring-primary-400';
 
-  // Підтипи фільтруються за обраним типом (subtypes мають typeid). Якщо тип не
-  // обрано — показуємо всі. Поточний підтип товару завжди лишаємо у списку.
+  // Підтипи фільтруються за обраним типом (subtypes мають typeid). Тип у драфті —
+  // НАЗВА (комбобокс), тож id шукаємо по довіднику (ci). Якщо тип не розпізнано
+  // (нове/порожнє значення) — показуємо всі. Поточний підтип завжди у списку.
   const subtypeOptions = (() => {
     const all = (filterOpts?.subtypes ?? []) as any[];
-    const tid = classDrafts['typeid'] ? Number(classDrafts['typeid']) : null;
+    const tname = (classDrafts['type_name'] ?? '').trim().toLowerCase();
+    const tid = tname
+      ? ((filterOpts?.types ?? []) as any[]).find((t) => (t.name || '').toLowerCase() === tname)?.id ?? null
+      : null;
     if (tid == null) return all;
     const curSub = (p as any)?.subtypeid;
     return all.filter((s) => s.typeid === tid || s.id === curSub);
@@ -936,6 +950,45 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
 
   // Класифікація: дропдаун наявних значень (edit) / RoCell зі значенням (read).
   // ⚠️ Викликати ЯК ФУНКЦІЮ: {classSelect({...})} — як і EditCell (без межі компонента).
+  // Комбобокс класифікації (1.4): пошук по довіднику + ВІЛЬНЕ введення нового
+  // значення (нативний datalist — фільтрує підказки при наборі, дозволяє свій
+  // текст). nameField — драфт/поле payload (brand_name…), lockField — FK для
+  // бейджів лока (brandid…). Сервер робить get-or-create за назвою.
+  const classCombo = ({ nameField, lockField, label, options, readValue }: {
+    nameField: string; lockField: string; label: string;
+    options: { id: number; name: string }[]; readValue?: React.ReactNode;
+  }): React.ReactElement | null => {
+    if (editMode) {
+      return (
+        <div className="flex flex-col gap-1 min-w-0">
+          <span className="text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500 font-medium flex items-center gap-1.5">
+            {label}<LockDot field={lockField} />
+          </span>
+          <input
+            list={`dl-${nameField}`}
+            value={classDrafts[nameField] ?? ''}
+            onChange={(e) => setClassDrafts((d) => ({ ...d, [nameField]: e.target.value }))}
+            placeholder="пошук або нове…"
+            className={inputCls}
+          />
+          <datalist id={`dl-${nameField}`}>
+            {options.map((o) => <option key={o.id} value={o.name} />)}
+          </datalist>
+        </div>
+      );
+    }
+    if (readValue === null || readValue === undefined || readValue === '') return null;
+    return (
+      <div className="flex flex-col gap-0.5 min-w-0">
+        <span className="text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500 font-medium">{label}</span>
+        <span className="text-sm text-gray-800 dark:text-gray-200 break-words flex items-center gap-2">
+          {(typeof readValue === 'string' || typeof readValue === 'number') ? <CopyOnClick value={readValue as string | number} /> : readValue}
+          <LockBadge field={lockField} />
+        </span>
+      </div>
+    );
+  };
+
   const classSelect = ({ field, label, options, readValue }: {
     field: string; label: string; options: { id: number; name: string }[]; readValue?: React.ReactNode;
   }): React.ReactElement | null => {
@@ -1609,12 +1662,12 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                   <div className="mt-3 border-t border-gray-100 dark:border-gray-800 pt-4">
                     <div className="text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500 mb-3 font-medium">Характеристики</div>
                     <div className={`grid ${charCols} gap-x-6 gap-y-3`}>
-                    {classSelect({ field: 'brandid', label: 'Бренд', options: (filterOpts?.brands ?? []) as any, readValue: formatBrandName((p as any).brand_name) })}
+                    {classCombo({ nameField: 'brand_name', lockField: 'brandid', label: 'Бренд', options: (filterOpts?.brands ?? []) as any, readValue: formatBrandName((p as any).brand_name) })}
                     {EditCell({ field: 'model', label: 'Модель' })}
                     {EditCell({ field: 'collection', label: 'Колекція' })}
-                    {classSelect({ field: 'typeid', label: 'Тип', options: (filterOpts?.types ?? []) as any, readValue: (p as any).type_name })}
-                    {classSelect({ field: 'subtypeid', label: 'Підтип', options: (subtypeOptions) as any, readValue: (p as any).subtype_name })}
-                    {classSelect({ field: 'styleid', label: 'Стиль', options: (filterOpts?.styles ?? []) as any, readValue: (p as any).style_name })}
+                    {classCombo({ nameField: 'type_name', lockField: 'typeid', label: 'Тип', options: (filterOpts?.types ?? []) as any, readValue: (p as any).type_name })}
+                    {classCombo({ nameField: 'subtype_name', lockField: 'subtypeid', label: 'Підтип', options: (subtypeOptions) as any, readValue: (p as any).subtype_name })}
+                    {classCombo({ nameField: 'style_name', lockField: 'styleid', label: 'Стиль', options: (filterOpts?.styles ?? []) as any, readValue: (p as any).style_name })}
                     {classSelect({ field: 'genderid', label: 'Стать', options: (filterOpts?.genders ?? []) as any, readValue: (p as any).gender_name })}
                     {EditCell({ field: 'season', label: 'Сезон' })}
                     {EditCell({ field: 'color_name', lockField: 'colorid', label: 'Колір' })}
