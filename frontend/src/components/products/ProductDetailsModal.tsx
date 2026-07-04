@@ -808,9 +808,20 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     return all.filter((s) => s.typeid === tid || s.id === curSub);
   })();
 
+  // Бейдж «змінено» показуємо ЛИШЕ (1) у режимі редагування — чистий перегляд
+  // без службових позначок, і (2) для СВІЖИХ правок (< 14 днів) — старі й так
+  // «прижились». Сам ЛОК від перезапису парсером діє незалежно від бейджа.
+  const LOCK_BADGE_TTL_DAYS = 14;
+  const lockFresh = (() => {
+    const ts = (p as any)?.manually_edited_at;
+    if (!ts) return false;
+    const age = Date.now() - new Date(ts).getTime();
+    return age >= 0 && age < LOCK_BADGE_TTL_DAYS * 86_400_000;
+  })();
+
   // Бейдж «змінено в програмі» + кнопка «скинути до аркуша» для залоченого поля
   const LockBadge: React.FC<{ field: string }> = ({ field }) =>
-    lockedFields.has(field) ? (
+    editMode && lockFresh && lockedFields.has(field) ? (
       <span className="inline-flex items-center gap-1 align-middle">
         <span className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300 font-medium"
               title="Змінено в програмі — парсер не перезатирає">
@@ -824,7 +835,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
 
   // Маленька крапка-індикатор лока (для компактних місць — лейбли в edit-режимі)
   const LockDot: React.FC<{ field: string }> = ({ field }) =>
-    lockedFields.has(field)
+    lockFresh && lockedFields.has(field)
       ? <span className="w-1.5 h-1.5 rounded-full bg-amber-500 inline-block" title="Змінено в програмі" />
       : null;
 
