@@ -507,6 +507,36 @@ async def delete_product_photo(
     return {"deleted": filename}
 
 
+@router.get("/api/products/{product_id}/journal-url")
+async def get_product_journal_url(
+    product_id: int = Path(..., ge=1, description="ID товару"),
+    db: Session = Depends(get_db)
+):
+    """Пряме посилання на аркуш журналу з цим товаром (кнопка «Таблиця» в картці).
+    gid вкладки дістаємо через Sheets API за назвою завозу (deliveryname)."""
+    row = db.execute(text("SELECT deliveryid FROM products WHERE id = :i"),
+                     {"i": product_id}).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Товар не знайдено")
+    sheet = product_service.get_delivery_name(db, row[0])
+    if not sheet:
+        raise HTTPException(status_code=404, detail="Товар не прив'язаний до поставки")
+    try:
+        try:
+            from scripts.sheets_parser import get_gc, JOURNAL_ID
+        except ImportError:
+            from backend.scripts.sheets_parser import get_gc, JOURNAL_ID
+        ws = get_gc().open_by_key(JOURNAL_ID).worksheet(sheet)
+        return {"url": f"https://docs.google.com/spreadsheets/d/{JOURNAL_ID}/edit#gid={ws.id}",
+                "sheet": sheet}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"journal-url failed for product {product_id}: {e}")
+        raise HTTPException(status_code=502,
+                            detail=f"Не вдалося знайти вкладку «{sheet}» у журналі")
+
+
 @router.get("/api/products/{product_id}")
 async def get_product(
     product_id: int = Path(..., ge=1, description="ID товару"),

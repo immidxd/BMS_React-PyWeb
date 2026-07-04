@@ -1200,6 +1200,43 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                   );
                 })()}
 
+                {/* «Поставка»: перейти на вкладку Поставки з відкритою карткою
+                    завозу цього товару (крос-таб патерн як bms:switch-to-orders) */}
+                {(p as any)?.deliveryid && (
+                  <button
+                    onClick={() => {
+                      localStorage.setItem('bms:pendingDeliveryCard', String((p as any).deliveryid));
+                      window.dispatchEvent(new CustomEvent('bms:switch-to-deliveries'));
+                      onClose();
+                    }}
+                    className="px-3 py-2 rounded-lg text-sm font-medium border border-gray-200 dark:border-gray-700 text-gray-600 hover:text-gray-900 hover:bg-gray-50 dark:text-gray-300 dark:hover:text-gray-100 dark:hover:bg-gray-800 transition-colors flex items-center gap-1.5"
+                    title="Відкрити поставку цього товару"
+                  >
+                    <span>📦</span><span>Поставка</span>
+                  </button>
+                )}
+
+                {/* «Таблиця»: відкрити журнал у браузері прямо на аркуші завозу
+                    (gid дістає бекенд через Sheets API) */}
+                {(p as any)?.deliveryid && (
+                  <button
+                    onClick={async () => {
+                      try {
+                        const r = await fetch(`/api/products/${productId}/journal-url`);
+                        if (!r.ok) throw new Error(await r.text());
+                        const { url } = await r.json();
+                        const a = document.createElement('a');
+                        a.href = url; a.target = '_blank'; a.rel = 'noopener noreferrer';
+                        document.body.appendChild(a); a.click(); a.remove();
+                      } catch (e) { console.error('journal-url', e); }
+                    }}
+                    className="px-3 py-2 rounded-lg text-sm font-medium border border-gray-200 dark:border-gray-700 text-gray-600 hover:text-gray-900 hover:bg-gray-50 dark:text-gray-300 dark:hover:text-gray-100 dark:hover:bg-gray-800 transition-colors flex items-center gap-1.5"
+                    title="Відкрити аркуш цього завозу в Google Таблиці"
+                  >
+                    <span>▤</span><span>Таблиця</span>
+                  </button>
+                )}
+
                 {!editMode ? (
                   <button
                     onClick={enterEditMode}

@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import {
-  fetchShipments, groupShipments, ungroupShipments, updateShipment,
+  fetchShipments, fetchShipment, groupShipments, ungroupShipments, updateShipment,
   fetchShipmentGroups,
   type Shipment, type ShipmentList, type ShipmentGroup,
 } from '../../services/referenceService';
@@ -37,6 +37,23 @@ const ShipmentsTable: React.FC<{ reloadSignal?: number }> = ({ reloadSignal }) =
   const [cardShipment, setCardShipment] = useState<Shipment | null>(null);
   const navigate = useNavigate();
   const location = useLocation();
+
+  // Крос-таб «Поставка» з картки товару: deliveryid чекає в localStorage
+  // (bms:pendingDeliveryCard). Читаємо при монтуванні І на подію-поштовх
+  // (bms:deliveries-open-card) — щоб працювало і коли вкладка вже відкрита.
+  useEffect(() => {
+    const openPending = () => {
+      const raw = localStorage.getItem('bms:pendingDeliveryCard');
+      if (!raw) return;
+      localStorage.removeItem('bms:pendingDeliveryCard');
+      const id = Number(raw);
+      if (!Number.isFinite(id) || id <= 0) return;
+      fetchShipment(id).then(setCardShipment).catch((e) => console.error('open delivery card', e));
+    };
+    openPending();
+    window.addEventListener('bms:deliveries-open-card', openPending);
+    return () => window.removeEventListener('bms:deliveries-open-card', openPending);
+  }, []);
 
   const loadData = useCallback(async () => {
     setLoading(true);

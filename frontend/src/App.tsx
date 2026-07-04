@@ -172,6 +172,18 @@ const AppContent: React.FC = () => {
     window.addEventListener('bms:switch-to-orders', onSwitchToOrders);
     return () => window.removeEventListener('bms:switch-to-orders', onSwitchToOrders);
   }, []);
+
+  // Крос-вкладкова навігація: картка товару → «Поставка». Той самий патерн:
+  // deliveryid у localStorage (bms:pendingDeliveryCard) → перемикаємо таб →
+  // подія-поштовх для вже змонтованої таблиці поставок.
+  useEffect(() => {
+    const onSwitchToDeliveries = () => {
+      setActiveTab('deliveries');
+      setTimeout(() => window.dispatchEvent(new CustomEvent('bms:deliveries-open-card')), 50);
+    };
+    window.addEventListener('bms:switch-to-deliveries', onSwitchToDeliveries);
+    return () => window.removeEventListener('bms:switch-to-deliveries', onSwitchToDeliveries);
+  }, []);
   
   const handleGlobalSearch = (term: string) => {
     console.log('Global search triggered:', term);

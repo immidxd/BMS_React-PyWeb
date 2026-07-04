@@ -454,6 +454,12 @@ export const updateShipment = async (id: number, data: { notes?: string; deliver
   return response.data;
 };
 
+// Одна поставка за id (крос-таб «Поставка» з картки товару)
+export const fetchShipment = async (id: number): Promise<Shipment> => {
+  const response = await axios.get(`/api/shipments/${id}`);
+  return response.data;
+};
+
 // Створення завозу: клон вкладки «New» у журналі + рядок у deliveries (Фаза 1
 // фічі «Додати товар»). Постачальник резолвиться get-or-create за назвою на бекенді.
 // Потребує PARSER_ADD_PRODUCT=1 у запуску бекенду — інакше 403.
