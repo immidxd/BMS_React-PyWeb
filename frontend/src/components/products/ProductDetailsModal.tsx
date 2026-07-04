@@ -547,6 +547,21 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     }
   };
 
+  // Прибрати «Стару ціну» одним кліком (додається випадково; повний ланцюг:
+  // БД NULL + лок + write-back стирає клітинку «Стара ціна» в журналі).
+  const clearOldprice = async () => {
+    if (!productId) return;
+    setSavingField(true);
+    try {
+      await productService.updateProduct(productId, { oldprice: null } as any);
+      await loadProduct(false);
+    } catch (e) {
+      console.error('Failed to clear oldprice', e);
+    } finally {
+      setSavingField(false);
+    }
+  };
+
   // Зняти лок з поля («скинути до аркуша») → відновиться при наступному парсингу
   const unlockField = async (field: string) => {
     if (!productId) return;
@@ -1435,8 +1450,15 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                         </span>
                         <span className="flex flex-col gap-1">
                           <span className="text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500 font-medium">Стара ціна</span>
-                          <input type="number" value={drafts['oldprice'] ?? ''} onChange={(e) => setDraft('oldprice', e.target.value)}
-                            className="w-28 px-2 py-1.5 text-lg font-bold rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800" />
+                          <span className="inline-flex items-center gap-1">
+                            <input type="number" value={drafts['oldprice'] ?? ''} onChange={(e) => setDraft('oldprice', e.target.value)}
+                              className="w-28 px-2 py-1.5 text-lg font-bold rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800" />
+                            {(drafts['oldprice'] ?? '') !== '' && (
+                              <button type="button" onClick={() => setDraft('oldprice', '')}
+                                className="text-gray-400 hover:text-red-500 text-base px-0.5"
+                                title="Прибрати стару ціну (збережеться при «Зберегти»)">✕</button>
+                            )}
+                          </span>
                         </span>
                       </span>
                     ) : editingField === 'price' ? (
@@ -1456,7 +1478,12 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                           <span className="text-xl text-gray-300 dark:text-gray-600">Ціна не вказана</span>
                         )}
                         {p.oldprice != null && p.oldprice > 0 && p.oldprice !== p.price && (
-                          <span className="text-base text-gray-400 line-through">{Number(p.oldprice).toFixed(0)} ₴</span>
+                          <span className="inline-flex items-center gap-0.5">
+                            <span className="text-base text-gray-400 line-through">{Number(p.oldprice).toFixed(0)} ₴</span>
+                            <button type="button" onClick={clearOldprice} disabled={savingField}
+                              className="opacity-0 group-hover:opacity-100 transition-opacity text-gray-400 hover:text-red-500 text-sm px-0.5"
+                              title="Прибрати стару ціну (і в журналі)">✕</button>
+                          </span>
                         )}
                         <EditBtn onClick={() => startEdit('price', p.price ?? '')} title="Редагувати ціну" always />
                         <LockBadge field="price" />
