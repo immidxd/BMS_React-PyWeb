@@ -64,9 +64,19 @@ def _with_retry(fn: Callable, *, attempts: int = 4, base_delay: float = 0.8, wha
 
 # Єдине джерело доступу до журналу — парсер (той самий gc/JOURNAL_ID).
 try:
-    from scripts.sheets_parser import get_gc, JOURNAL_ID
+    from scripts.sheets_parser import get_gc, JOURNAL_ID, JOURNAL_WRITE_LOCK
 except ImportError:
-    from backend.scripts.sheets_parser import get_gc, JOURNAL_ID
+    from backend.scripts.sheets_parser import get_gc, JOURNAL_ID, JOURNAL_WRITE_LOCK
+
+
+def _locked(fn: Callable) -> Callable:
+    """Обгортка: виконати fn під глобальним локом запису в журнал. Реордер робить
+    read-modify-write усієї вкладки — паралельний write-back/append у цю мить
+    був би затертий застарілим знімком. RLock — безпечно і при вкладеності."""
+    def run():
+        with JOURNAL_WRITE_LOCK:
+            return fn()
+    return run
 
 # Default ON (2026-06-19): фіча перевірена end-to-end, користувач активно користується.
 # Вимкнути за потреби: PARSER_ADD_PRODUCT=0.
@@ -249,7 +259,7 @@ def append_product_row(delivery_title: str, field_values: Dict[str, Any],
         ws.batch_update([{"range": rng, "values": [row_vec]}])
         return {"row": row_idx, "gid": ws.id, "written": written, "dry_run": False}
 
-    return _with_retry(_do, what=f"запис рядка у «{delivery_title}»")
+    return _with_retry(_locked(_do), what=f"запис рядка у «{delivery_title}»")
 
 
 def read_delivery_productnumbers(delivery_title: str) -> set:
@@ -339,13 +349,19 @@ def reorder_delivery_rows(delivery_title: str, dry_run: bool = False) -> Dict[st
         if not num_col:
             raise RuntimeError(f"У вкладці '{delivery_title}' немає колонки «Номер»")
 
-        all_vals = ws.get_all_values()
+        # ⚠️ ТИПОБЕЗПЕЧНЕ читання: FORMULA + SERIAL_NUMBER повертає формули як
+        # формули, числа/дати як числа (не відформатовані рядки). Старе читання
+        # formatted-рядків + запис RAW перетворювало ЧИСЛА/ДАТИ КОЖНОГО товару на
+        # текст і затирало формули обчисленими значеннями («дані з'їхали»).
+        all_vals = ws.get_all_values(
+            value_render_option="FORMULA", date_time_render_option="SERIAL_NUMBER")
         # Товарні рядки = рядки > HEADER_ROW із непорожнім «Номер». Зберігаємо cols 1..52.
-        product_rows = []  # (original_idx, row_vec[0..51])
+        product_rows = []  # (номер-як-рядок, row_vec[0..51], порядковий idx)
         occupied_rows = []  # фактичні номери рядків аркуша, що були зайняті
         for r_i, row in enumerate(all_vals[HEADER_ROW:], start=HEADER_ROW + 1):
-            cell = row[num_col - 1] if num_col - 1 < len(row) else ""
-            if cell and cell.strip():
+            raw_cell = row[num_col - 1] if num_col - 1 < len(row) else ""
+            cell = str(raw_cell).strip()   # FORMULA-режим може віддати число
+            if cell:
                 vec = [(row[c] if c < len(row) else "") for c in range(MAIN_COLS)]
                 product_rows.append((cell, vec, len(product_rows)))
                 occupied_rows.append(r_i)
@@ -361,21 +377,36 @@ def reorder_delivery_rows(delivery_title: str, dry_run: bool = False) -> Dict[st
             return {"reordered": len(product_rows), "gid": ws.id,
                     "order": [t[0] for t in ordered], "dry_run": True}
 
-        _backup_tab(ws, "reorder")
+        backup_name = _backup_tab(ws, "reorder")
         # Пишемо відсортовані cols1-52 у рядки 2..(2+P-1) одним батчем.
+        # USER_ENTERED: числа лишаються числами, серійні дати лягають у
+        # дато-форматовані комірки як дати, формули (=...) лишаються формулами.
         start = HEADER_ROW + 1
         end = start + len(ordered) - 1
         rng = f"{_gsu.rowcol_to_a1(start, 1)}:{_gsu.rowcol_to_a1(end, MAIN_COLS)}"
         values = [t[1] for t in ordered]
         updates = [{"range": rng, "values": values}]
-        ws.batch_update(updates)
+        ws.batch_update(updates, value_input_option="USER_ENTERED")
         # Очистити «хвіст» (рядки, що були зайняті, але тепер за межами P) — cols1-52.
         tail = [r for r in occupied_rows if r > end]
         if tail:
             ws.batch_clear([f"{_gsu.rowcol_to_a1(r,1)}:{_gsu.rowcol_to_a1(r,MAIN_COLS)}" for r in tail])
-        return {"reordered": len(ordered), "gid": ws.id, "dry_run": False}
 
-    return _with_retry(_do, what=f"сортування «{delivery_title}»")
+        # ВЕРИФІКАЦІЯ ЦІЛІСНОСТІ: мультимножина номерів на аркуші після запису
+        # має збігтися з очікуваною. Розбіжність = негайна помилка з іменем бекапу
+        # (вкладка-копія в самому журналі) — краще гучно впасти, ніж тихо зіпсувати.
+        col_letter = _gsu.rowcol_to_a1(1, num_col).rstrip("1")
+        after = ws.get(f"{col_letter}{start}:{col_letter}{end}")
+        got = sorted(str(r[0]).strip() for r in after if r and str(r[0]).strip())
+        expected = sorted(t[0] for t in ordered)
+        if got != expected:
+            raise RuntimeError(
+                f"Верифікація після сортування НЕ пройшла (номери не збігаються). "
+                f"Дані НЕ втрачені: відновіть вкладку з бекапу «{backup_name}» у журналі.")
+        return {"reordered": len(ordered), "gid": ws.id, "dry_run": False,
+                "backup": backup_name, "verified": True}
+
+    return _with_retry(_locked(_do), what=f"сортування «{delivery_title}»")
 
 
 # ── Інфо-блок «Інформація про завоз» (Фіча 4) ─────────────────────────────────
@@ -446,7 +477,7 @@ def rename_product_row(delivery_title: str, old_number: str, new_number: str,
         ws.batch_update([{"range": a1, "values": [[new_number]]}], value_input_option="USER_ENTERED")
         return {"renamed": 1, "row": rows[0], "gid": ws.id}
 
-    return _with_retry(_do, what=f"перейменування номера у «{delivery_title}»")
+    return _with_retry(_locked(_do), what=f"перейменування номера у «{delivery_title}»")
 
 
 def _block_label_col(all_vals) -> Optional[int]:
@@ -559,4 +590,4 @@ def update_delivery_info_block(delivery_title: str, changes: Dict[str, Any],
             ws.batch_update(updates, value_input_option="USER_ENTERED")
         return {"written": written, "skipped": skipped, "gid": ws.id, "dry_run": False}
 
-    return _with_retry(_do, what=f"інфо-блок «{delivery_title}»")
+    return _with_retry(_locked(_do), what=f"інфо-блок «{delivery_title}»")

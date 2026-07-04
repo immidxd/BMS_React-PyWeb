@@ -292,6 +292,12 @@ WRITEBACK_TEXT_FIELDS = {"model", "marking", "description", "season", "extranote
 WRITEBACK_ENABLED = os.getenv("PARSER_WRITEBACK", "1") != "0"
 _WRITEBACK_BACKUP_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "writeback_backups")
 
+# Глобальний лок ЗАПИСУ в журнал (write-back, реордер, append/delete/rename рядків).
+# Реордер робить read-modify-write усієї вкладки: паралельний запис у цю мить
+# був би затертий застарілим знімком. Усі писарі беруть цей лок.
+import threading as _threading
+JOURNAL_WRITE_LOCK = _threading.RLock()
+
 # Ghost-замовлення: коли набір товарів у рядку аркуша змінюється, fingerprint
 # змінюється → парсер створює НОВИЙ ордер, старий зависає орфаном (NULL-status).
 # Після прогону прибираємо такі привиди ВУЗЬКОЮ сигнатурою (untouched + строгий
@@ -334,6 +340,14 @@ def _save_writeback_backup(sheet_title: str, productnumber: str, field: str, bac
 
 
 def writeback_field_to_journal(sheet_title: str, productnumber: str, field: str, value) -> dict:
+    """Write `value` for `field` into ALL rows of `productnumber` in the journal
+    worksheet `sheet_title`. Під JOURNAL_WRITE_LOCK — щоб read-modify-write
+    реордера/append не перетинався з цим записом (див. journal_writer)."""
+    with JOURNAL_WRITE_LOCK:
+        return _writeback_field_to_journal_locked(sheet_title, productnumber, field, value)
+
+
+def _writeback_field_to_journal_locked(sheet_title: str, productnumber: str, field: str, value) -> dict:
     """Write `value` for `field` into ALL rows of `productnumber` in the journal
     worksheet `sheet_title`. Resolves the target column by header name, backs up
     old values first, then writes only changed cells in one batch call.
