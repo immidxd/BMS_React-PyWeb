@@ -94,7 +94,12 @@ def _get_service():
             DRIVE_CREDS_PATH,
             scopes=["https://www.googleapis.com/auth/drive.readonly"],
         )
-        _service = build("drive", "v3", credentials=creds, cache_discovery=False)
+        # Явний HTTP-таймаут: дефолтний httplib2 БЕЗ таймаута висне назавжди на
+        # мертвому сокеті (типово після сну Mac) — і «заморожує» операції з фото.
+        import httplib2
+        from google_auth_httplib2 import AuthorizedHttp
+        authed_http = AuthorizedHttp(creds, http=httplib2.Http(timeout=60))
+        _service = build("drive", "v3", http=authed_http, cache_discovery=False)
         return _service
 
 

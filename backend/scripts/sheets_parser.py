@@ -920,7 +920,14 @@ SKIP_SHEETS_PATTERNS = re.compile(
 # ── GSheets client ────────────────────────────────────────────────────────────
 def get_gc() -> gspread.Client:
     creds = Credentials.from_service_account_file(CREDS_PATH, scopes=SCOPES)
-    return gspread.authorize(creds)
+    gc = gspread.authorize(creds)
+    # Таймаут HTTP-викликів до Google. БЕЗ нього мертвий сокет (типово після сну
+    # Mac: TCP-з'єднання «напіввідкрите») висить ХВИЛИНАМИ/годинами — і будь-яка
+    # операція з журналом (а з нею й JOURNAL_WRITE_LOCK) «заморожує» застосунок.
+    # З таймаутом виклик швидко падає транзієнтною помилкою → _with_retry
+    # повторює вже на СВІЖОМУ з'єднанні.
+    gc.set_timeout(60)
+    return gc
 
 
 def is_skip_sheet(title: str) -> bool:

@@ -24,8 +24,14 @@ logger.info(f"Using database connection: {DATABASE_URL}")
 
 # Create SQLAlchemy engine with connection pool limits
 engine = create_engine(
-    DATABASE_URL, 
-    connect_args={} if DATABASE_URL.startswith("postgresql") else {"check_same_thread": False},
+    DATABASE_URL,
+    # TCP-keepalive: «напіввідкриті» з'єднання (типово після сну Mac) вбиваються
+    # за ~60с замість системних хвилин — pre_ping не висне на мертвому сокеті.
+    connect_args=(
+        {"keepalives": 1, "keepalives_idle": 30,
+         "keepalives_interval": 10, "keepalives_count": 3}
+        if DATABASE_URL.startswith("postgresql") else {"check_same_thread": False}
+    ),
     echo=False,  # Вимкнено для зменшення навантаження
     pool_size=10,  # Основний пул з'єднань (було 5: фонові старт-джоби — парсинг,
                    # Drive-прогрів, Telegram-синк — голодоморили UI-запити на старті)
