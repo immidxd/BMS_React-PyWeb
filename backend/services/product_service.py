@@ -1165,7 +1165,10 @@ def _apply_measurements_edit(db_product, edits: Dict[str, str]) -> Dict[str, str
 
 # Materials inline-edit ─────────────────────────────────────────────────────
 # Канонічні позиції матеріалів (узгоджено з MATERIAL_POSITIONS у sheets_parser).
-MATERIAL_POSITIONS = {"upper", "middle", "insole", "sole", "membrane"}
+# ⚠️ При додаванні позиції в парсер — додати і СЮДИ: інакше _apply_materials_edit
+# мовчки відкидає редагування цієї позиції в картці («значення зникає», так було
+# з midsole: у парсері з 2026-06-10, тут забули).
+MATERIAL_POSITIONS = {"upper", "middle", "insole", "sole", "midsole", "membrane"}
 
 
 def _get_or_create_material_id(db: Session, name: str) -> Optional[int]:

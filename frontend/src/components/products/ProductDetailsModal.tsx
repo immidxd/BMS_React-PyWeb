@@ -73,13 +73,15 @@ const EDITABLE_FIELDS: { field: string; type: FieldType }[] = [
 ];
 
 // Матеріали по позиціях — порядок і підписи (узгоджено з MATERIAL_POSITIONS бекенду).
+// Порядок АНАТОМІЧНИЙ, згори вниз: верх → середина → мембрана → устілка →
+// проміжна підошва → підошва (той самий порядок, що в публічному каталозі).
 const MATERIAL_POSITIONS: { pos: string; label: string }[] = [
   { pos: 'upper', label: 'Верх' },
   { pos: 'middle', label: 'Середина' },
-  { pos: 'insole', label: 'Устілка' },
-  { pos: 'sole', label: 'Підошва' },
-  { pos: 'midsole', label: 'Проміжна підошва' },
   { pos: 'membrane', label: 'Мембрана' },
+  { pos: 'insole', label: 'Устілка' },
+  { pos: 'midsole', label: 'Проміжна підошва' },
+  { pos: 'sole', label: 'Підошва' },
 ];
 
 // p.materials (список {position, materialname}) → {position: "шкіра, замша"} CSV.
