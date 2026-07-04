@@ -13,8 +13,11 @@ import socket
 import http.client
 
 # Configure logging
+# Рівень керується env LOG_LEVEL (default INFO). DEBUG глобально душить старт —
+# див. коментар у backend/app/main.py. Шумні бібліотеки приглушуються там.
+_LOG_LEVEL = getattr(logging, os.getenv("LOG_LEVEL", "INFO").upper(), logging.INFO)
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=_LOG_LEVEL,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.StreamHandler()

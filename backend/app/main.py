@@ -65,14 +65,34 @@ try:
 except Exception:
     pass
 
+# Рівень логів керується env LOG_LEVEL (default INFO).
+# ⚠️ DEBUG глобально = тормоза на старті: telethon пише ~10 рядків на КОЖНЕ
+# повідомлення Telegram, і все синхронно ллється в консоль+файл одночасно —
+# ця I/O-лавина блокує GIL якраз у вікні запуску (симптом: «висить після старту»).
+# Тому шумні бібліотеки явно приглушені до WARNING незалежно від LOG_LEVEL.
+_LOG_LEVEL = getattr(logging, os.getenv("LOG_LEVEL", "INFO").upper(), logging.INFO)
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=_LOG_LEVEL,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.StreamHandler(),
         logging.FileHandler(LOG_FILE, encoding='utf-8')
     ]
 )
+
+# Заглушити надмірно балакучі сторонні логери (мережевий шум, не наші помилки).
+for _noisy in (
+    "telethon",
+    "telethon.network.mtprotosender",
+    "telethon.extensions.messagepacker",
+    "googleapiclient.discovery",
+    "google_auth_httplib2",
+    "google.auth.transport.requests",
+    "urllib3.connectionpool",
+    "urllib3.util.retry",
+    "asyncio",
+):
+    logging.getLogger(_noisy).setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
 
