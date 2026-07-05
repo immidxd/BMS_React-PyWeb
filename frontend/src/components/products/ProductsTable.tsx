@@ -87,7 +87,7 @@ const PromGlyph: React.FC<{ size?: number }> = ({ size = 13 }) => {
         );
     }
     return (
-        <img src="/media-logos/prom-logo.jpg" alt="Prom"
+        <img src="/media-logos/prom-logo.png" alt="Prom"
             style={{ height: size, width: 'auto', display: 'block', borderRadius: 2 }}
             onError={() => setFailed(true)} />
     );

@@ -1199,7 +1199,7 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
               {/* Prom */}
               <div className="border border-gray-200 dark:border-gray-700 rounded-lg p-3 flex flex-col gap-2">
                 <div className="flex items-center gap-2 font-medium">
-                  <img src="/media-logos/prom-logo.jpg" alt="" className="h-5 rounded" /> Prom
+                  <img src="/media-logos/prom-logo.png" alt="" className="h-5 rounded" /> Prom
                 </div>
                 <span className={`text-xs ${promStatus?.token_expiring_soon ? 'text-amber-600 dark:text-amber-400' : promStatus?.configured ? 'text-green-600 dark:text-green-400' : 'text-gray-400'}`}>
                   {promStatus?.configured
@@ -1233,7 +1233,7 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
                onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between mb-3">
               <h3 className="text-lg font-semibold flex items-center gap-2">
-                <img src="/media-logos/prom-logo.jpg" alt="Prom" className="h-5 rounded" /> Замовлення Prom
+                <img src="/media-logos/prom-logo.png" alt="Prom" className="h-5 rounded" /> Замовлення Prom
                 <span className="text-sm text-gray-400">({promOrders.length})</span>
               </h3>
               <button onClick={() => setPromOrders(null)} className="text-gray-400 hover:text-gray-700 text-xl">✕</button>
