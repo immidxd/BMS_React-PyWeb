@@ -166,6 +166,38 @@ def _cancel_auto_if_running() -> None:
             _auto_job_id = None
 
 
+# ── Тригер синку ХМАРНОГО каталогу після успішного парсингу ──────────────────
+# Ланцюг свіжості: правка в таблиці → journal-poller (≤90с) → quick-parse →
+# ЦЕЙ тригер → BMS_catalog/cloud/sync_to_cloud.py → Neon → каталог 24/7.
+# Неблокуючий Popen у venv каталогу; фейл — лише warning (щогодинний launchd
+# лишається фолбеком). Тротл 120с (серія парсингів = один синк). На машинах без
+# BMS_catalog (Windows-прод) — тихий no-op. Вимкнути: CATALOG_CLOUD_SYNC=0.
+_CATALOG_DIR = os.path.expanduser("~/Desktop/BMS_catalog")
+_cloud_sync_last_ts: float = 0.0
+
+
+def _trigger_catalog_cloud_sync(reason: str) -> None:
+    global _cloud_sync_last_ts
+    import time as _time
+    import subprocess as _sp
+    if os.getenv("CATALOG_CLOUD_SYNC", "1") == "0":
+        return
+    py = os.path.join(_CATALOG_DIR, "venv", "bin", "python")
+    script = os.path.join(_CATALOG_DIR, "cloud", "sync_to_cloud.py")
+    if not (os.path.isfile(py) and os.path.isfile(script)):
+        return
+    now = _time.time()
+    if now - _cloud_sync_last_ts < 120:
+        return
+    _cloud_sync_last_ts = now
+    try:
+        with open("/tmp/bms_catalog_sync.out", "ab") as out:
+            _sp.Popen([py, script], cwd=_CATALOG_DIR, stdout=out, stderr=out)
+        logger.info(f"Catalog cloud-sync triggered ({reason})")
+    except Exception as e:
+        logger.warning(f"Catalog cloud-sync trigger failed: {e}")
+
+
 def start_auto_full_quick() -> Optional[int]:
     """Запускає sheets_full_quick у фоні при старті backend.
     Скіпає, якщо вже є активний parsing job (queued/running).
@@ -776,6 +808,10 @@ def _run_sheets_job(job_id: int, target: str, mode: str):
             job.current_step = "syncing statuses"
             job.logs_head = str(result)[:8000]
             sess.commit()
+
+        # Свіжі дані в БД → одразу штовхаємо їх у хмарний каталог (Neon),
+        # щоб публічна вітрина не чекала щогодинного launchd-синку.
+        _trigger_catalog_cloud_sync(f"after {target}/{mode} parse")
 
         # НЕ запускаємо sync_product_statuses — журнал є джерелом правди
         # для статусів товарів. sync_product_statuses перезаписувала статуси
