@@ -438,8 +438,9 @@ def _product_image_urls(product_number: str) -> List[str]:
     return urls
 
 
-def build_export_feed(db: Session, product_id: int, category_id: int) -> str:
-    """Prom XML-фід із ОДНИМ товаром (для import_file)."""
+def build_export_feed(db: Session, product_id: int, category_id: int, available: bool = True) -> str:
+    """Prom XML-фід із ОДНИМ товаром (для import_file). available=False —
+    товар створюється прихованим/без наявності (для draft-режиму, без «живого вікна»)."""
     bms = _bms_product_for_export(db, product_id)
     if not bms:
         raise RuntimeError("Товар не знайдено")
@@ -453,7 +454,7 @@ def build_export_feed(db: Session, product_id: int, category_id: int) -> str:
     def tag(t, v):
         return f"<{t}>{_xesc(str(v))}</{t}>"
     parts = [
-        f'<item id={_xqattr(num)} available="true">',
+        f'<item id={_xqattr(num)} available="{"true" if available else "false"}">',
         tag("price", int(price) if price == int(price) else price),
         tag("currencyId", "UAH"),
         tag("categoryId", category_id),
@@ -515,7 +516,10 @@ def export_product_to_prom(db: Session, product_id: int, as_draft: bool = True,
     if not (bms.get("price") and float(bms["price"]) > 0):
         return {"ok": False, "error": "У товару немає ціни"}
 
-    feed = build_export_feed(db, product_id, cat)
+    # Draft: створюємо ВІДРАЗУ прихованим (available=false) — без «живого вікна»,
+    # поки фоновий крок переведе в статус draft (створення на Prom АСИНХРОННЕ:
+    # статус імпорту одразу каже created=0, товар з'являється за 1-3 хв).
+    feed = build_export_feed(db, product_id, cat, available=not as_draft)
     try:
         import json as _json
         files = {"file": ("feed.xml", feed.encode("utf-8"), "application/xml")}
@@ -525,37 +529,37 @@ def export_product_to_prom(db: Session, product_id: int, as_draft: bool = True,
                           files=files, data=payload, timeout=90)
         if r.status_code >= 400:
             return {"ok": False, "error": f"Import [{r.status_code}]: {r.text[:250]}"}
-        imp = r.json()
-        import_id = imp.get("id") or (imp.get("import") or {}).get("id")
-        # Poll статусу імпорту (до ~40с)
-        import time as _t
-        status = None
-        for _ in range(20):
-            if not import_id:
-                break
-            _t.sleep(2)
-            try:
-                st = _api_get(token, f"/products/import/status/{import_id}")
-                status = st.get("status")
-                if status in ("SUCCESS", "PARTIAL", "FATAL"):
+        import_id = (r.json() or {}).get("id")
+
+        # Фоновий крок: дочекатись асинхронного створення (до ~4 хв) → перевести
+        # в draft (якщо треба) → оновити дзеркало. Ендпоінт не блокуємо.
+        import threading as _th
+
+        def _finalize():
+            import time as _t
+            from models.database import SessionLocal as _SL
+            prom_id = None
+            for _ in range(48):          # ~4 хв (5с крок)
+                _t.sleep(5)
+                prom_id = _find_prom_id_by_sku(token, sku)
+                if prom_id:
                     break
-            except Exception:
-                continue
-        if status == "FATAL":
-            return {"ok": False, "error": f"Prom відхилив імпорт (FATAL). Деталі імпорту id={import_id}"}
-        # Чернетка: знайти новий товар за sku і перевести у draft
-        prom_id = _find_prom_id_by_sku(token, sku)
-        drafted = False
-        if as_draft and prom_id:
+            if prom_id and as_draft:
+                try:
+                    _api_post(token, "/products/edit", [{"id": prom_id, "status": "draft"}])
+                except Exception as e:
+                    logger.warning(f"Prom draft-set failed for {sku}: {e}")
+            _db = _SL()
             try:
-                _api_post(token, "/products/edit", [{"id": prom_id, "status": "draft"}])
-                drafted = True
-            except Exception as e:
-                logger.warning(f"Prom draft-set failed for {sku}: {e}")
-        sync_products(db)  # оновити дзеркало (бейдж «на Prom»)
-        return {"ok": True, "sku": sku, "prom_id": prom_id, "category_id": cat,
-                "images": len(imgs), "import_status": status, "draft": drafted,
-                "name": _build_name(bms)}
+                sync_products(_db)
+            finally:
+                _db.close()
+            logger.info(f"Prom export finalize: sku={sku} prom_id={prom_id} draft={as_draft}")
+
+        _th.Thread(target=_finalize, daemon=True).start()
+        return {"ok": True, "sku": sku, "category_id": cat, "images": len(imgs),
+                "import_id": import_id, "name": _build_name(bms), "as_draft": as_draft,
+                "note": "Товар відправлено на Prom. З'явиться (як чернетка) за 1–3 хв — оновиться сам."}
     except Exception as e:
         logger.error(f"Prom export failed for {sku}: {e}")
         return {"ok": False, "error": str(e)}
