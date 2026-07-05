@@ -556,8 +556,9 @@ async def _auto_startup_publications_refresh():
     period_sec = int(os.getenv("PUBLICATIONS_SYNC_PERIOD_SEC", "1800"))
 
     async def _run_all_cycles():
-        # Telegram + OLX + Prom — кожен у власному try, щоб збій одного не блокував інших.
-        for label, fn in (("Publications", _publications_sync_cycle), ("OLX", _olx_sync_cycle), ("Prom", _prom_sync_cycle)):
+        # Telegram + OLX — кожен у власному try, щоб збій одного не блокував інший.
+        # Prom — В ОКРЕМОМУ, ЧАСТІШОМУ циклі нижче (читання дешеве, немає вебхуків).
+        for label, fn in (("Publications", _publications_sync_cycle), ("OLX", _olx_sync_cycle)):
             try:
                 await fn()
             except Exception as e:
@@ -572,7 +573,24 @@ async def _auto_startup_publications_refresh():
             await asyncio.sleep(period_sec)
             await _run_all_cycles()
 
+    # Prom-читання (замовлення+товари) — власний ЧАСТІШИЙ цикл (default 10 хв),
+    # бо в Prom немає вебхуків, а опитування дешеве. Наявність НА Prom пушиться
+    # окремо (тригер після парсингу, з тротлом ~1/год). PROM_SYNC_PERIOD_SEC=0 — вимкнути.
+    prom_period = int(os.getenv("PROM_SYNC_PERIOD_SEC", "600"))
+
+    async def _prom_periodic():
+        if prom_period <= 0:
+            return
+        await asyncio.sleep(25)  # трохи пізніше за старт-парсинг
+        while True:
+            try:
+                await _prom_sync_cycle()
+            except Exception as e:
+                logger.warning(f"Prom-sync cycle failed: {e}")
+            await asyncio.sleep(prom_period)
+
     asyncio.create_task(_initial_then_periodic())
+    asyncio.create_task(_prom_periodic())
 
 
 if __name__ == "__main__":

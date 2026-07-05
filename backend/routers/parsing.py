@@ -198,6 +198,45 @@ def _trigger_catalog_cloud_sync(reason: str) -> None:
         logger.warning(f"Catalog cloud-sync trigger failed: {e}")
 
 
+# ── Авто-наявність на Prom після оновлення BMS ───────────────────────────────
+# Наявність на Prom залежить від стану BMS (продажі парсяться з журналу), тож
+# пушимо ПІСЛЯ парсингу. Тротл 3600с — Prom дозволяє оновлювати наявність ~раз/
+# год. У фоновому потоці (мережа не блокує парсинг). Вимкнути: PROM_AUTO_AVAILABILITY=0.
+_prom_avail_last_ts: float = 0.0
+
+
+def _trigger_prom_availability(reason: str) -> None:
+    global _prom_avail_last_ts
+    import time as _time
+    import threading as _th
+    if os.getenv("PROM_AUTO_AVAILABILITY", "1") == "0":
+        return
+    now = _time.time()
+    if now - _prom_avail_last_ts < 3600:   # ліміт Prom ~1/год
+        return
+    _prom_avail_last_ts = now
+
+    def _run():
+        try:
+            from services import prom_service
+            from models.database import SessionLocal
+        except ImportError:
+            from backend.services import prom_service
+            from backend.models.database import SessionLocal
+        db = SessionLocal()
+        try:
+            if not prom_service.is_authorized(db):
+                return
+            res = prom_service.push_availability(db, dry_run=False)
+            logger.info(f"Prom auto-availability ({reason}): {res}")
+        except Exception as e:
+            logger.warning(f"Prom auto-availability failed: {e}")
+        finally:
+            db.close()
+
+    _th.Thread(target=_run, daemon=True).start()
+
+
 def start_auto_full_quick() -> Optional[int]:
     """Запускає sheets_full_quick у фоні при старті backend.
     Скіпає, якщо вже є активний parsing job (queued/running).
@@ -812,6 +851,8 @@ def _run_sheets_job(job_id: int, target: str, mode: str):
         # Свіжі дані в БД → одразу штовхаємо їх у хмарний каталог (Neon),
         # щоб публічна вітрина не чекала щогодинного launchd-синку.
         _trigger_catalog_cloud_sync(f"after {target}/{mode} parse")
+        # І наявність на Prom (тротл 1/год) — розпродане зникає з оголошень само.
+        _trigger_prom_availability(f"after {target}/{mode} parse")
 
         # НЕ запускаємо sync_product_statuses — журнал є джерелом правди
         # для статусів товарів. sync_product_statuses перезаписувала статуси

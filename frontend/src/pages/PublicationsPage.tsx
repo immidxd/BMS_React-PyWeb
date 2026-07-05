@@ -1159,7 +1159,7 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
               <h3 className="text-lg font-semibold">⚙ Інтеграції</h3>
               <button onClick={() => setIntegrationsOpen(false)} className="text-gray-400 hover:text-gray-700 text-xl">✕</button>
             </div>
-            <p className="text-xs text-gray-500 mb-4">Синхронізація й керування каналами. Авто-синхронізація й так відбувається кожні 30 хв — ці кнопки для запуску «зараз».</p>
+            <p className="text-xs text-gray-500 mb-4">Синхронізація й так відбувається автоматично: Telegram/OLX — кожні 30 хв, Prom — кожні ~10 хв, а наявність на Prom оновлюється сама після кожного оновлення BMS. Ці кнопки — щоб оновити «зараз».</p>
             {syncAllMsg && (
               <div className="mb-4 p-2 text-sm bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-700 rounded">{syncAllMsg}</div>
             )}
