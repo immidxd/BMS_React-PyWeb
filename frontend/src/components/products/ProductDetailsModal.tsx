@@ -807,6 +807,24 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     [(p as any)?.type_name]
   );
 
+  // Профіль моделі: тягнемо, коли в режимі редагування задані бренд+модель
+  // (дебаунс 600мс; власний запис виключаємо). ⚠️ ХУК — має бути ДО early-return
+  // `if (!open)` нижче, інакше React #310 (умовний виклик хука).
+  useEffect(() => {
+    if (!open || !editMode) { return; }
+    const brand = (classDrafts['brand_name'] ?? '').trim();
+    const model = (drafts['model'] ?? '').trim();
+    if (!brand || model.length < 2) { setModelProfile(null); return; }
+    const t = setTimeout(async () => {
+      try {
+        const r = await fetch(`/api/products/model-profile?brand_name=${encodeURIComponent(brand)}&model=${encodeURIComponent(model)}&exclude_id=${productId}`);
+        setModelProfile(r.ok ? await r.json() : null);
+      } catch { setModelProfile(null); }
+    }, 600);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, editMode, classDrafts['brand_name'], drafts['model'], productId]);
+
   if (!open) return null;
 
   // ── Дрібні UI-хелпери ─────────────────────────────────────────────────────────
@@ -825,23 +843,6 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     const curSub = (p as any)?.subtypeid;
     return all.filter((s) => s.typeid === tid || s.id === curSub);
   })();
-
-  // Профіль моделі: тягнемо, коли в режимі редагування задані бренд+модель
-  // (дебаунс 600мс; власний запис виключаємо, щоб його порожнечі не «розбавляли»).
-  useEffect(() => {
-    if (!editMode) { setModelProfile(null); setProfileNote(null); return; }
-    const brand = (classDrafts['brand_name'] ?? '').trim();
-    const model = (drafts['model'] ?? '').trim();
-    if (!brand || model.length < 2) { setModelProfile(null); return; }
-    const t = setTimeout(async () => {
-      try {
-        const r = await fetch(`/api/products/model-profile?brand_name=${encodeURIComponent(brand)}&model=${encodeURIComponent(model)}&exclude_id=${productId}`);
-        setModelProfile(r.ok ? await r.json() : null);
-      } catch { setModelProfile(null); }
-    }, 600);
-    return () => clearTimeout(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editMode, classDrafts['brand_name'], drafts['model'], productId]);
 
   // Заповнити ЛИШЕ порожні поля значеннями профілю моделі (драфти; в БД нічого
   // не пише — збереження звичайною кнопкою «Зберегти», з локами і write-back).
