@@ -239,6 +239,10 @@ const QuickAddProductForm: React.FC<Props> = ({ deliveryId, onSaved, filters: fi
   const [pickKey, setPickKey] = useState('');   // обране поле в панелі дефолтів
   const [pickVal, setPickVal] = useState('');
   const [defScope, setDefScope] = useState<'global' | 'delivery'>('global');  // куди додавати дефолт
+  // «Профіль моделі» (1.5): підтяг характеристик із наявних записів тієї ж
+  // бренд+моделі у ПОРОЖНІ поля форми (нового товару) до збереження.
+  const [modelProfile, setModelProfile] = useState<any | null>(null);
+  const [profileNote, setProfileNote] = useState<string | null>(null);
 
   // mounted-guard: задача додавання живе у taskManager (доробиться попри закриття форми);
   // локальний UI (скид/онсейв) чіпаємо лише якщо форма ще змонтована.
@@ -307,6 +311,40 @@ const QuickAddProductForm: React.FC<Props> = ({ deliveryId, onSaved, filters: fi
 
   const lay = useMemo(() => layout(values.type_name), [values.type_name]);
   const set = (k: string, v: string) => setValues(s => ({ ...s, [k]: v }));
+
+  // Профіль моделі: тягнемо при заданих бренд+модель (дебаунс 600мс).
+  useEffect(() => {
+    const brand = (values.brand_name || '').trim();
+    const model = (values.model || '').trim();
+    if (!brand || model.length < 2) { setModelProfile(null); setProfileNote(null); return; }
+    const t = setTimeout(async () => {
+      try {
+        const r = await fetch(`/api/products/model-profile?brand_name=${encodeURIComponent(brand)}&model=${encodeURIComponent(model)}`);
+        setModelProfile(r.ok ? await r.json() : null);
+      } catch { setModelProfile(null); }
+    }, 600);
+    return () => clearTimeout(t);
+  }, [values.brand_name, values.model]);
+
+  // Заповнити ЛИШЕ порожні поля значеннями профілю (+ показати optional як extras).
+  const applyModelProfile = () => {
+    if (!modelProfile) return;
+    const pf = modelProfile.fields || {};
+    const next = { ...values };
+    const newExtras = new Set(extras);
+    let filled = 0;
+    const put = (key: string, val?: string) => {
+      if (!val) return;
+      if (!(next[key] || '').trim()) {
+        next[key] = val; filled++;
+        if (F[key] && isValidExtra(key, lay)) newExtras.add(key);
+      }
+    };
+    for (const [f, info] of Object.entries(pf)) put(f, (info as any).value);
+    for (const [pos, info] of Object.entries(modelProfile.materials || {})) put(`material_${pos}`, (info as any).value);
+    setValues(next); setExtras(Array.from(newExtras));
+    setProfileNote(filled ? `✓ заповнено полів: ${filled}` : 'порожніх полів немає');
+  };
 
   // Зміна типу — ЛИШЕ ставимо значення. Базові поля деривуються з `lay` (перемикаються
   // миттєво: Сумка→Габарити, без Розмір/СМ). Реконсиляція (очистка невластивих полів +
@@ -459,6 +497,17 @@ const QuickAddProductForm: React.FC<Props> = ({ deliveryId, onSaved, filters: fi
 
   return (
     <div>
+      {modelProfile && modelProfile.records > 0 && (
+        <div className="mb-2 rounded-lg border border-indigo-200 dark:border-indigo-800 bg-indigo-50 dark:bg-indigo-900/20 px-3 py-2 flex items-center gap-3 flex-wrap">
+          <span className="text-xs text-indigo-700 dark:text-indigo-300">
+            База знає цю модель: <b>{modelProfile.records}</b> запис(ів) — можна підтягнути характеристики
+          </span>
+          <button type="button" onClick={applyModelProfile}
+            className="ml-auto px-3 py-1 rounded-md text-xs font-medium bg-indigo-600 text-white hover:bg-indigo-700"
+            title="Заповнити порожні поля найчастішими значеннями цієї моделі">Заповнити порожні поля</button>
+          {profileNote && <span className="text-xs text-indigo-600 dark:text-indigo-400 w-full">{profileNote}</span>}
+        </div>
+      )}
       <div className="grid grid-cols-2 md:grid-cols-6 gap-2.5">
         <div className="flex gap-1.5 col-span-2">
           <input value={values.productnumber || ''} onChange={e => set('productnumber', e.target.value)}

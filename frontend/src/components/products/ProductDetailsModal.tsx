@@ -166,6 +166,10 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
   const [filterOpts, setFilterOpts] = useState<ProductFilters | null>(null);
   const [savingAll, setSavingAll] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  // «Профіль моделі» (1.5): агрегат по всіх записах бренд+модель у базі —
+  // для розумного заповнення ПОРОЖНІХ полів одним кліком (нічого не перезаписує).
+  const [modelProfile, setModelProfile] = useState<any | null>(null);
+  const [profileNote, setProfileNote] = useState<string | null>(null);
   // Згорнуті підрозділи (Матеріали/Інше/Примітки) — за замовчуванням приховані,
   // розкриваються кліком. У режимі редагування завжди розгорнуті (щоб редагувати).
   const [openSections, setOpenSections] = useState<Record<string, boolean>>({});
@@ -821,6 +825,53 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     const curSub = (p as any)?.subtypeid;
     return all.filter((s) => s.typeid === tid || s.id === curSub);
   })();
+
+  // Профіль моделі: тягнемо, коли в режимі редагування задані бренд+модель
+  // (дебаунс 600мс; власний запис виключаємо, щоб його порожнечі не «розбавляли»).
+  useEffect(() => {
+    if (!editMode) { setModelProfile(null); setProfileNote(null); return; }
+    const brand = (classDrafts['brand_name'] ?? '').trim();
+    const model = (drafts['model'] ?? '').trim();
+    if (!brand || model.length < 2) { setModelProfile(null); return; }
+    const t = setTimeout(async () => {
+      try {
+        const r = await fetch(`/api/products/model-profile?brand_name=${encodeURIComponent(brand)}&model=${encodeURIComponent(model)}&exclude_id=${productId}`);
+        setModelProfile(r.ok ? await r.json() : null);
+      } catch { setModelProfile(null); }
+    }, 600);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editMode, classDrafts['brand_name'], drafts['model'], productId]);
+
+  // Заповнити ЛИШЕ порожні поля значеннями профілю моделі (драфти; в БД нічого
+  // не пише — збереження звичайною кнопкою «Зберегти», з локами і write-back).
+  const applyModelProfile = () => {
+    if (!modelProfile) return;
+    const pf = modelProfile.fields || {};
+    let filled = 0;
+    const cd = { ...classDrafts };
+    for (const f of ['type_name', 'subtype_name', 'style_name']) {
+      if (!(cd[f] ?? '').trim() && pf[f]) { cd[f] = pf[f].value; filled++; }
+    }
+    if (!(cd['genderid'] ?? '') && pf['gender_name']) {
+      const g = ((filterOpts?.genders ?? []) as any[])
+        .find((x) => (x.name || '').toLowerCase() === pf['gender_name'].value.toLowerCase());
+      if (g) { cd['genderid'] = String(g.id); filled++; }
+    }
+    const dr = { ...drafts };
+    const SCALARS = ['season', 'collection', 'geometric_shape', 'width',
+      'manufacturer_country_name', 'heel_type_name', 'lace_type_name', 'sole_type_name',
+      'toe_shape_name', 'fastening_type_name', 'lining_name', 'technology_name', 'packaging_name'];
+    for (const f of SCALARS) {
+      if (f in dr && !(dr[f] ?? '').trim() && pf[f]) { dr[f] = pf[f].value; filled++; }
+    }
+    const md = { ...materialDrafts };
+    for (const [pos, info] of Object.entries(modelProfile.materials || {})) {
+      if (pos in md && !(md[pos] ?? '').trim()) { md[pos] = (info as any).value; filled++; }
+    }
+    setClassDrafts(cd); setDrafts(dr); setMaterialDrafts(md);
+    setProfileNote(filled ? `✓ заповнено полів: ${filled} — перевір і збережи` : 'порожніх полів немає');
+  };
 
   // Бейдж «змінено» показуємо ЛИШЕ (1) у режимі редагування — чистий перегляд
   // без службових позначок, і (2) для СВІЖИХ правок (< 14 днів) — старі й так
@@ -1693,6 +1744,22 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                       </div>
                     )}
                   </div>
+                  )}
+
+                  {/* Розумне заповнення (1.5): база вже знає цю модель з інших завозів.
+                      Кнопка заповнює ЛИШЕ порожні поля; нічого не перезаписує. */}
+                  {editMode && modelProfile && modelProfile.records > 0 && (
+                    <div className="mt-3 rounded-lg border border-indigo-200 dark:border-indigo-800 bg-indigo-50 dark:bg-indigo-900/20 px-3 py-2 flex items-center gap-3 flex-wrap">
+                      <span className="text-xs text-indigo-700 dark:text-indigo-300">
+                        База знає цю модель: <b>{modelProfile.records}</b> запис(ів){modelProfile.numbers?.length ? ` (${modelProfile.numbers.slice(0, 4).join(', ')}${modelProfile.numbers.length > 4 ? '…' : ''})` : ''}
+                      </span>
+                      <button
+                        type="button" onClick={applyModelProfile}
+                        className="ml-auto px-3 py-1 rounded-md text-xs font-medium bg-indigo-600 text-white hover:bg-indigo-700"
+                        title="Заповнити порожні поля найчастішими значеннями цієї моделі"
+                      >Заповнити порожні поля</button>
+                      {profileNote && <span className="text-xs text-indigo-600 dark:text-indigo-400 w-full">{profileNote}</span>}
+                    </div>
                   )}
 
                   {/* Характеристики — у правій колонці ПОРУЧ із фото (заповнюють висоту) */}
