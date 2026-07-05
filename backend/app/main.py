@@ -518,6 +518,34 @@ async def _olx_sync_cycle() -> None:
         logger.warning(f"OLX-sync failed: {e}")
 
 
+# Prom read-sync (товари + замовлення) у фоні. ЛИШЕ читання — пуш наявності на
+# Prom лишається РУЧНИМ (рішення власника). Токен статичний → без OAuth-refresh.
+async def _prom_sync_cycle() -> None:
+    import asyncio
+
+    def _run():
+        try:
+            from services import prom_service
+            from models.database import SessionLocal
+        except ImportError:
+            from backend.services import prom_service
+            from backend.models.database import SessionLocal
+        db = SessionLocal()
+        try:
+            if not prom_service.is_authorized(db):
+                return
+            rp = prom_service.sync_products(db)
+            ro = prom_service.sync_orders(db)
+            logger.info(f"Prom-sync: products={rp} orders={ro}")
+        finally:
+            db.close()
+
+    try:
+        await asyncio.get_event_loop().run_in_executor(None, _run)
+    except Exception as e:
+        logger.warning(f"Prom-sync failed: {e}")
+
+
 @app.on_event("startup")
 async def _auto_startup_publications_refresh():
     """Initial sync at startup + periodic loop every N seconds."""
@@ -528,8 +556,8 @@ async def _auto_startup_publications_refresh():
     period_sec = int(os.getenv("PUBLICATIONS_SYNC_PERIOD_SEC", "1800"))
 
     async def _run_all_cycles():
-        # Telegram + OLX — кожен у власному try, щоб збій одного не блокував інший.
-        for label, fn in (("Publications", _publications_sync_cycle), ("OLX", _olx_sync_cycle)):
+        # Telegram + OLX + Prom — кожен у власному try, щоб збій одного не блокував інших.
+        for label, fn in (("Publications", _publications_sync_cycle), ("OLX", _olx_sync_cycle), ("Prom", _prom_sync_cycle)):
             try:
                 await fn()
             except Exception as e:
