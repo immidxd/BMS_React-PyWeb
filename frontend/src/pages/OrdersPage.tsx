@@ -61,7 +61,7 @@ interface FilterOptions {
   clients: { id: number; name: string }[];
 }
 
-const SALES_CHANNELS = ['Ефір', 'Viber', 'Telegram', 'Instagram', 'TikTok', 'OLX', 'Grailed', 'Shafa', 'Магазин'] as const;
+const SALES_CHANNELS = ['Ефір', 'Viber', 'Telegram', 'Instagram', 'TikTok', 'OLX', 'Prom', 'Grailed', 'Shafa', 'Магазин'] as const;
 type SalesChannel = typeof SALES_CHANNELS[number];
 
 const CHANNEL_COLORS: Record<string, string> = {
@@ -71,6 +71,7 @@ const CHANNEL_COLORS: Record<string, string> = {
   'Instagram': 'bg-fuchsia-100 text-fuchsia-700 border-fuchsia-200',
   'TikTok':    'bg-gray-900 text-white border-gray-700',
   'OLX':       'bg-teal-100 text-teal-700 border-teal-200',
+  'Prom':      'bg-indigo-100 text-indigo-700 border-indigo-200',   // фірмовий фіолет Prom.ua
   'Grailed':   'bg-gray-200 text-gray-800 border-gray-400',
   'Shafa':     'bg-gray-900 text-gray-100 border-gray-600',
   'Магазин':   'bg-green-100 text-green-700 border-green-200',

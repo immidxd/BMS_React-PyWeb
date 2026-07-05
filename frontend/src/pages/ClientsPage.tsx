@@ -148,6 +148,7 @@ const ClientsPage: React.FC<ClientsPageProps> = ({ currentSearchTerm }) => {
     'OLX':   'bg-teal-600 text-white',     // OLX — бірюзовий
     'GD':    'bg-gray-500 text-white',     // Grailed — сірий
     'Shafa': 'bg-black text-white',        // Shafa — чорний
+    'Prom':  'bg-indigo-600 text-white',   // Prom.ua — фірмовий фіолет
   };
   // Побудувати http(s)-посилання на профіль за значенням з БД.
   // Повертає null, якщо лінк сформувати неможливо (тоді мітка некліковна).

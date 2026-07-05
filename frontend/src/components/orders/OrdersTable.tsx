@@ -262,6 +262,7 @@ const OrdersTable: React.FC<OrdersTableProps> = ({
                       const channelColors: Record<string, string> = {
                         'Telegram': 'bg-blue-100 text-blue-700 border-blue-300',
                         'OLX': 'bg-orange-100 text-orange-700 border-orange-300',
+                        'Prom': 'bg-indigo-100 text-indigo-700 border-indigo-300',
                         'Viber': 'bg-violet-100 text-violet-700 border-violet-300',
                         'Instagram': 'bg-pink-100 text-pink-700 border-pink-300',
                         'GRAILED': 'bg-gray-100 text-gray-700 border-gray-300',

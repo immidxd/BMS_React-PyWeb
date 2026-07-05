@@ -508,7 +508,8 @@ ORDER_WRITEBACK_HEADERS = {"tracking_number": "Номер накладної", "
 ORDER_WB_SEARCH_TABS = int(os.getenv("ORDER_WB_SEARCH_TABS", "6"))  # newest tabs to search for an order's row
 # Canonical channel → token written into "Уточнення" (matches _SALES_CHANNEL_PATTERNS).
 CHANNEL_TOKENS = {"Telegram": "TG", "Viber": "Viber", "Instagram": "IG",
-                  "TikTok": "TT", "OLX": "OLX", "Grailed": "Grailed", "Shafa": "Shafa"}
+                  "TikTok": "TT", "OLX": "OLX", "Grailed": "Grailed", "Shafa": "Shafa",
+                  "Prom": "Prom"}
 
 
 def compute_order_fingerprint(client_name: str, order_date, product_numbers) -> str:
@@ -1662,6 +1663,8 @@ _SALES_CHANNEL_PATTERNS = [
     (re.compile(r'\b(?:olx|олх)\b', re.IGNORECASE), 'OLX'),
     (re.compile(r'\b(?:grail+ed|грейл+ед)\b', re.IGNORECASE), 'Grailed'),
     (re.compile(r'\b(?:shafa|шафа)\b', re.IGNORECASE), 'Shafa'),
+    # \b після «пром» НЕ матчить «промокод» (там далі літера) — лише окреме слово/prom.ua
+    (re.compile(r'\b(?:prom|пром)\b', re.IGNORECASE), 'Prom'),
 ]
 
 
