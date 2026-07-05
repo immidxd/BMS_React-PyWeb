@@ -1088,6 +1088,20 @@ async def prom_push_availability(body: Dict[str, Any] = Body(default={}), db: Se
     return r
 
 
+@router.post("/api/publications/prom/export-product")
+async def prom_export_product(body: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
+    """Виставити товар BMS на Prom (Фаза 3). preview=true — прев'ю автозаповнення
+    БЕЗ створення; as_draft (default true) — створити як чернетку."""
+    pid = body.get("product_id")
+    if not pid:
+        raise HTTPException(status_code=400, detail="Немає product_id")
+    r = _prom().export_product_to_prom(
+        db, int(pid), as_draft=body.get("as_draft", True), preview=bool(body.get("preview")))
+    if not r.get("ok"):
+        raise HTTPException(status_code=400, detail=r.get("error", "Prom export failed"))
+    return r
+
+
 @router.get("/api/publications/prom/orders")
 async def prom_orders_list(limit: int = Query(100, ge=1, le=500), db: Session = Depends(get_db)):
     """Список дзеркала замовлень Prom (для панелі огляду)."""
