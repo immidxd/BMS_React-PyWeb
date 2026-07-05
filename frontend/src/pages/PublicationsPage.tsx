@@ -402,6 +402,61 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
   // Стан для кнопки "Просканувати ВСІ зараз"
   const [syncingAll, setSyncingAll] = useState(false);
   const [syncAllMsg, setSyncAllMsg] = useState<string | null>(null);
+  // Prom-інтеграція: статус (термін токена), панель замовлень-дзеркала.
+  const [promStatus, setPromStatus] = useState<any | null>(null);
+  const [promOrders, setPromOrders] = useState<any[] | null>(null);
+
+  const fetchPromStatus = React.useCallback(async () => {
+    try { const r = await fetch('/api/publications/prom/status'); if (r.ok) setPromStatus(await r.json()); }
+    catch { /* нехай тихо */ }
+  }, []);
+  useEffect(() => { fetchPromStatus(); }, [fetchPromStatus]);
+
+  // Prom: синхронізувати товари + замовлення (дзеркала).
+  const handlePromSync = async () => {
+    if (syncingAll) return;
+    setSyncingAll(true); setSyncAllMsg(null);
+    try {
+      const rp = await fetch('/api/publications/sync-prom-products', { method: 'POST' });
+      const dp = await rp.json();
+      if (!rp.ok) { setSyncAllMsg(`❌ Prom товари: ${dp.detail || rp.status}`); return; }
+      const ro = await fetch('/api/publications/sync-prom-orders', { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' });
+      const dord = await ro.json();
+      setSyncAllMsg(`✅ Prom: ${dp.total || 0} товарів (${dp.linked || 0} злінковано), ${dord.total || 0} замовлень.`);
+      fetchItems(); fetchPromStatus();
+      setTimeout(() => setSyncAllMsg(null), 6000);
+    } catch (e: any) { setSyncAllMsg(`❌ Prom: ${e.message || 'Помилка'}`); }
+    finally { setSyncingAll(false); }
+  };
+
+  // Prom: оновити наявність (ЗАПИС у живі оголошення). Спершу dry-run → підтвердження.
+  const handlePromPushAvailability = async () => {
+    if (syncingAll) return;
+    try {
+      const dr = await fetch('/api/publications/prom/push-availability', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ dry_run: true }) });
+      const dd = await dr.json();
+      if (!dr.ok) { setSyncAllMsg(`❌ Prom: ${dd.detail || dr.status}`); return; }
+      const n = dd.would_change || 0;
+      if (n === 0) { setSyncAllMsg(`✅ Prom: наявність уже синхронна (перевірено ${dd.checked || 0}).`); setTimeout(() => setSyncAllMsg(null), 5000); return; }
+      const sample = (dd.sample || []).map((c: any) => `  ${c.sku}: → ${c.to === 'available' ? 'в наявності' : 'немає'}`).join('\n');
+      if (!window.confirm(`Оновити наявність на Prom для ${n} товар(ів)?\nЦе ЗАПИС у твої живі оголошення.\n\n${sample}${n > (dd.sample||[]).length ? '\n  …' : ''}`)) return;
+      setSyncingAll(true);
+      const r = await fetch('/api/publications/prom/push-availability', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ dry_run: false }) });
+      const d = await r.json();
+      setSyncAllMsg(r.ok ? `✅ Prom: наявність оновлено для ${d.changed || 0} товар(ів).` : `❌ Prom: ${d.detail || r.status}`);
+      fetchItems(); fetchPromStatus();
+      setTimeout(() => setSyncAllMsg(null), 6000);
+    } catch (e: any) { setSyncAllMsg(`❌ Prom: ${e.message || 'Помилка'}`); }
+    finally { setSyncingAll(false); }
+  };
+
+  const openPromOrders = async () => {
+    try {
+      const r = await fetch('/api/publications/prom/orders?limit=200');
+      const d = await r.json();
+      setPromOrders(d.orders || []);
+    } catch { setPromOrders([]); }
+  };
   const defaultPubVisibility: Record<PubColumnId, boolean> = PUB_COLUMN_ORDER.reduce(
     (acc, c) => { acc[c.id] = !c.optional; return acc; },
     {} as Record<PubColumnId, boolean>,
@@ -737,8 +792,40 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
             >
               {syncingAll ? '⏳ OLX…' : '🔄 Синхронізувати OLX'}
             </button>
+            <button
+              onClick={handlePromSync}
+              disabled={syncingAll}
+              className="px-3 py-1.5 text-sm text-white rounded transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+              style={{ backgroundColor: '#5B2D8E' }}
+              title="Підтягнути товари й замовлення Prom і прив'язати до товарів за номером (sku)"
+            >
+              {syncingAll ? '⏳ Prom…' : '🔄 Синхронізувати Prom'}
+            </button>
+            <button
+              onClick={handlePromPushAvailability}
+              disabled={syncingAll}
+              className="px-3 py-1.5 text-xs bg-gray-100 hover:bg-gray-200 dark:bg-gray-700 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-200 rounded transition-colors disabled:opacity-60"
+              title="Оновити наявність на Prom за станом BMS (спершу покаже прев'ю змін)"
+            >
+              📦 Prom: наявність
+            </button>
+            <button
+              onClick={openPromOrders}
+              className="px-3 py-1.5 text-xs bg-gray-100 hover:bg-gray-200 dark:bg-gray-700 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-200 rounded transition-colors"
+              title="Показати замовлення з Prom (окреме дзеркало)"
+            >
+              🧾 Замовлення Prom{promStatus?.order_count ? ` (${promStatus.order_count})` : ''}
+            </button>
           </div>
         </div>
+
+        {/* Банер: токен Prom спливає скоро → нагадати замінити */}
+        {promStatus?.token_expiring_soon && (
+          <div className="mb-3 p-2 text-sm bg-amber-50 dark:bg-amber-900/20 border border-amber-300 dark:border-amber-700 rounded text-amber-800 dark:text-amber-300">
+            ⚠️ Термін API-токена Prom спливає через {promStatus.token_days_left} дн.
+            (до {promStatus.token_expires_at?.slice(0, 10)}). Створи новий у кабінеті Prom і онови токен.
+          </div>
+        )}
 
         {syncAllMsg && (
           <div className="mb-3 p-2 text-sm bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-700 rounded">
@@ -1107,6 +1194,48 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
         open={cardProductId !== null}
         onClose={() => setCardProductId(null)}
       />
+
+      {/* Дзеркало замовлень Prom (окреме від журналу — лише огляд) */}
+      {promOrders !== null && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+             onClick={() => setPromOrders(null)}>
+          <div className="bg-white dark:bg-gray-900 rounded-lg shadow-xl max-w-3xl w-full max-h-[80vh] overflow-auto p-4"
+               onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-lg font-semibold flex items-center gap-2">
+                <img src="/media-logos/prom-logo.jpg" alt="Prom" className="h-5 rounded" /> Замовлення Prom
+                <span className="text-sm text-gray-400">({promOrders.length})</span>
+              </h3>
+              <button onClick={() => setPromOrders(null)} className="text-gray-400 hover:text-gray-700 text-xl">✕</button>
+            </div>
+            <p className="text-xs text-gray-500 mb-3">Окреме дзеркало Prom — у Google-журнал не вливається. Товари злінковані до BMS за номером (sku).</p>
+            {promOrders.length === 0 ? (
+              <div className="text-center text-gray-400 py-8">Замовлень Prom немає. Натисни «Синхронізувати Prom».</div>
+            ) : (
+              <div className="space-y-2">
+                {promOrders.map((o: any) => (
+                  <div key={o.prom_id} className="border border-gray-200 dark:border-gray-700 rounded p-2 text-sm">
+                    <div className="flex items-center justify-between flex-wrap gap-2">
+                      <span className="font-medium">#{o.prom_id} · {o.status} · <span className="text-gray-500">{o.source}</span></span>
+                      <span className="text-gray-500">{o.date_created ? String(o.date_created).slice(0, 16).replace('T', ' ') : ''}</span>
+                      <span className="font-semibold">{o.price_text || (o.price_num != null ? `${o.price_num} грн` : '')}</span>
+                    </div>
+                    <div className="text-gray-500 text-xs mt-0.5">{o.client_name || '—'} · {o.phone || ''} · злінковано {o.linked_count}/{(o.products || []).length}</div>
+                    <div className="mt-1 flex flex-wrap gap-1">
+                      {(o.products || []).map((pr: any, i: number) => (
+                        <span key={i} className={`px-1.5 py-0.5 rounded text-xs border ${pr.product_id ? 'bg-indigo-50 border-indigo-200 text-indigo-700 dark:bg-indigo-900/20 dark:text-indigo-300' : 'bg-gray-50 border-gray-200 text-gray-500'}`}
+                            title={pr.name || ''}>
+                          {pr.sku || '?'}{pr.quantity ? ` ×${pr.quantity}` : ''}{pr.product_id ? ' ✓' : ''}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </MainLayout>
   );
 };

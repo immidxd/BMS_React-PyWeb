@@ -89,6 +89,7 @@ const GENDER_ACTIVE_TINT: Record<'female' | 'male' | 'unisex', string> = {
 const PUBLICATION_PLATFORMS: { key: string; label: string; icon: string }[] = [
   { key: 'telegram', label: 'Telegram', icon: '/media-logos/telegram-logo.png' },
   { key: 'olx',      label: 'OLX',      icon: '/media-logos/olx-mark-emerald.png' },
+  { key: 'prom',     label: 'Prom',     icon: '/media-logos/prom-logo.jpg' },
   // { key: 'instagram', label: 'Instagram', icon: '/media-logos/instagram.png' },
 ];
 

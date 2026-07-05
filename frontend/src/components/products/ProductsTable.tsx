@@ -74,8 +74,27 @@ const OlxGlyph: React.FC<{ size?: number }> = ({ size = 13 }) => {
 // Соц-маркери рядка (інлайн, на одній лінії): Telegram + OLX. Пиняться
 // absolute-left у комірці «Номер» → висоту рядка/ширину колонки не чіпають.
 // Рендеримо лише наявні; якщо жодного — нічого.
-const RowIndicators: React.FC<{ publishedTg?: boolean; publishedOlx?: boolean }> = ({ publishedTg, publishedOlx }) => {
-    if (!publishedTg && !publishedOlx) return null;
+// Маркер Prom — власне лого. Текстовий фолбек, якщо картинка не завантажиться.
+const PromGlyph: React.FC<{ size?: number }> = ({ size = 13 }) => {
+    const [failed, setFailed] = React.useState(false);
+    if (failed) {
+        return (
+            <span style={{
+                fontSize: size - 4, fontWeight: 800, lineHeight: 1, color: '#fff',
+                background: '#5B2D8E', borderRadius: 3, padding: '1.5px 2.5px',
+                display: 'inline-flex', alignItems: 'center',
+            }}>P</span>
+        );
+    }
+    return (
+        <img src="/media-logos/prom-logo.jpg" alt="Prom"
+            style={{ height: size, width: 'auto', display: 'block', borderRadius: 2 }}
+            onError={() => setFailed(true)} />
+    );
+};
+
+const RowIndicators: React.FC<{ publishedTg?: boolean; publishedOlx?: boolean; publishedProm?: boolean }> = ({ publishedTg, publishedOlx, publishedProm }) => {
+    if (!publishedTg && !publishedOlx && !publishedProm) return null;
     return (
         <span className="inline-flex items-center gap-1 leading-none select-none shrink-0">
             {publishedTg && (
@@ -86,6 +105,11 @@ const RowIndicators: React.FC<{ publishedTg?: boolean; publishedOlx?: boolean }>
             {publishedOlx && (
                 <Tooltip title="Опубліковано на OLX">
                     <span style={{ display: 'inline-flex' }}><OlxGlyph size={11} /></span>
+                </Tooltip>
+            )}
+            {publishedProm && (
+                <Tooltip title="Опубліковано на Prom">
+                    <span style={{ display: 'inline-flex' }}><PromGlyph size={11} /></span>
                 </Tooltip>
             )}
         </span>
@@ -327,10 +351,10 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
                 if (isUnknownValue(label)) {
                     return (
                         <div className="flex items-center justify-center gap-1.5">
-                            <RowIndicators publishedTg={(record as any).published_tg} publishedOlx={(record as any).published_olx} />
+                            <RowIndicators publishedTg={(record as any).published_tg} publishedOlx={(record as any).published_olx} publishedProm={(record as any).published_prom} />
                             <UnknownIf value={label} className="text-xs font-medium" />
                             <span className="invisible" aria-hidden="true">
-                                <RowIndicators publishedTg={(record as any).published_tg} publishedOlx={(record as any).published_olx} />
+                                <RowIndicators publishedTg={(record as any).published_tg} publishedOlx={(record as any).published_olx} publishedProm={(record as any).published_prom} />
                             </span>
                         </div>
                     );
@@ -357,10 +381,10 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
                 );
                 return (
                     <div className="flex items-center justify-center gap-1.5">
-                        <RowIndicators publishedTg={(record as any).published_tg} publishedOlx={(record as any).published_olx} />
+                        <RowIndicators publishedTg={(record as any).published_tg} publishedOlx={(record as any).published_olx} publishedProm={(record as any).published_prom} />
                         {numberCell}
                         <span className="invisible" aria-hidden="true">
-                            <RowIndicators publishedTg={(record as any).published_tg} publishedOlx={(record as any).published_olx} />
+                            <RowIndicators publishedTg={(record as any).published_tg} publishedOlx={(record as any).published_olx} publishedProm={(record as any).published_prom} />
                         </span>
                     </div>
                 );

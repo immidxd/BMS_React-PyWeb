@@ -147,6 +147,7 @@ export interface Product {
     // Маркери рядка
     published_tg?: boolean;    // опубліковано в Telegram
     published_olx?: boolean;   // опубліковано на OLX
+    published_prom?: boolean;  // опубліковано на Prom
     has_photo?: boolean;       // має ≥1 фото
 }
 
