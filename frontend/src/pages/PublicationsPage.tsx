@@ -402,6 +402,9 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
   // Стан для кнопки "Просканувати ВСІ зараз"
   const [syncingAll, setSyncingAll] = useState(false);
   const [syncAllMsg, setSyncAllMsg] = useState<string | null>(null);
+  // Панель «Інтеграції» (Telegram/OLX/Prom) — усе керування каналами в одному місці.
+  const [integrationsOpen, setIntegrationsOpen] = useState(false);
+  const [olxStatus, setOlxStatus] = useState<any | null>(null);
   // Prom-інтеграція: статус (термін токена), панель замовлень-дзеркала.
   const [promStatus, setPromStatus] = useState<any | null>(null);
   const [promOrders, setPromOrders] = useState<any[] | null>(null);
@@ -410,7 +413,11 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
     try { const r = await fetch('/api/publications/prom/status'); if (r.ok) setPromStatus(await r.json()); }
     catch { /* нехай тихо */ }
   }, []);
-  useEffect(() => { fetchPromStatus(); }, [fetchPromStatus]);
+  const fetchOlxStatus = React.useCallback(async () => {
+    try { const r = await fetch('/api/publications/olx/status'); if (r.ok) setOlxStatus(await r.json()); }
+    catch { /* нехай тихо */ }
+  }, []);
+  useEffect(() => { fetchPromStatus(); fetchOlxStatus(); }, [fetchPromStatus, fetchOlxStatus]);
 
   // Prom: синхронізувати товари + замовлення (дзеркала).
   const handlePromSync = async () => {
@@ -754,67 +761,14 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
             {currentSearchTerm && (
               <span className="text-sm text-gray-500 dark:text-gray-400">Пошук: «{currentSearchTerm}»</span>
             )}
+            {/* Усі інтеграції (Telegram/OLX/Prom) — за однією кнопкою, щоб тулбар був чистим */}
             <button
-              onClick={handleRelink}
-              className="px-3 py-1.5 text-xs bg-gray-100 hover:bg-gray-200 dark:bg-gray-700 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-200 rounded transition-colors"
-              title="Зв'язати непов'язані пости з товарами по номеру"
+              onClick={() => setIntegrationsOpen(true)}
+              className="px-3 py-1.5 text-sm bg-gray-800 hover:bg-gray-900 dark:bg-gray-200 dark:hover:bg-white text-white dark:text-gray-900 rounded transition-colors flex items-center gap-1.5"
+              title="Синхронізація та керування каналами: Telegram, OLX, Prom"
             >
-              🔗 Перепов'язати
-            </button>
-            <button
-              onClick={handleSyncAll}
-              disabled={syncingAll}
-              className="px-3 py-1.5 text-sm bg-green-600 hover:bg-green-700 disabled:opacity-60 disabled:cursor-not-allowed text-white rounded transition-colors"
-              title="Просканувати ВСІ відомі канали зараз (інакше це робиться автоматично кожні 30 хв)"
-            >
-              {syncingAll ? '⏳ Скануємо…' : '🔄 Синхронізувати все'}
-            </button>
-            <button
-              onClick={() => setSyncOpen(true)}
-              className="px-3 py-1.5 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded transition-colors"
-              title="Просканувати конкретний канал за username (для нових/ad-hoc)"
-            >
-              📡 Один канал
-            </button>
-            <button
-              onClick={handleOlxConnect}
-              className="px-3 py-1.5 text-xs bg-gray-100 hover:bg-gray-200 dark:bg-gray-700 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-200 rounded transition-colors"
-              title="Одноразова авторизація OLX (OAuth). Потрібні OLX_CLIENT_ID/SECRET у .env"
-            >
-              🔌 OLX: підключити
-            </button>
-            <button
-              onClick={handleOlxSync}
-              disabled={syncingAll}
-              className="px-3 py-1.5 text-sm text-white rounded transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
-              style={{ backgroundColor: '#002F34' }}
-              title="Підтягнути власні оголошення OLX і прив'язати до товарів за номером"
-            >
-              {syncingAll ? '⏳ OLX…' : '🔄 Синхронізувати OLX'}
-            </button>
-            <button
-              onClick={handlePromSync}
-              disabled={syncingAll}
-              className="px-3 py-1.5 text-sm text-white rounded transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
-              style={{ backgroundColor: '#5B2D8E' }}
-              title="Підтягнути товари й замовлення Prom і прив'язати до товарів за номером (sku)"
-            >
-              {syncingAll ? '⏳ Prom…' : '🔄 Синхронізувати Prom'}
-            </button>
-            <button
-              onClick={handlePromPushAvailability}
-              disabled={syncingAll}
-              className="px-3 py-1.5 text-xs bg-gray-100 hover:bg-gray-200 dark:bg-gray-700 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-200 rounded transition-colors disabled:opacity-60"
-              title="Оновити наявність на Prom за станом BMS (спершу покаже прев'ю змін)"
-            >
-              📦 Prom: наявність
-            </button>
-            <button
-              onClick={openPromOrders}
-              className="px-3 py-1.5 text-xs bg-gray-100 hover:bg-gray-200 dark:bg-gray-700 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-200 rounded transition-colors"
-              title="Показати замовлення з Prom (окреме дзеркало)"
-            >
-              🧾 Замовлення Prom{promStatus?.order_count ? ` (${promStatus.order_count})` : ''}
+              ⚙ Інтеграції
+              {promStatus?.token_expiring_soon && <span className="w-2 h-2 rounded-full bg-amber-400" title="Токен Prom спливає" />}
             </button>
           </div>
         </div>
@@ -1194,6 +1148,82 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
         open={cardProductId !== null}
         onClose={() => setCardProductId(null)}
       />
+
+      {/* Панель «Інтеграції» — керування каналами (Telegram / OLX / Prom) в одному місці */}
+      {integrationsOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+             onClick={() => setIntegrationsOpen(false)}>
+          <div className="bg-white dark:bg-gray-900 rounded-lg shadow-xl max-w-4xl w-full max-h-[85vh] overflow-auto p-5"
+               onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-1">
+              <h3 className="text-lg font-semibold">⚙ Інтеграції</h3>
+              <button onClick={() => setIntegrationsOpen(false)} className="text-gray-400 hover:text-gray-700 text-xl">✕</button>
+            </div>
+            <p className="text-xs text-gray-500 mb-4">Синхронізація й керування каналами. Авто-синхронізація й так відбувається кожні 30 хв — ці кнопки для запуску «зараз».</p>
+            {syncAllMsg && (
+              <div className="mb-4 p-2 text-sm bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-700 rounded">{syncAllMsg}</div>
+            )}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              {/* Telegram */}
+              <div className="border border-gray-200 dark:border-gray-700 rounded-lg p-3 flex flex-col gap-2">
+                <div className="flex items-center gap-2 font-medium">
+                  <img src="/media-logos/telegram-logo.png" alt="" className="h-5" /> Telegram
+                </div>
+                <span className="text-xs text-green-600 dark:text-green-400">● активно (авто кожні 30 хв)</span>
+                <button onClick={handleSyncAll} disabled={syncingAll}
+                  className="mt-1 px-3 py-1.5 text-sm bg-green-600 hover:bg-green-700 disabled:opacity-60 text-white rounded">
+                  {syncingAll ? '⏳ Скануємо…' : '🔄 Синхронізувати все'}
+                </button>
+                <button onClick={() => { setIntegrationsOpen(false); setSyncOpen(true); }}
+                  className="px-3 py-1.5 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded">📡 Один канал</button>
+                <button onClick={handleRelink}
+                  className="px-3 py-1.5 text-xs bg-gray-100 hover:bg-gray-200 dark:bg-gray-700 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-200 rounded">🔗 Перепов'язати</button>
+              </div>
+              {/* OLX */}
+              <div className="border border-gray-200 dark:border-gray-700 rounded-lg p-3 flex flex-col gap-2">
+                <div className="flex items-center gap-2 font-medium">
+                  <img src="/media-logos/olx-mark-emerald.png" alt="" className="h-5" /> OLX
+                </div>
+                <span className={`text-xs ${olxStatus?.authorized ? 'text-green-600 dark:text-green-400' : 'text-gray-400'}`}>
+                  {olxStatus?.authorized ? `● підключено (${olxStatus.advert_count ?? 0} оголошень)` : '○ не підключено'}
+                </span>
+                {!olxStatus?.authorized && (
+                  <button onClick={handleOlxConnect}
+                    className="mt-1 px-3 py-1.5 text-xs bg-gray-100 hover:bg-gray-200 dark:bg-gray-700 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-200 rounded">🔌 Підключити (OAuth)</button>
+                )}
+                <button onClick={handleOlxSync} disabled={syncingAll}
+                  className="mt-1 px-3 py-1.5 text-sm text-white rounded disabled:opacity-60" style={{ backgroundColor: '#002F34' }}>
+                  {syncingAll ? '⏳ OLX…' : '🔄 Синхронізувати'}
+                </button>
+              </div>
+              {/* Prom */}
+              <div className="border border-gray-200 dark:border-gray-700 rounded-lg p-3 flex flex-col gap-2">
+                <div className="flex items-center gap-2 font-medium">
+                  <img src="/media-logos/prom-logo.jpg" alt="" className="h-5 rounded" /> Prom
+                </div>
+                <span className={`text-xs ${promStatus?.token_expiring_soon ? 'text-amber-600 dark:text-amber-400' : promStatus?.configured ? 'text-green-600 dark:text-green-400' : 'text-gray-400'}`}>
+                  {promStatus?.configured
+                    ? `● токен ✓${promStatus.token_days_left != null ? ` (${promStatus.token_days_left} дн)` : ''} · ${promStatus.product_count ?? 0} тов., ${promStatus.order_count ?? 0} замовл.`
+                    : '○ токен не задано'}
+                </span>
+                {promStatus?.token_expiring_soon && (
+                  <span className="text-xs text-amber-600 dark:text-amber-400">⚠️ Токен спливає — створи новий у кабінеті Prom</span>
+                )}
+                <button onClick={handlePromSync} disabled={syncingAll}
+                  className="mt-1 px-3 py-1.5 text-sm text-white rounded disabled:opacity-60" style={{ backgroundColor: '#5B2D8E' }}>
+                  {syncingAll ? '⏳ Prom…' : '🔄 Синхронізувати'}
+                </button>
+                <button onClick={handlePromPushAvailability} disabled={syncingAll}
+                  className="px-3 py-1.5 text-xs bg-gray-100 hover:bg-gray-200 dark:bg-gray-700 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-200 rounded disabled:opacity-60">📦 Оновити наявність</button>
+                <button onClick={() => { setIntegrationsOpen(false); openPromOrders(); }}
+                  className="px-3 py-1.5 text-xs bg-gray-100 hover:bg-gray-200 dark:bg-gray-700 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-200 rounded">
+                  🧾 Замовлення{promStatus?.order_count ? ` (${promStatus.order_count})` : ''}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Дзеркало замовлень Prom (окреме від журналу — лише огляд) */}
       {promOrders !== null && (
