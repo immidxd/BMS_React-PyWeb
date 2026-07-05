@@ -196,6 +196,13 @@ _PRODUCT_FROM_SQL = """
             JOIN products p2 ON p2.id = oa.product_id
             WHERE oa.status IN ('active', 'limited') AND p2.productnumber IS NOT NULL
         ) olxpub ON olxpub.pnum = TRIM(LEADING '#' FROM p.productnumber)
+        LEFT JOIN (
+            -- Номери (без #) з ≥1 товаром на Prom у статусі on_display.
+            SELECT DISTINCT TRIM(LEADING '#' FROM p2.productnumber) AS pnum
+            FROM prom_products pp
+            JOIN products p2 ON p2.id = pp.product_id
+            WHERE pp.status = 'on_display' AND p2.productnumber IS NOT NULL
+        ) prompub ON prompub.pnum = TRIM(LEADING '#' FROM p.productnumber)
         """
 
 
@@ -352,6 +359,8 @@ def _build_product_where(filters: Optional["schemas.ProductFilter"]) -> tuple:
                 _pub.append("tgpub.pnum IS NOT NULL")
             if 'olx' in filters.published_on:
                 _pub.append("olxpub.pnum IS NOT NULL")
+            if 'prom' in filters.published_on:
+                _pub.append("prompub.pnum IS NOT NULL")
             if _pub:
                 where_conditions.append("(" + " OR ".join(_pub) + ")")
 
@@ -599,7 +608,9 @@ def get_products(
                (tgpub.pnum IS NOT NULL) AS published_tg,
                -- Опубліковано на OLX (active/limited оголошення) — той самий
                -- принцип «за номером» (одне оголошення покриває всю ростовку).
-               (olxpub.pnum IS NOT NULL) AS published_olx
+               (olxpub.pnum IS NOT NULL) AS published_olx,
+               -- Опубліковано на Prom (товар on_display) — той самий принцип «за номером».
+               (prompub.pnum IS NOT NULL) AS published_prom
         FROM products p
         LEFT JOIN types t ON p.typeid = t.id
         LEFT JOIN brands b ON p.brandid = b.id  
@@ -692,6 +703,13 @@ def get_products(
             JOIN products p2 ON p2.id = oa.product_id
             WHERE oa.status IN ('active', 'limited') AND p2.productnumber IS NOT NULL
         ) olxpub ON olxpub.pnum = TRIM(LEADING '#' FROM p.productnumber)
+        LEFT JOIN (
+            -- Номери (без #) з ≥1 товаром на Prom у статусі on_display.
+            SELECT DISTINCT TRIM(LEADING '#' FROM p2.productnumber) AS pnum
+            FROM prom_products pp
+            JOIN products p2 ON p2.id = pp.product_id
+            WHERE pp.status = 'on_display' AND p2.productnumber IS NOT NULL
+        ) prompub ON prompub.pnum = TRIM(LEADING '#' FROM p.productnumber)
         """
         
         where_conditions, params = _build_product_where(filters)
@@ -844,6 +862,7 @@ def get_products(
                 'is_rostovka': bool(m.get('is_rostovka', False)),
                 'published_tg': bool(m.get('published_tg', False)),
                 'published_olx': bool(m.get('published_olx', False)),
+                'published_prom': bool(m.get('published_prom', False)),
                 'has_photo': product_has_photo(m.get('productnumber'), _photo_set),
             }
             items.append(product_dict)

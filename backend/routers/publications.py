@@ -1034,3 +1034,66 @@ async def relink_olx(db: Session = Depends(get_db)):
         db.rollback()
         logger.error(f"OLX relink error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── Prom.ua інтеграція (Фаза 2) ──────────────────────────────────────────────
+def _prom():
+    try:
+        from services import prom_service
+    except ImportError:
+        from backend.services import prom_service
+    return prom_service
+
+
+@router.get("/api/publications/prom/status")
+async def prom_status(db: Session = Depends(get_db)):
+    """Статус Prom: налаштовано, термін токена (+ попередження), лічильники."""
+    return _prom().get_status(db)
+
+
+@router.post("/api/publications/prom/save-token")
+async def prom_save_token(body: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
+    """Зберегти/оновити API-токен Prom (+ опційно дату закінчення)."""
+    token = (body.get("token") or "").strip()
+    if not token:
+        raise HTTPException(status_code=400, detail="Порожній токен")
+    _prom().save_token(db, token, body.get("expires_at"))
+    return _prom().get_status(db)
+
+
+@router.post("/api/publications/sync-prom-products")
+async def sync_prom_products(db: Session = Depends(get_db)):
+    """Синхронізувати товари Prom (дзеркало + лінк за sku)."""
+    r = _prom().sync_products(db)
+    if not r.get("ok"):
+        raise HTTPException(status_code=400, detail=r.get("error", "Prom sync failed"))
+    return r
+
+
+@router.post("/api/publications/sync-prom-orders")
+async def sync_prom_orders(body: Dict[str, Any] = Body(default={}), db: Session = Depends(get_db)):
+    """Синхронізувати замовлення Prom (окреме дзеркало). date_from опційно."""
+    r = _prom().sync_orders(db, date_from=body.get("date_from"))
+    if not r.get("ok"):
+        raise HTTPException(status_code=400, detail=r.get("error", "Prom orders sync failed"))
+    return r
+
+
+@router.post("/api/publications/prom/push-availability")
+async def prom_push_availability(body: Dict[str, Any] = Body(default={}), db: Session = Depends(get_db)):
+    """Оновити наявність на Prom за станом BMS. dry_run=true — лише прев'ю змін."""
+    r = _prom().push_availability(db, dry_run=bool(body.get("dry_run")))
+    if not r.get("ok"):
+        raise HTTPException(status_code=400, detail=r.get("error", "Prom push failed"))
+    return r
+
+
+@router.get("/api/publications/prom/orders")
+async def prom_orders_list(limit: int = Query(100, ge=1, le=500), db: Session = Depends(get_db)):
+    """Список дзеркала замовлень Prom (для панелі огляду)."""
+    rows = db.execute(text("""
+        SELECT prom_id, status, source, date_created, client_name, phone,
+               price_text, price_num, products, linked_count, client_notes
+        FROM prom_orders ORDER BY date_created DESC NULLS LAST LIMIT :lim
+    """), {"lim": limit}).mappings().all()
+    return {"orders": [dict(r) for r in rows], "total": len(rows)}
