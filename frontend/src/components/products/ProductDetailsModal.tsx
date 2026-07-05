@@ -170,6 +170,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
   // для розумного заповнення ПОРОЖНІХ полів одним кліком (нічого не перезаписує).
   const [modelProfile, setModelProfile] = useState<any | null>(null);
   const [profileNote, setProfileNote] = useState<string | null>(null);
+  const [promBusy, setPromBusy] = useState(false);  // експорт товару на Prom
   // Згорнуті підрозділи (Матеріали/Інше/Примітки) — за замовчуванням приховані,
   // розкриваються кліком. У режимі редагування завжди розгорнуті (щоб редагувати).
   const [openSections, setOpenSections] = useState<Record<string, boolean>>({});
@@ -1286,6 +1287,43 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                     title="Відкрити аркуш цього завозу в Google Таблиці"
                   >
                     <span>▤</span><span>Таблиця</span>
+                  </button>
+                )}
+
+                {/* «На Prom»: виставити товар на Prom (чернетка) з автозаповненням.
+                    Прев'ю → підтвердження → експорт (фон, з'явиться за 1-3 хв). */}
+                {!editMode && (
+                  <button
+                    onClick={async () => {
+                      if (!productId || promBusy) return;
+                      setPromBusy(true);
+                      try {
+                        const pv = await fetch('/api/publications/prom/export-product', {
+                          method: 'POST', headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ product_id: productId, preview: true }),
+                        });
+                        const d = await pv.json();
+                        if (!pv.ok) { alert(`Prom: ${d.detail || pv.status}`); return; }
+                        if (d.already_on_prom) { alert(`Товар ${d.sku} уже є на Prom.`); return; }
+                        if (!d.image_count) { alert('У товару немає фото — Prom вимагає зображення. Додай фото й повтори.'); return; }
+                        const chars = (d.params || []).map((x: any[]) => `${x[0]}: ${x[1]}`).join('\n');
+                        if (!window.confirm(
+                          `Виставити на Prom як ЧЕРНЕТКУ?\n\nНазва: ${d.name}\nКатегорія Prom: ${d.category_id}\nФото: ${d.image_count}\n\nХарактеристики:\n${chars}\n\nПотім переглянеш і опублікуєш у кабінеті Prom.`)) return;
+                        const ex = await fetch('/api/publications/prom/export-product', {
+                          method: 'POST', headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ product_id: productId, as_draft: true }),
+                        });
+                        const r = await ex.json();
+                        alert(ex.ok ? (r.note || 'Відправлено на Prom.') : `Prom: ${r.detail || ex.status}`);
+                      } catch (e: any) { alert(`Prom: ${e.message || 'Помилка'}`); }
+                      finally { setPromBusy(false); }
+                    }}
+                    disabled={promBusy}
+                    className="px-3 py-2 rounded-lg text-sm font-medium text-white transition-colors flex items-center gap-1.5 disabled:opacity-60"
+                    style={{ backgroundColor: '#5B2D8E' }}
+                    title="Виставити товар на Prom (чернетка) з автозаповненням характеристик і фото"
+                  >
+                    <span>{promBusy ? '⏳' : '🛍'}</span><span>{(p as any)?.published_prom ? 'Оновити на Prom' : 'На Prom'}</span>
                   </button>
                 )}
 
