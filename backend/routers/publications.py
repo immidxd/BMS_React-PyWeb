@@ -1104,6 +1104,18 @@ async def prom_export_product(body: Dict[str, Any] = Body(...), db: Session = De
     return r
 
 
+@router.post("/api/publications/prom/delete-product")
+async def prom_delete_product(body: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
+    """Прибрати товар з Prom (усі лістинги/розміри) — status=deleted + чистка дзеркала."""
+    pid = body.get("product_id")
+    if not pid:
+        raise HTTPException(status_code=400, detail="Немає product_id")
+    r = _prom().delete_product_from_prom(db, int(pid))
+    if not r.get("ok"):
+        raise HTTPException(status_code=400, detail=r.get("error", "Prom delete failed"))
+    return r
+
+
 @router.get("/api/publications/prom/orders")
 async def prom_orders_list(limit: int = Query(100, ge=1, le=500), db: Session = Depends(get_db)):
     """Список дзеркала замовлень Prom (для панелі огляду)."""

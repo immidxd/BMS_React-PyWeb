@@ -2,7 +2,7 @@ import React, { useEffect, useState, useMemo, useRef } from 'react';
 import { productService } from '../../services/productService';
 import type { Product, ProductFilters } from '../../types/product';
 import { Tag, Spin, Image, notification } from 'antd';
-import { CloseOutlined, PictureOutlined, LeftOutlined, RightOutlined, WarningOutlined, EditOutlined, CheckOutlined, PlusOutlined, SyncOutlined, EyeOutlined, EyeInvisibleOutlined, StarFilled } from '@ant-design/icons';
+import { CloseOutlined, PictureOutlined, LeftOutlined, RightOutlined, WarningOutlined, EditOutlined, CheckOutlined, PlusOutlined, SyncOutlined, EyeOutlined, EyeInvisibleOutlined, StarFilled, ShoppingOutlined, TableOutlined, InboxOutlined } from '@ant-design/icons';
 import { CopyOnClick, formatBrandName, getProductDisplayStatus, getConditionColor } from '../common/displayHelpers';
 import { hiddenFieldsForType } from './productCategory';
 import { taskManager, emitProductPhotosChanged } from '../../services/taskManager';
@@ -170,7 +170,8 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
   // для розумного заповнення ПОРОЖНІХ полів одним кліком (нічого не перезаписує).
   const [modelProfile, setModelProfile] = useState<any | null>(null);
   const [profileNote, setProfileNote] = useState<string | null>(null);
-  const [promBusy, setPromBusy] = useState(false);  // експорт товару на Prom
+  const [promBusy, setPromBusy] = useState(false);  // експорт/видалення товару на Prom
+  const [promPublished, setPromPublished] = useState(false);  // чіп-стан «на Prom»
   // Згорнуті підрозділи (Матеріали/Інше/Примітки) — за замовчуванням приховані,
   // розкриваються кліком. У режимі редагування завжди розгорнуті (щоб редагувати).
   const [openSections, setOpenSections] = useState<Record<string, boolean>>({});
@@ -218,6 +219,63 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
       notification.error({ message: 'Не вдалося оновити «Рекомендований»', placement: 'bottomRight' });
     } finally { setCatalogSaving(false); }
   };
+
+  // Чіп «Prom»: стан з даних товару (оновлюється при підміні картки/синку)
+  useEffect(() => { setPromPublished(!!(product as any)?.published_prom); }, [productId, (product as any)?.published_prom]);
+
+  // Публікація на Prom (прев'ю → попередження про фото/стан → підтвердження → експорт-чернетка)
+  const promPublishFlow = async () => {
+    if (!productId || promBusy) return;
+    setPromBusy(true);
+    try {
+      const pv = await fetch('/api/publications/prom/export-product', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ product_id: productId, preview: true }),
+      });
+      const d = await pv.json();
+      if (!pv.ok) { notification.error({ message: `Prom: ${d.detail || pv.status}`, placement: 'bottomRight' }); return; }
+      if (!d.image_count) { notification.warning({ message: 'У товару немає фото — Prom вимагає зображення.', placement: 'bottomRight' }); return; }
+      // Додатковий рівень захисту: окреме попередження про реальні фото / вживаний стан
+      const warns: string[] = [];
+      if (d.image_kind === 'real') warns.push('❗ У товару НЕМАЄ офіційних фото — публікація піде з РЕАЛЬНИМИ фото.');
+      if (d.condition_warn) warns.push(`❗ Стан товару: «${d.condition}» → на Prom як «${d.condition_prom}».`);
+      if (warns.length && !window.confirm(`⚠️ УВАГА перед публікацією на Prom:\n\n${warns.join('\n')}\n\nВи впевнені, що хочете продовжити?`)) return;
+      const force = !!d.already_on_prom;
+      const chars = (d.params || []).map((x: any[]) => `${x[0]}: ${x[1]}`).join('\n');
+      const sizes = d.sizes_count && d.sizes_count > 1 ? `\nРостовка: ${d.sizes_count} розмірів → ${d.sizes_count} окремих лістингів` : '';
+      const head = force
+        ? `Товар ${d.sku} УЖЕ є на Prom.\n\nПерезаписати автозаповненням (назва/опис/характеристики/фото)?`
+        : `Виставити на Prom як ЧЕРНЕТКУ?`;
+      if (!window.confirm(`${head}\n\nНазва: ${d.name}${sizes}\nКатегорія Prom: ${d.category_id}\nФото: ${d.image_count}\n\nХарактеристики:\n${chars}\n\nПотім переглянеш і опублікуєш у кабінеті Prom.`)) return;
+      const ex = await fetch('/api/publications/prom/export-product', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ product_id: productId, as_draft: true, force }),
+      });
+      const r = await ex.json();
+      if (ex.ok) { setPromPublished(true); notification.success({ message: r.note || 'Відправлено на Prom.', placement: 'bottomRight', duration: 4 }); }
+      else notification.error({ message: `Prom: ${r.detail || ex.status}`, placement: 'bottomRight' });
+    } catch (e: any) { notification.error({ message: `Prom: ${e.message || 'Помилка'}`, placement: 'bottomRight' }); }
+    finally { setPromBusy(false); }
+  };
+
+  // Видалення товару з Prom (з підтвердженням) — знімає всі лістинги (і розміри ростовки)
+  const promDeleteFlow = async () => {
+    if (!productId || promBusy) return;
+    if (!window.confirm('Видалити цей товар з Prom?\n\nЛістинг(и) буде знято з публікації на Prom. У BMS товар лишається без змін.')) return;
+    setPromBusy(true);
+    try {
+      const r = await fetch('/api/publications/prom/delete-product', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ product_id: productId }),
+      });
+      const d = await r.json();
+      if (r.ok) { setPromPublished(false); notification.success({ message: `Знято з Prom (${d.deleted ?? 1}).`, placement: 'bottomRight', duration: 3 }); }
+      else notification.error({ message: `Prom: ${d.detail || r.status}`, placement: 'bottomRight' });
+    } catch (e: any) { notification.error({ message: `Prom: ${e.message || 'Помилка'}`, placement: 'bottomRight' }); }
+    finally { setPromBusy(false); }
+  };
+
+  const promToggle = () => (promPublished ? promDeleteFlow() : promPublishFlow());
   // Плавна навігація між картками: prevIdRef відрізняє первинне відкриття від ◀/▶;
   // loadSeqRef відкидає застарілі fetch'і при швидкому гортанні.
   const prevIdRef = useRef<number | null>(null);
@@ -1227,6 +1285,23 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                       )}
                     </>
                   )}
+
+                  {/* Чіп «Prom»: тумблер публікації (аналог «У каталозі»). Активний = на Prom.
+                      Клік: неактивний → публікація; активний → підтвердження й видалення з Prom. */}
+                  <button
+                    type="button"
+                    onClick={promToggle}
+                    disabled={promBusy}
+                    className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold border transition-colors disabled:opacity-50 ${
+                      promPublished
+                        ? 'bg-violet-700 text-white border-violet-800 dark:bg-violet-600 dark:border-violet-500'
+                        : 'bg-gray-50 text-gray-500 border-gray-200 hover:bg-gray-100 dark:bg-gray-800 dark:text-gray-400 dark:border-gray-700 dark:hover:bg-gray-700'
+                    }`}
+                    title={promPublished ? 'Прибрати товар з Prom' : 'Виставити товар на Prom (чернетка)'}
+                  >
+                    {promBusy ? <SyncOutlined spin className="text-[11px]" /> : <ShoppingOutlined className="text-[11px]" />}
+                    <span>Prom</span>
+                  </button>
                 </div>
                 <h2 className="text-2xl font-semibold text-gray-900 dark:text-gray-50 truncate leading-tight">
                   {productTitle ? <CopyOnClick value={productTitle} /> : productTitle}
@@ -1235,108 +1310,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
 
               {/* Дії: Google + Редагувати / Зберегти все · Скасувати + Закрити */}
               <div className="shrink-0 ml-2 flex items-center gap-2">
-                {!editMode && (() => {
-                  const parts = [(p as any).brand_name, p.model, p.marking].filter(Boolean) as string[];
-                  const q = parts.join(' ').replace(/\s+/g, ' ').trim();
-                  if (!q) return null;
-                  return (
-                    <a
-                      href={`https://www.google.com/search?q=${encodeURIComponent(q)}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="px-3 py-2 rounded-lg text-sm font-medium border border-blue-200 dark:border-blue-700 text-blue-600 hover:text-blue-800 hover:bg-blue-50 dark:text-blue-400 dark:hover:text-blue-300 dark:hover:bg-blue-900/20 transition-colors flex items-center gap-1.5"
-                      title={`Пошук в Google: ${q}`}
-                    >
-                      <span className="font-bold text-xs">G</span>
-                      <span>Знайти в Google</span>
-                    </a>
-                  );
-                })()}
-
-                {/* «Поставка»: перейти на вкладку Поставки з відкритою карткою
-                    завозу цього товару (крос-таб патерн як bms:switch-to-orders) */}
-                {(p as any)?.deliveryid && (
-                  <button
-                    onClick={() => {
-                      localStorage.setItem('bms:pendingDeliveryCard', String((p as any).deliveryid));
-                      window.dispatchEvent(new CustomEvent('bms:switch-to-deliveries'));
-                      onClose();
-                    }}
-                    className="px-3 py-2 rounded-lg text-sm font-medium border border-gray-200 dark:border-gray-700 text-gray-600 hover:text-gray-900 hover:bg-gray-50 dark:text-gray-300 dark:hover:text-gray-100 dark:hover:bg-gray-800 transition-colors flex items-center gap-1.5"
-                    title="Відкрити поставку цього товару"
-                  >
-                    <span>📦</span><span>Поставка</span>
-                  </button>
-                )}
-
-                {/* «Таблиця»: відкрити журнал у браузері прямо на аркуші завозу
-                    (gid дістає бекенд через Sheets API) */}
-                {(p as any)?.deliveryid && (
-                  <button
-                    onClick={async () => {
-                      try {
-                        const r = await fetch(`/api/products/${productId}/journal-url`);
-                        if (!r.ok) throw new Error(await r.text());
-                        const { url } = await r.json();
-                        const a = document.createElement('a');
-                        a.href = url; a.target = '_blank'; a.rel = 'noopener noreferrer';
-                        document.body.appendChild(a); a.click(); a.remove();
-                      } catch (e) { console.error('journal-url', e); }
-                    }}
-                    className="px-3 py-2 rounded-lg text-sm font-medium border border-gray-200 dark:border-gray-700 text-gray-600 hover:text-gray-900 hover:bg-gray-50 dark:text-gray-300 dark:hover:text-gray-100 dark:hover:bg-gray-800 transition-colors flex items-center gap-1.5"
-                    title="Відкрити аркуш цього завозу в Google Таблиці"
-                  >
-                    <span>▤</span><span>Таблиця</span>
-                  </button>
-                )}
-
-                {/* «На Prom»: виставити товар на Prom (чернетка) з автозаповненням.
-                    Прев'ю → підтвердження → експорт (фон, з'явиться за 1-3 хв). */}
-                {!editMode && (
-                  <button
-                    onClick={async () => {
-                      if (!productId || promBusy) return;
-                      setPromBusy(true);
-                      try {
-                        const pv = await fetch('/api/publications/prom/export-product', {
-                          method: 'POST', headers: { 'Content-Type': 'application/json' },
-                          body: JSON.stringify({ product_id: productId, preview: true }),
-                        });
-                        const d = await pv.json();
-                        if (!pv.ok) { alert(`Prom: ${d.detail || pv.status}`); return; }
-                        if (!d.image_count) { alert('У товару немає фото — Prom вимагає зображення. Додай фото й повтори.'); return; }
-                        // Додатковий рівень захисту: окреме попередження про реальні фото / вживаний стан
-                        const warns: string[] = [];
-                        if (d.image_kind === 'real') warns.push('❗ У товару НЕМАЄ офіційних фото — публікація піде з РЕАЛЬНИМИ фото.');
-                        if (d.condition_warn) warns.push(`❗ Стан товару: «${d.condition}» → на Prom як «${d.condition_prom}».`);
-                        if (warns.length && !window.confirm(`⚠️ УВАГА перед публікацією на Prom:\n\n${warns.join('\n')}\n\nВи впевнені, що хочете продовжити?`)) return;
-                        // Товар уже на Prom → не створюємо дублікат; пропонуємо перезапис
-                        const force = !!d.already_on_prom;
-                        const chars = (d.params || []).map((x: any[]) => `${x[0]}: ${x[1]}`).join('\n');
-                        const sizes = d.sizes_count && d.sizes_count > 1 ? `\nРостовка: ${d.sizes_count} розмірів → ${d.sizes_count} окремих лістингів` : '';
-                        const head = force
-                          ? `Товар ${d.sku} УЖЕ є на Prom.\n\nПерезаписати автозаповненням (назва/опис/характеристики/фото)?`
-                          : `Виставити на Prom як ЧЕРНЕТКУ?`;
-                        if (!window.confirm(
-                          `${head}\n\nНазва: ${d.name}${sizes}\nКатегорія Prom: ${d.category_id}\nФото: ${d.image_count}\n\nХарактеристики:\n${chars}\n\nПотім переглянеш і опублікуєш у кабінеті Prom.`)) return;
-                        const ex = await fetch('/api/publications/prom/export-product', {
-                          method: 'POST', headers: { 'Content-Type': 'application/json' },
-                          body: JSON.stringify({ product_id: productId, as_draft: true, force }),
-                        });
-                        const r = await ex.json();
-                        alert(ex.ok ? (r.note || 'Відправлено на Prom.') : `Prom: ${r.detail || ex.status}`);
-                      } catch (e: any) { alert(`Prom: ${e.message || 'Помилка'}`); }
-                      finally { setPromBusy(false); }
-                    }}
-                    disabled={promBusy}
-                    className="px-3 py-2 rounded-lg text-sm font-medium text-white transition-colors flex items-center gap-1.5 disabled:opacity-60"
-                    style={{ backgroundColor: '#5B2D8E' }}
-                    title="Виставити товар на Prom (чернетка) з автозаповненням характеристик і фото"
-                  >
-                    <span>{promBusy ? '⏳' : '🛍'}</span><span>{(p as any)?.published_prom ? 'Оновити на Prom' : 'На Prom'}</span>
-                  </button>
-                )}
-
+                {/* Редагувати / Зберегти все · Скасувати (перше в ряду) */}
                 {!editMode ? (
                   <button
                     onClick={enterEditMode}
@@ -1365,6 +1339,62 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                       Скасувати
                     </button>
                   </>
+                )}
+
+                {/* «Знайти в Google» (після «Редагувати») */}
+                {!editMode && (() => {
+                  const parts = [(p as any).brand_name, p.model, p.marking].filter(Boolean) as string[];
+                  const q = parts.join(' ').replace(/\s+/g, ' ').trim();
+                  if (!q) return null;
+                  return (
+                    <a
+                      href={`https://www.google.com/search?q=${encodeURIComponent(q)}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="px-3 py-2 rounded-lg text-sm font-medium border border-blue-200 dark:border-blue-700 text-blue-600 hover:text-blue-800 hover:bg-blue-50 dark:text-blue-400 dark:hover:text-blue-300 dark:hover:bg-blue-900/20 transition-colors flex items-center gap-1.5"
+                      title={`Пошук в Google: ${q}`}
+                    >
+                      <span className="font-bold text-xs">G</span>
+                      <span>Знайти в Google</span>
+                    </a>
+                  );
+                })()}
+
+                {/* «Таблиця»: відкрити журнал у браузері прямо на аркуші завозу
+                    (gid дістає бекенд через Sheets API) */}
+                {(p as any)?.deliveryid && (
+                  <button
+                    onClick={async () => {
+                      try {
+                        const r = await fetch(`/api/products/${productId}/journal-url`);
+                        if (!r.ok) throw new Error(await r.text());
+                        const { url } = await r.json();
+                        const a = document.createElement('a');
+                        a.href = url; a.target = '_blank'; a.rel = 'noopener noreferrer';
+                        document.body.appendChild(a); a.click(); a.remove();
+                      } catch (e) { console.error('journal-url', e); }
+                    }}
+                    className="px-3 py-2 rounded-lg text-sm font-medium border border-gray-200 dark:border-gray-700 text-gray-600 hover:text-gray-900 hover:bg-gray-50 dark:text-gray-300 dark:hover:text-gray-100 dark:hover:bg-gray-800 transition-colors flex items-center gap-1.5"
+                    title="Відкрити аркуш цього завозу в Google Таблиці"
+                  >
+                    <TableOutlined style={{ fontSize: 14 }} /><span>Таблиця</span>
+                  </button>
+                )}
+
+                {/* «Поставка»: перейти на вкладку Поставки з відкритою карткою
+                    завозу цього товару (крос-таб патерн як bms:switch-to-orders) */}
+                {(p as any)?.deliveryid && (
+                  <button
+                    onClick={() => {
+                      localStorage.setItem('bms:pendingDeliveryCard', String((p as any).deliveryid));
+                      window.dispatchEvent(new CustomEvent('bms:switch-to-deliveries'));
+                      onClose();
+                    }}
+                    className="px-3 py-2 rounded-lg text-sm font-medium border border-gray-200 dark:border-gray-700 text-gray-600 hover:text-gray-900 hover:bg-gray-50 dark:text-gray-300 dark:hover:text-gray-100 dark:hover:bg-gray-800 transition-colors flex items-center gap-1.5"
+                    title="Відкрити поставку цього товару"
+                  >
+                    <InboxOutlined style={{ fontSize: 14 }} /><span>Поставка</span>
+                  </button>
                 )}
 
                 <button

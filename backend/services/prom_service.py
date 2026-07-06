@@ -1021,6 +1021,36 @@ def export_product_to_prom(db: Session, product_id: int, as_draft: bool = True,
         return {"ok": False, "error": str(e)}
 
 
+def delete_product_from_prom(db: Session, product_id: int) -> Dict:
+    """Прибрати товар з Prom: знімає ВСІ його лістинги (цілий номер + усі розміри
+    ростовки) через status='deleted' + чистить дзеркало/чергу чернеток."""
+    cfg = _load_config(db)
+    if not cfg:
+        return {"ok": False, "error": "Prom токен не задано"}
+    token = cfg["api_token"]
+    rows = _export_rows(db, product_id)
+    if not rows:
+        return {"ok": False, "error": "Товар не знайдено"}
+    number = (rows[0]["productnumber"] or "").lstrip("#")
+    skus = {number} | {r["_sku"] for r in rows}      # цілий номер + усі «номер-розмір»
+    deleted = []
+    for s in skus:
+        pid = _find_prom_id_by_sku(token, s)
+        if pid:
+            try:
+                _api_post(token, "/products/edit", [{"id": pid, "status": "deleted"}])
+                deleted.append(s)
+            except Exception as e:
+                logger.warning(f"Prom delete failed for {s}: {e}")
+    db.execute(text("DELETE FROM prom_draft_queue WHERE sku = ANY(:s)"), {"s": list(skus)})
+    if deleted:
+        db.execute(text("DELETE FROM prom_products WHERE sku = ANY(:s)"), {"s": list(skus)})
+    db.commit()
+    if not deleted:
+        return {"ok": False, "error": f"Товар {number} не знайдено на Prom (можливо, вже видалено)."}
+    return {"ok": True, "deleted": len(deleted), "sku": number}
+
+
 # ── Status (для UI + попередження про термін токена) ─────────────────────────
 def get_status(db: Session) -> Dict:
     cfg = _load_config(db)
