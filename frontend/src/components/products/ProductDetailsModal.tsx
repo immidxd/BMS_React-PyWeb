@@ -276,6 +276,9 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
   };
 
   const promToggle = () => (promPublished ? promDeleteFlow() : promPublishFlow());
+  // Єдиний стиль кнопок заголовка (Редагувати/Google/Таблиця/Поставка) — однаковий
+  // вигляд і поведінка попри різні функції: без підкреслень, плавний перехід.
+  const HDR_BTN = "px-3 py-2 rounded-lg text-sm font-medium border border-gray-200 dark:border-gray-700 text-gray-600 hover:text-gray-900 hover:bg-gray-50 dark:text-gray-300 dark:hover:text-gray-100 dark:hover:bg-gray-800 transition-colors duration-150 flex items-center gap-1.5 no-underline hover:no-underline";
   // Плавна навігація між картками: prevIdRef відрізняє первинне відкриття від ◀/▶;
   // loadSeqRef відкидає застарілі fetch'і при швидкому гортанні.
   const prevIdRef = useRef<number | null>(null);
@@ -1310,58 +1313,25 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
 
               {/* Дії: Google + Редагувати / Зберегти все · Скасувати + Закрити */}
               <div className="shrink-0 ml-2 flex items-center gap-2">
-                {/* Редагувати / Зберегти все · Скасувати (перше в ряду) */}
-                {!editMode ? (
+                {/* Порядок (зліва направо): Поставка · Таблиця · Google · Редагувати.
+                    Усі — єдиний стиль HDR_BTN (однаковий вигляд і поведінка). */}
+
+                {/* «Поставка»: перейти на вкладку Поставки з відкритою карткою завозу */}
+                {(p as any)?.deliveryid && (
                   <button
-                    onClick={enterEditMode}
-                    className="px-3 py-2 rounded-lg text-sm font-medium border border-gray-200 dark:border-gray-700 text-gray-600 hover:text-gray-900 hover:bg-gray-50 dark:text-gray-300 dark:hover:text-gray-100 dark:hover:bg-gray-800 transition-colors flex items-center gap-1.5"
-                    title="Редагувати всі поля картки"
+                    onClick={() => {
+                      localStorage.setItem('bms:pendingDeliveryCard', String((p as any).deliveryid));
+                      window.dispatchEvent(new CustomEvent('bms:switch-to-deliveries'));
+                      onClose();
+                    }}
+                    className={HDR_BTN}
+                    title="Відкрити поставку цього товару"
                   >
-                    <EditOutlined style={{ fontSize: 14 }} />
-                    <span>Редагувати</span>
+                    <InboxOutlined style={{ fontSize: 14 }} /><span>Поставка</span>
                   </button>
-                ) : (
-                  <>
-                    <button
-                      onClick={saveAll}
-                      disabled={savingAll}
-                      className="px-3 py-2 rounded-lg text-sm font-semibold bg-green-600 hover:bg-green-700 !text-white transition-colors flex items-center gap-1.5 disabled:opacity-60"
-                      title="Зберегти всі зміни (БД + аркуш)"
-                    >
-                      <CheckOutlined style={{ fontSize: 14 }} />
-                      <span>{savingAll ? 'Збереження…' : 'Зберегти все'}</span>
-                    </button>
-                    <button
-                      onClick={cancelEditMode}
-                      disabled={savingAll}
-                      className="px-3 py-2 rounded-lg text-sm font-medium border border-gray-200 dark:border-gray-700 text-gray-600 hover:bg-gray-50 dark:text-gray-300 dark:hover:bg-gray-800 transition-colors"
-                    >
-                      Скасувати
-                    </button>
-                  </>
                 )}
 
-                {/* «Знайти в Google» (після «Редагувати») */}
-                {!editMode && (() => {
-                  const parts = [(p as any).brand_name, p.model, p.marking].filter(Boolean) as string[];
-                  const q = parts.join(' ').replace(/\s+/g, ' ').trim();
-                  if (!q) return null;
-                  return (
-                    <a
-                      href={`https://www.google.com/search?q=${encodeURIComponent(q)}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="px-3 py-2 rounded-lg text-sm font-medium border border-blue-200 dark:border-blue-700 text-blue-600 hover:text-blue-800 hover:bg-blue-50 dark:text-blue-400 dark:hover:text-blue-300 dark:hover:bg-blue-900/20 transition-colors flex items-center gap-1.5"
-                      title={`Пошук в Google: ${q}`}
-                    >
-                      <span className="font-bold text-xs">G</span>
-                      <span>Знайти в Google</span>
-                    </a>
-                  );
-                })()}
-
-                {/* «Таблиця»: відкрити журнал у браузері прямо на аркуші завозу
-                    (gid дістає бекенд через Sheets API) */}
+                {/* «Таблиця»: відкрити журнал у браузері прямо на аркуші завозу */}
                 {(p as any)?.deliveryid && (
                   <button
                     onClick={async () => {
@@ -1374,27 +1344,61 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                         document.body.appendChild(a); a.click(); a.remove();
                       } catch (e) { console.error('journal-url', e); }
                     }}
-                    className="px-3 py-2 rounded-lg text-sm font-medium border border-gray-200 dark:border-gray-700 text-gray-600 hover:text-gray-900 hover:bg-gray-50 dark:text-gray-300 dark:hover:text-gray-100 dark:hover:bg-gray-800 transition-colors flex items-center gap-1.5"
+                    className={HDR_BTN}
                     title="Відкрити аркуш цього завозу в Google Таблиці"
                   >
                     <TableOutlined style={{ fontSize: 14 }} /><span>Таблиця</span>
                   </button>
                 )}
 
-                {/* «Поставка»: перейти на вкладку Поставки з відкритою карткою
-                    завозу цього товару (крос-таб патерн як bms:switch-to-orders) */}
-                {(p as any)?.deliveryid && (
+                {/* «Знайти в Google» */}
+                {!editMode && (() => {
+                  const parts = [(p as any).brand_name, p.model, p.marking].filter(Boolean) as string[];
+                  const q = parts.join(' ').replace(/\s+/g, ' ').trim();
+                  if (!q) return null;
+                  return (
+                    <a
+                      href={`https://www.google.com/search?q=${encodeURIComponent(q)}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className={HDR_BTN}
+                      title={`Пошук в Google: ${q}`}
+                    >
+                      <span className="font-bold text-xs">G</span>
+                      <span>Знайти в Google</span>
+                    </a>
+                  );
+                })()}
+
+                {/* Редагувати / Зберегти все · Скасувати (найправіше, перед «Закрити») */}
+                {!editMode ? (
                   <button
-                    onClick={() => {
-                      localStorage.setItem('bms:pendingDeliveryCard', String((p as any).deliveryid));
-                      window.dispatchEvent(new CustomEvent('bms:switch-to-deliveries'));
-                      onClose();
-                    }}
-                    className="px-3 py-2 rounded-lg text-sm font-medium border border-gray-200 dark:border-gray-700 text-gray-600 hover:text-gray-900 hover:bg-gray-50 dark:text-gray-300 dark:hover:text-gray-100 dark:hover:bg-gray-800 transition-colors flex items-center gap-1.5"
-                    title="Відкрити поставку цього товару"
+                    onClick={enterEditMode}
+                    className={HDR_BTN}
+                    title="Редагувати всі поля картки"
                   >
-                    <InboxOutlined style={{ fontSize: 14 }} /><span>Поставка</span>
+                    <EditOutlined style={{ fontSize: 14 }} />
+                    <span>Редагувати</span>
                   </button>
+                ) : (
+                  <>
+                    <button
+                      onClick={saveAll}
+                      disabled={savingAll}
+                      className="px-3 py-2 rounded-lg text-sm font-semibold bg-green-600 hover:bg-green-700 !text-white transition-colors duration-150 flex items-center gap-1.5 disabled:opacity-60"
+                      title="Зберегти всі зміни (БД + аркуш)"
+                    >
+                      <CheckOutlined style={{ fontSize: 14 }} />
+                      <span>{savingAll ? 'Збереження…' : 'Зберегти все'}</span>
+                    </button>
+                    <button
+                      onClick={cancelEditMode}
+                      disabled={savingAll}
+                      className="px-3 py-2 rounded-lg text-sm font-medium border border-gray-200 dark:border-gray-700 text-gray-600 hover:text-gray-900 hover:bg-gray-50 dark:text-gray-300 dark:hover:text-gray-100 dark:hover:bg-gray-800 transition-colors duration-150 flex items-center gap-1.5"
+                    >
+                      Скасувати
+                    </button>
+                  </>
                 )}
 
                 <button
