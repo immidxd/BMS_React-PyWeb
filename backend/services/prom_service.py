@@ -90,17 +90,32 @@ def _api_post(token: str, path: str, body) -> dict:
 
 # ── Лінк за SKU (= productnumber) ────────────────────────────────────────────
 def _resolve_product_id(db: Session, sku: Optional[str]) -> Optional[int]:
-    """SKU Prom → products.id за номером. Пробуємо форми з/без '#'/'Ф'."""
+    """SKU Prom → products.id. Спершу як цілий номер (форми з/без '#'/'Ф'); якщо не
+    знайдено — ростовка «номер-розмір»: відрізаємо останній «-розмір» і шукаємо рядок
+    за номером І sizeeu (реальні номери-варіанти на кшталт «Ф1067-2» матчаться раніше)."""
     if not sku:
         return None
     s = str(sku).strip().lstrip("#")
-    forms = {s, f"#{s}", s.upper(), f"#{s.upper()}"}
-    if s[:1].isdigit():
-        forms |= {f"Ф{s}", f"#Ф{s}"}
+
+    def _forms(x):
+        f = {x, f"#{x}", x.upper(), f"#{x.upper()}"}
+        if x[:1].isdigit():
+            f |= {f"Ф{x}", f"#Ф{x}"}
+        return list(f)
+
     row = db.execute(text(
         "SELECT id FROM products WHERE productnumber = ANY(:f) ORDER BY id LIMIT 1"
-    ), {"f": list(forms)}).fetchone()
-    return row[0] if row else None
+    ), {"f": _forms(s)}).fetchone()
+    if row:
+        return row[0]
+    if "-" in s:                                   # ростовка: номер-розмір
+        base, size = s.rsplit("-", 1)
+        r2 = db.execute(text(
+            "SELECT id FROM products WHERE productnumber = ANY(:f) AND sizeeu = :sz ORDER BY id LIMIT 1"
+        ), {"f": _forms(base), "sz": size}).fetchone()
+        if r2:
+            return r2[0]
+    return None
 
 
 def _price_num(price_text: Optional[str]) -> Optional[float]:
@@ -548,8 +563,7 @@ def _build_description(bms: dict, lang: str = "uk") -> str:
     labels = _MAT_LABELS_RU if ru else _MAT_LABELS
     for pos in _MAT_ORDER:
         if mats.get(pos):
-            val = (_MATERIAL_RU.get(str(mats[pos]).strip().lower(), mats[pos]) if ru else mats[pos])
-            rows.append(f"<li><b>{labels[pos]}:</b> {_xesc(_cap(val))}</li>")
+            rows.append(f"<li><b>{labels[pos]}:</b> {_xesc(_norm_material(mats[pos], lang))}</li>")
     sizes = bms.get("sizes") or []
     if sizes:
         rows.append(f"<li><b>{L('Доступні розміри')}:</b> {_xesc(', '.join(map(str, sizes)))}</li>")
@@ -601,9 +615,24 @@ _MATERIAL_RU = {
     "шкіра": "Кожа", "натуральна шкіра": "Натуральная кожа", "штучна шкіра": "Искусственная кожа",
     "екошкіра": "Экокожа", "замша": "Замша", "нубук": "Нубук", "текстиль": "Текстиль",
     "тканина": "Текстиль", "сітка": "Сетка", "гума": "Резина", "резина": "Резина",
-    "синтетика": "Синтетика", "ева": "ЭВА", "эва": "ЭВА", "eva": "ЭВА",
+    "синтетика": "Синтетика",
     "leather": "Кожа", "textile": "Текстиль", "suede": "Замша", "rubber": "Резина",
 }
+# Матеріали-АБРЕВІАТУРИ — завжди ВЕЛИКИМИ латиницею (як PU/TPU): виняток на всі мови.
+_MATERIAL_ABBR = {"eva": "EVA", "ева": "EVA", "эва": "EVA", "pu": "PU", "пу": "PU",
+                  "tpu": "TPU", "тпу": "TPU", "tpr": "TPR", "тпр": "TPR", "pvc": "PVC",
+                  "пвх": "PVC", "tr": "TR", "abs": "ABS", "pp": "PP"}
+
+
+def _norm_material(val, lang: str = "uk") -> str:
+    """Назва матеріалу цільовою мовою; абревіатури (EVA/PU/TPU…) — завжди ВЕЛИКИМИ латиницею."""
+    s = str(val or "").strip()
+    if not s:
+        return ""
+    ab = _MATERIAL_ABBR.get(s.lower())
+    if ab:
+        return ab
+    return _cap(_MATERIAL_RU.get(s.lower(), s)) if lang == "ru" else _cap(s)
 
 
 def _build_params(bms: dict) -> List[tuple]:
@@ -638,7 +667,7 @@ def _build_params(bms: dict) -> List[tuple]:
         out.append(("Страна производитель", _COUNTRY_RU.get(manuf.lower(), _cap(manuf))))
     up = (bms.get("materials") or {}).get("upper")              # Матеріал верху
     if up:
-        out.append(("Материал верха", _MATERIAL_RU.get(str(up).strip().lower(), _cap(up))))
+        out.append(("Материал верха", _norm_material(up, "ru")))
     return out
 
 
@@ -651,41 +680,65 @@ _TRANSLIT = str.maketrans({
 })
 
 
-def _build_keywords(bms: dict) -> str:
-    """Пошукові теги: макс. доречних варіантів — бренд/модель/тип/стать/колір/сезон
-    + транслітерації + комбінації, для кращого пошуку на Prom."""
+# Синоніми типу для ширшого пошуку: укр-тип → (uk-синоніми, ru-синоніми).
+_TYPE_SYN = {
+    "шльопанці": (["шльопки", "сланці"], ["шлепки", "сланцы"]),
+    "босоніжки": (["сандалі"], ["сандалии"]),
+    "кросівки": (["кеди"], ["кеды"]),
+    "капці": (["тапочки"], ["тапочки"]),
+    "чоботи": (["черевики"], ["сапоги"]),
+}
+
+
+def _build_keywords(bms: dict, lang: str = "uk") -> str:
+    """Пошукові теги ЦІЛЬОВОЮ мовою (uk/ru) — багато доречних варіантів: бренд/модель/
+    тип/стать/колір/сезон + синоніми + комбінації + транслітерація. RU → рос-поле keywords,
+    UA → keywords_ua (мови НЕ змішувати)."""
+    ru = lang == "ru"
     brand = str(bms.get("brandname") or "").strip()
     model = str(bms.get("model") or "").strip()
-    typ = str(bms.get("typename") or "").strip().lower()
-    gender = str(bms.get("gendername") or "").strip().lower()
+    typ_raw = str(bms.get("typename") or "").strip().lower()
+    typ = (_TYPE_RU.get(typ_raw, typ_raw) if ru else typ_raw).lower()
+    gl = str(bms.get("gendername") or "").strip().lower()
+    gender = (_GENDER_RU.get(gl, gl) if ru else gl).lower()
     color = str(bms.get("colorname") or "").strip().lower()
+    if ru:
+        color = _COLOR_RU.get(color, color).lower()
     season = str(bms.get("season") or "").strip().lower()
-    tags = set()
+    if ru:
+        season = _SEASON_RU.get(season, season).lower()
+    buy, orig, shoes = ("купить", "оригинал", "обувь") if ru else ("купити", "оригінал", "взуття")
+    men, women = ("мужские", "женские") if ru else ("чоловічі", "жіночі")
+
+    tags, seen = [], set()
 
     def add(*xs):
         for x in xs:
-            x = " ".join(str(x or "").split()).strip()
-            if len(x) >= 2:
-                tags.add(x.lower())
+            x = " ".join(str(x or "").split()).strip().lower()
+            if len(x) >= 2 and x not in seen:
+                seen.add(x); tags.append(x)
 
-    add(brand, model, typ, color)
+    add(typ, brand, model, color)
     if brand:
-        add(brand.lower().translate(_TRANSLIT))            # транслітерація бренду
-        add(f"{brand} {typ}", f"{typ} {brand}", f"{brand} {model}")
-        if gender:
-            add(f"{gender} {typ} {brand}")
-    if typ:
-        add(f"{typ} {color}", f"{gender} {typ}", f"{typ} {gender}")
-        add(typ.translate(_TRANSLIT))
+        add(f"{brand} {typ}", f"{typ} {brand}", f"{brand} {shoes}", f"{orig} {brand}",
+            brand.lower().translate(_TRANSLIT))
+        if model:
+            add(f"{brand} {model}", f"{brand} {model} {typ}", f"{model} {typ}")
+        if color:
+            add(f"{brand} {color}")
     if model:
-        add(f"{brand} {model}", model.lower().translate(_TRANSLIT))
-    if color:
-        add(f"{typ} {color}", f"{brand} {color}")
+        add(f"{model} {color}", model.lower().translate(_TRANSLIT))
+    if typ:
+        add(f"{typ} {color}", f"{color} {typ}", f"{gender} {typ}", f"{typ} {gender}",
+            f"{buy} {typ}", f"{buy} {brand} {typ}", f"{season} {typ}", f"{typ} {season}",
+            typ_raw.translate(_TRANSLIT))
+        for s in (_TYPE_SYN.get(typ_raw, ([], []))[1 if ru else 0]):
+            add(s, f"{s} {brand}", f"{brand} {s}")
+        if gl == "унісекс":                          # унісекс → обидві статі (ширший пошук)
+            add(f"{men} {typ}", f"{women} {typ}")
     if season:
-        add(f"{season} {typ}", f"{typ} {season}")
-    # прибрати порожні/дублі, обмежити довжину рядка (Prom ~keywords)
-    out = [t for t in tags if t]
-    return ", ".join(sorted(out))[:900]
+        add(f"{season} {shoes}")
+    return ", ".join(t for t in tags if t)[:1400]
 
 
 def _product_image_urls(product_number: str) -> List[str]:
@@ -713,47 +766,57 @@ def _product_image_urls(product_number: str) -> List[str]:
     return urls
 
 
-# Групи каталогу продавця (categoryId у фіді = ГРУПА, не маркетплейс-категорія;
-# маркетплейс-категорію Prom визначає сам за назвою/вмістом). Усе взуття → «Взуття».
-# Пізніше: Одяг/Сумки/Аксесуари — свої групи.
-_PROM_GROUP_SHOES = 154833694     # «Взуття» / «Обувь»
-_PROM_GROUP_SHOES_NAME = "Взуття"
+# Група каталогу продавця (categoryId у фіді = ГРУПА, не маркетплейс-категорія;
+# маркетплейс-категорію Prom визначає сам). ВАЖЛИВО: фід-імпорт НЕ вміє класти товар
+# у вручну-створену групу — він тримає власну фід-групу «Обувь» (усі експорти йдуть у
+# неї консистентно). Назва первинна (рос.) «Обувь», щоб не плодити «Взуття».
+_PROM_GROUP_SHOES = 154833694     # «Обувь» (ru) / «Взуття» (uk)
+_PROM_GROUP_SHOES_NAME = "Обувь"
 
 
-def build_export_feed(db: Session, product_id: int, category_id: int, available: bool = True) -> str:
-    """Prom XML-фід із ОДНИМ товаром (для import_file). available=False —
-    товар прихований/без наявності (draft-режим). categoryId = ГРУПА «Взуття»."""
+def _export_rows(db: Session, product_id: int) -> List[dict]:
+    """Рядки для експорту: 1 розмір → 1 лістинг (sku=номер); РОСТОВКА (N розмірів) →
+    N лістингів (sku=«номер-розмір»), кожен зі своїм єдиним розміром. Поле _sku — sku лістингу."""
     bms = _bms_product_for_export(db, product_id)
     if not bms:
-        raise RuntimeError("Товар не знайдено")
-    _refresh_brand_countries(db)          # актуальний довідник країн-власників з БД
+        return []
     num = (bms["productnumber"] or "").lstrip("#")
+    sizes = [str(s).strip() for s in (bms.get("sizes") or []) if str(s).strip()]
+    if len(sizes) <= 1:
+        bms["_sku"] = num
+        return [bms]
+    rows = []
+    for sz in sizes:
+        r = dict(bms)
+        r["sizes"] = [sz]
+        r["_sku"] = f"{num}-{sz}"
+        rows.append(r)
+    return rows
+
+
+def _feed_item(bms: dict, sku: str, available: bool, imgs: List[str], group_id: int) -> str:
+    """Один <item> фіду для конкретного лістингу (розміру)."""
     price = _prom_price(bms["price"], bms.get("typename"))
-    imgs = _product_image_urls(bms["productnumber"])
-    # Двомовність: основна мова вітрини — рос., укр. — окремими тегами (name_ua/description_ua).
     name_ru = _build_name(bms, "ru"); name_ua = _build_name(bms, "uk")
     desc_ru = _build_description(bms, "ru"); desc_ua = _build_description(bms, "uk")
     params = _build_params(bms)
-    keywords = _build_keywords(bms)
-    group_id = _PROM_GROUP_SHOES
+    kw_ru = _build_keywords(bms, "ru"); kw_ua = _build_keywords(bms, "uk")
 
     def tag(t, v):
         return f"<{t}>{_xesc(str(v))}</{t}>"
     parts = [
-        f'<item id={_xqattr(num)} available="{"true" if available else "false"}">',
-        tag("price", price),
-        tag("currencyId", "UAH"),
-        tag("categoryId", group_id),
-        tag("name", name_ru),
-        tag("name_ua", name_ua),
-        tag("vendorCode", num),
-        tag("quantity_in_stock", 1),        # залишок: 1 (одиничний товар)
+        f'<item id={_xqattr(sku)} available="{"true" if available else "false"}">',
+        tag("price", price), tag("currencyId", "UAH"), tag("categoryId", group_id),
+        tag("name", name_ru), tag("name_ua", name_ua), tag("vendorCode", sku),
+        tag("quantity_in_stock", 1),        # залишок: 1 (одиничний товар/розмір)
         tag("presence", "available" if available else "not_available"),
     ]
     if bms.get("brandname"):
         parts.append(tag("vendor", bms["brandname"]))
-    if keywords:
-        parts.append(tag("keywords", keywords))
+    if kw_ru:                               # рос-теги → поле «Пошукові запити (Російська)»
+        parts.append(tag("keywords", kw_ru))
+    if kw_ua:                               # укр-теги → поле «Пошукові запити (Українська)»
+        parts.append(tag("keywords_ua", kw_ua))
     parts.append(f"<description><![CDATA[{desc_ru}]]></description>")
     parts.append(f"<description_ua><![CDATA[{desc_ua}]]></description_ua>")
     for u in imgs:
@@ -761,15 +824,32 @@ def build_export_feed(db: Session, product_id: int, category_id: int, available:
     for pn, pv in params:
         parts.append(f'<param name={_xqattr(pn)}>{_xesc(pv)}</param>')
     parts.append("</item>")
-    item_xml = "".join(parts)
+    return "".join(parts)
+
+
+def build_export_feed(db: Session, product_id: int, category_id: int, available: bool = True,
+                      rows: Optional[List[dict]] = None) -> str:
+    """Prom XML-фід (для import_file). available=False — приховано (draft-режим).
+    categoryId = ГРУПА «Взуття». rows — попередньо відібрані рядки (напр. лише нові розміри
+    ростовки); якщо None — усі рядки товару. Ростовка → кілька <item> в одному фіді."""
+    _refresh_brand_countries(db)          # актуальний довідник країн-власників з БД
+    rows = rows if rows is not None else _export_rows(db, product_id)
+    if not rows:
+        raise RuntimeError("Товар не знайдено")
+    imgs = _product_image_urls(rows[0]["productnumber"])
+    group_id = _PROM_GROUP_SHOES
+    items = "".join(_feed_item(r, r["_sku"], available, imgs, group_id) for r in rows)
+    # ОДНА категорія «Обувь» (Prom сам вкладе під корінь). Фід-імпорт НЕ матчить
+    # вручну-створені групи — тримає власну; оголошення кореня плодить дубль-корінь,
+    # тож НЕ оголошуємо. Усі експорти консистентно йдуть в одну фід-групу «Обувь».
     return (
         '<?xml version="1.0" encoding="UTF-8"?>\n'
         '<price><date>{d}</date>'
         '<currencies><currency id="UAH" rate="1"/></currencies>'
         '<categories><category id="{gid}">{gname}</category></categories>'
-        '<items>{item}</items></price>'
-    ).format(d=datetime.now().strftime("%Y-%m-%d %H:%M"), gid=group_id,
-             gname=_xesc(_PROM_GROUP_SHOES_NAME), item=item_xml)
+        '<items>{items}</items></price>'
+    ).format(d=datetime.now().strftime("%Y-%m-%d %H:%M"),
+             gid=group_id, gname=_xesc(_PROM_GROUP_SHOES_NAME), items=items)
 
 
 def _find_prom_id_by_sku(token: str, sku: str) -> Optional[int]:
@@ -828,33 +908,45 @@ def export_product_to_prom(db: Session, product_id: int, as_draft: bool = True,
         return {"ok": False, "error": "Prom токен не задано"}
     token = cfg["api_token"]
     _refresh_brand_countries(db)          # актуальний довідник країн-власників з БД
-    bms = _bms_product_for_export(db, product_id)
-    if not bms:
+    rows = _export_rows(db, product_id)   # ростовка → кілька рядків (по розміру)
+    if not rows:
         return {"ok": False, "error": "Товар не знайдено"}
-    imgs = _product_image_urls(bms["productnumber"])
-    cat = _prom_category_for(db, token, bms)
-    sku = (bms["productnumber"] or "").lstrip("#")
+    base = rows[0]
+    number = (base["productnumber"] or "").lstrip("#")
+    imgs = _product_image_urls(base["productnumber"])
+    cat = _prom_category_for(db, token, base)
+    skus = [r["_sku"] for r in rows]
 
     if preview:
-        return {"ok": True, "preview": True, "sku": sku, "name": _build_name(bms),
+        existing = {s: _find_prom_id_by_sku(token, s) for s in skus}
+        return {"ok": True, "preview": True, "sku": number, "skus": skus,
+                "sizes_count": len(rows), "name": _build_name(base, "uk"),
                 "category_id": cat, "images": imgs, "image_count": len(imgs),
-                "params": _build_params(bms), "already_on_prom": _find_prom_id_by_sku(token, sku) is not None}
+                "params": _build_params(base),
+                "already_on_prom": bool(existing) and all(existing.values())}
 
-    # Запобіжник дублікатів: товар із цим номером уже на Prom — не створюємо копію.
-    existing = _find_prom_id_by_sku(token, sku)
-    if existing and not force:
-        return {"ok": False, "already_on_prom": True, "prom_id": existing, "sku": sku,
-                "error": f"Товар {sku} вже є на Prom (id {existing}). Дублікат не створюю. "
-                         f"Щоб перезаписати автозаповненням — підтверди примусово."}
     if not imgs:
         return {"ok": False, "error": "У товару немає фото — Prom вимагає зображення. Додай фото й повтори."}
-    if not (bms.get("price") and float(bms["price"]) > 0):
+    if not (base.get("price") and float(base["price"]) > 0):
         return {"ok": False, "error": "У товару немає ціни"}
+
+    # Запобіжник дублікатів (по КОЖНОМУ розміру): наявні sku не чіпаємо, лишаємо нові.
+    # force=True → перезаписуємо всі. Якщо все вже є і не force → «вже на Prom».
+    existing = {s: _find_prom_id_by_sku(token, s) for s in skus}
+    if not force:
+        rows = [r for r in rows if not existing.get(r["_sku"])]
+        if not rows:
+            have = len([v for v in existing.values() if v])
+            return {"ok": False, "already_on_prom": True, "sku": number,
+                    "prom_id": next((v for v in existing.values() if v), None),
+                    "error": f"Товар {number} уже на Prom ({have}/{len(skus)} розмірів). "
+                             f"Дублікати не створюю. Щоб перезаписати — підтверди примусово."}
+    target_skus = [r["_sku"] for r in rows]
 
     # Draft: створюємо ВІДРАЗУ прихованим (available=false) — без «живого вікна»,
     # поки фоновий крок переведе в статус draft (створення на Prom АСИНХРОННЕ:
     # статус імпорту одразу каже created=0, товар з'являється за 1-3 хв).
-    feed = build_export_feed(db, product_id, cat, available=not as_draft)
+    feed = build_export_feed(db, product_id, cat, available=not as_draft, rows=rows)
     try:
         import json as _json
         files = {"file": ("feed.xml", feed.encode("utf-8"), "application/xml")}
@@ -866,38 +958,41 @@ def export_product_to_prom(db: Session, product_id: int, as_draft: bool = True,
             return {"ok": False, "error": f"Import [{r.status_code}]: {r.text[:250]}"}
         import_id = (r.json() or {}).get("id")
 
-        # НАДІЙНЕ переведення в чернетку через чергу: створення на Prom асинхронне
-        # (1-3 хв), тож кладемо sku в prom_draft_queue — і Prom-синк-цикл щоразу
-        # намагається знайти товар і виставити draft, доки не вдасться. Плюс
-        # короткий фоновий «швидкий» прохід, щоб зазвичай устигнути за ~хвилину.
+        # НАДІЙНЕ переведення в чернетку через чергу (створення асинхронне): кладемо
+        # КОЖЕН sku в prom_draft_queue — Prom-синк-цикл виставить draft, коли зʼявиться.
+        # Плюс короткий фоновий «швидкий» прохід, щоб устигнути за ~хвилину.
         if as_draft:
-            _queue_draft(db, sku)
+            for s in target_skus:
+                _queue_draft(db, s)
             import threading as _th
 
-            def _quick():
+            def _quick(pending):
                 import time as _t
                 from models.database import SessionLocal as _SL
                 for _ in range(24):          # ~4 хв швидких спроб
                     _t.sleep(10)
                     _db = _SL()
                     try:
-                        if process_draft_queue(_db).get("resolved_skus") and sku not in \
-                           [x[0] for x in _db.execute(text("SELECT sku FROM prom_draft_queue")).fetchall()]:
+                        process_draft_queue(_db)
+                        left = {x[0] for x in _db.execute(text("SELECT sku FROM prom_draft_queue")).fetchall()}
+                        if not (set(pending) & left):
                             break
                     except Exception:
                         pass
                     finally:
                         _db.close()
 
-            _th.Thread(target=_quick, daemon=True).start()
+            _th.Thread(target=_quick, args=(list(target_skus),), daemon=True).start()
 
-        note = ("Товар створюється на Prom як ЧЕРНЕТКА (з'явиться за 1-3 хв — особливість "
-                "Prom API). Знайти: Prom → Товари → фільтр «Видимість: чернетка». "
-                "Перевір автозаповнення й опублікуй.")
-        return {"ok": True, "sku": sku, "category_id": cat, "images": len(imgs),
-                "import_id": import_id, "name": _build_name(bms), "as_draft": as_draft, "note": note}
+        n = len(target_skus)
+        note = (f"Створюється {'ЧЕРНЕТКА' if n == 1 else f'{n} ЧЕРНЕТОК (по розміру)'} на Prom "
+                "(з'явиться за 1-3 хв — особливість Prom API). Знайти: Prom → Товари → "
+                "фільтр «Видимість: чернетка». Перевір і опублікуй.")
+        return {"ok": True, "sku": number, "skus": target_skus, "sizes_count": n,
+                "category_id": cat, "images": len(imgs), "import_id": import_id,
+                "name": _build_name(base, "uk"), "as_draft": as_draft, "note": note}
     except Exception as e:
-        logger.error(f"Prom export failed for {sku}: {e}")
+        logger.error(f"Prom export failed for {number}: {e}")
         return {"ok": False, "error": str(e)}
 
 

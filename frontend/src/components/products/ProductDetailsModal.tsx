@@ -1308,11 +1308,12 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                         // Товар уже на Prom → не створюємо дублікат; пропонуємо перезапис
                         const force = !!d.already_on_prom;
                         const chars = (d.params || []).map((x: any[]) => `${x[0]}: ${x[1]}`).join('\n');
+                        const sizes = d.sizes_count && d.sizes_count > 1 ? `\nРостовка: ${d.sizes_count} розмірів → ${d.sizes_count} окремих лістингів` : '';
                         const head = force
                           ? `Товар ${d.sku} УЖЕ є на Prom.\n\nПерезаписати автозаповненням (назва/опис/характеристики/фото)?`
                           : `Виставити на Prom як ЧЕРНЕТКУ?`;
                         if (!window.confirm(
-                          `${head}\n\nНазва: ${d.name}\nКатегорія Prom: ${d.category_id}\nФото: ${d.image_count}\n\nХарактеристики:\n${chars}\n\nПотім переглянеш і опублікуєш у кабінеті Prom.`)) return;
+                          `${head}\n\nНазва: ${d.name}${sizes}\nКатегорія Prom: ${d.category_id}\nФото: ${d.image_count}\n\nХарактеристики:\n${chars}\n\nПотім переглянеш і опублікуєш у кабінеті Prom.`)) return;
                         const ex = await fetch('/api/publications/prom/export-product', {
                           method: 'POST', headers: { 'Content-Type': 'application/json' },
                           body: JSON.stringify({ product_id: productId, as_draft: true, force }),
