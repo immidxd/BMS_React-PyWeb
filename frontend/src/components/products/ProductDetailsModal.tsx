@@ -255,11 +255,11 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
       const sizes = d.sizes_count && d.sizes_count > 1 ? `\nРостовка: ${d.sizes_count} розмірів → ${d.sizes_count} окремих лістингів` : '';
       const head = force
         ? `Товар ${d.sku} УЖЕ є на Prom.\n\nПерезаписати автозаповненням (назва/опис/характеристики/фото)?`
-        : `Виставити на Prom як ЧЕРНЕТКУ?`;
-      if (!window.confirm(`${head}\n\nНазва: ${d.name}${sizes}\nКатегорія Prom: ${d.category_id}\nФото: ${d.image_count}\n\nХарактеристики:\n${chars}\n\nПотім переглянеш і опублікуєш у кабінеті Prom.`)) return;
+        : `Опублікувати на Prom (ОДРАЗУ живим, видимим покупцям)?`;
+      if (!window.confirm(`${head}\n\nНазва: ${d.name}${sizes}\nКатегорія Prom: ${d.category_id}\nФото: ${d.image_count}\n\nХарактеристики:\n${chars}\n\nПеревір у кабінеті Prom; якщо щось не так — зніми чіпом «Prom».`)) return;
       const ex = await fetch('/api/publications/prom/export-product', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ product_id: productId, as_draft: true, force }),
+        body: JSON.stringify({ product_id: productId, as_draft: false, force }),
       });
       const r = await ex.json();
       if (ex.ok) { setPromPublished(true); notification.success({ message: r.note || 'Відправлено на Prom.', placement: 'bottomRight', duration: 4 }); }
@@ -1310,7 +1310,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                         ? 'bg-violet-700 text-white border-violet-800 dark:bg-violet-600 dark:border-violet-500'
                         : 'bg-gray-50 text-gray-500 border-gray-200 hover:bg-gray-100 dark:bg-gray-800 dark:text-gray-400 dark:border-gray-700 dark:hover:bg-gray-700'
                     }`}
-                    title={promPublished ? 'Прибрати товар з Prom' : 'Виставити товар на Prom (чернетка)'}
+                    title={promPublished ? 'Прибрати товар з Prom' : 'Опублікувати товар на Prom'}
                   >
                     {promBusy ? <SyncOutlined spin className="text-[11px]" /> : <ShoppingOutlined className="text-[11px]" />}
                     <span>Prom</span>

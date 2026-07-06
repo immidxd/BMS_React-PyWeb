@@ -890,32 +890,38 @@ def _queue_draft(db: Session, sku: str) -> None:
 
 
 def process_draft_queue(db: Session) -> Dict:
-    """Перевести в draft усі товари з prom_draft_queue, що вже з'явились на Prom.
-    Idempotent, викликається щоциклу синку. Здається після ~60 спроб (не вічно)."""
+    """Дотягнути щойно-опубліковані товари в дзеркало (створення на Prom асинхронне,
+    1-3 хв). Товари публікуються ЖИВИМИ (on_display) — щойно зʼявляються в /products/list,
+    вписуємо в prom_products і знімаємо з черги (для миттєвого статусу чіпа). Idempotent;
+    здається після ~60 спроб. (Prom API чернеток не показує — тому лише живі товари.)"""
     cfg = _load_config(db)
     if not cfg:
         return {"resolved": 0, "resolved_skus": []}
     token = cfg["api_token"]
     rows = db.execute(text("SELECT sku, attempts FROM prom_draft_queue")).fetchall()
+    if not rows:
+        return {"resolved": 0, "resolved_skus": []}
+    try:
+        data = _api_get(token, "/products/list", {"limit": 100})
+    except Exception:
+        return {"resolved": 0, "resolved_skus": []}
+    by_sku = {str(p.get("sku")): p for p in data.get("products", []) if p.get("sku")}
     resolved = []
     for sku, attempts in rows:
-        pid = _find_prom_id_by_sku(token, sku)
-        if pid:
-            try:
-                _api_post(token, "/products/edit", [{"id": pid, "status": "draft"}])
-                # Одразу вписуємо в дзеркало (щоб чіп «Prom» лишався активним без «діри»
-                # між зняттям з черги і наступним повним синком, який реконсилює далі).
-                db.execute(text("""
-                    INSERT INTO prom_products (prom_id, product_id, sku, status, last_synced_at)
-                    VALUES (:pid, :bms, :sku, 'draft', now())
-                    ON CONFLICT (prom_id) DO UPDATE SET
-                        product_id = EXCLUDED.product_id, sku = EXCLUDED.sku,
-                        status = 'draft', last_synced_at = now()
-                """), {"pid": pid, "bms": _resolve_product_id(db, sku), "sku": sku[:80]})
-                db.execute(text("DELETE FROM prom_draft_queue WHERE sku = :s"), {"s": sku})
-                resolved.append(sku)
-            except Exception as e:
-                logger.warning(f"Prom draft-set failed for {sku}: {e}")
+        p = by_sku.get(sku)
+        if p:
+            db.execute(text("""
+                INSERT INTO prom_products (prom_id, product_id, sku, name, presence, status, price, last_synced_at)
+                VALUES (:id, :bms, :sku, :name, :pres, :st, :price, now())
+                ON CONFLICT (prom_id) DO UPDATE SET
+                    product_id=EXCLUDED.product_id, sku=EXCLUDED.sku, name=EXCLUDED.name,
+                    presence=EXCLUDED.presence, status=EXCLUDED.status, price=EXCLUDED.price,
+                    last_synced_at=now()
+            """), {"id": p.get("id"), "bms": _resolve_product_id(db, sku), "sku": sku[:80],
+                   "name": (p.get("name") or "")[:400], "pres": p.get("presence"),
+                   "st": p.get("status"), "price": p.get("price")})
+            db.execute(text("DELETE FROM prom_draft_queue WHERE sku = :s"), {"s": sku})
+            resolved.append(sku)
         else:
             if (attempts or 0) + 1 > 60:
                 db.execute(text("DELETE FROM prom_draft_queue WHERE sku = :s"), {"s": sku})
@@ -944,7 +950,7 @@ def prom_product_status(db: Session, product_id: int) -> Dict:
     return {"on_prom": False, "status": None}
 
 
-def export_product_to_prom(db: Session, product_id: int, as_draft: bool = True,
+def export_product_to_prom(db: Session, product_id: int, as_draft: bool = False,
                            preview: bool = False, force: bool = False) -> Dict:
     """Виставити товар BMS на Prom (Фаза 3). preview=True — повертає згенеровані
     назву/опис/категорію/фото БЕЗ створення. Інакше: import_file (mark_missing=none
@@ -996,10 +1002,10 @@ def export_product_to_prom(db: Session, product_id: int, as_draft: bool = True,
                              f"Дублікати не створюю. Щоб перезаписати — підтверди примусово."}
     target_skus = [r["_sku"] for r in rows]
 
-    # Draft: створюємо ВІДРАЗУ прихованим (available=false) — без «живого вікна»,
-    # поки фоновий крок переведе в статус draft (створення на Prom АСИНХРОННЕ:
-    # статус імпорту одразу каже created=0, товар з'являється за 1-3 хв).
-    feed = build_export_feed(db, product_id, cat, available=not as_draft, rows=rows)
+    # ЖИВА публікація (available=true, on_display): Prom API НЕ показує чернетки в
+    # /products/list, тож draft = невідстежуваний. Живий товар одразу видно в API —
+    # дедуп/синк/бейдж/видалення працюють надійно. Створення асинхронне (1-3 хв).
+    feed = build_export_feed(db, product_id, cat, available=True, rows=rows)
     try:
         import json as _json
         files = {"file": ("feed.xml", feed.encode("utf-8"), "application/xml")}
@@ -1011,39 +1017,39 @@ def export_product_to_prom(db: Session, product_id: int, as_draft: bool = True,
             return {"ok": False, "error": f"Import [{r.status_code}]: {r.text[:250]}"}
         import_id = (r.json() or {}).get("id")
 
-        # НАДІЙНЕ переведення в чернетку через чергу (створення асинхронне): кладемо
-        # КОЖЕН sku в prom_draft_queue — Prom-синк-цикл виставить draft, коли зʼявиться.
-        # Плюс короткий фоновий «швидкий» прохід, щоб устигнути за ~хвилину.
-        if as_draft:
-            for s in target_skus:
-                _queue_draft(db, s)
-            import threading as _th
+        # Черга «дотягнути в дзеркало»: створення асинхронне (1-3 хв), тож кладемо КОЖЕН
+        # sku у prom_draft_queue — щойно товар зʼявиться в /products/list, синк-цикл впише
+        # його в дзеркало й зніме з черги (для миттєвого «pending»-статусу чіпа). Плюс
+        # короткий фоновий «швидкий» прохід, щоб устигнути за ~хвилину.
+        for s in target_skus:
+            _queue_draft(db, s)
+        import threading as _th
 
-            def _quick(pending):
-                import time as _t
-                from models.database import SessionLocal as _SL
-                for _ in range(24):          # ~4 хв швидких спроб
-                    _t.sleep(10)
-                    _db = _SL()
-                    try:
-                        process_draft_queue(_db)
-                        left = {x[0] for x in _db.execute(text("SELECT sku FROM prom_draft_queue")).fetchall()}
-                        if not (set(pending) & left):
-                            break
-                    except Exception:
-                        pass
-                    finally:
-                        _db.close()
+        def _quick(pending):
+            import time as _t
+            from models.database import SessionLocal as _SL
+            for _ in range(24):          # ~4 хв швидких спроб
+                _t.sleep(10)
+                _db = _SL()
+                try:
+                    process_draft_queue(_db)
+                    left = {x[0] for x in _db.execute(text("SELECT sku FROM prom_draft_queue")).fetchall()}
+                    if not (set(pending) & left):
+                        break
+                except Exception:
+                    pass
+                finally:
+                    _db.close()
 
-            _th.Thread(target=_quick, args=(list(target_skus),), daemon=True).start()
+        _th.Thread(target=_quick, args=(list(target_skus),), daemon=True).start()
 
         n = len(target_skus)
-        note = (f"Створюється {'ЧЕРНЕТКА' if n == 1 else f'{n} ЧЕРНЕТОК (по розміру)'} на Prom "
-                "(з'явиться за 1-3 хв — особливість Prom API). Знайти: Prom → Товари → "
-                "фільтр «Видимість: чернетка». Перевір і опублікуй.")
+        note = (f"Опубліковано на Prom {'товар' if n == 1 else f'{n} лістингів (по розміру)'} "
+                "(зʼявиться за 1-3 хв — створення на Prom асинхронне; вже видимий покупцям). "
+                "Перевір у кабінеті Prom; якщо щось не так — зніми чіпом «Prom».")
         return {"ok": True, "sku": number, "skus": target_skus, "sizes_count": n,
                 "category_id": cat, "images": len(imgs), "import_id": import_id,
-                "name": _build_name(base, "uk"), "as_draft": as_draft, "note": note}
+                "name": _build_name(base, "uk"), "as_draft": False, "note": note}
     except Exception as e:
         logger.error(f"Prom export failed for {number}: {e}")
         return {"ok": False, "error": str(e)}
