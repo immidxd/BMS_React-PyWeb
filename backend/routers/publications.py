@@ -1089,14 +1089,15 @@ async def prom_push_availability(body: Dict[str, Any] = Body(default={}), db: Se
 
 
 @router.post("/api/publications/prom/export-product")
-async def prom_export_product(body: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
-    """Виставити товар BMS на Prom (Фаза 3). preview=true — прев'ю автозаповнення
-    БЕЗ створення; as_draft (default true) — створити як чернетку."""
+def prom_export_product(body: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
+    """Виставити товар BMS на Prom (Фаза 3). preview=true — прев'ю автозаповнення БЕЗ
+    створення; інакше публікуємо ЖИВИМ. Sync-роут (def) — блокуючий імпорт/очікування
+    слота йде в пулі потоків, не блокує сервер (Prom: 1 імпорт за раз)."""
     pid = body.get("product_id")
     if not pid:
         raise HTTPException(status_code=400, detail="Немає product_id")
     r = _prom().export_product_to_prom(
-        db, int(pid), as_draft=body.get("as_draft", True), preview=bool(body.get("preview")),
+        db, int(pid), as_draft=body.get("as_draft", False), preview=bool(body.get("preview")),
         force=bool(body.get("force")))
     # «вже на Prom» — не помилка, а сигнал фронту показати підтвердження перезапису
     if not r.get("ok") and not r.get("already_on_prom"):

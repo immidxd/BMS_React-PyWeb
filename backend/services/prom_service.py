@@ -1007,15 +1007,32 @@ def export_product_to_prom(db: Session, product_id: int, as_draft: bool = False,
     # дедуп/синк/бейдж/видалення працюють надійно. Створення асинхронне (1-3 хв).
     feed = build_export_feed(db, product_id, cat, available=True, rows=rows)
     try:
-        import json as _json
-        files = {"file": ("feed.xml", feed.encode("utf-8"), "application/xml")}
+        import json as _json, time as _t
         payload = {"data": _json.dumps({"mark_missing_product_as": "none", "force_update": True})}
-        r = requests.post(f"{PROM_API_BASE}/products/import_file",
-                          headers={"Authorization": f"Bearer {token}"},
-                          files=files, data=payload, timeout=90)
-        if r.status_code >= 400:
-            return {"ok": False, "error": f"Import [{r.status_code}]: {r.text[:250]}"}
-        import_id = (r.json() or {}).get("id")
+        # Prom: 1 імпорт ЗА РАЗ («ограничение на запуск одновременных импортов»). Якщо
+        # слот зайнятий (400) — чекаємо й повторюємо (до ~48с), потім зрозуміла помилка.
+        import_id = None
+        for attempt in range(7):
+            r = requests.post(f"{PROM_API_BASE}/products/import_file",
+                              headers={"Authorization": f"Bearer {token}"},
+                              files={"file": ("feed.xml", feed.encode("utf-8"), "application/xml")},
+                              data=payload, timeout=90)
+            if r.status_code < 400:
+                import_id = (r.json() or {}).get("id")
+                break
+            body = r.text or ""
+            busy = ("ограничен" in body or "одновременных" in body or "одночасн" in body)
+            if busy and attempt < 6:
+                _t.sleep(7)               # інший імпорт ще йде — чекаємо звільнення слота
+                continue
+            if busy:
+                return {"ok": False, "error": "На Prom зараз виконується інший імпорт. "
+                        "Зачекай ~хвилину і натисни «Prom» ще раз."}
+            try:
+                msg = (r.json().get("error") or {}).get("message") or r.text
+            except Exception:
+                msg = r.text
+            return {"ok": False, "error": f"Prom [{r.status_code}]: {str(msg)[:200]}"}
 
         # Черга «дотягнути в дзеркало»: створення асинхронне (1-3 хв), тож кладемо КОЖЕН
         # sku у prom_draft_queue — щойно товар зʼявиться в /products/list, синк-цикл впише
