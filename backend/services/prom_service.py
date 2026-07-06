@@ -303,6 +303,7 @@ def _bms_product_for_export(db: Session, product_id: int) -> Optional[dict]:
                b.brandname, t.typename, t.id AS typeid, st.subtypename, st.id AS subtypeid,
                c.colorname, g.gendername, p.season, p.year,
                co.countryname AS manufacturer, cond.conditionname,
+               pk.packagingname,
                ARRAY(SELECT DISTINCT p2.sizeeu FROM products p2
                      WHERE p2.productnumber = p.productnumber AND p2.sizeeu IS NOT NULL AND p2.sizeeu <> '') AS sizes
         FROM products p
@@ -313,6 +314,7 @@ def _bms_product_for_export(db: Session, product_id: int) -> Optional[dict]:
         LEFT JOIN genders g ON g.id=p.genderid
         LEFT JOIN countries co ON co.id=p.manufacturercountryid
         LEFT JOIN conditions cond ON cond.id=COALESCE(p.current_conditionid, p.conditionid)
+        LEFT JOIN packaging_types pk ON pk.id = p.packagingid
         WHERE p.id = :id
     """), {"id": product_id}).mappings().first()
     if not row:
@@ -361,56 +363,203 @@ def _prom_category_for(db: Session, token: str, bms: dict) -> int:
 
 _GENDER_ADJ = {"чоловіча": "Чоловічі", "жіноча": "Жіночі", "дитяча": "Дитячі", "унісекс": "Унісекс"}
 
+# Країна-власник бренду (публічні дані) → у дужках у описі: «Ecco (Данія)».
+BRAND_COUNTRY = {
+    "nike": "США", "adidas": "Німеччина", "reebok": "США", "puma": "Німеччина",
+    "new balance": "США", "asics": "Японія", "hoka": "США", "teva": "США",
+    "merrell": "США", "salomon": "Франція", "columbia": "США", "vans": "США",
+    "converse": "США", "timberland": "США", "crocs": "США", "skechers": "США",
+    "ecco": "Данія", "geox": "Італія", "clarks": "Великобританія", "caprice": "Німеччина",
+    "rieker": "Німеччина", "tamaris": "Німеччина", "gabor": "Німеччина", "lasocki": "Польща",
+    "gino rossi": "Польща", "badura": "Польща", "guess": "США", "tommy hilfiger": "США",
+    "calvin klein": "США", "karl lagerfeld": "Німеччина", "michael kors": "США",
+    "lacoste": "Франція", "fila": "Італія", "kappa": "Італія", "champion": "США",
+    "ugg": "США", "birkenstock": "Німеччина", "dr. martens": "Великобританія",
+    "keen": "США", "jack wolfskin": "Німеччина", "under armour": "США", "mizuno": "Японія",
+    "saucony": "США", "brooks": "США", "diesel": "Італія", "gucci": "Італія",
+    "versace": "Італія", "emporio armani": "Італія", "liu jo": "Італія", "pinko": "Італія",
+    "levis": "США", "wrangler": "США", "mustang": "Німеччина", "s.oliver": "Німеччина",
+    "bugatti": "Німеччина", "marco tozzi": "Німеччина", "legero": "Австрія", "ara": "Німеччина",
+    "remonte": "Німеччина", "josef seibel": "Німеччина", "salamander": "Німеччина",
+    "camper": "Іспанія", "pikolinos": "Іспанія", "aldo": "Канада", "steve madden": "США",
+    "palladium": "Франція", "hey dude": "США", "keds": "США", "sorel": "Канада",
+    "the north face": "США", "cmp": "Італія", "helly hansen": "Норвегія",
+}
+
+# Націнка на Prom за типом (30-40%, з дослідження цін власника).
+_TYPE_MARKUP = {
+    "кросівки": 1.35, "кеди": 1.35, "черевики": 1.35, "ботінки": 1.35, "чоботи": 1.35,
+    "босоніжки": 1.35, "сандалі": 1.33, "шльопанці": 1.30, "туфлі": 1.28,
+    "балетки": 1.28, "мокасини": 1.30, "сумка": 1.35, "валіза": 1.35,
+}
+
+
+def _prom_price(base, typename: str):
+    """Ціна для Prom: база × націнка(за типом) → «психологічне» округлення (…90,
+    подекуди …50 лишаємо), але не нижче бази й без роботизованості."""
+    base = float(base or 0)
+    if base <= 0:
+        return base
+    m = _TYPE_MARKUP.get(str(typename or "").strip().lower(), 1.33)
+    v = round(base * m / 10) * 10          # до найближчих 10
+    rem = v % 100
+    if rem <= 40:
+        charm = v - rem - 10               # 2020 → 1990
+    elif rem >= 60:
+        charm = v - rem + 90               # 2070 → 2090
+    else:
+        charm = v                          # …50 лишаємо (як у реальних цінах)
+    if charm < base:                       # ніколи нижче бази
+        charm = v if v >= base else int(base)
+    return int(charm)
+
+
+def _cap(s):
+    s = str(s or "").strip()
+    return s[:1].upper() + s[1:] if s else s
+
 
 def _build_name(bms: dict) -> str:
-    """Назва (укр): стать(прикметник) + тип(мала) + бренд + модель + колір + розмір.
-    Напр. «Жіночі кросівки Nike Air Max чорні розмір 38»."""
+    """Назва (укр): стать + тип + бренд + модель + колір + «N розмір» (число ПЕРЕД словом)."""
     g = _GENDER_ADJ.get(str(bms.get("gendername") or "").strip().lower())
     typ = str(bms.get("typename") or "").strip().lower()
     parts = [g, typ, bms.get("brandname"), bms.get("model"), bms.get("colorname")]
     name = " ".join(str(x).strip() for x in parts if x and str(x).strip())
     sizes = bms.get("sizes") or []
     if len(sizes) == 1:
-        name += f" розмір {sizes[0]}"
+        name += f" {sizes[0]} розмір"
     return name[:250] or (bms.get("productnumber") or "Товар")
 
 
+# Порядок матеріалів у описі — анатомічний (як у картці/каталозі).
+_MAT_ORDER = ["upper", "middle", "membrane", "insole", "midsole", "sole"]
 _MAT_LABELS = {"upper": "Верх", "middle": "Середина", "membrane": "Мембрана",
                "insole": "Устілка", "midsole": "Проміжна підошва", "sole": "Підошва"}
 
 
+def _brand_with_country(brand: str) -> str:
+    c = BRAND_COUNTRY.get(str(brand or "").strip().lower())
+    return f"{brand} ({c})" if c else str(brand or "")
+
+
+def _packaging_line(bms: dict) -> Optional[str]:
+    """Рядок стану/пакування: новий+без пакування → «Нові, без коробки»;
+    новий+«коробка» → «Нові, в коробці»; решта — нічого (None)."""
+    cond = str(bms.get("conditionname") or "").strip().lower()
+    pack = str(bms.get("packagingname") or "").strip().lower()
+    if cond != "новий":
+        return None
+    if "коробк" in pack:
+        return "Нові, в коробці"
+    if not pack:
+        return "Нові, без коробки"
+    return None
+
+
 def _build_description(bms: dict) -> str:
-    """HTML-опис з характеристик BMS."""
+    """HTML-опис: жирні назви характеристик, модель жирним у заголовку, рядок
+    пакування, Виробник=Китай пропускаємо, стандартний регістр значень."""
+    brand = bms.get("brandname"); model = bms.get("model")
+    # Заголовок з жирними бренд+модель
+    g = _GENDER_ADJ.get(str(bms.get("gendername") or "").strip().lower()) or ""
+    typ = str(bms.get("typename") or "").strip().lower()
+    bm = " ".join(x for x in (brand, model) if x)
+    head = " ".join(x for x in (g, typ) if x)
+    color = bms.get("colorname")
+    title = f"{head} <b>{_xesc(bm)}</b>" + (f" {_xesc(str(color))}" if color else "")
+
     rows = []
-    for label, key in [("Бренд", "brandname"), ("Модель", "model"), ("Тип", "typename"),
-                       ("Колір", "colorname"), ("Стать", "gendername"), ("Сезон", "season"),
-                       ("Стан", "conditionname"), ("Виробник", "manufacturer")]:
+    pl = _packaging_line(bms)
+    if pl:
+        rows.append(f"<li><b>Стан:</b> {_xesc(pl)}</li>")
+    if brand:
+        rows.append(f"<li><b>Бренд:</b> {_xesc(_brand_with_country(brand))}</li>")
+    if model:
+        rows.append(f"<li><b>Модель:</b> {_xesc(str(model))}</li>")
+    for label, key in [("Тип", "typename"), ("Колір", "colorname"), ("Стать", "gendername"),
+                       ("Сезон", "season")]:
         v = bms.get(key)
         if v:
-            rows.append(f"<li><b>{_xesc(label)}:</b> {_xesc(str(v))}</li>")
-    for pos, names in (bms.get("materials") or {}).items():
-        if names:
-            rows.append(f"<li><b>{_xesc(_MAT_LABELS.get(pos, pos))}:</b> {_xesc(names)}</li>")
+            rows.append(f"<li><b>{label}:</b> {_xesc(_cap(v))}</li>")
+    # Виробник: Китай — НЕ пишемо; інша країна — пишемо
+    manuf = str(bms.get("manufacturer") or "").strip()
+    if manuf and manuf.lower() != "китай":
+        rows.append(f"<li><b>Виробник:</b> {_xesc(_cap(manuf))}</li>")
+    # Матеріали в анатомічному порядку
+    mats = bms.get("materials") or {}
+    for pos in _MAT_ORDER:
+        if mats.get(pos):
+            rows.append(f"<li><b>{_MAT_LABELS[pos]}:</b> {_xesc(_cap(mats[pos]))}</li>")
     sizes = bms.get("sizes") or []
     if sizes:
         rows.append(f"<li><b>Доступні розміри:</b> {_xesc(', '.join(map(str, sizes)))}</li>")
-    intro = _xesc(_build_name(bms))
-    return f"<p>{intro}</p><ul>{''.join(rows)}</ul>"
+    return f"<p>{title}</p><ul>{''.join(rows)}</ul>"
 
 
 def _build_params(bms: dict) -> List[tuple]:
-    """(назва, значення) для <param> — характеристики Prom."""
+    """(назва, значення) для <param> — характеристики Prom (стандартний регістр)."""
     out = []
-    for label, key in [("Бренд", "brandname"), ("Колір", "colorname"), ("Стать", "gendername"),
-                       ("Сезон", "season"), ("Стан", "conditionname"), ("Країна-виробник", "manufacturer")]:
+    if bms.get("brandname"):
+        out.append(("Бренд", str(bms["brandname"])))
+    for label, key in [("Колір", "colorname"), ("Стать", "gendername"),
+                       ("Сезон", "season"), ("Стан", "conditionname")]:
         v = bms.get(key)
         if v:
-            out.append((label, str(v)))
+            out.append((label, _cap(v)))
+    manuf = str(bms.get("manufacturer") or "").strip()
+    if manuf and manuf.lower() != "китай":
+        out.append(("Країна-виробник", _cap(manuf)))
     if (bms.get("materials") or {}).get("upper"):
-        out.append(("Матеріал", bms["materials"]["upper"]))
+        out.append(("Матеріал", _cap(bms["materials"]["upper"])))
     for sz in (bms.get("sizes") or []):
         out.append(("Розмір", str(sz)))
     return out
+
+
+# Транслітерація укр→лат для тегів (щоб ловити і латинські запити).
+_TRANSLIT = str.maketrans({
+    "а": "a", "б": "b", "в": "v", "г": "h", "ґ": "g", "д": "d", "е": "e", "є": "ie",
+    "ж": "zh", "з": "z", "и": "y", "і": "i", "ї": "i", "й": "i", "к": "k", "л": "l",
+    "м": "m", "н": "n", "о": "o", "п": "p", "р": "r", "с": "s", "т": "t", "у": "u",
+    "ф": "f", "х": "kh", "ц": "ts", "ч": "ch", "ш": "sh", "щ": "shch", "ь": "", "ю": "iu", "я": "ia",
+})
+
+
+def _build_keywords(bms: dict) -> str:
+    """Пошукові теги: макс. доречних варіантів — бренд/модель/тип/стать/колір/сезон
+    + транслітерації + комбінації, для кращого пошуку на Prom."""
+    brand = str(bms.get("brandname") or "").strip()
+    model = str(bms.get("model") or "").strip()
+    typ = str(bms.get("typename") or "").strip().lower()
+    gender = str(bms.get("gendername") or "").strip().lower()
+    color = str(bms.get("colorname") or "").strip().lower()
+    season = str(bms.get("season") or "").strip().lower()
+    tags = set()
+
+    def add(*xs):
+        for x in xs:
+            x = " ".join(str(x or "").split()).strip()
+            if len(x) >= 2:
+                tags.add(x.lower())
+
+    add(brand, model, typ, color)
+    if brand:
+        add(brand.lower().translate(_TRANSLIT))            # транслітерація бренду
+        add(f"{brand} {typ}", f"{typ} {brand}", f"{brand} {model}")
+        if gender:
+            add(f"{gender} {typ} {brand}")
+    if typ:
+        add(f"{typ} {color}", f"{gender} {typ}", f"{typ} {gender}")
+        add(typ.translate(_TRANSLIT))
+    if model:
+        add(f"{brand} {model}", model.lower().translate(_TRANSLIT))
+    if color:
+        add(f"{typ} {color}", f"{brand} {color}")
+    if season:
+        add(f"{season} {typ}", f"{typ} {season}")
+    # прибрати порожні/дублі, обмежити довжину рядка (Prom ~keywords)
+    out = [t for t in tags if t]
+    return ", ".join(sorted(out))[:900]
 
 
 def _product_image_urls(product_number: str) -> List[str]:
@@ -438,31 +587,44 @@ def _product_image_urls(product_number: str) -> List[str]:
     return urls
 
 
+# Групи каталогу продавця (categoryId у фіді = ГРУПА, не маркетплейс-категорія;
+# маркетплейс-категорію Prom визначає сам за назвою/вмістом). Усе взуття → «Взуття».
+# Пізніше: Одяг/Сумки/Аксесуари — свої групи.
+_PROM_GROUP_SHOES = 154833694     # «Взуття» / «Обувь»
+_PROM_GROUP_SHOES_NAME = "Взуття"
+
+
 def build_export_feed(db: Session, product_id: int, category_id: int, available: bool = True) -> str:
     """Prom XML-фід із ОДНИМ товаром (для import_file). available=False —
-    товар створюється прихованим/без наявності (для draft-режиму, без «живого вікна»)."""
+    товар прихований/без наявності (draft-режим). categoryId = ГРУПА «Взуття»."""
     bms = _bms_product_for_export(db, product_id)
     if not bms:
         raise RuntimeError("Товар не знайдено")
     num = (bms["productnumber"] or "").lstrip("#")
-    price = float(bms["price"] or 0)
+    price = _prom_price(bms["price"], bms.get("typename"))
     imgs = _product_image_urls(bms["productnumber"])
     name = _build_name(bms)
     desc = _build_description(bms)
     params = _build_params(bms)
+    keywords = _build_keywords(bms)
+    group_id = _PROM_GROUP_SHOES
 
     def tag(t, v):
         return f"<{t}>{_xesc(str(v))}</{t}>"
     parts = [
         f'<item id={_xqattr(num)} available="{"true" if available else "false"}">',
-        tag("price", int(price) if price == int(price) else price),
+        tag("price", price),
         tag("currencyId", "UAH"),
-        tag("categoryId", category_id),
+        tag("categoryId", group_id),
         tag("name", name),
         tag("vendorCode", num),
+        tag("quantity_in_stock", 1),        # залишок: 1 (одиничний товар)
+        tag("presence", "available" if available else "not_available"),
     ]
     if bms.get("brandname"):
         parts.append(tag("vendor", bms["brandname"]))
+    if keywords:
+        parts.append(tag("keywords", keywords))
     parts.append(f"<description><![CDATA[{desc}]]></description>")
     for u in imgs:
         parts.append(tag("image", u))
@@ -470,14 +632,14 @@ def build_export_feed(db: Session, product_id: int, category_id: int, available:
         parts.append(f'<param name={_xqattr(pn)}>{_xesc(pv)}</param>')
     parts.append("</item>")
     item_xml = "".join(parts)
-    cat_caption = _xesc(bms.get("subtypename") or bms.get("typename") or "Товар")
     return (
         '<?xml version="1.0" encoding="UTF-8"?>\n'
         '<price><date>{d}</date>'
         '<currencies><currency id="UAH" rate="1"/></currencies>'
-        '<categories><category id="{cid}">{cap}</category></categories>'
+        '<categories><category id="{gid}">{gname}</category></categories>'
         '<items>{item}</items></price>'
-    ).format(d=datetime.now().strftime("%Y-%m-%d %H:%M"), cid=category_id, cap=cat_caption, item=item_xml)
+    ).format(d=datetime.now().strftime("%Y-%m-%d %H:%M"), gid=group_id,
+             gname=_xesc(_PROM_GROUP_SHOES_NAME), item=item_xml)
 
 
 def _find_prom_id_by_sku(token: str, sku: str) -> Optional[int]:
@@ -525,10 +687,12 @@ def process_draft_queue(db: Session) -> Dict:
 
 
 def export_product_to_prom(db: Session, product_id: int, as_draft: bool = True,
-                           preview: bool = False) -> Dict:
+                           preview: bool = False, force: bool = False) -> Dict:
     """Виставити товар BMS на Prom (Фаза 3). preview=True — повертає згенеровані
     назву/опис/категорію/фото БЕЗ створення. Інакше: import_file (mark_missing=none
-    — інші товари не чіпає) + (as_draft) переводить у чернетку."""
+    — інші товари не чіпає) + (as_draft) переводить у чернетку.
+    force=False (типово) — якщо товар з таким sku ВЖЕ на Prom, НЕ створювати дублікат
+    (це рівно кейс «товар вже давно на Prom»); force=True — свідомо перезаписати."""
     cfg = _load_config(db)
     if not cfg:
         return {"ok": False, "error": "Prom токен не задано"}
@@ -544,6 +708,13 @@ def export_product_to_prom(db: Session, product_id: int, as_draft: bool = True,
         return {"ok": True, "preview": True, "sku": sku, "name": _build_name(bms),
                 "category_id": cat, "images": imgs, "image_count": len(imgs),
                 "params": _build_params(bms), "already_on_prom": _find_prom_id_by_sku(token, sku) is not None}
+
+    # Запобіжник дублікатів: товар із цим номером уже на Prom — не створюємо копію.
+    existing = _find_prom_id_by_sku(token, sku)
+    if existing and not force:
+        return {"ok": False, "already_on_prom": True, "prom_id": existing, "sku": sku,
+                "error": f"Товар {sku} вже є на Prom (id {existing}). Дублікат не створюю. "
+                         f"Щоб перезаписати автозаповненням — підтверди примусово."}
     if not imgs:
         return {"ok": False, "error": "У товару немає фото — Prom вимагає зображення. Додай фото й повтори."}
     if not (bms.get("price") and float(bms["price"]) > 0):

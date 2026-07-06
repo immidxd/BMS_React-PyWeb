@@ -1096,8 +1096,10 @@ async def prom_export_product(body: Dict[str, Any] = Body(...), db: Session = De
     if not pid:
         raise HTTPException(status_code=400, detail="Немає product_id")
     r = _prom().export_product_to_prom(
-        db, int(pid), as_draft=body.get("as_draft", True), preview=bool(body.get("preview")))
-    if not r.get("ok"):
+        db, int(pid), as_draft=body.get("as_draft", True), preview=bool(body.get("preview")),
+        force=bool(body.get("force")))
+    # «вже на Prom» — не помилка, а сигнал фронту показати підтвердження перезапису
+    if not r.get("ok") and not r.get("already_on_prom"):
         raise HTTPException(status_code=400, detail=r.get("error", "Prom export failed"))
     return r
 

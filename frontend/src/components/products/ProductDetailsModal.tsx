@@ -1304,14 +1304,18 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                         });
                         const d = await pv.json();
                         if (!pv.ok) { alert(`Prom: ${d.detail || pv.status}`); return; }
-                        if (d.already_on_prom) { alert(`Товар ${d.sku} уже є на Prom.`); return; }
                         if (!d.image_count) { alert('У товару немає фото — Prom вимагає зображення. Додай фото й повтори.'); return; }
+                        // Товар уже на Prom → не створюємо дублікат; пропонуємо перезапис
+                        const force = !!d.already_on_prom;
                         const chars = (d.params || []).map((x: any[]) => `${x[0]}: ${x[1]}`).join('\n');
+                        const head = force
+                          ? `Товар ${d.sku} УЖЕ є на Prom.\n\nПерезаписати автозаповненням (назва/опис/характеристики/фото)?`
+                          : `Виставити на Prom як ЧЕРНЕТКУ?`;
                         if (!window.confirm(
-                          `Виставити на Prom як ЧЕРНЕТКУ?\n\nНазва: ${d.name}\nКатегорія Prom: ${d.category_id}\nФото: ${d.image_count}\n\nХарактеристики:\n${chars}\n\nПотім переглянеш і опублікуєш у кабінеті Prom.`)) return;
+                          `${head}\n\nНазва: ${d.name}\nКатегорія Prom: ${d.category_id}\nФото: ${d.image_count}\n\nХарактеристики:\n${chars}\n\nПотім переглянеш і опублікуєш у кабінеті Prom.`)) return;
                         const ex = await fetch('/api/publications/prom/export-product', {
                           method: 'POST', headers: { 'Content-Type': 'application/json' },
-                          body: JSON.stringify({ product_id: productId, as_draft: true }),
+                          body: JSON.stringify({ product_id: productId, as_draft: true, force }),
                         });
                         const r = await ex.json();
                         alert(ex.ok ? (r.note || 'Відправлено на Prom.') : `Prom: ${r.detail || ex.status}`);
