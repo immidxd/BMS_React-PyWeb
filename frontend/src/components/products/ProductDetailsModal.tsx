@@ -1305,6 +1305,11 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                         const d = await pv.json();
                         if (!pv.ok) { alert(`Prom: ${d.detail || pv.status}`); return; }
                         if (!d.image_count) { alert('У товару немає фото — Prom вимагає зображення. Додай фото й повтори.'); return; }
+                        // Додатковий рівень захисту: окреме попередження про реальні фото / вживаний стан
+                        const warns: string[] = [];
+                        if (d.image_kind === 'real') warns.push('❗ У товару НЕМАЄ офіційних фото — публікація піде з РЕАЛЬНИМИ фото.');
+                        if (d.condition_warn) warns.push(`❗ Стан товару: «${d.condition}» → на Prom як «${d.condition_prom}».`);
+                        if (warns.length && !window.confirm(`⚠️ УВАГА перед публікацією на Prom:\n\n${warns.join('\n')}\n\nВи впевнені, що хочете продовжити?`)) return;
                         // Товар уже на Prom → не створюємо дублікат; пропонуємо перезапис
                         const force = !!d.already_on_prom;
                         const chars = (d.params || []).map((x: any[]) => `${x[0]}: ${x[1]}`).join('\n');

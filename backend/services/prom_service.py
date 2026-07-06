@@ -513,17 +513,19 @@ def _brand_with_country(brand: str, lang: str = "uk") -> str:
     return f"{brand} ({_country(c, lang)})" if c else str(brand or "")
 
 
-def _packaging_line(bms: dict, lang: str = "uk") -> Optional[str]:
-    """Рядок стану/пакування: новий+без пакування → «Нові, без коробки»;
-    новий+«коробка» → «Нові, в коробці»; решта — нічого. lang керує мовою."""
+def _condition_line(bms: dict, lang: str = "uk") -> Optional[str]:
+    """Рядок «Стан» у описі. Новий/Хороший → «Нові…» (з пакуванням); Вживаний/
+    Легковживаний/Пошкоджений → чесний реальний стан. lang керує мовою."""
     cond = str(bms.get("conditionname") or "").strip().lower()
     pack = str(bms.get("packagingname") or "").strip().lower()
-    if cond != "новий":
-        return None
-    if "коробк" in pack:
-        return "Новые, в коробке" if lang == "ru" else "Нові, в коробці"
-    if not pack:
-        return "Новые, без коробки" if lang == "ru" else "Нові, без коробки"
+    if cond in _COND_NEWLIKE:
+        if "коробк" in pack:
+            return "Новые, в коробке" if lang == "ru" else "Нові, в коробці"
+        if not pack:
+            return "Новые, без коробки" if lang == "ru" else "Нові, без коробки"
+        return "Новые" if lang == "ru" else "Нові"
+    if cond in _COND_USED:                       # чесно показуємо реальний стан вживаного
+        return _COND_DESC_RU.get(cond, "Б/у") if lang == "ru" else _cap(bms.get("conditionname"))
     return None
 
 
@@ -542,7 +544,7 @@ def _build_description(bms: dict, lang: str = "uk") -> str:
     title = f"{head} <b>{_xesc(bm)}</b>" + (f" {_xesc(color)}" if color else "")
 
     rows = []
-    pl = _packaging_line(bms, lang)
+    pl = _condition_line(bms, lang)
     if pl:
         rows.append(f"<li><b>{L('Стан')}:</b> {_xesc(pl)}</li>")
     if brand:
@@ -605,7 +607,16 @@ _GENDER_SIZE_ATTRS = {
 }
 _SEASON_RU = {"літо": "Лето", "зима": "Зима", "весна": "Весна", "осінь": "Осень",
               "демісезон": "Демисезон", "весна-осінь": "Демисезон", "всесезон": "Всесезонный"}
-_COND_RU = {"новий": "Новое", "нове": "Новое", "вживаний": "Б/у", "б/у": "Б/у"}
+# Стан BMS → «Состояние» на Prom (лише 2 значення: Новое / Б/у).
+# Політика власника: Новий/Нове/Хороший → «Новое»; Вживаний/Легковживаний/Пошкоджений → «Б/у».
+_COND_RU = {"новий": "Новое", "нове": "Новое", "хороший": "Новое",
+            "вживаний": "Б/у", "легковживаний": "Б/у", "пошкоджений": "Б/у", "б/у": "Б/у"}
+_COND_NEWLIKE = {"новий", "нове", "хороший"}          # у описі → рядок «Нові…»
+_COND_USED = {"вживаний", "легковживаний", "пошкоджений", "б/у"}
+# Стани, що ПОТРЕБУЮТЬ підтвердження при публікації (усе, крім Новий/Нове).
+_COND_WARN = {"хороший", "вживаний", "легковживаний", "пошкоджений"}
+# Чесне відображення стану вживаного в описі (укр як є; рос — короткою фразою).
+_COND_DESC_RU = {"вживаний": "Б/у", "легковживаний": "Легкое б/у", "пошкоджений": "С дефектом"}
 _COUNTRY_RU = {"вʼєтнам": "Вьетнам", "в'єтнам": "Вьетнам", "туреччина": "Турция",
                "італія": "Италия", "португалія": "Португалия", "іспанія": "Испания",
                "польща": "Польша", "україна": "Украина", "індонезія": "Индонезия",
@@ -741,8 +752,10 @@ def _build_keywords(bms: dict, lang: str = "uk") -> str:
     return ", ".join(t for t in tags if t)[:1400]
 
 
-def _product_image_urls(product_number: str) -> List[str]:
-    """Публічні R2-URL офіційних фото товару (fallback — реальні). Порожньо, якщо R2 не налаштовано."""
+def _select_images(product_number: str):
+    """Публічні R2-URL фото + їхній тип. ТАБУ: якщо є ОФІЦІЙНІ — беремо ЛИШЕ офіційні
+    (реальні НЕ домішуємо ніколи); якщо офіційних немає — реальні (не-дефектні).
+    Повертає (urls, kind), kind ∈ {'official','real','none'}."""
     try:
         from services.product_images import list_images
         from services import r2_storage
@@ -753,7 +766,9 @@ def _product_image_urls(product_number: str) -> List[str]:
         from urllib.parse import unquote
     imgs = list_images(product_number)
     official = [i for i in imgs if getattr(i, "kind", "") == "official"]
-    chosen = official or [i for i in imgs if getattr(i, "kind", "") != "defect"]
+    # Табу на змішування: офіційні → лише офіційні; інакше — реальні (без дефектних).
+    chosen = official if official else [i for i in imgs if getattr(i, "kind", "") != "defect"]
+    kind = "official" if official else ("real" if chosen else "none")
     urls = []
     for e in chosen[:10]:
         u = getattr(e, "url", "") or ""
@@ -763,7 +778,12 @@ def _product_image_urls(product_number: str) -> List[str]:
             pub = r2_storage.public_url(key)
             if pub:
                 urls.append(pub)
-    return urls
+    return urls, kind
+
+
+def _product_image_urls(product_number: str) -> List[str]:
+    """Лише URL-и (тип див. _select_images). Офіційні або реальні, ніколи не змішані."""
+    return _select_images(product_number)[0]
 
 
 # Група каталогу продавця (categoryId у фіді = ГРУПА, не маркетплейс-категорія;
@@ -913,15 +933,20 @@ def export_product_to_prom(db: Session, product_id: int, as_draft: bool = True,
         return {"ok": False, "error": "Товар не знайдено"}
     base = rows[0]
     number = (base["productnumber"] or "").lstrip("#")
-    imgs = _product_image_urls(base["productnumber"])
+    imgs, image_kind = _select_images(base["productnumber"])
     cat = _prom_category_for(db, token, base)
     skus = [r["_sku"] for r in rows]
+    cond_l = str(base.get("conditionname") or "").strip().lower()
 
     if preview:
         existing = {s: _find_prom_id_by_sku(token, s) for s in skus}
         return {"ok": True, "preview": True, "sku": number, "skus": skus,
                 "sizes_count": len(rows), "name": _build_name(base, "uk"),
                 "category_id": cat, "images": imgs, "image_count": len(imgs),
+                "image_kind": image_kind,                       # official | real | none
+                "condition": base.get("conditionname"),
+                "condition_prom": _COND_RU.get(cond_l, "Новое"),
+                "condition_warn": cond_l in _COND_WARN,          # потребує підтвердження
                 "params": _build_params(base),
                 "already_on_prom": bool(existing) and all(existing.values())}
 
