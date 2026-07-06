@@ -197,11 +197,17 @@ _PRODUCT_FROM_SQL = """
             WHERE oa.status IN ('active', 'limited') AND p2.productnumber IS NOT NULL
         ) olxpub ON olxpub.pnum = TRIM(LEADING '#' FROM p.productnumber)
         LEFT JOIN (
-            -- Номери (без #) з ≥1 товаром на Prom у статусі on_display.
-            SELECT DISTINCT TRIM(LEADING '#' FROM p2.productnumber) AS pnum
+            -- Номери (без #), що Є на Prom: лістинг у дзеркалі (будь-який статус, крім
+            -- deleted — тобто й ЧЕРНЕТКА) АБО в черзі експорту (pending). Узгоджено з чіпом «Prom».
+            SELECT TRIM(LEADING '#' FROM p2.productnumber) AS pnum
             FROM prom_products pp
             JOIN products p2 ON p2.id = pp.product_id
-            WHERE pp.status = 'on_display' AND p2.productnumber IS NOT NULL
+            WHERE COALESCE(pp.status, '') <> 'deleted' AND p2.productnumber IS NOT NULL
+            UNION
+            SELECT TRIM(LEADING '#' FROM p3.productnumber) AS pnum
+            FROM prom_draft_queue q
+            JOIN products p3 ON q.sku = TRIM(LEADING '#' FROM p3.productnumber)
+                             OR q.sku LIKE TRIM(LEADING '#' FROM p3.productnumber) || '-%'
         ) prompub ON prompub.pnum = TRIM(LEADING '#' FROM p.productnumber)
         """
 
@@ -704,11 +710,17 @@ def get_products(
             WHERE oa.status IN ('active', 'limited') AND p2.productnumber IS NOT NULL
         ) olxpub ON olxpub.pnum = TRIM(LEADING '#' FROM p.productnumber)
         LEFT JOIN (
-            -- Номери (без #) з ≥1 товаром на Prom у статусі on_display.
-            SELECT DISTINCT TRIM(LEADING '#' FROM p2.productnumber) AS pnum
+            -- Номери (без #), що Є на Prom: лістинг у дзеркалі (будь-який статус, крім
+            -- deleted — тобто й ЧЕРНЕТКА) АБО в черзі експорту (pending). Узгоджено з чіпом «Prom».
+            SELECT TRIM(LEADING '#' FROM p2.productnumber) AS pnum
             FROM prom_products pp
             JOIN products p2 ON p2.id = pp.product_id
-            WHERE pp.status = 'on_display' AND p2.productnumber IS NOT NULL
+            WHERE COALESCE(pp.status, '') <> 'deleted' AND p2.productnumber IS NOT NULL
+            UNION
+            SELECT TRIM(LEADING '#' FROM p3.productnumber) AS pnum
+            FROM prom_draft_queue q
+            JOIN products p3 ON q.sku = TRIM(LEADING '#' FROM p3.productnumber)
+                             OR q.sku LIKE TRIM(LEADING '#' FROM p3.productnumber) || '-%'
         ) prompub ON prompub.pnum = TRIM(LEADING '#' FROM p.productnumber)
         """
         
