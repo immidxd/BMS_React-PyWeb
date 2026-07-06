@@ -466,15 +466,35 @@ _COUNTRY_UA2RU = {"данія": "Дания", "німеччина": "Герма�
                   "норвегія": "Норвегия", "нідерланди": "Нидерланды", "португалія": "Португалия",
                   "туреччина": "Турция", "україна": "Украина", "вʼєтнам": "Вьетнам", "в'єтнам": "Вьетнам",
                   "китай": "Китай", "індонезія": "Индонезия", "індія": "Индия", "камбоджа": "Камбоджа",
-                  "бангладеш": "Бангладеш", "румунія": "Румыния", "марокко": "Марокко"}
+                  "бангладеш": "Бангладеш", "румунія": "Румыния", "марокко": "Марокко",
+                  "південна корея": "Южная Корея", "південна корея (пд. корея)": "Южная Корея"}
 
 
 def _country(name: str, lang: str) -> str:
     return _COUNTRY_UA2RU.get(str(name or "").strip().lower(), str(name or "")) if lang == "ru" else str(name or "")
 
 
+# Override з таблиці brand_countries (редаговане власником джерело). Оновлюється
+# при кожному експорті; BRAND_COUNTRY у коді лишається як fallback/сід.
+_BRAND_COUNTRY_DB: Dict[str, str] = {}
+
+
+def _refresh_brand_countries(db: Session) -> None:
+    global _BRAND_COUNTRY_DB
+    try:
+        rows = db.execute(text("SELECT lower(brand), country FROM brand_countries")).fetchall()
+        _BRAND_COUNTRY_DB = {b: c for b, c in rows if b and c}
+    except Exception as e:            # таблиці ще нема / БД недоступна — лишаємось на словнику
+        logger.debug(f"brand_countries недоступна: {e}")
+
+
+def _brand_country(brand: str) -> Optional[str]:
+    b = str(brand or "").strip().lower()
+    return _BRAND_COUNTRY_DB.get(b) or BRAND_COUNTRY.get(b)
+
+
 def _brand_with_country(brand: str, lang: str = "uk") -> str:
-    c = BRAND_COUNTRY.get(str(brand or "").strip().lower())
+    c = _brand_country(brand)
     return f"{brand} ({_country(c, lang)})" if c else str(brand or "")
 
 
@@ -706,6 +726,7 @@ def build_export_feed(db: Session, product_id: int, category_id: int, available:
     bms = _bms_product_for_export(db, product_id)
     if not bms:
         raise RuntimeError("Товар не знайдено")
+    _refresh_brand_countries(db)          # актуальний довідник країн-власників з БД
     num = (bms["productnumber"] or "").lstrip("#")
     price = _prom_price(bms["price"], bms.get("typename"))
     imgs = _product_image_urls(bms["productnumber"])
@@ -806,6 +827,7 @@ def export_product_to_prom(db: Session, product_id: int, as_draft: bool = True,
     if not cfg:
         return {"ok": False, "error": "Prom токен не задано"}
     token = cfg["api_token"]
+    _refresh_brand_countries(db)          # актуальний довідник країн-власників з БД
     bms = _bms_product_for_export(db, product_id)
     if not bms:
         return {"ok": False, "error": "Товар не знайдено"}
