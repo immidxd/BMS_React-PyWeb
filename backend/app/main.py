@@ -536,7 +536,13 @@ async def _prom_sync_cycle() -> None:
                 return
             rp = prom_service.sync_products(db)
             ro = prom_service.sync_orders(db)
-            logger.info(f"Prom-sync: products={rp} orders={ro}")
+            # Надійно довести експортовані товари до статусу «чернетка»
+            # (створення на Prom асинхронне — черга ретраїть щоциклу).
+            try:
+                dq = prom_service.process_draft_queue(db)
+            except Exception as _e:
+                dq = {"error": str(_e)}
+            logger.info(f"Prom-sync: products={rp} orders={ro} drafts={dq}")
         finally:
             db.close()
 

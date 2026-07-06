@@ -491,6 +491,39 @@ def _find_prom_id_by_sku(token: str, sku: str) -> Optional[int]:
     return None
 
 
+def _queue_draft(db: Session, sku: str) -> None:
+    db.execute(text("INSERT INTO prom_draft_queue (sku) VALUES (:s) "
+                    "ON CONFLICT (sku) DO UPDATE SET requested_at = now(), attempts = 0"), {"s": sku})
+    db.commit()
+
+
+def process_draft_queue(db: Session) -> Dict:
+    """Перевести в draft усі товари з prom_draft_queue, що вже з'явились на Prom.
+    Idempotent, викликається щоциклу синку. Здається після ~60 спроб (не вічно)."""
+    cfg = _load_config(db)
+    if not cfg:
+        return {"resolved": 0, "resolved_skus": []}
+    token = cfg["api_token"]
+    rows = db.execute(text("SELECT sku, attempts FROM prom_draft_queue")).fetchall()
+    resolved = []
+    for sku, attempts in rows:
+        pid = _find_prom_id_by_sku(token, sku)
+        if pid:
+            try:
+                _api_post(token, "/products/edit", [{"id": pid, "status": "draft"}])
+                db.execute(text("DELETE FROM prom_draft_queue WHERE sku = :s"), {"s": sku})
+                resolved.append(sku)
+            except Exception as e:
+                logger.warning(f"Prom draft-set failed for {sku}: {e}")
+        else:
+            if (attempts or 0) + 1 > 60:
+                db.execute(text("DELETE FROM prom_draft_queue WHERE sku = :s"), {"s": sku})
+            else:
+                db.execute(text("UPDATE prom_draft_queue SET attempts = COALESCE(attempts,0)+1 WHERE sku = :s"), {"s": sku})
+    db.commit()
+    return {"resolved": len(resolved), "resolved_skus": resolved}
+
+
 def export_product_to_prom(db: Session, product_id: int, as_draft: bool = True,
                            preview: bool = False) -> Dict:
     """Виставити товар BMS на Prom (Фаза 3). preview=True — повертає згенеровані
@@ -531,35 +564,36 @@ def export_product_to_prom(db: Session, product_id: int, as_draft: bool = True,
             return {"ok": False, "error": f"Import [{r.status_code}]: {r.text[:250]}"}
         import_id = (r.json() or {}).get("id")
 
-        # Фоновий крок: дочекатись асинхронного створення (до ~4 хв) → перевести
-        # в draft (якщо треба) → оновити дзеркало. Ендпоінт не блокуємо.
-        import threading as _th
+        # НАДІЙНЕ переведення в чернетку через чергу: створення на Prom асинхронне
+        # (1-3 хв), тож кладемо sku в prom_draft_queue — і Prom-синк-цикл щоразу
+        # намагається знайти товар і виставити draft, доки не вдасться. Плюс
+        # короткий фоновий «швидкий» прохід, щоб зазвичай устигнути за ~хвилину.
+        if as_draft:
+            _queue_draft(db, sku)
+            import threading as _th
 
-        def _finalize():
-            import time as _t
-            from models.database import SessionLocal as _SL
-            prom_id = None
-            for _ in range(48):          # ~4 хв (5с крок)
-                _t.sleep(5)
-                prom_id = _find_prom_id_by_sku(token, sku)
-                if prom_id:
-                    break
-            if prom_id and as_draft:
-                try:
-                    _api_post(token, "/products/edit", [{"id": prom_id, "status": "draft"}])
-                except Exception as e:
-                    logger.warning(f"Prom draft-set failed for {sku}: {e}")
-            _db = _SL()
-            try:
-                sync_products(_db)
-            finally:
-                _db.close()
-            logger.info(f"Prom export finalize: sku={sku} prom_id={prom_id} draft={as_draft}")
+            def _quick():
+                import time as _t
+                from models.database import SessionLocal as _SL
+                for _ in range(24):          # ~4 хв швидких спроб
+                    _t.sleep(10)
+                    _db = _SL()
+                    try:
+                        if process_draft_queue(_db).get("resolved_skus") and sku not in \
+                           [x[0] for x in _db.execute(text("SELECT sku FROM prom_draft_queue")).fetchall()]:
+                            break
+                    except Exception:
+                        pass
+                    finally:
+                        _db.close()
 
-        _th.Thread(target=_finalize, daemon=True).start()
+            _th.Thread(target=_quick, daemon=True).start()
+
+        note = ("Товар створюється на Prom як ЧЕРНЕТКА (з'явиться за 1-3 хв — особливість "
+                "Prom API). Знайти: Prom → Товари → фільтр «Видимість: чернетка». "
+                "Перевір автозаповнення й опублікуй.")
         return {"ok": True, "sku": sku, "category_id": cat, "images": len(imgs),
-                "import_id": import_id, "name": _build_name(bms), "as_draft": as_draft,
-                "note": "Товар відправлено на Prom. З'явиться (як чернетка) за 1–3 хв — оновиться сам."}
+                "import_id": import_id, "name": _build_name(bms), "as_draft": as_draft, "note": note}
     except Exception as e:
         logger.error(f"Prom export failed for {sku}: {e}")
         return {"ok": False, "error": str(e)}
