@@ -1020,18 +1020,20 @@ def export_product_to_prom(db: Session, product_id: int, as_draft: bool = False,
             if r.status_code < 400:
                 import_id = (r.json() or {}).get("id")
                 break
-            body = r.text or ""
-            busy = ("ограничен" in body or "одновременных" in body or "одночасн" in body)
+            # Декодуємо повідомлення (r.text — з \u-escape, тож перевіряти треба ДЕКОДОВАНЕ).
+            try:
+                j = r.json()
+                msg = (j.get("error") or {}).get("message") or j.get("message") or r.text
+            except Exception:
+                msg = r.text
+            m = str(msg).lower()
+            busy = any(k in m for k in ("ограничен", "одновремен", "одночасн", "предыдущего импорт"))
             if busy and attempt < 6:
                 _t.sleep(7)               # інший імпорт ще йде — чекаємо звільнення слота
                 continue
             if busy:
                 return {"ok": False, "error": "На Prom зараз виконується інший імпорт. "
-                        "Зачекай ~хвилину і натисни «Prom» ще раз."}
-            try:
-                msg = (r.json().get("error") or {}).get("message") or r.text
-            except Exception:
-                msg = r.text
+                        "Зачекай ~хвилину і натисни «Prom» ще раз (не тисни кілька разів підряд)."}
             return {"ok": False, "error": f"Prom [{r.status_code}]: {str(msg)[:200]}"}
 
         # Черга «дотягнути в дзеркало»: створення асинхронне (1-3 хв), тож кладемо КОЖЕН
