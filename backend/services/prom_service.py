@@ -419,15 +419,34 @@ def _cap(s):
     return s[:1].upper() + s[1:] if s else s
 
 
-def _build_name(bms: dict) -> str:
-    """Назва (укр): стать + тип + бренд + модель + колір + «N розмір» (число ПЕРЕД словом)."""
-    g = _GENDER_ADJ.get(str(bms.get("gendername") or "").strip().lower())
-    typ = str(bms.get("typename") or "").strip().lower()
-    parts = [g, typ, bms.get("brandname"), bms.get("model"), bms.get("colorname")]
+# Прикметник статі в назві — укр і рос.
+_GENDER_ADJ_RU = {"чоловіча": "Мужские", "жіноча": "Женские", "дитяча": "Детские", "унісекс": "Унисекс"}
+
+
+def _val(bms: dict, key: str, lang: str, lower: bool = False) -> str:
+    """Значення характеристики цільовою мовою (рос — через словники, укр — як є)."""
+    raw = str(bms.get(key) or "").strip()
+    if not raw:
+        return ""
+    if lang == "ru":
+        m = {"typename": _TYPE_RU, "colorname": _COLOR_RU, "gendername": _GENDER_RU,
+             "season": _SEASON_RU, "conditionname": _COND_RU}.get(key)
+        raw = (m or {}).get(raw.lower(), raw) if m else raw
+    return raw.lower() if lower else _cap(raw)
+
+
+def _build_name(bms: dict, lang: str = "uk") -> str:
+    """Назва: стать + тип + бренд + модель + колір + «N розмір» (число ПЕРЕД словом).
+    lang='uk' (укр) або 'ru' (рос) — тип/колір/стать беруться відповідною мовою."""
+    gl = str(bms.get("gendername") or "").strip().lower()
+    g = (_GENDER_ADJ_RU if lang == "ru" else _GENDER_ADJ).get(gl)
+    typ = _val(bms, "typename", lang, lower=True)
+    color = _val(bms, "colorname", lang, lower=True)
+    parts = [g, typ, bms.get("brandname"), bms.get("model"), color]
     name = " ".join(str(x).strip() for x in parts if x and str(x).strip())
     sizes = bms.get("sizes") or []
     if len(sizes) == 1:
-        name += f" {sizes[0]} розмір"
+        name += f" {sizes[0]} {'размер' if lang == 'ru' else 'розмір'}"
     return name[:250] or (bms.get("productnumber") or "Товар")
 
 
@@ -435,64 +454,85 @@ def _build_name(bms: dict) -> str:
 _MAT_ORDER = ["upper", "middle", "membrane", "insole", "midsole", "sole"]
 _MAT_LABELS = {"upper": "Верх", "middle": "Середина", "membrane": "Мембрана",
                "insole": "Устілка", "midsole": "Проміжна підошва", "sole": "Підошва"}
+_MAT_LABELS_RU = {"upper": "Верх", "middle": "Средняя часть", "membrane": "Мембрана",
+                  "insole": "Стелька", "midsole": "Промежуточная подошва", "sole": "Подошва"}
+# Мітки характеристик і країни укр→рос для рос-опису.
+_DESC_LABELS_RU = {"Стан": "Состояние", "Бренд": "Бренд", "Модель": "Модель", "Тип": "Вид",
+                   "Колір": "Цвет", "Стать": "Пол", "Сезон": "Сезон", "Виробник": "Производитель",
+                   "Доступні розміри": "Доступные размеры"}
+_COUNTRY_UA2RU = {"данія": "Дания", "німеччина": "Германия", "сша": "США", "італія": "Италия",
+                  "франція": "Франция", "японія": "Япония", "великобританія": "Великобритания",
+                  "австрія": "Австрия", "іспанія": "Испания", "польща": "Польша", "канада": "Канада",
+                  "норвегія": "Норвегия", "нідерланди": "Нидерланды", "португалія": "Португалия",
+                  "туреччина": "Турция", "україна": "Украина", "вʼєтнам": "Вьетнам", "в'єтнам": "Вьетнам",
+                  "китай": "Китай", "індонезія": "Индонезия", "індія": "Индия", "камбоджа": "Камбоджа",
+                  "бангладеш": "Бангладеш", "румунія": "Румыния", "марокко": "Марокко"}
 
 
-def _brand_with_country(brand: str) -> str:
+def _country(name: str, lang: str) -> str:
+    return _COUNTRY_UA2RU.get(str(name or "").strip().lower(), str(name or "")) if lang == "ru" else str(name or "")
+
+
+def _brand_with_country(brand: str, lang: str = "uk") -> str:
     c = BRAND_COUNTRY.get(str(brand or "").strip().lower())
-    return f"{brand} ({c})" if c else str(brand or "")
+    return f"{brand} ({_country(c, lang)})" if c else str(brand or "")
 
 
-def _packaging_line(bms: dict) -> Optional[str]:
+def _packaging_line(bms: dict, lang: str = "uk") -> Optional[str]:
     """Рядок стану/пакування: новий+без пакування → «Нові, без коробки»;
-    новий+«коробка» → «Нові, в коробці»; решта — нічого (None)."""
+    новий+«коробка» → «Нові, в коробці»; решта — нічого. lang керує мовою."""
     cond = str(bms.get("conditionname") or "").strip().lower()
     pack = str(bms.get("packagingname") or "").strip().lower()
     if cond != "новий":
         return None
     if "коробк" in pack:
-        return "Нові, в коробці"
+        return "Новые, в коробке" if lang == "ru" else "Нові, в коробці"
     if not pack:
-        return "Нові, без коробки"
+        return "Новые, без коробки" if lang == "ru" else "Нові, без коробки"
     return None
 
 
-def _build_description(bms: dict) -> str:
-    """HTML-опис: жирні назви характеристик, модель жирним у заголовку, рядок
-    пакування, Виробник=Китай пропускаємо, стандартний регістр значень."""
+def _build_description(bms: dict, lang: str = "uk") -> str:
+    """HTML-опис (укр або рос): жирні назви характеристик, модель жирним у заголовку,
+    рядок пакування, Виробник=Китай пропускаємо, стандартний регістр значень."""
+    ru = lang == "ru"
+    def L(uk_label):                                  # мітка мовою
+        return _DESC_LABELS_RU.get(uk_label, uk_label) if ru else uk_label
     brand = bms.get("brandname"); model = bms.get("model")
-    # Заголовок з жирними бренд+модель
-    g = _GENDER_ADJ.get(str(bms.get("gendername") or "").strip().lower()) or ""
-    typ = str(bms.get("typename") or "").strip().lower()
+    g = (_GENDER_ADJ_RU if ru else _GENDER_ADJ).get(str(bms.get("gendername") or "").strip().lower()) or ""
+    typ = _val(bms, "typename", lang, lower=True)
     bm = " ".join(x for x in (brand, model) if x)
     head = " ".join(x for x in (g, typ) if x)
-    color = bms.get("colorname")
-    title = f"{head} <b>{_xesc(bm)}</b>" + (f" {_xesc(str(color))}" if color else "")
+    color = _val(bms, "colorname", lang, lower=True)
+    title = f"{head} <b>{_xesc(bm)}</b>" + (f" {_xesc(color)}" if color else "")
 
     rows = []
-    pl = _packaging_line(bms)
+    pl = _packaging_line(bms, lang)
     if pl:
-        rows.append(f"<li><b>Стан:</b> {_xesc(pl)}</li>")
+        rows.append(f"<li><b>{L('Стан')}:</b> {_xesc(pl)}</li>")
     if brand:
-        rows.append(f"<li><b>Бренд:</b> {_xesc(_brand_with_country(brand))}</li>")
+        rows.append(f"<li><b>{L('Бренд')}:</b> {_xesc(_brand_with_country(brand, lang))}</li>")
     if model:
-        rows.append(f"<li><b>Модель:</b> {_xesc(str(model))}</li>")
+        rows.append(f"<li><b>{L('Модель')}:</b> {_xesc(str(model))}</li>")
     for label, key in [("Тип", "typename"), ("Колір", "colorname"), ("Стать", "gendername"),
                        ("Сезон", "season")]:
-        v = bms.get(key)
+        v = _val(bms, key, lang)
         if v:
-            rows.append(f"<li><b>{label}:</b> {_xesc(_cap(v))}</li>")
+            rows.append(f"<li><b>{L(label)}:</b> {_xesc(v)}</li>")
     # Виробник: Китай — НЕ пишемо; інша країна — пишемо
     manuf = str(bms.get("manufacturer") or "").strip()
     if manuf and manuf.lower() != "китай":
-        rows.append(f"<li><b>Виробник:</b> {_xesc(_cap(manuf))}</li>")
+        rows.append(f"<li><b>{L('Виробник')}:</b> {_xesc(_country(manuf, lang))}</li>")
     # Матеріали в анатомічному порядку
     mats = bms.get("materials") or {}
+    labels = _MAT_LABELS_RU if ru else _MAT_LABELS
     for pos in _MAT_ORDER:
         if mats.get(pos):
-            rows.append(f"<li><b>{_MAT_LABELS[pos]}:</b> {_xesc(_cap(mats[pos]))}</li>")
+            val = (_MATERIAL_RU.get(str(mats[pos]).strip().lower(), mats[pos]) if ru else mats[pos])
+            rows.append(f"<li><b>{labels[pos]}:</b> {_xesc(_cap(val))}</li>")
     sizes = bms.get("sizes") or []
     if sizes:
-        rows.append(f"<li><b>Доступні розміри:</b> {_xesc(', '.join(map(str, sizes)))}</li>")
+        rows.append(f"<li><b>{L('Доступні розміри')}:</b> {_xesc(', '.join(map(str, sizes)))}</li>")
     return f"<p>{title}</p><ul>{''.join(rows)}</ul>"
 
 
@@ -669,8 +709,9 @@ def build_export_feed(db: Session, product_id: int, category_id: int, available:
     num = (bms["productnumber"] or "").lstrip("#")
     price = _prom_price(bms["price"], bms.get("typename"))
     imgs = _product_image_urls(bms["productnumber"])
-    name = _build_name(bms)
-    desc = _build_description(bms)
+    # Двомовність: основна мова вітрини — рос., укр. — окремими тегами (name_ua/description_ua).
+    name_ru = _build_name(bms, "ru"); name_ua = _build_name(bms, "uk")
+    desc_ru = _build_description(bms, "ru"); desc_ua = _build_description(bms, "uk")
     params = _build_params(bms)
     keywords = _build_keywords(bms)
     group_id = _PROM_GROUP_SHOES
@@ -682,7 +723,8 @@ def build_export_feed(db: Session, product_id: int, category_id: int, available:
         tag("price", price),
         tag("currencyId", "UAH"),
         tag("categoryId", group_id),
-        tag("name", name),
+        tag("name", name_ru),
+        tag("name_ua", name_ua),
         tag("vendorCode", num),
         tag("quantity_in_stock", 1),        # залишок: 1 (одиничний товар)
         tag("presence", "available" if available else "not_available"),
@@ -691,7 +733,8 @@ def build_export_feed(db: Session, product_id: int, category_id: int, available:
         parts.append(tag("vendor", bms["brandname"]))
     if keywords:
         parts.append(tag("keywords", keywords))
-    parts.append(f"<description><![CDATA[{desc}]]></description>")
+    parts.append(f"<description><![CDATA[{desc_ru}]]></description>")
+    parts.append(f"<description_ua><![CDATA[{desc_ua}]]></description_ua>")
     for u in imgs:
         parts.append(tag("image", u))
     for pn, pv in params:
