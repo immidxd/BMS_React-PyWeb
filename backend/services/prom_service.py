@@ -903,6 +903,15 @@ def process_draft_queue(db: Session) -> Dict:
         if pid:
             try:
                 _api_post(token, "/products/edit", [{"id": pid, "status": "draft"}])
+                # Одразу вписуємо в дзеркало (щоб чіп «Prom» лишався активним без «діри»
+                # між зняттям з черги і наступним повним синком, який реконсилює далі).
+                db.execute(text("""
+                    INSERT INTO prom_products (prom_id, product_id, sku, status, last_synced_at)
+                    VALUES (:pid, :bms, :sku, 'draft', now())
+                    ON CONFLICT (prom_id) DO UPDATE SET
+                        product_id = EXCLUDED.product_id, sku = EXCLUDED.sku,
+                        status = 'draft', last_synced_at = now()
+                """), {"pid": pid, "bms": _resolve_product_id(db, sku), "sku": sku[:80]})
                 db.execute(text("DELETE FROM prom_draft_queue WHERE sku = :s"), {"s": sku})
                 resolved.append(sku)
             except Exception as e:
@@ -914,6 +923,25 @@ def process_draft_queue(db: Session) -> Dict:
                 db.execute(text("UPDATE prom_draft_queue SET attempts = COALESCE(attempts,0)+1 WHERE sku = :s"), {"s": sku})
     db.commit()
     return {"resolved": len(resolved), "resolved_skus": resolved}
+
+
+def prom_product_status(db: Session, product_id: int) -> Dict:
+    """Статус товару на Prom для чіпа «Prom» (БЕЗ мережі — лише БД): активний, якщо
+    є лістинг у дзеркалі (будь-який статус, крім deleted) АБО в черзі експорту (pending).
+    Покриває розмір-ростовку (номер + усі «номер-розмір»)."""
+    rows = _export_rows(db, product_id)
+    if not rows:
+        return {"on_prom": False, "status": None}
+    number = (rows[0]["productnumber"] or "").lstrip("#")
+    skus = list({number} | {r["_sku"] for r in rows})
+    row = db.execute(text(
+        "SELECT status FROM prom_products WHERE sku = ANY(:s) AND COALESCE(status,'') <> 'deleted' "
+        "ORDER BY (status = 'on_display') DESC LIMIT 1"), {"s": skus}).fetchone()
+    if row:
+        return {"on_prom": True, "status": row[0] or "draft"}
+    if db.execute(text("SELECT 1 FROM prom_draft_queue WHERE sku = ANY(:s) LIMIT 1"), {"s": skus}).fetchone():
+        return {"on_prom": True, "status": "pending"}
+    return {"on_prom": False, "status": None}
 
 
 def export_product_to_prom(db: Session, product_id: int, as_draft: bool = True,

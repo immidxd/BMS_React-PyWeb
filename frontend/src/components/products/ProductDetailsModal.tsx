@@ -220,8 +220,18 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     } finally { setCatalogSaving(false); }
   };
 
-  // Чіп «Prom»: стан з даних товару (оновлюється при підміні картки/синку)
-  useEffect(() => { setPromPublished(!!(product as any)?.published_prom); }, [productId, (product as any)?.published_prom]);
+  // Чіп «Prom»: живий статус з бекенда (включно з чернеткою/pending) — НЕ залежить від
+  // on_display-синку, тож лишається активним одразу після публікації й при поверненні.
+  useEffect(() => {
+    if (!productId || !open) return;
+    let cancelled = false;
+    setPromPublished(!!(product as any)?.published_prom);   // швидкий початковий хінт
+    fetch(`/api/publications/prom/product-status/${productId}`)
+      .then(r => (r.ok ? r.json() : null))
+      .then(d => { if (!cancelled && d) setPromPublished(!!d.on_prom); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [productId, open, (product as any)?.published_prom]);
 
   // Публікація на Prom (прев'ю → попередження про фото/стан → підтвердження → експорт-чернетка)
   const promPublishFlow = async () => {

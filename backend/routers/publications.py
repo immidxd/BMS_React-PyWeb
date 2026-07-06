@@ -1116,6 +1116,12 @@ async def prom_delete_product(body: Dict[str, Any] = Body(...), db: Session = De
     return r
 
 
+@router.get("/api/publications/prom/product-status/{product_id}")
+async def prom_product_status(product_id: int, db: Session = Depends(get_db)):
+    """Статус товару на Prom для чіпа «Prom» (on_prom + status: draft/on_display/pending)."""
+    return _prom().prom_product_status(db, int(product_id))
+
+
 @router.get("/api/publications/prom/orders")
 async def prom_orders_list(limit: int = Query(100, ge=1, le=500), db: Session = Depends(get_db)):
     """Список дзеркала замовлень Prom (для панелі огляду)."""
