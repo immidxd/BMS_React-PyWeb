@@ -253,10 +253,12 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
       const force = !!d.already_on_prom;
       const chars = (d.params || []).map((x: any[]) => `${x[0]}: ${x[1]}`).join('\n');
       const sizes = d.sizes_count && d.sizes_count > 1 ? `\nРостовка: ${d.sizes_count} розмірів → ${d.sizes_count} окремих лістингів` : '';
+      const priceLine = d.price_prom ? `\nЦіна: ${d.price_base} → ${d.price_prom} грн (з комісією Prom)` : '';
+      const kidsLine = d.kids ? `\n👶 ДИТЯЧЕ взуття (розмір/опис)` : '';
       const head = force
         ? `Товар ${d.sku} УЖЕ є на Prom.\n\nПерезаписати автозаповненням (назва/опис/характеристики/фото)?`
         : `Опублікувати на Prom (ОДРАЗУ живим, видимим покупцям)?`;
-      if (!window.confirm(`${head}\n\nНазва: ${d.name}${sizes}\nКатегорія Prom: ${d.category_id}\nФото: ${d.image_count}\n\nХарактеристики:\n${chars}\n\nПеревір у кабінеті Prom; якщо щось не так — зніми чіпом «Prom».`)) return;
+      if (!window.confirm(`${head}\n\nНазва: ${d.name}${kidsLine}${priceLine}${sizes}\nФото: ${d.image_count}\n\nХарактеристики:\n${chars}\n\nПеревір у кабінеті Prom; якщо щось не так — зніми чіпом «Prom».`)) return;
       const ex = await fetch('/api/publications/prom/export-product', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ product_id: productId, as_draft: false, force }),

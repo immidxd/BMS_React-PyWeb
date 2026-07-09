@@ -14,6 +14,7 @@
 import os
 import re
 import logging
+import threading
 from datetime import datetime, timezone
 from typing import Optional, Dict, List, Tuple
 
@@ -22,6 +23,11 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
+
+# Prom: 1 імпорт ЗА РАЗ. Серіалізуємо ВСІ наші import_file — щоб публікації «по одному»
+# (навіть кілька підряд) не стикались між собою й не ловили ліміт (лишається лише
+# можливе накладання з ручним імпортом у кабінеті, яке гасить retry-очікування).
+_IMPORT_LOCK = threading.Lock()
 
 PROM_API_BASE = os.getenv("PROM_API_BASE", "https://my.prom.ua/api/v1").rstrip("/")
 _TIMEOUT = 60
@@ -314,11 +320,16 @@ _PROM_SHOE_GROUP = 154833694      # група каталогу «Взуття»
 
 def _bms_product_for_export(db: Session, product_id: int) -> Optional[dict]:
     row = db.execute(text("""
-        SELECT p.id, p.productnumber, p.model, p.price, p.description,
+        SELECT p.id, p.productnumber, p.model, p.price, p.description, p.extranote,
                b.brandname, t.typename, t.id AS typeid, st.subtypename, st.id AS subtypeid,
                c.colorname, g.gendername, p.season, p.year,
                co.countryname AS manufacturer, cond.conditionname,
                pk.packagingname,
+               sty.stylename, ts.toeshapename, ft.fasteningtypename, ht.heeltypename,
+               ln.liningname, so.soletypename, p.width, p.size_letter,
+               p.measurementscm_min, p.measurementscm_max,
+               p.measurements_heel_min, p.measurements_heel_max,
+               p.measurements_sole_thickness_min, p.measurements_sole_thickness_max,
                ARRAY(SELECT DISTINCT p2.sizeeu FROM products p2
                      WHERE p2.productnumber = p.productnumber AND p2.sizeeu IS NOT NULL AND p2.sizeeu <> '') AS sizes
         FROM products p
@@ -330,6 +341,12 @@ def _bms_product_for_export(db: Session, product_id: int) -> Optional[dict]:
         LEFT JOIN countries co ON co.id=p.manufacturercountryid
         LEFT JOIN conditions cond ON cond.id=COALESCE(p.current_conditionid, p.conditionid)
         LEFT JOIN packaging_types pk ON pk.id = p.packagingid
+        LEFT JOIN styles sty ON sty.id=p.styleid
+        LEFT JOIN toe_shapes ts ON ts.id=p.toeshapeid
+        LEFT JOIN fastening_types ft ON ft.id=p.fasteningtypeid
+        LEFT JOIN heel_types ht ON ht.id=p.heeltypeid
+        LEFT JOIN linings ln ON ln.id=p.liningid
+        LEFT JOIN sole_types so ON so.id=p.soletypeid
         WHERE p.id = :id
     """), {"id": product_id}).mappings().first()
     if not row:
@@ -342,6 +359,20 @@ def _bms_product_for_export(db: Session, product_id: int) -> Optional[dict]:
     """), {"id": product_id}).fetchall()
     d["materials"] = {p: n for p, n in mats}
     return d
+
+
+def _is_kids(bms: dict) -> bool:
+    """Дитячий товар: НІКОЛИ не плутати доросле й дитяче. Ознаки: «дитяч»/«детск» в
+    описі/нотатці/статі АБО всі EU-розміри ≤ 34 (доросла сітка починається з 35-36)."""
+    txt = f"{bms.get('description') or ''} {bms.get('extranote') or ''} {bms.get('gendername') or ''}".lower()
+    if "дитяч" in txt or "детск" in txt:
+        return True
+    sizes = []
+    for s in (bms.get("sizes") or []):
+        m = re.match(r"\d+(?:[.,]\d+)?", str(s).strip())
+        if m:
+            sizes.append(float(m.group(0).replace(",", ".")))
+    return bool(sizes) and max(sizes) <= 34.5
 
 
 def _prom_category_for(db: Session, token: str, bms: dict) -> int:
@@ -409,14 +440,24 @@ _TYPE_MARKUP = {
 }
 
 
-def _prom_price(base, typename: str):
-    """Ціна для Prom: база × націнка(за типом) → «психологічне» округлення (…90,
-    подекуди …50 лишаємо), але не нижче бази й без роботизованості."""
+# Комісія Prom (з реальних лістингів власника: дитячі категорії ~25%, дорослі ~17.7%)
+# + комісія післяплати (~60 грн). Ціну ГРОСИМО на комісію, щоб чистими лишалась
+# планова націнка 30-40%, а не «менше за базу» (кейс 950→1190: 25% зʼїдали все).
+_PROM_FEE_KIDS = float(os.getenv("PROM_COMMISSION_KIDS", "25")) / 100.0
+_PROM_FEE_ADULT = float(os.getenv("PROM_COMMISSION_ADULT", "18")) / 100.0
+_PROM_POSTPAY_FEE = float(os.getenv("PROM_POSTPAY_FEE", "60"))
+
+
+def _prom_price(base, typename: str, kids: bool = False):
+    """Ціна для Prom: (база × націнка(за типом) + післяплата) / (1 − комісія Prom)
+    → «психологічне» округлення (…90/…50). Страховка: чистими (після комісій)
+    НІКОЛИ не менше ніж база +10%."""
     base = float(base or 0)
     if base <= 0:
         return base
     m = _TYPE_MARKUP.get(str(typename or "").strip().lower(), 1.33)
-    v = round(base * m / 10) * 10          # до найближчих 10
+    c = _PROM_FEE_KIDS if kids else _PROM_FEE_ADULT
+    v = round((base * m + _PROM_POSTPAY_FEE) / (1.0 - c) / 10) * 10   # gross-up, до 10
     rem = v % 100
     if rem <= 40:
         charm = v - rem - 10               # 2020 → 1990
@@ -424,8 +465,8 @@ def _prom_price(base, typename: str):
         charm = v - rem + 90               # 2070 → 2090
     else:
         charm = v                          # …50 лишаємо (як у реальних цінах)
-    if charm < base:                       # ніколи нижче бази
-        charm = v if v >= base else int(base)
+    while charm * (1.0 - c) - _PROM_POSTPAY_FEE < base * 1.10:        # чистими ≥ база+10%
+        charm += 100
     return int(charm)
 
 
@@ -450,11 +491,19 @@ def _val(bms: dict, key: str, lang: str, lower: bool = False) -> str:
     return raw.lower() if lower else _cap(raw)
 
 
+def _gender_adj(bms: dict, lang: str) -> Optional[str]:
+    """Прикметник для назви/опису. ДИТЯЧЕ (за розміром/описом) завжди «Дитячі/Детские» —
+    ніколи не «Унісекс/Чоловічі» (щоб Prom не кидав у дорослу категорію)."""
+    if _is_kids(bms):
+        return "Детские" if lang == "ru" else "Дитячі"
+    gl = str(bms.get("gendername") or "").strip().lower()
+    return (_GENDER_ADJ_RU if lang == "ru" else _GENDER_ADJ).get(gl)
+
+
 def _build_name(bms: dict, lang: str = "uk") -> str:
     """Назва: стать + тип + бренд + модель + колір + «N розмір» (число ПЕРЕД словом).
     lang='uk' (укр) або 'ru' (рос) — тип/колір/стать беруться відповідною мовою."""
-    gl = str(bms.get("gendername") or "").strip().lower()
-    g = (_GENDER_ADJ_RU if lang == "ru" else _GENDER_ADJ).get(gl)
+    g = _gender_adj(bms, lang)
     typ = _val(bms, "typename", lang, lower=True)
     color = _val(bms, "colorname", lang, lower=True)
     parts = [g, typ, bms.get("brandname"), bms.get("model"), color]
@@ -536,7 +585,7 @@ def _build_description(bms: dict, lang: str = "uk") -> str:
     def L(uk_label):                                  # мітка мовою
         return _DESC_LABELS_RU.get(uk_label, uk_label) if ru else uk_label
     brand = bms.get("brandname"); model = bms.get("model")
-    g = (_GENDER_ADJ_RU if ru else _GENDER_ADJ).get(str(bms.get("gendername") or "").strip().lower()) or ""
+    g = _gender_adj(bms, lang) or ""
     typ = _val(bms, "typename", lang, lower=True)
     bm = " ".join(x for x in (brand, model) if x)
     head = " ".join(x for x in (g, typ) if x)
@@ -646,24 +695,107 @@ def _norm_material(val, lang: str = "uk") -> str:
     return _cap(_MATERIAL_RU.get(s.lower(), s)) if lang == "ru" else _cap(s)
 
 
+# ── Мапи характеристик BMS → значення шаблону Prom (рос.) ────────────────────
+# Стиль BMS (styles, укр) → Prom «Стиль» (Деловой/Классический/Молодежный/Повседневный/
+# Праздничный/Спортивный/Этнический — точний словник із кабінету).
+_STYLE_PROM = {
+    "повсякденний": "Повседневный", "повсякденне": "Повседневный", "повсякдений": "Повседневный",
+    "міський": "Повседневный", "сучасний": "Повседневный", "лаконічний": "Повседневный",
+    "мінімалістичний": "Повседневный", "ретро": "Повседневный", "літній": "Повседневный",
+    "пляжний": "Повседневный", "хатній": "Повседневный", "дорожній": "Повседневный",
+    "босоногий": "Повседневный", "масажні": "Повседневный", "ортопедичні": "Повседневный",
+    "ортопедичний": "Повседневный", "гумові": "Повседневный",
+    "спорт": "Спортивный", "спортивний": "Спортивный", "спортивні": "Спортивный",
+    "спортзал": "Спортивный", "біговий": "Спортивный", "баскетбольні": "Спортивный",
+    "футбольні": "Спортивный", "футзалки": "Спортивный", "боксерки": "Спортивный",
+    "трекінгові": "Спортивный", "трекінговий": "Спортивный", "туристичний": "Спортивный",
+    "скейтерський": "Спортивный", "тактичний": "Спортивный", "гірнолижна": "Спортивный",
+    "гірнолижний": "Спортивный",
+    "класичний": "Классический", "класика": "Классический", "англійський": "Классический",
+    "елегантний": "Классический",
+    "вечірній": "Праздничный", "святковий": "Праздничный",
+    "діловий": "Деловой", "робочий": "Деловой", "будівельний": "Деловой",
+    "шкільний": "Молодежный", "молодіжний": "Молодежный",
+    "етнічний": "Этнический", "шотландський": "Этнический",
+}
+# Форма носка BMS (toe_shapes) → Prom «Форма мыска» (Закругленный/Заостренный/Квадратный/
+# Круглый/Острый/Трапециевидный). Відкриті типи (peep/open) — це «Тип носка: Открытый».
+_TOE_PROM = {
+    "круглий": "Круглый", "кругла": "Круглый", "гострий": "Острый", "гостра": "Острый",
+    "квадратний": "Квадратный", "квадрат": "Квадратный", "прямий": "Квадратный",
+    "мигдалевидний": "Закругленный", "chisel": "Квадратный",
+}
+_TOE_OPEN = {"peep-toe", "open-toe"}
+_TYPE_OPEN = {"шльопанці", "босоніжки", "сандалі", "сандалії"}   # відкритий носок за типом
+# Застібка BMS (fastening_types) → Prom «Застежка».
+_FASTEN_PROM = {
+    "липучка": "Липучка", "шнурки": "Шнуровка", "шнурівка": "Шнуровка",
+    "шнурівка, ремінець": "Шнуровка", "замок": "Молния", "бічний замок": "Молния",
+    "блискавка": "Молния", "ремінець": "Ремешок", "пряжка": "Пряжка", "монки": "Пряжка",
+    "еластик": "Резинка", "кнопки": "Кнопка", "кнопка": "Кнопка", "магніт": "Магнит",
+    "без застібки": "Без застежки", "фастекс": "Фастекс",
+}
+# Каблук/підошва BMS (heel_types + sole_types) → Prom «Каблук/Подошва».
+_HEEL_PROM = {
+    "танкетка": "Танкетка", "платформа": "Платформа", "шпилька": "Шпилька",
+    "столбик": "Каблук", "конусний": "Каблук", "рюмочка": "Каблук", "кітен-хіл": "Каблук",
+    "блок": "Каблук", "широкий": "Каблук", "тракторний": "Каблук", "скошений": "Каблук",
+    "плоский": "Без каблука", "без каблука": "Без каблука",
+}
+_SOLE_HEEL_PROM = {"платформа": "Платформа", "танкетка": "Танкетка", "дабл-сол": "Платформа",
+                   "шпилька": "Шпилька", "підбора": "Каблук"}
+# Підкладка BMS (linings) → Prom «Материал подкладки» (доповнення до _norm_material).
+_LINING_PROM = {"хутро": "Мех", "овчина": "Овчина", "фліс": "Флис", "меш": "Сетка",
+                "мембрана": "Мембрана", "без підкладки": "Без подкладки"}
+# Повнота: латинські шкали (C-H, W…) → Prom «Полнота обуви» (вужче/стандарт/ширше).
+_WIDTH_PROM = {"b": "Узкая", "c": "Узкая", "d": "Средняя", "e": "Средняя", "f": "Средняя",
+               "m": "Средняя", "g": "Широкая", "w": "Широкая", "h": "Очень широкая",
+               "ee": "Широкая", "eee": "Очень широкая", "4e": "Очень широкая", "2e": "Широкая"}
+# Візерунки/принти: корені в описі → Prom «Узоры и принты».
+_PRINT_ROOTS = [("камуфляж", "Камуфляж"), ("леопард", "Леопардовый"), ("зебр", "Анималистический"),
+                ("анімал", "Анималистический"), ("тварин", "Анималистический"),
+                ("клітин", "Клетка"), ("клетк", "Клетка"), ("смуж", "Полоска"), ("смуг", "Полоска"),
+                ("полоск", "Полоска"), ("горох", "Горох"), ("горош", "Горох"),
+                ("квіт", "Цветочный"), ("цветоч", "Цветочный"), ("геометр", "Геометрия"),
+                ("абстрак", "Абстракция"), ("логотип", "Логотип"), ("напис", "Надписи")]
+
+
+def _num(v) -> Optional[float]:
+    try:
+        f = float(v)
+        return f if f > 0 else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _fmt_num(f: float) -> str:
+    return str(int(f)) if float(f).is_integer() else str(f)
+
+
 def _build_params(bms: dict) -> List[tuple]:
-    """(назва, значення) для <param> — атрибути КАТЕГОРІЇ Prom. Назви — рос., точно
-    як у шаблоні категорії (перевірено на реальних лістингах), інакше Prom не змапить.
-    Ключові для фільтрів: розмір (гендерозалежний) і «Цвет» зі словника."""
+    """(назва, значення) для <param> — атрибути КАТЕГОРІЇ Prom. Назви — рос., точно як у
+    шаблоні (перевірено на реальних лістингах). Максимальне автозаповнення з наявних даних;
+    чого немає в картці — не шлемо (Prom мовчки відкидає незбіги — це безпечно)."""
     out: List[tuple] = []
+    kids = _is_kids(bms)
     gl = str(bms.get("gendername") or "").strip().lower()
     typ = str(bms.get("typename") or "").strip().lower()
     color = str(bms.get("colorname") or "").strip().lower()
+    desc_all = f"{bms.get('description') or ''} {bms.get('extranote') or ''} {bms.get('stylename') or ''}".lower()
 
     if typ:                                                      # Вид обуви
         out.append(("Вид обуви", _TYPE_RU.get(typ, _cap(bms.get("typename")))))
-    size_attrs = _GENDER_SIZE_ATTRS.get(gl, ["Размер мужской обуви"])  # Розмір (унісекс → обидві шкали)
+    # Розмір: ДИТЯЧЕ → «Размер детской обуви» (ніколи не плутати з дорослим);
+    # унісекс → обидві дорослі шкали; інакше — за статтю.
+    size_attrs = ["Размер детской обуви"] if kids else _GENDER_SIZE_ATTRS.get(gl, ["Размер мужской обуви"])
     for attr in size_attrs:
         for sz in (bms.get("sizes") or []):
             out.append((attr, str(sz)))
     if color:                                                   # Цвет
         out.append(("Цвет", _COLOR_RU.get(color, _cap(bms.get("colorname")))))
-    if gl:                                                      # Стать
+    if kids:                                                    # Стать
+        out.append(("Стать", "Детская"))
+    elif gl:
         out.append(("Стать", _GENDER_RU.get(gl, _cap(bms.get("gendername")))))
     season = str(bms.get("season") or "").strip().lower()
     if season:                                                  # Сезон
@@ -676,9 +808,73 @@ def _build_params(bms: dict) -> List[tuple]:
     manuf = str(bms.get("manufacturer") or "").strip()          # Країна (Китай не вказуємо)
     if manuf and manuf.lower() != "китай":
         out.append(("Страна производитель", _COUNTRY_RU.get(manuf.lower(), _cap(manuf))))
-    up = (bms.get("materials") or {}).get("upper")              # Матеріал верху
-    if up:
-        out.append(("Материал верха", _norm_material(up, "ru")))
+
+    # Стиль → словник Prom (якщо нашого стилю немає в мапі — не шлемо).
+    style = str(bms.get("stylename") or "").strip().lower()
+    if style and _STYLE_PROM.get(style):
+        out.append(("Стиль", _STYLE_PROM[style]))
+    # Довжина устілки, см: у ростовки — СВОЯ на кожен розмір (_insole з _export_rows),
+    # для одиночного — measurementscm_max/min картки.
+    insole = _num(bms.get("_insole")) or _num(bms.get("measurementscm_max")) or _num(bms.get("measurementscm_min"))
+    if insole and insole <= 50:
+        out.append(("Длина стельки", _fmt_num(insole)))
+    # Повнота: width або size_letter у будь-якій шкалі (H/W/G/D/EE…) → найближчий відповідник.
+    width = str(bms.get("width") or bms.get("size_letter") or "").strip().lower()
+    if width and _WIDTH_PROM.get(width):
+        out.append(("Полнота обуви", _WIDTH_PROM[width]))
+
+    # Матеріали: верх / підкладка (linings або middle) / устілка / підошва (sole, фолбек midsole).
+    mats = bms.get("materials") or {}
+    if mats.get("upper"):
+        out.append(("Материал верха", _norm_material(mats["upper"], "ru")))
+    lining = str(bms.get("liningname") or "").strip().lower()
+    lining_val = (_LINING_PROM.get(lining) or (_norm_material(lining, "ru") if lining else "")
+                  or (_norm_material(mats["middle"], "ru") if mats.get("middle") else ""))
+    if lining_val:
+        out.append(("Материал подкладки", lining_val))
+    if mats.get("insole"):
+        out.append(("Материал стельки", _norm_material(mats["insole"], "ru")))
+    sole_mat = mats.get("sole") or mats.get("midsole")          # немає підошви → проміжна підошва
+    if sole_mat:
+        out.append(("Материал подошвы", _norm_material(sole_mat, "ru")))
+
+    # Каблук/Подошва + висоти (лише якщо реально є в картці).
+    heel = str(bms.get("heeltypename") or "").strip().lower()
+    sole_t = str(bms.get("soletypename") or "").strip().lower()
+    heel_val = _HEEL_PROM.get(heel) or _SOLE_HEEL_PROM.get(sole_t)
+    if heel_val:
+        out.append(("Каблук/Подошва", heel_val))
+    hh = _num(bms.get("measurements_heel_max")) or _num(bms.get("measurements_heel_min"))
+    if hh:
+        out.append(("Высота каблука, см", _fmt_num(hh)))
+    ph = _num(bms.get("measurements_sole_thickness_max")) or _num(bms.get("measurements_sole_thickness_min"))
+    if ph:
+        out.append(("Высота платформы, см", _fmt_num(ph)))
+
+    # Форма носка + відкритий тип носка (шльопанці/босоніжки → «Открытый», як у ручних).
+    toe = str(bms.get("toeshapename") or "").strip().lower()
+    if _TOE_PROM.get(toe):
+        out.append(("Форма мыска", _TOE_PROM[toe]))
+    if typ in _TYPE_OPEN or toe in _TOE_OPEN:
+        out.append(("Тип носка", "Открытый"))
+    # Застібка.
+    fasten = str(bms.get("fasteningtypename") or "").strip().lower()
+    if _FASTEN_PROM.get(fasten):
+        out.append(("Застежка", _FASTEN_PROM[fasten]))
+    # Ортопедичні: «ортопед…» у стилі/описі/нотатці → Да.
+    if "ортопед" in desc_all:
+        out.append(("Ортопедические", "Да"))
+    # Супінатор в описі → Да.
+    if "супінатор" in desc_all or "супинатор" in desc_all:
+        out.append(("Супинатор", "Да"))
+    # Візерунки і принти: корені в описі → відповідник Prom (перший збіг).
+    for root, val in _PRINT_ROOTS:
+        if root in desc_all:
+            out.append(("Узоры и принты", val))
+            break
+    # Прошита підошва → Прошивка: Да.
+    if sole_t in ("прошита", "goodyear welt", "blake stitch"):
+        out.append(("Прошивка", "Да"))
     return out
 
 
@@ -706,6 +902,7 @@ def _build_keywords(bms: dict, lang: str = "uk") -> str:
     тип/стать/колір/сезон + синоніми + комбінації + транслітерація. RU → рос-поле keywords,
     UA → keywords_ua (мови НЕ змішувати)."""
     ru = lang == "ru"
+    kids = _is_kids(bms)
     brand = str(bms.get("brandname") or "").strip()
     model = str(bms.get("model") or "").strip()
     typ_raw = str(bms.get("typename") or "").strip().lower()
@@ -720,6 +917,7 @@ def _build_keywords(bms: dict, lang: str = "uk") -> str:
         season = _SEASON_RU.get(season, season).lower()
     buy, orig, shoes = ("купить", "оригинал", "обувь") if ru else ("купити", "оригінал", "взуття")
     men, women = ("мужские", "женские") if ru else ("чоловічі", "жіночі")
+    kid_adj = "детские" if ru else "дитячі"
 
     tags, seen = [], set()
 
@@ -740,15 +938,34 @@ def _build_keywords(bms: dict, lang: str = "uk") -> str:
     if model:
         add(f"{model} {color}", model.lower().translate(_TRANSLIT))
     if typ:
-        add(f"{typ} {color}", f"{color} {typ}", f"{gender} {typ}", f"{typ} {gender}",
+        add(f"{typ} {color}", f"{color} {typ}",
             f"{buy} {typ}", f"{buy} {brand} {typ}", f"{season} {typ}", f"{typ} {season}",
             typ_raw.translate(_TRANSLIT))
         for s in (_TYPE_SYN.get(typ_raw, ([], []))[1 if ru else 0]):
             add(s, f"{s} {brand}", f"{brand} {s}")
-        if gl == "унісекс":                          # унісекс → обидві статі (ширший пошук)
-            add(f"{men} {typ}", f"{women} {typ}")
+        if kids:                                     # дитяче → дитячі запити, НЕ дорослі
+            add(f"{kid_adj} {typ}", f"{typ} {kid_adj}",
+                "детская обувь" if ru else "дитяче взуття",
+                "для мальчика" if ru else "для хлопчика",
+                "для девочки" if ru else "для дівчинки",
+                f"{typ} для мальчика" if ru else f"{typ} для хлопчика",
+                f"{typ} для девочки" if ru else f"{typ} для дівчинки")
+        else:
+            add(f"{gender} {typ}", f"{typ} {gender}")
+            if gl == "унісекс":                      # унісекс → обидві статі (ширший пошук)
+                add(f"{men} {typ}", f"{women} {typ}")
     if season:
         add(f"{season} {shoes}")
+    # Загальні «продажні» запити: оригінал/бренд/якість + географія за країною бренду.
+    add(orig, f"{orig} {typ}",
+        "брендовая обувь" if ru else "брендове взуття",
+        "качественная обувь" if ru else "якісне взуття",
+        "бренд")
+    bc = str(_brand_country(brand) or "")
+    if bc in ("США", "Канада"):
+        add("америка", f"{shoes} америка" if not ru else f"{shoes} америка")
+    elif bc and bc != "Китай":
+        add("європа" if not ru else "европа", f"{shoes} з європи" if not ru else f"{shoes} из европы")
     return ", ".join(t for t in tags if t)[:1400]
 
 
@@ -805,18 +1022,23 @@ def _export_rows(db: Session, product_id: int) -> List[dict]:
     if len(sizes) <= 1:
         bms["_sku"] = num
         return [bms]
+    # Ростовка: у кожного розміру СВОЯ довжина устілки (см) — тягнемо по рядках номера.
+    cm = {str(r[0]).strip(): (r[1] or r[2]) for r in db.execute(text(
+        "SELECT sizeeu, measurementscm_max, measurementscm_min FROM products "
+        "WHERE productnumber = :n AND sizeeu IS NOT NULL"), {"n": bms["productnumber"]}).fetchall()}
     rows = []
     for sz in sizes:
         r = dict(bms)
         r["sizes"] = [sz]
         r["_sku"] = f"{num}-{sz}"
+        r["_insole"] = cm.get(sz)
         rows.append(r)
     return rows
 
 
 def _feed_item(bms: dict, sku: str, available: bool, imgs: List[str], group_id: int) -> str:
     """Один <item> фіду для конкретного лістингу (розміру)."""
-    price = _prom_price(bms["price"], bms.get("typename"))
+    price = _prom_price(bms["price"], bms.get("typename"), kids=_is_kids(bms))
     name_ru = _build_name(bms, "ru"); name_ua = _build_name(bms, "uk")
     desc_ru = _build_description(bms, "ru"); desc_ua = _build_description(bms, "uk")
     params = _build_params(bms)
@@ -974,6 +1196,7 @@ def export_product_to_prom(db: Session, product_id: int, as_draft: bool = False,
 
     if preview:
         existing = {s: _find_prom_id_by_sku(token, s) for s in skus}
+        kids = _is_kids(base)
         return {"ok": True, "preview": True, "sku": number, "skus": skus,
                 "sizes_count": len(rows), "name": _build_name(base, "uk"),
                 "category_id": cat, "images": imgs, "image_count": len(imgs),
@@ -981,6 +1204,9 @@ def export_product_to_prom(db: Session, product_id: int, as_draft: bool = False,
                 "condition": base.get("conditionname"),
                 "condition_prom": _COND_RU.get(cond_l, "Новое"),
                 "condition_warn": cond_l in _COND_WARN,          # потребує підтвердження
+                "kids": kids,
+                "price_base": float(base.get("price") or 0),
+                "price_prom": _prom_price(base.get("price"), base.get("typename"), kids=kids),
                 "params": _build_params(base),
                 "already_on_prom": bool(existing) and all(existing.values())}
 
@@ -1009,32 +1235,34 @@ def export_product_to_prom(db: Session, product_id: int, as_draft: bool = False,
     try:
         import json as _json, time as _t
         payload = {"data": _json.dumps({"mark_missing_product_as": "none", "force_update": True})}
-        # Prom: 1 імпорт ЗА РАЗ («ограничение на запуск одновременных импортов»). Якщо
-        # слот зайнятий (400) — чекаємо й повторюємо (до ~48с), потім зрозуміла помилка.
+        # Prom: 1 імпорт ЗА РАЗ («ограничение на запуск одновременных импортов»). Спершу
+        # серіалізуємо НАШІ імпорти локом (кілька публікацій підряд не стикаються), а якщо
+        # слот зайнятий кабінетом (400) — чекаємо й повторюємо (до ~48с), потім зрозуміла помилка.
         import_id = None
-        for attempt in range(7):
-            r = requests.post(f"{PROM_API_BASE}/products/import_file",
-                              headers={"Authorization": f"Bearer {token}"},
-                              files={"file": ("feed.xml", feed.encode("utf-8"), "application/xml")},
-                              data=payload, timeout=90)
-            if r.status_code < 400:
-                import_id = (r.json() or {}).get("id")
-                break
-            # Декодуємо повідомлення (r.text — з \u-escape, тож перевіряти треба ДЕКОДОВАНЕ).
-            try:
-                j = r.json()
-                msg = (j.get("error") or {}).get("message") or j.get("message") or r.text
-            except Exception:
-                msg = r.text
-            m = str(msg).lower()
-            busy = any(k in m for k in ("ограничен", "одновремен", "одночасн", "предыдущего импорт"))
-            if busy and attempt < 6:
-                _t.sleep(7)               # інший імпорт ще йде — чекаємо звільнення слота
-                continue
-            if busy:
-                return {"ok": False, "error": "На Prom зараз виконується інший імпорт. "
-                        "Зачекай ~хвилину і натисни «Prom» ще раз (не тисни кілька разів підряд)."}
-            return {"ok": False, "error": f"Prom [{r.status_code}]: {str(msg)[:200]}"}
+        with _IMPORT_LOCK:
+            for attempt in range(7):
+                r = requests.post(f"{PROM_API_BASE}/products/import_file",
+                                  headers={"Authorization": f"Bearer {token}"},
+                                  files={"file": ("feed.xml", feed.encode("utf-8"), "application/xml")},
+                                  data=payload, timeout=90)
+                if r.status_code < 400:
+                    import_id = (r.json() or {}).get("id")
+                    break
+                # Декодуємо повідомлення (r.text — з \u-escape, тож перевіряти треба ДЕКОДОВАНЕ).
+                try:
+                    j = r.json()
+                    msg = (j.get("error") or {}).get("message") or j.get("message") or r.text
+                except Exception:
+                    msg = r.text
+                m = str(msg).lower()
+                busy = any(k in m for k in ("ограничен", "одновремен", "одночасн", "предыдущего импорт"))
+                if busy and attempt < 6:
+                    _t.sleep(7)           # інший імпорт (кабінет) ще йде — чекаємо звільнення слота
+                    continue
+                if busy:
+                    return {"ok": False, "error": "На Prom зараз виконується інший імпорт (напевно з "
+                            "кабінету). Зачекай ~хвилину і натисни «Prom» ще раз."}
+                return {"ok": False, "error": f"Prom [{r.status_code}]: {str(msg)[:200]}"}
 
         # Черга «дотягнути в дзеркало»: створення асинхронне (1-3 хв), тож кладемо КОЖЕН
         # sku у prom_draft_queue — щойно товар зʼявиться в /products/list, синк-цикл впише
