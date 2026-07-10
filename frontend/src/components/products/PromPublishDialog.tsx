@@ -152,7 +152,7 @@ const PromPublishDialog: React.FC<Props> = ({ data, busy, onCancel, onConfirm })
 
           {/* Характеристики */}
           <div>
-            <div className="flex items-center justify-between mb-1.5">
+            <div className="flex items-center justify-between mb-0.5">
               <div className={LABEL_CLS}>Характеристики</div>
               <button
                 onClick={() => setParams(ps => [...ps, { n: '', v: '' }])}
@@ -161,6 +161,10 @@ const PromPublishDialog: React.FC<Props> = ({ data, busy, onCancel, onConfirm })
               >
                 <PlusOutlined style={{ fontSize: 10 }} /> Додати
               </button>
+            </div>
+            <div className="text-[11px] text-gray-400 dark:text-gray-500 mb-2 leading-snug">
+              Технічні назви — російською (шаблон фільтрів Prom). На сайті Prom покупець бачить їх
+              двомовно автоматично. «Додати» — власна характеристика (будь-яка назва й значення).
             </div>
             <div className="space-y-1.5">
               {params.map((p, i) => {
