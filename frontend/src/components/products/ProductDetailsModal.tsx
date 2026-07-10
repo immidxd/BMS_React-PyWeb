@@ -6,6 +6,7 @@ import { CloseOutlined, PictureOutlined, LeftOutlined, RightOutlined, WarningOut
 import { CopyOnClick, formatBrandName, getProductDisplayStatus, getConditionColor } from '../common/displayHelpers';
 import { hiddenFieldsForType } from './productCategory';
 import { taskManager, emitProductPhotosChanged } from '../../services/taskManager';
+import PromPublishDialog from './PromPublishDialog';
 
 interface Props {
   productId: number | null;
@@ -172,6 +173,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
   const [profileNote, setProfileNote] = useState<string | null>(null);
   const [promBusy, setPromBusy] = useState(false);  // експорт/видалення товару на Prom
   const [promPublished, setPromPublished] = useState(false);  // чіп-стан «на Prom»
+  const [promPreview, setPromPreview] = useState<any | null>(null);  // дані діалогу публікації
   // Згорнуті підрозділи (Матеріали/Інше/Примітки) — за замовчуванням приховані,
   // розкриваються кліком. У режимі редагування завжди розгорнуті (щоб редагувати).
   const [openSections, setOpenSections] = useState<Record<string, boolean>>({});
@@ -233,7 +235,8 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     return () => { cancelled = true; };
   }, [productId, open, (product as any)?.published_prom]);
 
-  // Публікація на Prom (прев'ю → попередження про фото/стан → підтвердження → експорт-чернетка)
+  // Публікація на Prom: прев'ю → ВЛАСНИЙ діалог (редагування назв/ціни/характеристик,
+  // попередження про фото/стан всередині) → підтвердження → живий експорт з overrides.
   const promPublishFlow = async () => {
     if (!productId || promBusy) return;
     setPromBusy(true);
@@ -245,27 +248,26 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
       const d = await pv.json();
       if (!pv.ok) { notification.error({ message: `Prom: ${d.detail || pv.status}`, placement: 'bottomRight' }); return; }
       if (!d.image_count) { notification.warning({ message: 'У товару немає фото — Prom вимагає зображення.', placement: 'bottomRight' }); return; }
-      // Додатковий рівень захисту: окреме попередження про реальні фото / вживаний стан
-      const warns: string[] = [];
-      if (d.image_kind === 'real') warns.push('❗ У товару НЕМАЄ офіційних фото — публікація піде з РЕАЛЬНИМИ фото.');
-      if (d.condition_warn) warns.push(`❗ Стан товару: «${d.condition}» → на Prom як «${d.condition_prom}».`);
-      if (warns.length && !window.confirm(`⚠️ УВАГА перед публікацією на Prom:\n\n${warns.join('\n')}\n\nВи впевнені, що хочете продовжити?`)) return;
-      const force = !!d.already_on_prom;
-      const chars = (d.params || []).map((x: any[]) => `${x[0]}: ${x[1]}`).join('\n');
-      const sizes = d.sizes_count && d.sizes_count > 1 ? `\nРостовка: ${d.sizes_count} розмірів → ${d.sizes_count} окремих лістингів` : '';
-      const priceLine = d.price_prom ? `\nЦіна: ${d.price_base} → ${d.price_prom} грн (з комісією Prom)` : '';
-      const kidsLine = d.kids ? `\n👶 ДИТЯЧЕ взуття (розмір/опис)` : '';
-      const head = force
-        ? `Товар ${d.sku} УЖЕ є на Prom.\n\nПерезаписати автозаповненням (назва/опис/характеристики/фото)?`
-        : `Опублікувати на Prom (ОДРАЗУ живим, видимим покупцям)?`;
-      if (!window.confirm(`${head}\n\nНазва: ${d.name}${kidsLine}${priceLine}${sizes}\nФото: ${d.image_count}\n\nХарактеристики:\n${chars}\n\nПеревір у кабінеті Prom; якщо щось не так — зніми чіпом «Prom».`)) return;
+      setPromPreview(d);            // відкриває діалог публікації
+    } catch (e: any) { notification.error({ message: `Prom: ${e.message || 'Помилка'}`, placement: 'bottomRight' }); }
+    finally { setPromBusy(false); }
+  };
+
+  // Підтвердження з діалогу: публікуємо з overrides (відредаговані назви/ціна/характеристики)
+  const promConfirmPublish = async (overrides: any) => {
+    if (!productId || !promPreview) return;
+    setPromBusy(true);
+    try {
       const ex = await fetch('/api/publications/prom/export-product', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ product_id: productId, as_draft: false, force }),
+        body: JSON.stringify({ product_id: productId, as_draft: false,
+                               force: !!promPreview.already_on_prom, overrides }),
       });
       const r = await ex.json();
-      if (ex.ok) { setPromPublished(true); notification.success({ message: r.note || 'Відправлено на Prom.', placement: 'bottomRight', duration: 4 }); }
-      else notification.error({ message: `Prom: ${r.detail || ex.status}`, placement: 'bottomRight' });
+      if (ex.ok) {
+        setPromPublished(true); setPromPreview(null);
+        notification.success({ message: r.note || 'Опубліковано на Prom.', placement: 'bottomRight', duration: 4 });
+      } else notification.error({ message: `Prom: ${r.detail || ex.status}`, placement: 'bottomRight' });
     } catch (e: any) { notification.error({ message: `Prom: ${e.message || 'Помилка'}`, placement: 'bottomRight' }); }
     finally { setPromBusy(false); }
   };
@@ -2057,6 +2059,16 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
           </div>
         )}
       </div>
+
+      {/* Діалог публікації на Prom (редагування назв/ціни/характеристик перед відправкою) */}
+      {promPreview && (
+        <PromPublishDialog
+          data={promPreview}
+          busy={promBusy}
+          onCancel={() => { if (!promBusy) setPromPreview(null); }}
+          onConfirm={promConfirmPublish}
+        />
+      )}
     </div>
   );
 };

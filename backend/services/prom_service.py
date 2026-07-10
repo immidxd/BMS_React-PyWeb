@@ -783,14 +783,27 @@ def _build_params(bms: dict) -> List[tuple]:
     color = str(bms.get("colorname") or "").strip().lower()
     desc_all = f"{bms.get('description') or ''} {bms.get('extranote') or ''} {bms.get('stylename') or ''}".lower()
 
-    if typ:                                                      # Вид обуви
-        out.append(("Вид обуви", _TYPE_RU.get(typ, _cap(bms.get("typename")))))
-    # Розмір: ДИТЯЧЕ → «Размер детской обуви» (ніколи не плутати з дорослим);
-    # унісекс → обидві дорослі шкали; інакше — за статтю.
-    size_attrs = ["Размер детской обуви"] if kids else _GENDER_SIZE_ATTRS.get(gl, ["Размер мужской обуви"])
-    for attr in size_attrs:
-        for sz in (bms.get("sizes") or []):
-            out.append((attr, str(sz)))
+    # Категорія: взуття чи ні (сумки/одяг/аксесуари → загальні атрибути; точні назви
+    # їхніх шаблонів Prom звіримо на першій реальній публікації такої категорії).
+    is_shoe = bool(_TYPE_RU.get(typ)) or typ in _TYPE_OPEN
+    if typ:                                                      # Вид обуви / Вид
+        out.append(("Вид обуви", _TYPE_RU.get(typ, _cap(bms.get("typename")))) if is_shoe
+                   else ("Вид", _cap(bms.get("typename"))))
+    if is_shoe:
+        # Розмір: ДИТЯЧЕ → «Размер детской обуви» (ніколи не плутати з дорослим);
+        # унісекс → обидві дорослі шкали; інакше — за статтю.
+        size_attrs = ["Размер детской обуви"] if kids else _GENDER_SIZE_ATTRS.get(gl, ["Размер мужской обуви"])
+        for attr in size_attrs:
+            for sz in (bms.get("sizes") or []):
+                out.append((attr, str(sz)))
+    else:
+        # Не-взуття: буквений розмір (S/M/L/XL…) або числовий з картки.
+        sl = str(bms.get("size_letter") or "").strip()
+        if sl:
+            out.append(("Размер", sl.upper()))
+        else:
+            for sz in (bms.get("sizes") or []):
+                out.append(("Размер", str(sz)))
     if color:                                                   # Цвет
         out.append(("Цвет", _COLOR_RU.get(color, _cap(bms.get("colorname")))))
     if kids:                                                    # Стать
@@ -813,59 +826,59 @@ def _build_params(bms: dict) -> List[tuple]:
     style = str(bms.get("stylename") or "").strip().lower()
     if style and _STYLE_PROM.get(style):
         out.append(("Стиль", _STYLE_PROM[style]))
-    # Довжина устілки, см: у ростовки — СВОЯ на кожен розмір (_insole з _export_rows),
-    # для одиночного — measurementscm_max/min картки.
+    # Довжина устілки, см (взуття): у ростовки — СВОЯ на кожен розмір (_insole з
+    # _export_rows), для одиночного — measurementscm_max/min картки.
     insole = _num(bms.get("_insole")) or _num(bms.get("measurementscm_max")) or _num(bms.get("measurementscm_min"))
-    if insole and insole <= 50:
+    if is_shoe and insole and insole <= 50:
         out.append(("Длина стельки", _fmt_num(insole)))
-    # Повнота: width або size_letter у будь-якій шкалі (H/W/G/D/EE…) → найближчий відповідник.
-    width = str(bms.get("width") or bms.get("size_letter") or "").strip().lower()
-    if width and _WIDTH_PROM.get(width):
+    # Повнота (взуття): width/size_letter у будь-якій шкалі (H/W/G/D/EE…) → відповідник.
+    width = str(bms.get("width") or (bms.get("size_letter") if is_shoe else "") or "").strip().lower()
+    if is_shoe and width and _WIDTH_PROM.get(width):
         out.append(("Полнота обуви", _WIDTH_PROM[width]))
 
-    # Матеріали: верх / підкладка (linings або middle) / устілка / підошва (sole, фолбек midsole).
+    # Матеріали: верх / підкладка (linings або middle) / устілка / підошва (фолбек midsole).
     mats = bms.get("materials") or {}
     if mats.get("upper"):
-        out.append(("Материал верха", _norm_material(mats["upper"], "ru")))
+        out.append(("Материал верха" if is_shoe else "Материал", _norm_material(mats["upper"], "ru")))
     lining = str(bms.get("liningname") or "").strip().lower()
     lining_val = (_LINING_PROM.get(lining) or (_norm_material(lining, "ru") if lining else "")
                   or (_norm_material(mats["middle"], "ru") if mats.get("middle") else ""))
     if lining_val:
         out.append(("Материал подкладки", lining_val))
-    if mats.get("insole"):
+    if is_shoe and mats.get("insole"):
         out.append(("Материал стельки", _norm_material(mats["insole"], "ru")))
     sole_mat = mats.get("sole") or mats.get("midsole")          # немає підошви → проміжна підошва
-    if sole_mat:
+    if is_shoe and sole_mat:
         out.append(("Материал подошвы", _norm_material(sole_mat, "ru")))
 
-    # Каблук/Подошва + висоти (лише якщо реально є в картці).
+    # Каблук/Подошва + висоти (взуття, лише якщо реально є в картці).
     heel = str(bms.get("heeltypename") or "").strip().lower()
     sole_t = str(bms.get("soletypename") or "").strip().lower()
     heel_val = _HEEL_PROM.get(heel) or _SOLE_HEEL_PROM.get(sole_t)
-    if heel_val:
+    if is_shoe and heel_val:
         out.append(("Каблук/Подошва", heel_val))
     hh = _num(bms.get("measurements_heel_max")) or _num(bms.get("measurements_heel_min"))
-    if hh:
+    if is_shoe and hh:
         out.append(("Высота каблука, см", _fmt_num(hh)))
     ph = _num(bms.get("measurements_sole_thickness_max")) or _num(bms.get("measurements_sole_thickness_min"))
-    if ph:
+    if is_shoe and ph:
         out.append(("Высота платформы, см", _fmt_num(ph)))
 
     # Форма носка + відкритий тип носка (шльопанці/босоніжки → «Открытый», як у ручних).
     toe = str(bms.get("toeshapename") or "").strip().lower()
-    if _TOE_PROM.get(toe):
+    if is_shoe and _TOE_PROM.get(toe):
         out.append(("Форма мыска", _TOE_PROM[toe]))
-    if typ in _TYPE_OPEN or toe in _TOE_OPEN:
+    if is_shoe and (typ in _TYPE_OPEN or toe in _TOE_OPEN):
         out.append(("Тип носка", "Открытый"))
-    # Застібка.
+    # Застібка (взуття/одяг/сумки).
     fasten = str(bms.get("fasteningtypename") or "").strip().lower()
     if _FASTEN_PROM.get(fasten):
         out.append(("Застежка", _FASTEN_PROM[fasten]))
     # Ортопедичні: «ортопед…» у стилі/описі/нотатці → Да.
-    if "ортопед" in desc_all:
+    if is_shoe and "ортопед" in desc_all:
         out.append(("Ортопедические", "Да"))
     # Супінатор в описі → Да.
-    if "супінатор" in desc_all or "супинатор" in desc_all:
+    if is_shoe and ("супінатор" in desc_all or "супинатор" in desc_all):
         out.append(("Супинатор", "Да"))
     # Візерунки і принти: корені в описі → відповідник Prom (перший збіг).
     for root, val in _PRINT_ROOTS:
@@ -873,9 +886,35 @@ def _build_params(bms: dict) -> List[tuple]:
             out.append(("Узоры и принты", val))
             break
     # Прошита підошва → Прошивка: Да.
-    if sole_t in ("прошита", "goodyear welt", "blake stitch"):
+    if is_shoe and sole_t in ("прошита", "goodyear welt", "blake stitch"):
         out.append(("Прошивка", "Да"))
     return out
+
+
+# Словники значень для РЕДАГУВАННЯ у діалозі публікації (фронт показує select/підказки).
+_PARAM_OPTIONS: Dict[str, List[str]] = {
+    "Стиль": ["Деловой", "Классический", "Молодежный", "Повседневный", "Праздничный",
+              "Спортивный", "Этнический"],
+    "Цвет": sorted(set(_COLOR_RU.values())),
+    "Сезон": ["Лето", "Зима", "Весна", "Осень", "Демисезон", "Всесезонный"],
+    "Состояние": ["Новое", "Б/у"],
+    "Стать": ["Мужская", "Женская", "Унисекс", "Детская"],
+    "Вид обуви": sorted(set(_TYPE_RU.values())),
+    "Форма мыска": ["Закругленный", "Заостренный", "Квадратный", "Круглый", "Острый",
+                    "Трапециевидный"],
+    "Тип носка": ["Открытый", "Закрытый"],
+    "Застежка": sorted(set(_FASTEN_PROM.values())),
+    "Каблук/Подошва": ["Без каблука", "Каблук", "Платформа", "Танкетка", "Шпилька"],
+    "Полнота обуви": ["Узкая", "Средняя", "Широкая", "Очень широкая"],
+    "Узоры и принты": sorted(set(v for _, v in _PRINT_ROOTS)),
+    "Ортопедические": ["Да", "Нет"], "Супинатор": ["Да", "Нет"], "Прошивка": ["Да", "Нет"],
+    "Материал верха": sorted(set(list(_MATERIAL_RU.values()) + list(_MATERIAL_ABBR.values()))),
+    "Материал подкладки": sorted(set(list(_LINING_PROM.values()) + list(_MATERIAL_RU.values()))),
+    "Материал подошвы": sorted(set(list(_MATERIAL_RU.values()) + list(_MATERIAL_ABBR.values()))),
+}
+# Атрибути, які ЗАВЖДИ авто (по кожному розміру ростовки) — override їх не чіпає.
+_AUTO_PARAMS = {"Размер детской обуви", "Размер мужской обуви", "Размер женской обуви",
+                "Длина стельки"}
 
 
 # Транслітерація укр→лат для тегів (щоб ловити і латинські запити).
@@ -1038,10 +1077,17 @@ def _export_rows(db: Session, product_id: int) -> List[dict]:
 
 def _feed_item(bms: dict, sku: str, available: bool, imgs: List[str], group_id: int) -> str:
     """Один <item> фіду для конкретного лістингу (розміру)."""
-    price = _prom_price(bms["price"], bms.get("typename"), kids=_is_kids(bms))
-    name_ru = _build_name(bms, "ru"); name_ua = _build_name(bms, "uk")
+    # Overrides з діалогу публікації (ціна/назви/характеристики, ключі _ov_*);
+    # розмірні атрибути (_AUTO_PARAMS) завжди авто — свої на кожен розмір ростовки.
+    price = _fmt_num(_num(bms.get("_ov_price")) or _prom_price(bms["price"], bms.get("typename"), kids=_is_kids(bms)))
+    name_ru = bms.get("_ov_name_ru") or _build_name(bms, "ru")
+    name_ua = bms.get("_ov_name_ua") or _build_name(bms, "uk")
     desc_ru = _build_description(bms, "ru"); desc_ua = _build_description(bms, "uk")
     params = _build_params(bms)
+    if bms.get("_ov_params") is not None:
+        auto_kept = [(n, v) for n, v in params if n in _AUTO_PARAMS]
+        params = [(str(n).strip(), str(v).strip()) for n, v in bms["_ov_params"]
+                  if str(n).strip() and str(v).strip() and str(n).strip() not in _AUTO_PARAMS] + auto_kept
     kw_ru = _build_keywords(bms, "ru"); kw_ua = _build_keywords(bms, "uk")
 
     def tag(t, v):
@@ -1120,6 +1166,10 @@ def process_draft_queue(db: Session) -> Dict:
     if not cfg:
         return {"resolved": 0, "resolved_skus": []}
     token = cfg["api_token"]
+    # Запобіжник: записи, старші за 2 год — «сироти» від краху/невдалого імпорту
+    # (нормальне створення займає 1-3 хв). Чистимо, щоб черга не накопичувала сміття.
+    db.execute(text("DELETE FROM prom_draft_queue WHERE requested_at < now() - interval '2 hours'"))
+    db.commit()
     rows = db.execute(text("SELECT sku, attempts FROM prom_draft_queue")).fetchall()
     if not rows:
         return {"resolved": 0, "resolved_skus": []}
@@ -1173,7 +1223,8 @@ def prom_product_status(db: Session, product_id: int) -> Dict:
 
 
 def export_product_to_prom(db: Session, product_id: int, as_draft: bool = False,
-                           preview: bool = False, force: bool = False) -> Dict:
+                           preview: bool = False, force: bool = False,
+                           overrides: Optional[Dict] = None) -> Dict:
     """Виставити товар BMS на Prom (Фаза 3). preview=True — повертає згенеровані
     назву/опис/категорію/фото БЕЗ створення. Інакше: import_file (mark_missing=none
     — інші товари не чіпає) + (as_draft) переводить у чернетку.
@@ -1199,6 +1250,7 @@ def export_product_to_prom(db: Session, product_id: int, as_draft: bool = False,
         kids = _is_kids(base)
         return {"ok": True, "preview": True, "sku": number, "skus": skus,
                 "sizes_count": len(rows), "name": _build_name(base, "uk"),
+                "name_ru": _build_name(base, "ru"),
                 "category_id": cat, "images": imgs, "image_count": len(imgs),
                 "image_kind": image_kind,                       # official | real | none
                 "condition": base.get("conditionname"),
@@ -1207,13 +1259,26 @@ def export_product_to_prom(db: Session, product_id: int, as_draft: bool = False,
                 "kids": kids,
                 "price_base": float(base.get("price") or 0),
                 "price_prom": _prom_price(base.get("price"), base.get("typename"), kids=kids),
+                # для живого перерахунку «чистими» в діалозі публікації
+                "commission_pct": round((_PROM_FEE_KIDS if kids else _PROM_FEE_ADULT) * 100),
+                "postpay_fee": _PROM_POSTPAY_FEE,
                 "params": _build_params(base),
+                "param_options": _PARAM_OPTIONS,                # словники для селектів діалогу
+                "auto_params": sorted(_AUTO_PARAMS),            # ці атрибути завжди авто
                 "already_on_prom": bool(existing) and all(existing.values())}
 
     if not imgs:
         return {"ok": False, "error": "У товару немає фото — Prom вимагає зображення. Додай фото й повтори."}
     if not (base.get("price") and float(base["price"]) > 0):
         return {"ok": False, "error": "У товару немає ціни"}
+
+    # Запобіжник «вікна народження»: якщо цей номер ще в черзі (Prom щойно створює його,
+    # 1-3 хв) — не запускаємо другий імпорт поверх (навіть із force).
+    pending = db.execute(text("SELECT 1 FROM prom_draft_queue WHERE sku = ANY(:s) LIMIT 1"),
+                         {"s": skus}).fetchone()
+    if pending:
+        return {"ok": False, "error": f"Публікація {number} вже триває — Prom створює товар "
+                f"(1-3 хв). Зачекай, стан оновиться сам."}
 
     # Запобіжник дублікатів (по КОЖНОМУ розміру): наявні sku не чіпаємо, лишаємо нові.
     # force=True → перезаписуємо всі. Якщо все вже є і не force → «вже на Prom».
@@ -1227,6 +1292,21 @@ def export_product_to_prom(db: Session, product_id: int, as_draft: bool = False,
                     "error": f"Товар {number} уже на Prom ({have}/{len(skus)} розмірів). "
                              f"Дублікати не створюю. Щоб перезаписати — підтверди примусово."}
     target_skus = [r["_sku"] for r in rows]
+
+    # Overrides з діалогу публікації: ціна — на всі рядки; назви — лише для одиночного
+    # товару (у ростовки назва генерується на кожен розмір); характеристики — на всі
+    # (розмірні _AUTO_PARAMS відфільтрує _feed_item і підставить авто по-розмірно).
+    ov = overrides or {}
+    single = len(rows) == 1
+    for r in rows:
+        if _num(ov.get("price")):
+            r["_ov_price"] = _num(ov["price"])
+        if single and str(ov.get("name_ua") or "").strip():
+            r["_ov_name_ua"] = str(ov["name_ua"]).strip()[:250]
+        if single and str(ov.get("name_ru") or "").strip():
+            r["_ov_name_ru"] = str(ov["name_ru"]).strip()[:250]
+        if isinstance(ov.get("params"), list):
+            r["_ov_params"] = ov["params"]
 
     # ЖИВА публікація (available=true, on_display): Prom API НЕ показує чернетки в
     # /products/list, тож draft = невідстежуваний. Живий товар одразу видно в API —
