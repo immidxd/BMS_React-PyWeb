@@ -14,6 +14,7 @@ export interface OrderItem {
   notes?: string | null;
   product_number?: string;
   product_name?: string;
+  has_queue?: boolean;
 }
 
 export interface Order {
@@ -48,6 +49,7 @@ export interface OrderWithDetails extends Order {
   delivery_address_details?: AddressDetails | null;
   broadcast_name: string | null;
   order_items: OrderItem[];
+  has_queue?: boolean;
 }
 
 export interface AddressDetails {
@@ -66,6 +68,7 @@ export interface OrdersResponse {
   page: number;
   per_page: number;
   pages: number;
+  queue_markers_count?: number;
 }
 
 export interface OrderFilters {

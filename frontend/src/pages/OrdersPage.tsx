@@ -28,6 +28,7 @@ interface OrderItem {
   additional_operation?: string | null;
   additional_operation_value?: number | null;
   notes: string | null;
+  has_queue: boolean;
 }
 
 interface Order {
@@ -49,6 +50,7 @@ interface Order {
   order_items: OrderItem[];
   sales_channel: string | null;
   deferred_until: string | null;
+  has_queue: boolean;
 }
 
 interface FilterOption { id: number; name?: string; status_name?: string; }
@@ -403,6 +405,7 @@ const OrdersPage: React.FC<OrdersPageProps> = ({ currentSearchTerm }) => {
   const [cardClientId, setCardClientId] = useState<number | null>(null);
   const [editOrderId, setEditOrderId] = useState<number | null>(null);
   const [filteredSum, setFilteredSum] = useState<number>(0);
+  const [queueMarkersCount, setQueueMarkersCount] = useState<number>(0);
   const [filterOpts, setFilterOpts] = useState<FilterOptions | null>(null);
   // Дефолтний фільтр: останній тиждень. Діє доки користувач сам не змінить
   // фільтри (включно зі скиданням). Один раз на монтуванні.
@@ -524,6 +527,7 @@ const OrdersPage: React.FC<OrdersPageProps> = ({ currentSearchTerm }) => {
       setTotal(data.total || 0);
       setPages(data.pages || 1);
       setFilteredSum(data.filtered_sum || 0);
+      setQueueMarkersCount(data.queue_markers_count || 0);
     } catch (e: any) { setError(e.message || 'Помилка завантаження'); }
     finally { setLoading(false); setIsRefreshing(false); }
   }, [buildParams]);
@@ -571,6 +575,14 @@ const OrdersPage: React.FC<OrdersPageProps> = ({ currentSearchTerm }) => {
           <h1 className="text-2xl font-semibold text-gray-900 dark:text-gray-100">
             Замовлення
             <span className="ml-2 text-base font-normal text-gray-400">({total})</span>
+            {queueMarkersCount > 0 && (
+              <span
+                title="Службові мітки «на товар є черга» за вибраний період. Вони не є замовленнями."
+                className="ml-2 inline-flex align-middle px-2 py-0.5 rounded-full border border-amber-300 bg-amber-50 text-amber-700 dark:border-amber-700 dark:bg-amber-900/30 dark:text-amber-300 text-[11px] font-semibold"
+              >
+                Черга · {queueMarkersCount}
+              </span>
+            )}
           </h1>
           <div className="flex items-center gap-3">
             {currentSearchTerm && (
@@ -719,8 +731,16 @@ const OrdersPage: React.FC<OrdersPageProps> = ({ currentSearchTerm }) => {
                       )}
                       {colVis.items_count && (
                         <td className="px-3 py-2 text-gray-500 dark:text-gray-400 text-center">
-                          <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-gray-100 dark:bg-gray-600 text-xs font-semibold">
-                            {order.order_items?.length || 0}
+                          <span className="inline-flex items-center gap-1.5">
+                            <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-gray-100 dark:bg-gray-600 text-xs font-semibold">
+                              {order.order_items?.length || 0}
+                            </span>
+                            {order.has_queue && (
+                              <span
+                                title="На один із товарів цього замовлення є черга в цій вкладці"
+                                className="inline-flex w-2 h-2 rounded-full bg-amber-500 ring-2 ring-amber-100 dark:ring-amber-900/50"
+                              />
+                            )}
                           </span>
                         </td>
                       )}
@@ -845,6 +865,12 @@ const OrdersPage: React.FC<OrdersPageProps> = ({ currentSearchTerm }) => {
                                       >{item.product_number}</span>
                                     ) : (
                                       <span className="text-gray-500 dark:text-gray-400">{item.product_number}</span>
+                                    )}
+                                    {item.has_queue && (
+                                      <span
+                                        title="На цей товар є черга в цій вкладці"
+                                        className="ml-2 inline-flex px-1.5 py-0.5 rounded-full border border-amber-300 bg-amber-50 text-amber-700 dark:border-amber-700 dark:bg-amber-900/30 dark:text-amber-300 text-[10px] font-semibold font-sans"
+                                      >Черга</span>
                                     )}
                                   </td>
                                   <td className="pr-4 py-1">

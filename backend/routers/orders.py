@@ -8,6 +8,7 @@ import threading
 from backend.models.database import get_db, SessionLocal
 from backend.models.models import Order, OrderItem, Client, Product, PaymentStatus, OrderStatus
 from backend.services.order_service import OrderDAO
+from backend.utils.order_status_logic import real_order_sql
 
 
 def _apply_paid_auto_confirm(db: Session, data: dict) -> None:
@@ -30,6 +31,24 @@ from backend.schemas.order import (
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+def _queue_exists_sql(order_alias: str, item_alias: str) -> str:
+    """SQL EXISTS для мітки черги на товар у тій самій вкладці Sheets.
+
+    Мітка вже має потрібний зв'язок order_items + source_sheet_gid, тому окрема
+    таблиця не потрібна. Іменні «В черзі» сюди навмисно не входять.
+    """
+
+    return f"""EXISTS (
+        SELECT 1
+        FROM orders qo
+        JOIN order_items qoi ON qoi.order_id = qo.id
+        WHERE qo.order_status_id = 8
+          AND qo.client_id IS NULL
+          AND qoi.product_id = {item_alias}.product_id
+          AND qo.source_sheet_gid = {order_alias}.source_sheet_gid
+    )"""
 
 @router.get("/api/orders", response_model=OrderList)
 def get_orders(
@@ -65,7 +84,9 @@ def get_orders(
     from sqlalchemy import text as sa_text
 
     # ── Build WHERE clauses ──────────────────────────────────────────────
-    where = []
+    # Порожній клієнт + «В черзі» — службова мітка товару, не замовлення.
+    # Іменні записи зі статусом 8 лишаються у списку.
+    where = [real_order_sql("o")]
     params: Dict[str, Any] = {}
 
     if search:
@@ -260,6 +281,24 @@ def get_orders(
     pages = max(1, (total + per_page - 1) // per_page)
     offset = (page - 1) * per_page
 
+    # Окремий компактний лічильник технічних міток за вибраним періодом.
+    queue_date_where = []
+    queue_params: Dict[str, Any] = {}
+    if date_from:
+        queue_date_where.append("qr.order_date >= :queue_date_from")
+        queue_params["queue_date_from"] = date_from
+    if date_to:
+        queue_date_where.append("qr.order_date <= :queue_date_to")
+        queue_params["queue_date_to"] = date_to
+    queue_date_sql = ("AND " + " AND ".join(queue_date_where)) if queue_date_where else ""
+    queue_markers_count = db.execute(sa_text(f"""
+        SELECT COUNT(*)
+        FROM orders qr
+        WHERE qr.order_status_id = 8
+          AND qr.client_id IS NULL
+          {queue_date_sql}
+    """), queue_params).scalar() or 0
+
     # ── Main query — single JOIN for all needed data ─────────────────────
     main_sql = f"""
         SELECT
@@ -307,7 +346,8 @@ def get_orders(
     # ── Fetch order items for this page in one query ─────────────────────
     items_by_order: Dict[int, list] = {oid: [] for oid in order_ids}
     if order_ids:
-        items_sql = """
+        queue_exists = _queue_exists_sql("item_order", "oi")
+        items_sql = f"""
             SELECT oi.id, oi.order_id, oi.product_id, oi.quantity,
                    CASE
                        WHEN COALESCE(oi.price, 0) > 0 THEN oi.price
@@ -317,8 +357,10 @@ def get_orders(
                    oi.discount_type, oi.discount_value,
                    oi.additional_operation, oi.additional_operation_value,
                    oi.notes, oi.created_at, oi.updated_at,
-                   p.productnumber, p.model, p.marking
+                   p.productnumber, p.model, p.marking,
+                   {queue_exists} AS has_queue
             FROM order_items oi
+            JOIN orders item_order ON item_order.id = oi.order_id
             LEFT JOIN products p ON oi.product_id = p.id
             LEFT JOIN LATERAL (
                 SELECT MAX(oi2.price) AS peer_price
@@ -350,6 +392,7 @@ def get_orders(
                 "notes": ir["notes"],
                 "created_at": ir["created_at"],
                 "updated_at": ir["updated_at"],
+                "has_queue": bool(ir["has_queue"]),
             })
 
     # ── Build response ────────────────────────────────────────────────────
@@ -387,9 +430,18 @@ def get_orders(
             "created_at": r["created_at"],
             "updated_at": r["updated_at"],
             "order_items": items_by_order.get(r["id"], []),
+            "has_queue": any(it["has_queue"] for it in items_by_order.get(r["id"], [])),
         })
 
-    return {"items": items, "total": total, "page": page, "per_page": per_page, "pages": pages, "filtered_sum": filtered_sum}
+    return {
+        "items": items,
+        "total": total,
+        "page": page,
+        "per_page": per_page,
+        "pages": pages,
+        "filtered_sum": filtered_sum,
+        "queue_markers_count": int(queue_markers_count),
+    }
 
 @router.post("/api/orders/bulk-update")
 async def bulk_update_orders(
@@ -468,6 +520,18 @@ async def get_order(order_id: int = Path(..., ge=1), db: Session = Depends(get_d
     # Get broadcast name
     broadcast_name = order.broadcast.name if order.broadcast else None
     
+    # Мітка належить товару в контексті тієї самої вкладки, а не одному
+    # конкретному замовленню: у вкладці той самий товар може бути в кількох.
+    from sqlalchemy import text as sa_text
+    queue_exists = _queue_exists_sql("item_order", "oi")
+    queued_product_ids = set(db.execute(sa_text(f"""
+        SELECT DISTINCT oi.product_id
+        FROM order_items oi
+        JOIN orders item_order ON item_order.id = oi.order_id
+        WHERE oi.order_id = :order_id
+          AND {queue_exists}
+    """), {"order_id": order_id}).scalars().all())
+
     # Prepare order items
     order_items = []
     for item in order.items:
@@ -488,7 +552,8 @@ async def get_order(order_id: int = Path(..., ge=1), db: Session = Depends(get_d
             "additional_operation_value": item.additional_operation_value,
             "notes": item.notes,
             "created_at": item.created_at,
-            "updated_at": item.updated_at
+            "updated_at": item.updated_at,
+            "has_queue": item.product_id in queued_product_ids,
         })
     
     # Create delivery address details
@@ -534,7 +599,8 @@ async def get_order(order_id: int = Path(..., ge=1), db: Session = Depends(get_d
         "sales_channel": getattr(order, 'sales_channel', None) or 'Ефір',
         "created_at": order.created_at,
         "updated_at": order.updated_at,
-        "order_items": order_items
+        "order_items": order_items,
+        "has_queue": bool(queued_product_ids),
     }
 
 @router.post("/api/orders", response_model=OrderWithDetails)

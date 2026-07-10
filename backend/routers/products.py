@@ -16,12 +16,12 @@ try:
     from models.database import get_db
     from models import models
     from schemas import product as schemas
-    from services import product_service
+    from services import product_service, catalog_sync_service
 except ImportError:
     from backend.models.database import get_db
     from backend.models import models
     from backend.schemas import product as schemas
-    from backend.services import product_service
+    from backend.services import product_service, catalog_sync_service
 
 logger = logging.getLogger(__name__)
 
@@ -698,7 +698,16 @@ async def update_product_catalog_status(
                 updated_at   = now()
         """), {"pn": pnum, "pub": is_published, "feat": feat})
         db.commit()
-        return {"success": True, "productnumber": pnum, "is_published": is_published, "is_featured": feat}
+        sync_queued = catalog_sync_service.trigger_catalog_cloud_sync(
+            f"catalog toggle {pnum}: published={bool(is_published)}, featured={feat}"
+        )
+        return {
+            "success": True,
+            "productnumber": pnum,
+            "is_published": is_published,
+            "is_featured": feat,
+            "catalog_sync_queued": sync_queued,
+        }
     except HTTPException:
         raise
     except Exception as e:

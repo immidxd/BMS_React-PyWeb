@@ -36,7 +36,7 @@ Status reference (from `order_statuses` table, do not renumber)
 """
 
 from __future__ import annotations
-from typing import Iterable
+from typing import Iterable, Optional
 
 # ── Individual status IDs ────────────────────────────────────────────────────
 STATUS_CONFIRMED   = 1   # Підтверджено
@@ -50,6 +50,33 @@ STATUS_QUEUED      = 8   # В черзі
 STATUS_RETURNED    = 9   # Повернення
 STATUS_EXCHANGE    = 10  # Обмін
 STATUS_HANDOFF     = 11  # Передати
+
+
+def is_anonymous_queue_marker(
+    client_name: Optional[str],
+    order_status_id: Optional[int],
+) -> bool:
+    """Чи є рядок Sheets службовою міткою черги, а не замовленням.
+
+    Бізнес-правило: лише перетин ``порожній клієнт + В черзі`` є міткою.
+    Іменні записи зі статусом ``В черзі`` залишаються справжніми замовленнями.
+    """
+
+    return order_status_id == STATUS_QUEUED and not (client_name or "").strip()
+
+
+def real_order_sql(order_alias: str = "o") -> str:
+    """SQL-предикат, що відсікає службові анонімні мітки черги.
+
+    Технічний рядок лишається дзеркалом Google Sheets у ``orders``, але всі
+    бізнес-лічильники реальних замовлень мають застосовувати цей предикат.
+    Іменні ``В черзі`` він не відсікає.
+    """
+
+    return (
+        f"NOT (COALESCE({order_alias}.order_status_id, 0) = {STATUS_QUEUED} "
+        f"AND {order_alias}.client_id IS NULL)"
+    )
 
 
 # ── Named semantic groups ────────────────────────────────────────────────────
@@ -149,6 +176,7 @@ def latest_order_status_in(pid_ref: str, ids: Iterable[int]) -> str:
         SELECT o.order_status_id
         FROM order_items oi JOIN orders o ON o.id = oi.order_id
         WHERE oi.product_id = {pid_ref}
+          AND {real_order_sql("o")}
         ORDER BY o.created_at DESC LIMIT 1
     ), 0) IN {in_list}"""
 

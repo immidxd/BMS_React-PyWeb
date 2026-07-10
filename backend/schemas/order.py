@@ -27,6 +27,7 @@ class OrderItem(OrderItemBase):
     updated_at: Optional[datetime] = None
     product_number: Optional[str] = None
     product_name: Optional[str] = None
+    has_queue: bool = False
 
     class Config:
         from_attributes = True
@@ -127,6 +128,7 @@ class OrderWithDetails(Order):
     delivery_address_details: Optional[Dict[str, Any]] = None
     broadcast_name: Optional[str] = None
     order_items: List[OrderItem] = []
+    has_queue: bool = False
     
     class Config:
         from_attributes = True
@@ -139,6 +141,7 @@ class OrderList(BaseModel):
     per_page: int
     pages: int
     filtered_sum: float = 0.0  # сума по всіх відфільтрованих (без Відміни/Ігнор/Подарунок/Обмін/В Черзі)
+    queue_markers_count: int = 0  # службові мітки черги за вибраний період; не входять у total
 
 # Order filters
 class OrderFilters(BaseModel):
@@ -177,4 +180,4 @@ class FilterOptions(BaseModel):
     payment_methods: List[Dict[str, Any]] = []
     delivery_methods: List[Dict[str, Any]] = []
     delivery_statuses: List[Dict[str, Any]] = []
-    clients: List[Dict[str, Any]] = [] 
+    clients: List[Dict[str, Any]] = []

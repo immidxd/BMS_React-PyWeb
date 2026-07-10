@@ -8,14 +8,14 @@ try:
     from backend.models.database import get_db
     from backend.utils.order_status_logic import (
         REVENUE_GENERATING, CONFIRMED_SOLD, CANCELLED_OR_RETURNED, sql_in_list,
-        PAID_STATUS_ID,
+        PAID_STATUS_ID, real_order_sql,
     )
     from backend.utils.cost_allocation import COST_RATIO_CTE, PRODUCT_COST_CTE
 except ImportError:
     from models.database import get_db
     from utils.order_status_logic import (
         REVENUE_GENERATING, CONFIRMED_SOLD, CANCELLED_OR_RETURNED, sql_in_list,
-        PAID_STATUS_ID,
+        PAID_STATUS_ID, real_order_sql,
     )
     from utils.cost_allocation import COST_RATIO_CTE, PRODUCT_COST_CTE
 
@@ -40,6 +40,7 @@ router = APIRouter()
 REVENUE_SQL = sql_in_list(REVENUE_GENERATING)              # (1)
 CONFIRMED_SOLD_SQL = sql_in_list(CONFIRMED_SOLD)           # (1, 7)
 CANCELLED_OR_RET_SQL = sql_in_list(CANCELLED_OR_RETURNED)  # (5, 6, 9)
+REAL_ORDER_SQL = real_order_sql("o")
 
 # Реалізований виторг = Підтверджено AND Оплачено. Передбачає, що таблиця orders
 # має алієс `o`. Собівартість/прибуток рахуються через cost_allocation
@@ -67,7 +68,7 @@ async def get_sales_stats(
       • profit     – revenue − cost − ship
     """
     params: Dict[str, Any] = {}
-    date_conds = ["o.order_date IS NOT NULL"]
+    date_conds = ["o.order_date IS NOT NULL", REAL_ORDER_SQL]
     if year:
         date_conds.append("EXTRACT(YEAR FROM o.order_date) = :year")
         params["year"] = year
@@ -380,13 +381,16 @@ async def get_summary_stats(db: Session = Depends(get_db)) -> Dict[str, Any]:
                 LEFT JOIN product_sales ps ON ps.product_id = p.id
                 WHERE COALESCE(ps.sold_units, 0) = 0) AS products_unsold,
 
-            (SELECT COUNT(*) FROM orders
-                WHERE order_status_id NOT IN {CANCELLED_OR_RET_SQL}) AS total_orders,
-            (SELECT COUNT(*) FROM orders
-                WHERE order_status_id IN {REVENUE_SQL}) AS confirmed_orders,
-            (SELECT COUNT(*) FROM orders
-                WHERE order_status_id IN {REVENUE_SQL}
-                  AND payment_status_id = {PAID_STATUS_ID}) AS paid_orders,
+            (SELECT COUNT(*) FROM orders o
+                WHERE {REAL_ORDER_SQL}
+                  AND o.order_status_id NOT IN {CANCELLED_OR_RET_SQL}) AS total_orders,
+            (SELECT COUNT(*) FROM orders o
+                WHERE {REAL_ORDER_SQL}
+                  AND o.order_status_id IN {REVENUE_SQL}) AS confirmed_orders,
+            (SELECT COUNT(*) FROM orders o
+                WHERE {REAL_ORDER_SQL}
+                  AND o.order_status_id IN {REVENUE_SQL}
+                  AND o.payment_status_id = {PAID_STATUS_ID}) AS paid_orders,
 
             (SELECT COALESCE(SUM(o.total_amount), 0)::float
              FROM orders o WHERE {PAID_REVENUE}) AS total_revenue,
@@ -920,7 +924,8 @@ async def get_products_stats(
                         FILTER (WHERE {PAID_REVENUE}), 0)::float AS revenue
         FROM orders o
         LEFT JOIN order_items oi ON oi.order_id = o.id
-        WHERE o.order_status_id NOT IN {CANCELLED_OR_RET_SQL}
+        WHERE {REAL_ORDER_SQL}
+          AND o.order_status_id NOT IN {CANCELLED_OR_RET_SQL}
         GROUP BY COALESCE(o.sales_channel, 'Ефір')
         ORDER BY orders_count DESC
     """)).fetchall()

@@ -10,6 +10,11 @@ import math
 from models import models
 from schemas import product as schemas
 
+try:
+    from backend.utils.order_status_logic import real_order_sql
+except ImportError:
+    from utils.order_status_logic import real_order_sql
+
 logger = logging.getLogger(__name__)
 
 def get_product(db: Session, product_id: int) -> Optional[models.Product]:
@@ -561,7 +566,7 @@ def get_products(
         # Use direct SQL query to get all product data with related names
         from sqlalchemy import text
         
-        base_sql = """
+        base_sql = f"""
         SELECT p.*,
                t.typename as type_name,
                b.brandname as brand_name,
@@ -588,7 +593,10 @@ def get_products(
                -- відрізнити «застарілий знімок Продано» (замовлення є, але всі в не-
                -- продажному стані Обмін/Відміна → sold_count<qty) від легітимного
                -- неформального продажу (замовлень нема зовсім → знімку довіряємо).
-               (SELECT COUNT(*) FROM order_items oi_oc WHERE oi_oc.product_id = p.id) AS order_count,
+               (SELECT COUNT(*)
+                FROM order_items oi_oc
+                JOIN orders o_oc ON o_oc.id = oi_oc.order_id
+                WHERE oi_oc.product_id = p.id AND {real_order_sql("o_oc")}) AS order_count,
                -- «Заброньовано»: є активна бронь (Підтверджено без Оплачено) і товар
                -- ще не повністю проданий. Оверлей над «Непродано» — НЕ змінює sold/available.
                COALESCE(reserved.reserved_count, 0) AS reserved_count,
@@ -1578,7 +1586,7 @@ def get_product_with_relations(db: Session, product_id: int) -> Optional[Dict[st
     """
     try:
         # SQL запит з JOIN для отримання пов'язаних даних
-        query = text("""
+        query = text(f"""
             SELECT p.*,
                    t.typename as type_name,
                    st.subtypename as subtype_name,
@@ -1606,7 +1614,10 @@ def get_product_with_relations(db: Session, product_id: int) -> Optional[Dict[st
                    GREATEST(COALESCE(p.quantity, 0) - COALESCE(sold.sold_count, 0), 0) AS available_qty,
                    -- див. коментар у get_products: відрізняє застарілий знімок «Продано»
                    -- від легітимного неформального продажу без замовлень.
-                   (SELECT COUNT(*) FROM order_items oi_oc WHERE oi_oc.product_id = p.id) AS order_count,
+                   (SELECT COUNT(*)
+                    FROM order_items oi_oc
+                    JOIN orders o_oc ON o_oc.id = oi_oc.order_id
+                    WHERE oi_oc.product_id = p.id AND {real_order_sql("o_oc")}) AS order_count,
                    COALESCE(reserved.reserved_count, 0) AS reserved_count,
                    (COALESCE(reserved.reserved_count, 0) > 0
                         AND COALESCE(sold.sold_count, 0) < COALESCE(NULLIF(p.quantity, 0), 1)) AS is_reserved,
