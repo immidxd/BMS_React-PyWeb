@@ -1,4 +1,5 @@
-import { notification } from 'antd';
+
+import { notify } from '../ui/feedback';
 
 /** Глобальний менеджер фонових задач.
  *
@@ -67,10 +68,9 @@ class TaskManager {
       task.endedAt = Date.now();
       this.emit();
       if (!opts?.silentSuccess) {
-        notification.success({
+        notify.success({
           message: '✓ Готово',
           description: opts?.successMsg || label,
-          placement: 'bottomRight',
           duration: 4,
         });
       }
@@ -81,10 +81,9 @@ class TaskManager {
       task.detail = errDetail(e);
       task.endedAt = Date.now();
       this.emit();
-      notification.error({
+      notify.error({
         message: '✕ Не вдалося',
         description: opts?.errorMsg ? `${opts.errorMsg}: ${task.detail}` : `${label}: ${task.detail}`,
-        placement: 'bottomRight',
         duration: 9,
       });
       throw e;

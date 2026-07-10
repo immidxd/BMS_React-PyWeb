@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { fetchOrder, type OrderWithDetails, updateOrder, updateOrderItemPrice, addOrderItem, removeOrderItem, type FilterOptions } from '../../services/orderService';
 import ProductDetailsModal from '../products/ProductDetailsModal';
 import { productService } from '../../services/productService';
+import { confirmDialog } from '../../ui/feedback';
 
 interface Props {
   orderId: number | null;
@@ -47,7 +48,7 @@ const OrderDetailsModal: React.FC<Props> = ({ orderId, open, onClose, filterOpti
 
   const removeItem = async (itemId: number) => {
     if (!orderId) return;
-    if (!window.confirm('Прибрати цю позицію із замовлення? (Запишеться в аркуш)')) return;
+    if (!(await confirmDialog('Прибрати цю позицію із замовлення? (Запишеться в аркуш)'))) return;
     setItemBusy(true);
     try { setOrder(await removeOrderItem(orderId, itemId)); }
     catch (e) { console.error('remove item failed', e); }
@@ -219,6 +220,12 @@ const OrderDetailsModal: React.FC<Props> = ({ orderId, open, onClose, filterOpti
                             {it.product_number || it.product_id}
                           </span>
                         ) : (it.product_number || '—')}
+                        {it.has_queue && (
+                          <span
+                            title="На цей товар є черга в цій вкладці замовлень"
+                            className="ml-2 inline-flex px-1.5 py-0.5 rounded-full border border-amber-300 bg-amber-50 text-amber-700 dark:border-amber-700 dark:bg-amber-900/30 dark:text-amber-300 text-[10px] font-semibold"
+                          >Черга</span>
+                        )}
                       </td>
                       <td className="px-3 py-2">{it.product_name || '—'}</td>
                       <td className="px-3 py-2 text-right">{it.quantity}</td>
@@ -299,5 +306,4 @@ const OrderDetailsModal: React.FC<Props> = ({ orderId, open, onClose, filterOpti
 };
 
 export default OrderDetailsModal;
-
 

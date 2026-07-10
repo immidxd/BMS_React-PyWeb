@@ -8,6 +8,7 @@ import {
 } from '../../services/referenceService';
 import Pagination from '../common/Pagination';
 import BmsEmpty from '../common/BmsEmpty';
+import { confirmDialog } from '../../ui/feedback';
 
 type SortCol = 'id' | 'name' | 'product_count' | 'shipments_count' | 'total_spent' | 'avg_price';
 
@@ -140,7 +141,7 @@ const SuppliersTable: React.FC = () => {
   };
 
   const handleDelete = async (id: number) => {
-    if (!window.confirm('Видалити постачальника?')) return;
+    if (!(await confirmDialog('Видалити постачальника?'))) return;
     try {
       await deleteSupplier(id);
       await loadData();
@@ -169,7 +170,7 @@ const SuppliersTable: React.FC = () => {
   };
 
   const handleSplit = async (aliasId: number, aliasName: string, supplierId: number) => {
-    if (!window.confirm(`Розділити "${aliasName}" назад у окремого постачальника?\nВідповідні поставки будуть переприсвоєні.`)) return;
+    if (!(await confirmDialog(`Розділити "${aliasName}" назад у окремого постачальника?\nВідповідні поставки будуть переприсвоєні.`))) return;
     setSplittingAlias(aliasId);
     try {
       const result = await splitSupplier(aliasId);

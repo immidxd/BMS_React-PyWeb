@@ -19,6 +19,7 @@ import { Product } from '../../types/product';
 import { useNavigate, useParams } from 'react-router-dom';
 import { productService } from '../../services/productService';
 import styled from 'styled-components';
+import { notify } from '../../ui/feedback';
 
 const { TextArea } = Input;
 const { Option } = Select;
@@ -68,11 +69,11 @@ const ProductForm: React.FC<ProductFormProps> = ({
         setSubmitting(true);
         try {
             await onSubmit(values);
-            message.success(`Товар успішно ${mode === 'create' ? 'створено' : 'оновлено'}`);
+            notify.success({ message: `Товар успішно ${mode === 'create' ? 'створено' : 'оновлено'}` });
             navigate('/products');
         } catch (error) {
             console.error('Error submitting form:', error);
-            message.error(`Помилка при ${mode === 'create' ? 'створенні' : 'оновленні'} товару`);
+            notify.error({ message: `Помилка при ${mode === 'create' ? 'створенні' : 'оновленні'} товару` });
         } finally {
             setSubmitting(false);
         }

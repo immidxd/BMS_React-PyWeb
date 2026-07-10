@@ -3,6 +3,7 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import MainLayout from '../layouts/MainLayout';
 import Pagination from '../components/common/Pagination';
 import BmsEmpty from '../components/common/BmsEmpty';
+import { confirmDialog } from '../ui/feedback';
 
 /* ── Types ─────────────────────────────────────────────────────────── */
 
@@ -244,7 +245,7 @@ const BrandsPage: React.FC<BrandsPageProps> = ({ currentSearchTerm }) => {
   const handleMerge = async (targetId: number, newName: string | null) => {
     const sourceIds = Array.from(selected).filter(id => id !== targetId);
     if (sourceIds.length === 0) return;
-    if (!window.confirm(`Злити ${sourceIds.length} брендів у "${brands.find(b => b.id === targetId)?.brandname}"?`)) return;
+    if (!(await confirmDialog(`Злити ${sourceIds.length} брендів у "${brands.find(b => b.id === targetId)?.brandname}"?`))) return;
 
     try {
       const res = await fetch('/api/brands/merge', {
@@ -266,7 +267,7 @@ const BrandsPage: React.FC<BrandsPageProps> = ({ currentSearchTerm }) => {
 
   // Block
   const handleBlock = async (brand: Brand) => {
-    if (!window.confirm(`Заблокувати "${brand.brandname}"? Товари цього бренду втратять прив'язку.`)) return;
+    if (!(await confirmDialog(`Заблокувати "${brand.brandname}"? Товари цього бренду втратять прив'язку.`))) return;
     try {
       const res = await fetch(`/api/brands/${brand.id}/block`, { method: 'POST' });
       if (!res.ok) {

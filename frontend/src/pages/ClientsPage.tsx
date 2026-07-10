@@ -5,6 +5,7 @@ import Pagination from '../components/common/Pagination';
 import ClientDetailsModal from '../components/clients/ClientDetailsModal';
 import { CopyOnClick } from '../components/common/displayHelpers';
 import DuplicatesCarousel from '../components/clients/DuplicatesCarousel';
+import { confirmDialog } from '../ui/feedback';
 
 interface Client {
   id: number;
@@ -251,7 +252,7 @@ const ClientsPage: React.FC<ClientsPageProps> = ({ currentSearchTerm }) => {
     if (!mergeTargetId || selectedIds.size < 2) return;
     const sourceIds = Array.from(selectedIds).filter(id => id !== mergeTargetId);
     const target = clients.find(c => c.id === mergeTargetId);
-    if (!window.confirm(`Об'єднати ${sourceIds.length} клієнтів у "${target?.full_name || mergeTargetId}"? Дія незворотна.`)) return;
+    if (!(await confirmDialog(`Об'єднати ${sourceIds.length} клієнтів у "${target?.full_name || mergeTargetId}"? Дія незворотна.`))) return;
     setMerging(true);
     let okCount = 0;
     const errors: string[] = [];

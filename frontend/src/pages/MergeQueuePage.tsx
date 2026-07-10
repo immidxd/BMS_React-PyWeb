@@ -1,7 +1,8 @@
 import React, { useEffect, useState, useCallback } from 'react';
-import { Button, Spin, Empty, message, Tag, Popconfirm } from 'antd';
+import { Button, Spin, Empty, Tag, Popconfirm } from 'antd';
 import { LinkOutlined, CheckOutlined, CloseOutlined, ReloadOutlined } from '@ant-design/icons';
 import axios from 'axios';
+import { notify } from '../ui/feedback';
 
 interface MergeCandidate {
     id: number;
@@ -63,7 +64,7 @@ const MergeQueuePage: React.FC = () => {
             const res = await axios.get('/api/merge-candidates');
             setCandidates(res.data?.items ?? []);
         } catch (e: any) {
-            message.error('Не вдалось завантажити кандидатів: ' + (e?.message ?? e));
+            notify.error({ message: 'Не вдалось завантажити кандидатів: ' + (e?.message ?? e) });
         } finally {
             setLoading(false);
         }
@@ -76,12 +77,10 @@ const MergeQueuePage: React.FC = () => {
         try {
             const res = await axios.post('/api/merge-candidates/scan?reset=true');
             const d = res.data ?? {};
-            message.success(
-                `Сканування: ${d.scanned_lost ?? 0} загублених → ${d.candidates_created ?? 0} пропозицій`
-            );
+            notify.success({ message: `Сканування: ${d.scanned_lost ?? 0} загублених → ${d.candidates_created ?? 0} пропозицій` });
             await load();
         } catch (e: any) {
-            message.error('Сканування не вдалось: ' + (e?.response?.data?.detail ?? e.message));
+            notify.error({ message: 'Сканування не вдалось: ' + (e?.response?.data?.detail ?? e.message) });
         } finally {
             setScanning(false);
         }
@@ -92,11 +91,11 @@ const MergeQueuePage: React.FC = () => {
         try {
             const res = await axios.post(`/api/merge-candidates/${c.id}/accept`);
             const nFilled = res.data?.filled_fields?.length ?? 0;
-            message.success(`Об'єднано з #${c.sp_pnum.replace(/^#/, '')}${nFilled ? ` · заповнено ${nFilled} порожніх полів` : ''}`);
+            notify.success({ message: `Об'єднано з #${c.sp_pnum.replace(/^#/, '')}${nFilled ? ` · заповнено ${nFilled} порожніх полів` : ''}` });
             // Прибираємо всі пропозиції цього ж загубленого товару (його видалено при merge)
             setCandidates(prev => prev.filter(x => x.new_product_id !== c.new_product_id));
         } catch (e: any) {
-            message.error('Не вдалось об\'єднати: ' + (e?.response?.data?.detail ?? e.message));
+            notify.error({ message: 'Не вдалось об\'єднати: ' + (e?.response?.data?.detail ?? e.message) });
         } finally {
             setActing(null);
         }
@@ -106,10 +105,10 @@ const MergeQueuePage: React.FC = () => {
         setActing(c.id);
         try {
             await axios.post(`/api/merge-candidates/${c.id}/decline`);
-            message.info('Пропозицію відхилено');
+            notify.info({ message: 'Пропозицію відхилено' });
             setCandidates(prev => prev.filter(x => x.id !== c.id));
         } catch (e: any) {
-            message.error('Не вдалось: ' + (e?.response?.data?.detail ?? e.message));
+            notify.error({ message: 'Не вдалось: ' + (e?.response?.data?.detail ?? e.message) });
         } finally {
             setActing(null);
         }

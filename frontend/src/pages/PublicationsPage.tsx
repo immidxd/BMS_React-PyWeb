@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import MainLayout from '../layouts/MainLayout';
 import Pagination from '../components/common/Pagination';
 import ProductDetailsModal from '../components/products/ProductDetailsModal';
+import { confirmDialog } from '../ui/feedback';
 
 /* ── Types ─────────────────────────────────────────────────────────── */
 
@@ -446,7 +447,7 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
       const n = dd.would_change || 0;
       if (n === 0) { setSyncAllMsg(`✅ Prom: наявність уже синхронна (перевірено ${dd.checked || 0}).`); setTimeout(() => setSyncAllMsg(null), 5000); return; }
       const sample = (dd.sample || []).map((c: any) => `  ${c.sku}: → ${c.to === 'available' ? 'в наявності' : 'немає'}`).join('\n');
-      if (!window.confirm(`Оновити наявність на Prom для ${n} товар(ів)?\nЦе ЗАПИС у твої живі оголошення.\n\n${sample}${n > (dd.sample||[]).length ? '\n  …' : ''}`)) return;
+      if (!(await confirmDialog(`Оновити наявність на Prom для ${n} товар(ів)?\nЦе ЗАПИС у твої живі оголошення.\n\n${sample}${n > (dd.sample||[]).length ? '\n  …' : ''}`))) return;
       setSyncingAll(true);
       const r = await fetch('/api/publications/prom/push-availability', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ dry_run: false }) });
       const d = await r.json();
@@ -543,7 +544,7 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
   };
 
   const handleRelink = async () => {
-    if (!window.confirm('Спробувати зв\'язати непов\'язані пости з товарами по їх номерах?')) return;
+    if (!(await confirmDialog('Спробувати зв\'язати непов\'язані пости з товарами по їх номерах?'))) return;
     try {
       const res = await fetch('/api/publications/relink', { method: 'POST' });
       const data = await res.json();
@@ -626,7 +627,7 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
   };
 
   const handleUnpublish = async (productId: number) => {
-    if (!window.confirm('Зняти з публікації? Пост буде переслано у WORKSHOP (архів) і видалено з усіх каналів/гілок.')) return;
+    if (!(await confirmDialog('Зняти з публікації? Пост буде переслано у WORKSHOP (архів) і видалено з усіх каналів/гілок.'))) return;
     setUnpublishing(productId);
     try {
       const res = await fetch(`/api/publications/unpublish/${productId}`, { method: 'POST' });
@@ -662,7 +663,7 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
   const handleBulkUnpublish = async () => {
     const ids = Array.from(selectedIds);
     if (ids.length === 0) return;
-    if (!window.confirm(`Зняти з публікації ${ids.length} товарів? Кожен буде переслано у WORKSHOP і видалено з усіх каналів.`)) return;
+    if (!(await confirmDialog(`Зняти з публікації ${ids.length} товарів? Кожен буде переслано у WORKSHOP і видалено з усіх каналів.`))) return;
     setBulkUnpublishing(true);
     try {
       const res = await fetch('/api/publications/unpublish-bulk', {

@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { notification } from 'antd';
+
 import { productService } from '../../services/productService';
 import { taskManager, emitDeliveryChanged } from '../../services/taskManager';
 import type { ProductFilters } from '../../types/product';
@@ -9,6 +9,7 @@ import {
   getGlobalDefaults, setGlobalDefault, clearGlobalDefault, clearAllGlobalDefaults,
 } from './deliveryDefaults';
 import AutoCompleteInput from './AutoCompleteInput';
+import { notify } from '../../ui/feedback';
 
 // Правила-імплікації: додавання поля авто-додає повʼязане з дефолт-значенням (редаговано).
 // Напр. «Тип шнурівки» → «Застібка»=шнурівка (взуття зі шнурівкою застібається шнурками).
@@ -421,7 +422,7 @@ const QuickAddProductForm: React.FC<Props> = ({ deliveryId, onSaved, filters: fi
     const pnum = (values.productnumber || '').trim();
     if (!pnum) {
       setError('Вкажіть або згенеруйте номер');
-      notification.warning({ message: 'Немає номера', description: 'Вкажіть номер товару або натисніть ⚡ для генерації.', placement: 'topRight' });
+      notify.warning({ message: 'Немає номера', description: 'Вкажіть номер товару або натисніть ⚡ для генерації.' });
       return;
     }
     const payload: any = { productnumber: pnum };

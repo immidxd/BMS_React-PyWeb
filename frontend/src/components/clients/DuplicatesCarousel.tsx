@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { confirmDialog } from '../../ui/feedback';
 
 interface RecentOrder {
   id: number;
@@ -125,9 +126,9 @@ const DuplicatesCarousel: React.FC<Props> = ({ open, onClose, onMerged }) => {
     const sources = cur.clients.filter(c => c.id !== selectedMaster).map(c => c.id);
     if (sources.length === 0) return;
     const masterC = cur.clients.find(c => c.id === selectedMaster);
-    if (!window.confirm(
+    if (!(await confirmDialog(
       `Обʼєднати ${sources.length} клієнтів у "${masterC?.full_name}" (#${selectedMaster})?\nДія НЕЗВОРОТНА.`
-    )) return;
+    ))) return;
     setBusy(true);
     try {
       const payload = { groups: [{ master_id: selectedMaster, source_ids: sources }] };

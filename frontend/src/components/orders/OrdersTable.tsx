@@ -17,6 +17,7 @@ import {
 import Pagination from '../common/Pagination';
 import BmsEmpty from '../common/BmsEmpty';
 import { CopyOnClick, OrderStatusBadge, PaymentStatusBadge, UnknownIf } from '../common/displayHelpers';
+import { confirmDialog } from '../../ui/feedback';
 
 interface OrdersTableProps {
   onViewOrder?: (orderId: number) => void;
@@ -64,7 +65,7 @@ const OrdersTable: React.FC<OrdersTableProps> = ({
     else navigate(`/orders/${orderId}/edit`);
   };
   const handleDeleteOrder = async (orderId: number) => {
-    if (window.confirm('Ви впевнені, що хочете видалити це замовлення?')) {
+    if ((await confirmDialog('Ви впевнені, що хочете видалити це замовлення?'))) {
       try {
         await deleteOrder(orderId);
         fetchOrdersList();

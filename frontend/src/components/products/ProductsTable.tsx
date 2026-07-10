@@ -27,6 +27,7 @@ import { LinkOutlined, LockFilled, PictureOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import { productService } from '../../services/productService';
 import { CopyOnClick, UnknownIf, isUnknownValue, BrandName, getProductDisplayStatus } from '../common/displayHelpers';
+import { notify } from '../../ui/feedback';
 // Pagination is rendered at page level
 
 // Column configuration type
@@ -287,7 +288,7 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
         // дозволяємо перехід і для них, а не лише для проданих.
         const isReserved = !!(record as any).is_reserved || ((record as any).reserved_count ?? 0) > 0;
         if (sold <= 0 && !isReserved) {
-            message.info('Товар не продано і не заброньовано — немає замовлень для показу');
+            notify.info({ message: 'Товар не продано і не заброньовано — немає замовлень для показу' });
             return;
         }
         const label = (record.productnumber || '').replace(/^#/, '') || `ID ${record.id}`;
@@ -304,9 +305,9 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
         setVisibilityLoading(prev => ({ ...prev, [id]: true }));
         try {
             await onVisibilityChange(id, isVisible);
-            message.success(`Видимість товару ${isVisible ? 'включена' : 'виключена'}`);
+            notify.success({ message: `Видимість товару ${isVisible ? 'включена' : 'виключена'}` });
         } catch (error) {
-            message.error('Помилка при зміні видимості товару');
+            notify.error({ message: 'Помилка при зміні видимості товару' });
         } finally {
             setVisibilityLoading(prev => ({ ...prev, [id]: false }));
         }
@@ -316,9 +317,9 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
     const handleDelete = async (id: number) => {
         try {
             await onDelete(id);
-            message.success('Товар успішно видалено');
+            notify.success({ message: 'Товар успішно видалено' });
         } catch (error) {
-            message.error('Помилка при видаленні товару');
+            notify.error({ message: 'Помилка при видаленні товару' });
         }
     };
     

@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
-import { message, notification } from 'antd';
+
 import { productService } from '../../services/productService';
 import type { Product, ProductFilters } from '../../types/product';
 import {
@@ -8,6 +8,7 @@ import {
 } from '../../services/referenceService';
 import QuickAddProductForm from './QuickAddProductForm';
 import ProductDetailsModal from '../products/ProductDetailsModal';
+import { alertDialog, confirmDialog, notify } from '../../ui/feedback';
 
 // Числовий ключ сортування номера (як бекенд _pn_sort_key): (prefix, base, suffix).
 // Бекенд get_products НЕ підтримує sort_by=productnumber → сортуємо тут, у картці.
@@ -165,12 +166,12 @@ const DeliveryCardModal: React.FC<Props> = ({ shipment, open, onClose }) => {
   const sid = shipment.id;
 
   const removeProduct = async (p: Product) => {
-    if (!window.confirm(`Видалити товар ${p.productnumber}?`)) return;
+    if (!(await confirmDialog(`Видалити товар ${p.productnumber}?`))) return;
     try {
       await deleteProductFromDelivery(sid, p.id);
       loadProducts();
     } catch (e: any) {
-      window.alert(e?.response?.data?.detail || 'Не вдалося видалити товар');
+      (await alertDialog(e?.response?.data?.detail || 'Не вдалося видалити товар'));
     }
   };
 
@@ -182,9 +183,9 @@ const DeliveryCardModal: React.FC<Props> = ({ shipment, open, onClose }) => {
       setPrefill(productToPrefill(full || p));
       setPrefillNonce(n => n + 1);
       setShowForm(true);
-      message.info(`Дублюю ${p.productnumber} — вкажіть новий номер`);
+      notify.info({ message: `Дублюю ${p.productnumber} — вкажіть новий номер` });
     } catch {
-      notification.error({ message: 'Не вдалося дублювати', placement: 'topRight' });
+      notify.error({ message: 'Не вдалося дублювати' });
     }
   };
 
@@ -197,14 +198,14 @@ const DeliveryCardModal: React.FC<Props> = ({ shipment, open, onClose }) => {
     setSavingNum(true);
     try {
       const r = await renameDeliveryProductNumber(sid, p.id, v);
-      if (r.renamed) message.success(`Номер змінено: ${r.old} → ${r.productnumber}`);
+      if (r.renamed) notify.success({ message: `Номер змінено: ${r.old} → ${r.productnumber}` });
       cancelNumEdit();
       await loadProducts();
     } catch (e: any) {
       const st = e?.response?.status; const d = e?.response?.data?.detail;
-      notification.error({
+      notify.error({
         message: st === 409 ? 'Конфлікт номера' : 'Не вдалося змінити номер',
-        description: d || 'Помилка', duration: 7, placement: 'topRight',
+        description: d || 'Помилка', duration: 7,
       });
     } finally { setSavingNum(false); }
   };
@@ -214,10 +215,10 @@ const DeliveryCardModal: React.FC<Props> = ({ shipment, open, onClose }) => {
     setSorting(true);
     try {
       const r = await sortDeliveryRows(sid);
-      message.success(r.noop ? 'Уже впорядковано' : `Журнал упорядковано за номером (${r.reordered})`);
+      notify.success({ message: r.noop ? 'Уже впорядковано' : `Журнал упорядковано за номером (${r.reordered})` });
       await loadProducts();
     } catch (e: any) {
-      notification.error({ message: 'Не вдалося впорядкувати', description: e?.response?.data?.detail || 'Помилка журналу', placement: 'topRight' });
+      notify.error({ message: 'Не вдалося впорядкувати', description: e?.response?.data?.detail || 'Помилка журналу' });
     } finally { setSorting(false); }
   };
 
@@ -228,7 +229,7 @@ const DeliveryCardModal: React.FC<Props> = ({ shipment, open, onClose }) => {
       const r = await getDeliveryInfo(sid);
       setInfoFields(r.fields);
     } catch (e: any) {
-      notification.error({ message: 'Не вдалося прочитати інфо завозу', description: e?.response?.data?.detail || 'Помилка журналу', placement: 'topRight' });
+      notify.error({ message: 'Не вдалося прочитати інфо завозу', description: e?.response?.data?.detail || 'Помилка журналу' });
     } finally { setInfoLoading(false); }
   };
 
@@ -253,11 +254,11 @@ const DeliveryCardModal: React.FC<Props> = ({ shipment, open, onClose }) => {
     setInfoSaving(true);
     try {
       await updateDeliveryInfo(sid, changes);
-      message.success('Інформацію про завоз збережено');
+      notify.success({ message: 'Інформацію про завоз збережено' });
       setInfoEditing(false);
       await loadInfo();
     } catch (e: any) {
-      notification.error({ message: 'Не вдалося зберегти інфо', description: e?.response?.data?.detail || 'Помилка журналу', placement: 'topRight' });
+      notify.error({ message: 'Не вдалося зберегти інфо', description: e?.response?.data?.detail || 'Помилка журналу' });
     } finally { setInfoSaving(false); }
   };
 

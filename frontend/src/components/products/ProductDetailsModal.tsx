@@ -1,12 +1,13 @@
 import React, { useEffect, useState, useMemo, useRef } from 'react';
 import { productService } from '../../services/productService';
 import type { Product, ProductFilters } from '../../types/product';
-import { Tag, Spin, Image, notification } from 'antd';
+import { Tag, Spin, Image } from 'antd';
 import { CloseOutlined, PictureOutlined, LeftOutlined, RightOutlined, WarningOutlined, EditOutlined, CheckOutlined, PlusOutlined, SyncOutlined, EyeOutlined, EyeInvisibleOutlined, StarFilled, ShoppingOutlined, TableOutlined, InboxOutlined } from '@ant-design/icons';
 import { CopyOnClick, formatBrandName, getProductDisplayStatus, getConditionColor } from '../common/displayHelpers';
 import { hiddenFieldsForType } from './productCategory';
 import { taskManager, emitProductPhotosChanged } from '../../services/taskManager';
 import PromPublishDialog from './PromPublishDialog';
+import { confirmDialog, notify } from '../../ui/feedback';
 
 interface Props {
   productId: number | null;
@@ -204,9 +205,9 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
         is_featured: next ? (catalogStatus?.is_featured ?? false) : false,
       });
       setCatalogStatus({ is_published: r.is_published, is_featured: r.is_featured });
-      notification.success({ message: next ? 'Опубліковано в каталозі' : 'Знято з публікації', placement: 'bottomRight', duration: 2 });
+      notify.success({ message: next ? 'Опубліковано в каталозі' : 'Знято з публікації', duration: 2 });
     } catch {
-      notification.error({ message: 'Не вдалося оновити публікацію', placement: 'bottomRight' });
+      notify.error({ message: 'Не вдалося оновити публікацію' });
     } finally { setCatalogSaving(false); }
   };
 
@@ -218,7 +219,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
       const r = await productService.setCatalogStatus(productId, { is_published: true, is_featured: next });
       setCatalogStatus({ is_published: r.is_published, is_featured: r.is_featured });
     } catch {
-      notification.error({ message: 'Не вдалося оновити «Рекомендований»', placement: 'bottomRight' });
+      notify.error({ message: 'Не вдалося оновити «Рекомендований»' });
     } finally { setCatalogSaving(false); }
   };
 
@@ -246,10 +247,10 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
         body: JSON.stringify({ product_id: productId, preview: true }),
       });
       const d = await pv.json();
-      if (!pv.ok) { notification.error({ message: `Prom: ${d.detail || pv.status}`, placement: 'bottomRight' }); return; }
-      if (!d.image_count) { notification.warning({ message: 'У товару немає фото — Prom вимагає зображення.', placement: 'bottomRight' }); return; }
+      if (!pv.ok) { notify.error({ message: `Prom: ${d.detail || pv.status}` }); return; }
+      if (!d.image_count) { notify.warning({ message: 'У товару немає фото — Prom вимагає зображення.' }); return; }
       setPromPreview(d);            // відкриває діалог публікації
-    } catch (e: any) { notification.error({ message: `Prom: ${e.message || 'Помилка'}`, placement: 'bottomRight' }); }
+    } catch (e: any) { notify.error({ message: `Prom: ${e.message || 'Помилка'}` }); }
     finally { setPromBusy(false); }
   };
 
@@ -266,16 +267,16 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
       const r = await ex.json();
       if (ex.ok) {
         setPromPublished(true); setPromPreview(null);
-        notification.success({ message: r.note || 'Опубліковано на Prom.', placement: 'bottomRight', duration: 4 });
-      } else notification.error({ message: `Prom: ${r.detail || ex.status}`, placement: 'bottomRight' });
-    } catch (e: any) { notification.error({ message: `Prom: ${e.message || 'Помилка'}`, placement: 'bottomRight' }); }
+        notify.success({ message: r.note || 'Опубліковано на Prom.', duration: 4 });
+      } else notify.error({ message: `Prom: ${r.detail || ex.status}` });
+    } catch (e: any) { notify.error({ message: `Prom: ${e.message || 'Помилка'}` }); }
     finally { setPromBusy(false); }
   };
 
   // Видалення товару з Prom (з підтвердженням) — знімає всі лістинги (і розміри ростовки)
   const promDeleteFlow = async () => {
     if (!productId || promBusy) return;
-    if (!window.confirm('Видалити цей товар з Prom?\n\nЛістинг(и) буде знято з публікації на Prom. У BMS товар лишається без змін.')) return;
+    if (!(await confirmDialog('Видалити цей товар з Prom?\n\nЛістинг(и) буде знято з публікації на Prom. У BMS товар лишається без змін.'))) return;
     setPromBusy(true);
     try {
       const r = await fetch('/api/publications/prom/delete-product', {
@@ -283,9 +284,9 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
         body: JSON.stringify({ product_id: productId }),
       });
       const d = await r.json();
-      if (r.ok) { setPromPublished(false); notification.success({ message: `Знято з Prom (${d.deleted ?? 1}).`, placement: 'bottomRight', duration: 3 }); }
-      else notification.error({ message: `Prom: ${d.detail || r.status}`, placement: 'bottomRight' });
-    } catch (e: any) { notification.error({ message: `Prom: ${e.message || 'Помилка'}`, placement: 'bottomRight' }); }
+      if (r.ok) { setPromPublished(false); notify.success({ message: `Знято з Prom (${d.deleted ?? 1}).`, duration: 3 }); }
+      else notify.error({ message: `Prom: ${d.detail || r.status}` });
+    } catch (e: any) { notify.error({ message: `Prom: ${e.message || 'Помилка'}` }); }
     finally { setPromBusy(false); }
   };
 
@@ -453,13 +454,12 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
         emitProductPhotosChanged(pid);
         const errs = res.errors || [];
         if (errs.length === 0) {
-          notification.success({ message: '✓ Готово', description: `Завантажено ${res.added} фото`, placement: 'bottomRight', duration: 4 });
+          notify.success({ message: '✓ Готово', description: `Завантажено ${res.added} фото`, duration: 4 });
         } else {
           // Частина файлів не пройшла (напр. HEIC/битий) — інші збереглись.
-          notification.warning({
+          notify.warning({
             message: `Завантажено ${res.added} з ${arr.length}`,
-            description: `Не вдалося: ${errs.map(e => e.file).join(', ')}`,
-            placement: 'bottomRight', duration: 9,
+            description: `Не вдалося: ${errs.map(e => e.file).join(', ')}`, duration: 9,
           });
         }
       },
@@ -1636,7 +1636,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                                       <SyncOutlined style={{ fontSize: 10 }} />
                                     </button>
                                     <button type="button" disabled={photoBusy}
-                                      onClick={() => { if (window.confirm(`Видалити фото ${img.filename}?`)) handleDeletePhoto(img.filename); }}
+                                      onClick={async () => { if ((await confirmDialog(`Видалити фото ${img.filename}?`))) handleDeletePhoto(img.filename); }}
                                       className="w-5 h-5 inline-flex items-center justify-center rounded bg-white/90 dark:bg-gray-900/90 text-red-600 hover:bg-white shadow"
                                       title="Видалити">
                                       <CloseOutlined style={{ fontSize: 10 }} />

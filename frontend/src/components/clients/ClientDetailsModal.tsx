@@ -31,6 +31,7 @@ import ProductNumberLink from '../products/ProductNumberLink';
 import { toast } from 'react-toastify';
 import { CopyOnClick, OrderStatusBadge, PaymentStatusBadge } from '../common/displayHelpers';
 import { DeliveryBadge } from '../common/DeliveryBadge';
+import { confirmDialog } from '../../ui/feedback';
 
 /* ── Типи ─────────────────────────────────────────────────────────────────── */
 interface RecentOrder {
@@ -253,7 +254,7 @@ const ClientDetailsModal: React.FC<Props> = ({ clientId, open, onClose }) => {
 
   const removeRel = async (r: ClientRelation) => {
     if (!clientId) return;
-    if (!window.confirm(`Видалити звʼязок з "${r.related_full_name || '#' + r.related_id}"? Дзеркальний звʼязок теж буде видалено.`)) return;
+    if (!(await confirmDialog(`Видалити звʼязок з "${r.related_full_name || '#' + r.related_id}"? Дзеркальний звʼязок теж буде видалено.`))) return;
     setRelBusy(true);
     try {
       await deleteClientRelation(clientId, r.id, true);
@@ -380,7 +381,7 @@ const ClientDetailsModal: React.FC<Props> = ({ clientId, open, onClose }) => {
 
   const removeAlias = async (a: ClientAlias) => {
     if (!clientId) return;
-    if (!window.confirm(`Видалити цей варіант імені? «${a.full_raw || a.nickname || a.first_name || ''}»`)) return;
+    if (!(await confirmDialog(`Видалити цей варіант імені? «${a.full_raw || a.nickname || a.first_name || ''}»`))) return;
     setAliasBusy(true);
     try {
       await deleteClientAlias(clientId, a.id);
@@ -403,11 +404,11 @@ const ClientDetailsModal: React.FC<Props> = ({ clientId, open, onClose }) => {
 
   const mergeWith = async (peerId: number) => {
     if (!clientId) return;
-    if (!window.confirm(
+    if (!(await confirmDialog(
       `Об'єднати клієнта #${clientId} → #${peerId}?\n\n` +
       `Усі замовлення, адреси, звʼязки та псевдоніми клієнта #${clientId} переїдуть до #${peerId}.\n` +
       `Клієнт #${clientId} буде ВИДАЛЕНО. Дія НЕ зворотна.`
-    )) return;
+    ))) return;
     try {
       const r = await mergeClients(clientId, peerId);
       toast.success(`Об'єднано: orders=${r.moved.orders}, addr=${r.moved.addresses}, rel=${r.moved.relations}, aliases=${r.moved.aliases}`);
@@ -471,7 +472,7 @@ const ClientDetailsModal: React.FC<Props> = ({ clientId, open, onClose }) => {
 
   const removeAddress = async (a: ClientAddress) => {
     if (!clientId) return;
-    if (!window.confirm(`Видалити адресу "${a.label || a.city || '#' + a.id}"?`)) return;
+    if (!(await confirmDialog(`Видалити адресу "${a.label || a.city || '#' + a.id}"?`))) return;
     setAddrBusy(true);
     try {
       await deleteClientAddress(clientId, a.id);

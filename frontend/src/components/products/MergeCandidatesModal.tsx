@@ -1,7 +1,8 @@
 import React, { useEffect, useState, useCallback } from 'react';
-import { Modal, Button, Spin, Empty, message, Tag } from 'antd';
+import { Modal, Button, Spin, Empty, Tag } from 'antd';
 import { LinkOutlined, CheckOutlined, CloseOutlined } from '@ant-design/icons';
 import axios from 'axios';
+import { notify } from '../../ui/feedback';
 
 interface MergeCandidate {
     id: number;
@@ -67,7 +68,7 @@ const MergeCandidatesModal: React.FC<Props> = ({ productId, open, onClose, onMer
             const res = await axios.get(`/api/merge-candidates?product_id=${productId}`);
             setCandidates(res.data?.items ?? []);
         } catch (e: any) {
-            message.error('Не вдалось завантажити кандидатів: ' + (e?.message ?? e));
+            notify.error({ message: 'Не вдалось завантажити кандидатів: ' + (e?.message ?? e) });
         } finally {
             setLoading(false);
         }
@@ -82,11 +83,11 @@ const MergeCandidatesModal: React.FC<Props> = ({ productId, open, onClose, onMer
         try {
             const res = await axios.post(`/api/merge-candidates/${c.id}/accept`);
             const nFilled = res.data?.filled_fields?.length ?? 0;
-            message.success(`Об'єднано з #${c.sp_pnum.replace(/^#/, '')}${nFilled ? ` · заповнено ${nFilled} порожніх полів` : ''}`);
+            notify.success({ message: `Об'єднано з #${c.sp_pnum.replace(/^#/, '')}${nFilled ? ` · заповнено ${nFilled} порожніх полів` : ''}` });
             onMerged?.();
             onClose();
         } catch (e: any) {
-            message.error('Не вдалось об\'єднати: ' + (e?.response?.data?.detail ?? e.message));
+            notify.error({ message: 'Не вдалось об\'єднати: ' + (e?.response?.data?.detail ?? e.message) });
         } finally {
             setActing(null);
         }
@@ -96,11 +97,11 @@ const MergeCandidatesModal: React.FC<Props> = ({ productId, open, onClose, onMer
         setActing(c.id);
         try {
             await axios.post(`/api/merge-candidates/${c.id}/decline`);
-            message.info('Пропозицію відхилено');
+            notify.info({ message: 'Пропозицію відхилено' });
             setCandidates(prev => prev.filter(x => x.id !== c.id));
             onMerged?.();
         } catch (e: any) {
-            message.error('Не вдалось: ' + (e?.response?.data?.detail ?? e.message));
+            notify.error({ message: 'Не вдалось: ' + (e?.response?.data?.detail ?? e.message) });
         } finally {
             setActing(null);
         }
