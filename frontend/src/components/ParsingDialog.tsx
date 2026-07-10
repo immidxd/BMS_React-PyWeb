@@ -13,7 +13,6 @@ import {
   Chip,
   TextField,
   Box,
-  CircularProgress,
   Alert,
   Slider,
   FormControl,
@@ -30,6 +29,7 @@ import {
   CheckCircle
 } from '@mui/icons-material';
 import axios from 'axios';
+import LoadingSpinner from './common/LoadingSpinner';
 
 interface ParsingMode {
   id: string;
@@ -280,9 +280,7 @@ export const ParsingDialog: React.FC<ParsingDialogProps> = ({ open, onClose, onS
         {false && jobId && <ProgressHeader />}
 
         {loading ? (
-          <Box display="flex" justifyContent="center" p={3}>
-            <CircularProgress />
-          </Box>
+          <LoadingSpinner variant="section" text="Завантаження режимів…" />
         ) : selectedMode && !jobId ? (
           <Box>
             <Box display="flex" alignItems="center" mb={2}>
@@ -356,4 +354,4 @@ export const ParsingDialog: React.FC<ParsingDialogProps> = ({ open, onClose, onS
       </DialogActions>
     </Dialog>
   );
-} 
+}

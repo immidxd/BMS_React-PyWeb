@@ -1,13 +1,14 @@
 import React, { useEffect, useState, useMemo, useRef } from 'react';
 import { productService } from '../../services/productService';
 import type { Product, ProductFilters } from '../../types/product';
-import { Tag, Spin, Image } from 'antd';
+import { Tag, Image } from 'antd';
 import { CloseOutlined, PictureOutlined, LeftOutlined, RightOutlined, WarningOutlined, EditOutlined, CheckOutlined, PlusOutlined, SyncOutlined, EyeOutlined, EyeInvisibleOutlined, StarFilled, ShoppingOutlined, TableOutlined, InboxOutlined } from '@ant-design/icons';
 import { CopyOnClick, formatBrandName, getProductDisplayStatus, getConditionColor, effectiveProductNumber } from '../common/displayHelpers';
 import { hiddenFieldsForType } from './productCategory';
 import { taskManager, emitProductPhotosChanged } from '../../services/taskManager';
 import PromPublishDialog from './PromPublishDialog';
 import { confirmDialog, notify } from '../../ui/feedback';
+import LoadingSpinner from '../common/LoadingSpinner';
 
 interface Props {
   productId: number | null;
@@ -1225,9 +1226,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
       <div className="relative bg-white dark:bg-gray-900 rounded-2xl shadow-2xl w-full max-w-6xl mx-4 h-[90vh] overflow-hidden flex flex-col">
 
         {loading && (
-          <div className="flex items-center justify-center py-32">
-            <Spin size="large" />
-          </div>
+          <LoadingSpinner variant="modal" size="large" text="Завантаження товару…" />
         )}
 
         {!loading && !p && (
@@ -1493,10 +1492,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                           )}
                         </>
                       ) : imagesLoading ? (
-                        <div className="flex flex-col items-center justify-center text-gray-300 dark:text-gray-600">
-                          <Spin />
-                          <span className="text-[11px] text-gray-400 dark:text-gray-500 mt-3">Завантаження фото…</span>
-                        </div>
+                        <LoadingSpinner variant="section" text="Завантаження фото…" />
                       ) : (
                         <div className="flex flex-col items-center justify-center text-gray-300 dark:text-gray-600 px-6 w-full text-center">
                           <PictureOutlined style={{ fontSize: 56 }} />
@@ -1578,7 +1574,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
 
                         <div className="flex items-center justify-between mb-2.5 gap-2">
                           <span className="text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500 font-medium whitespace-nowrap">
-                            Фото товару {photoBusy && <Spin size="small" className="ml-1" />}
+                            Фото товару {photoBusy && <LoadingSpinner variant="inline" size="small" text={null} className="ml-1" />}
                           </span>
                           {/* Перемикач куди завантажувати/чим керувати: офіційні (_NN) vs реальні (_00N) */}
                           <div className="inline-flex rounded-md border border-gray-300 dark:border-gray-600 overflow-hidden text-[11px]">

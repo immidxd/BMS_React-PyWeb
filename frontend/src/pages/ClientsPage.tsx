@@ -6,6 +6,7 @@ import ClientDetailsModal from '../components/clients/ClientDetailsModal';
 import { CopyOnClick } from '../components/common/displayHelpers';
 import DuplicatesCarousel from '../components/clients/DuplicatesCarousel';
 import { confirmDialog } from '../ui/feedback';
+import LoadingSpinner from '../components/common/LoadingSpinner';
 
 interface Client {
   id: number;
@@ -351,7 +352,7 @@ const ClientsPage: React.FC<ClientsPageProps> = ({ currentSearchTerm }) => {
 
         {/* Table */}
         {loading && clients.length === 0 ? (
-          <div className="flex justify-center items-center h-48 text-gray-400">Завантаження...</div>
+          <LoadingSpinner variant="section" size="large" text="Завантаження клієнтів…" />
         ) : error ? (
           <div className="flex justify-center items-center h-48 text-red-500">{error}</div>
         ) : (

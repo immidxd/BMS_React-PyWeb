@@ -3,6 +3,7 @@ import { fetchOrder, type OrderWithDetails, updateOrder, updateOrderItemPrice, a
 import ProductDetailsModal from '../products/ProductDetailsModal';
 import { productService } from '../../services/productService';
 import { confirmDialog } from '../../ui/feedback';
+import LoadingSpinner from '../common/LoadingSpinner';
 
 interface Props {
   orderId: number | null;
@@ -129,7 +130,7 @@ const OrderDetailsModal: React.FC<Props> = ({ orderId, open, onClose, filterOpti
           </div>
         </div>
         {loading ? (
-          <div className="py-8 text-center text-gray-500">Завантаження...</div>
+          <LoadingSpinner variant="modal" text="Завантаження замовлення…" />
         ) : !order ? (
           <div className="py-8 text-center text-gray-500">Не знайдено</div>
         ) : (
@@ -306,4 +307,3 @@ const OrderDetailsModal: React.FC<Props> = ({ orderId, open, onClose, filterOpti
 };
 
 export default OrderDetailsModal;
-

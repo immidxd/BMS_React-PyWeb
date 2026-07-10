@@ -652,7 +652,105 @@ select option {
   outline: none !important;
 }
 
-/* ── Spin / Loader → BMS primary ── */
+/* ── Єдиний стабільний loader BMS ───────────────────────────────────────────
+   Центрування належить зовнішньому контейнеру, а не самій анімації. Тому
+   індикатор залишається посередині видимої області навіть у дуже широких
+   таблицях з горизонтальним скролом. */
+.bms-loading {
+  --bms-loading-size: 30px;
+  --bms-loading-track: rgba(127, 127, 127, 0.22);
+  --bms-loading-track: color-mix(in srgb, var(--bms-fg) 16%, transparent);
+  --bms-loading-head: var(--bms-primary);
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  align-items: center;
+  justify-content: center;
+  color: var(--bms-fg-subtle);
+}
+
+.bms-loading--small { --bms-loading-size: 16px; }
+.bms-loading--large { --bms-loading-size: 38px; }
+
+.bms-loading--inline {
+  display: inline-flex;
+  width: auto;
+  min-height: 0;
+  vertical-align: middle;
+}
+
+.bms-loading--section { min-height: 12rem; }
+.bms-loading--page {
+  height: 100%;
+  min-height: clamp(16rem, 48vh, 34rem);
+}
+.bms-loading--modal {
+  flex: 1 1 auto;
+  min-height: 12rem;
+}
+
+.bms-loading--overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  min-height: 12rem;
+  background: rgba(255, 255, 255, 0.86);
+  background: color-mix(in srgb, var(--bms-surface) 82%, transparent);
+  backdrop-filter: blur(1px);
+  -webkit-backdrop-filter: blur(1px);
+}
+
+[data-theme="dark"] .bms-loading--overlay,
+.dark .bms-loading--overlay {
+  background: rgba(30, 30, 30, 0.86);
+  background: color-mix(in srgb, var(--bms-surface) 82%, transparent);
+}
+
+.bms-loading__content {
+  display: inline-flex;
+  max-width: min(100%, 24rem);
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  text-align: center;
+}
+
+.bms-loading--inline .bms-loading__content {
+  flex-direction: row;
+  gap: 6px;
+}
+
+.bms-loading__spinner {
+  display: block;
+  flex: 0 0 auto;
+  width: var(--bms-loading-size);
+  height: var(--bms-loading-size);
+  border: max(2px, calc(var(--bms-loading-size) / 11)) solid var(--bms-loading-track);
+  border-top-color: var(--bms-loading-head);
+  border-radius: 50%;
+  animation: bms-loading-spin 720ms linear infinite;
+  transform-origin: 50% 50%;
+  will-change: transform;
+}
+
+.bms-loading__label {
+  font-size: var(--bms-text-sm);
+  line-height: var(--bms-leading-normal);
+  color: var(--bms-fg-subtle);
+}
+
+@keyframes bms-loading-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bms-loading__spinner {
+    animation-duration: 1.8s;
+  }
+}
+
+/* Старі/сторонні AntD Spin, якщо такий з'явиться в плагінному вмісті. */
 .ant-spin-dot-item { background-color: var(--bms-primary) !important; }
 
 /* ── AntD Pagination (там, де воно ще використовується) → BMS ── */

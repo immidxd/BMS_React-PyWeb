@@ -32,6 +32,7 @@ import { toast } from 'react-toastify';
 import { CopyOnClick, OrderStatusBadge, PaymentStatusBadge } from '../common/displayHelpers';
 import { DeliveryBadge } from '../common/DeliveryBadge';
 import { confirmDialog } from '../../ui/feedback';
+import LoadingSpinner from '../common/LoadingSpinner';
 
 /* ── Типи ─────────────────────────────────────────────────────────────────── */
 interface RecentOrder {
@@ -608,9 +609,7 @@ const ClientDetailsModal: React.FC<Props> = ({ clientId, open, onClose }) => {
 
         {/* Loading */}
         {loading && (
-          <div className="flex items-center justify-center py-20">
-            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500" />
-          </div>
+          <LoadingSpinner variant="modal" size="large" text="Завантаження клієнта…" />
         )}
 
         {/* Not found */}

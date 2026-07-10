@@ -3,6 +3,7 @@ import MainLayout from '../layouts/MainLayout';
 import Pagination from '../components/common/Pagination';
 import ProductDetailsModal from '../components/products/ProductDetailsModal';
 import { confirmDialog } from '../ui/feedback';
+import LoadingSpinner from '../components/common/LoadingSpinner';
 
 /* ── Types ─────────────────────────────────────────────────────────── */
 
@@ -789,7 +790,7 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
         )}
 
         {loading && items.length === 0 ? (
-          <div className="flex justify-center items-center h-48 text-gray-400">Завантаження...</div>
+          <LoadingSpinner variant="section" size="large" text="Завантаження публікацій…" />
         ) : error ? (
           <div className="flex justify-center items-center h-48 text-red-500">{error}</div>
         ) : items.length === 0 ? (

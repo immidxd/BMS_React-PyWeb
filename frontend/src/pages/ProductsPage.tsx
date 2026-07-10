@@ -13,6 +13,7 @@ import { toast } from 'react-toastify';
 import Pagination from '../components/common/Pagination';
 import AddProductModal from '../components/shipments/AddProductModal';
 import { PlusOutlined, EyeOutlined, EyeInvisibleOutlined } from '@ant-design/icons';
+import LoadingSpinner from '../components/common/LoadingSpinner';
 
 // Placeholder for actual filter components for Products
 
@@ -327,7 +328,7 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
             onFilterChange={(f) => { setSelectedFilters(f); setPage(1); }}
           />
         ) : (
-          <div className="flex items-center justify-center h-32 text-gray-400 text-sm">Завантаження фільтрів...</div>
+          <LoadingSpinner variant="section" text="Завантаження фільтрів…" />
         )
       }
       onRefresh={handleRefresh}
@@ -481,4 +482,4 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
     );
 };
 
-export default ProductsPage; 
+export default ProductsPage;

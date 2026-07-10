@@ -1,8 +1,9 @@
 import React, { useEffect, useState, useCallback } from 'react';
-import { Modal, Button, Spin, Empty, Tag } from 'antd';
+import { Modal, Button, Empty, Tag } from 'antd';
 import { LinkOutlined, CheckOutlined, CloseOutlined } from '@ant-design/icons';
 import axios from 'axios';
 import { notify } from '../../ui/feedback';
+import LoadingSpinner from '../common/LoadingSpinner';
 
 interface MergeCandidate {
     id: number;
@@ -117,7 +118,7 @@ const MergeCandidatesModal: React.FC<Props> = ({ productId, open, onClose, onMer
             destroyOnClose
         >
             {loading ? (
-                <div className="py-10 text-center"><Spin /></div>
+                <LoadingSpinner variant="modal" text="Завантаження кандидатів…" />
             ) : candidates.length === 0 ? (
                 <Empty description="Немає активних пропозицій" />
             ) : (

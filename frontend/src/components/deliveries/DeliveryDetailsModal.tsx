@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import LoadingSpinner from '../common/LoadingSpinner';
 
 interface DeliveryDetails {
   id: number;
@@ -59,7 +60,7 @@ const DeliveryDetailsModal: React.FC<Props> = ({ deliveryId, open, onClose, onSa
           </div>
         </div>
         {loading ? (
-          <div className="py-8 text-center text-gray-500">Завантаження...</div>
+          <LoadingSpinner variant="modal" text="Завантаження поставки…" />
         ) : !delivery ? (
           <div className="py-8 text-center text-gray-500">Не знайдено</div>
         ) : (
@@ -77,5 +78,4 @@ const DeliveryDetailsModal: React.FC<Props> = ({ deliveryId, open, onClose, onSa
 };
 
 export default DeliveryDetailsModal;
-
 

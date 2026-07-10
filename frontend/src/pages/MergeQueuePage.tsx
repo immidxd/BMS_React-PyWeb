@@ -1,8 +1,9 @@
 import React, { useEffect, useState, useCallback } from 'react';
-import { Button, Spin, Empty, Tag, Popconfirm } from 'antd';
+import { Button, Empty, Tag, Popconfirm } from 'antd';
 import { LinkOutlined, CheckOutlined, CloseOutlined, ReloadOutlined } from '@ant-design/icons';
 import axios from 'axios';
 import { notify } from '../ui/feedback';
+import LoadingSpinner from '../components/common/LoadingSpinner';
 
 interface MergeCandidate {
     id: number;
@@ -150,7 +151,7 @@ const MergeQueuePage: React.FC = () => {
             </div>
 
             {loading ? (
-                <div className="py-16 text-center"><Spin /></div>
+                <LoadingSpinner variant="section" text="Завантаження збігів…" />
             ) : groups.length === 0 ? (
                 <Empty description="Немає пропозицій. Натисніть «Сканувати», щоб знайти оригінали для загублених товарів." />
             ) : (

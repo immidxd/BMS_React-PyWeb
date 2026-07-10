@@ -8,6 +8,7 @@ import OrderDetailsModal from '../components/orders/OrderDetailsModal';
 import BmsEmpty from '../components/common/BmsEmpty';
 import { CopyOnClick, OrderStatusBadge, PaymentStatusBadge, UnknownIf } from '../components/common/displayHelpers';
 import { DeliveryBadge } from '../components/common/DeliveryBadge';
+import LoadingSpinner from '../components/common/LoadingSpinner';
 import { DatePicker } from 'antd';
 import dayjs from 'dayjs';
 import 'dayjs/locale/uk';
@@ -229,7 +230,7 @@ const OrdersFilterPanel: React.FC<{
     onChange({ ...filters, date_from: dateFrom || undefined, date_to: dateTo || undefined });
   };
 
-  if (!filterOpts) return <div className="flex items-center justify-center h-32 text-gray-400 text-sm">Завантаження фільтрів...</div>;
+  if (!filterOpts) return <LoadingSpinner variant="section" text="Завантаження фільтрів…" />;
 
   return (
     <div className="flex flex-col gap-0 text-sm">
@@ -643,7 +644,7 @@ const OrdersPage: React.FC<OrdersPageProps> = ({ currentSearchTerm }) => {
 
         {/* Table */}
         {loading && orders.length === 0 ? (
-          <div className="flex justify-center items-center h-48 text-gray-400">Завантаження...</div>
+          <LoadingSpinner variant="section" size="large" text="Завантаження замовлень…" />
         ) : error ? (
           <div className="flex justify-center items-center h-48 text-red-500">{error}</div>
         ) : (

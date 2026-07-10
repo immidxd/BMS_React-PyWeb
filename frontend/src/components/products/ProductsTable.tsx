@@ -28,6 +28,7 @@ import { useNavigate } from 'react-router-dom';
 import { productService } from '../../services/productService';
 import { CopyOnClick, UnknownIf, isUnknownValue, BrandName, getProductDisplayStatus, effectiveProductNumber } from '../common/displayHelpers';
 import { notify } from '../../ui/feedback';
+import LoadingSpinner from '../common/LoadingSpinner';
 // Pagination is rendered at page level
 
 // Column configuration type
@@ -700,14 +701,20 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
                 onMerged={() => { if (onPageChange) onPageChange(1); }}
             />
             
-            <div className="overflow-x-auto rounded-lg shadow-md border border-gray-200 bg-white dark:bg-gray-800 dark:border-gray-700">
+            <div
+                className="relative min-h-[12rem] overflow-x-auto rounded-lg shadow-md border border-gray-200 bg-white dark:bg-gray-800 dark:border-gray-700"
+                aria-busy={loading}
+            >
+                {loading && (
+                    <LoadingSpinner variant="overlay" size="large" text="Завантаження товарів…" />
+                )}
                 <Table
                     columns={columns}
                     dataSource={products.items}
                     rowKey="id"
                     rowSelection={ENABLE_ROW_SELECTION ? rowSelection : undefined}
                     pagination={false}
-                    loading={loading}
+                    loading={false}
                     onRow={(record: Product) => {
                         const issues: string[] = [];
                         const noNum = !record.productnumber || record.productnumber === '???'
@@ -825,4 +832,4 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
     );
 };
 
-export default ProductsTable; 
+export default ProductsTable;

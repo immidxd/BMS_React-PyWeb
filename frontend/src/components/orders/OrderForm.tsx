@@ -15,6 +15,7 @@ import {
 } from '../../services/orderService';
 import productService from '../../services/productService';
 import { Product } from '../../types/product';
+import LoadingSpinner from '../common/LoadingSpinner';
 
 // Styled components
 const Container = styled.div`
@@ -499,7 +500,7 @@ const OrderForm: React.FC = () => {
   
   // Loading state
   if (loading) {
-    return <div>Завантаження даних...</div>;
+    return <LoadingSpinner variant="page" size="large" text="Завантаження замовлення…" />;
   }
   
   return (
@@ -853,4 +854,4 @@ const OrderForm: React.FC = () => {
   );
 };
 
-export default OrderForm; 
+export default OrderForm;

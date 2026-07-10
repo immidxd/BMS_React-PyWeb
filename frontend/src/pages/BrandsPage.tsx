@@ -4,6 +4,7 @@ import MainLayout from '../layouts/MainLayout';
 import Pagination from '../components/common/Pagination';
 import BmsEmpty from '../components/common/BmsEmpty';
 import { confirmDialog } from '../ui/feedback';
+import LoadingSpinner from '../components/common/LoadingSpinner';
 
 /* ── Types ─────────────────────────────────────────────────────────── */
 
@@ -383,7 +384,7 @@ const BrandsPage: React.FC<BrandsPageProps> = ({ currentSearchTerm }) => {
 
         {/* Table */}
         {loading && brands.length === 0 ? (
-          <div className="flex justify-center items-center h-48 text-gray-400">Завантаження...</div>
+          <LoadingSpinner variant="section" size="large" text="Завантаження брендів…" />
         ) : error ? (
           <div className="flex justify-center items-center h-48 text-red-500">{error}</div>
         ) : (

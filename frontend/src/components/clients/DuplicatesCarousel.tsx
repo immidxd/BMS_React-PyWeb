@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { confirmDialog } from '../../ui/feedback';
+import LoadingSpinner from '../common/LoadingSpinner';
 
 interface RecentOrder {
   id: number;
@@ -193,7 +194,7 @@ const DuplicatesCarousel: React.FC<Props> = ({ open, onClose, onMerged }) => {
 
         {/* Body */}
         {loading ? (
-          <div className="h-72 flex items-center justify-center text-gray-400">Завантаження…</div>
+          <LoadingSpinner variant="modal" text="Завантаження дублікатів…" />
         ) : error ? (
           <div className="h-72 flex items-center justify-center text-red-500">{error}</div>
         ) : total === 0 ? (

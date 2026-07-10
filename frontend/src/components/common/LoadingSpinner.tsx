@@ -1,38 +1,39 @@
 import React from 'react';
-import styled from 'styled-components';
 
-const SpinnerContainer = styled.div`
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  padding: 20px;
-`;
-
-const Spinner = styled.div`
-  border: 4px solid rgba(0, 0, 0, 0.1);
-  width: 36px;
-  height: 36px;
-  border-radius: 50%;
-  border-left-color: #09f;
-  animation: spin 1s linear infinite;
-
-  @keyframes spin {
-    0% { transform: rotate(0deg); }
-    100% { transform: rotate(360deg); }
-  }
-`;
+type LoadingSpinnerVariant = 'inline' | 'section' | 'page' | 'modal' | 'overlay';
+type LoadingSpinnerSize = 'small' | 'medium' | 'large';
 
 interface LoadingSpinnerProps {
-  text?: string;
+  text?: string | null;
+  variant?: LoadingSpinnerVariant;
+  size?: LoadingSpinnerSize;
+  className?: string;
 }
 
-const LoadingSpinner: React.FC<LoadingSpinnerProps> = ({ text = 'Завантаження...' }) => {
-  return (
-    <SpinnerContainer>
-      <Spinner />
-      {text && <span style={{ marginLeft: '10px' }}>{text}</span>}
-    </SpinnerContainer>
-  );
-};
+/**
+ * Єдиний індикатор завантаження BMS.
+ *
+ * Контейнер завжди центрує саме внутрішній вузол, а overlay позиціонується
+ * відносно видимого батьківського блоку. Це не дає індикатору «поїхати» вбік
+ * услід за широким вмістом таблиці з горизонтальним скролом.
+ */
+const LoadingSpinner: React.FC<LoadingSpinnerProps> = ({
+  text = 'Завантаження…',
+  variant = 'section',
+  size = 'medium',
+  className = '',
+}) => (
+  <span
+    className={`bms-loading bms-loading--${variant} bms-loading--${size} ${className}`.trim()}
+    role="status"
+    aria-live="polite"
+    aria-label={text || 'Завантаження'}
+  >
+    <span className="bms-loading__content">
+      <span className="bms-loading__spinner" aria-hidden="true" />
+      {text && <span className="bms-loading__label">{text}</span>}
+    </span>
+  </span>
+);
 
-export default LoadingSpinner; 
+export default LoadingSpinner;

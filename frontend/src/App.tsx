@@ -9,6 +9,7 @@ import { ParsingStatus } from './components/ParsingStatus';
 import TaskCenter from './components/common/TaskCenter';
 import DevBadge from './components/common/DevBadge';
 import UpdateBanner from './components/common/UpdateBanner';
+import LoadingSpinner from './components/common/LoadingSpinner';
 import { ToastContainer, toast } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
 import './App.css';
@@ -298,9 +299,7 @@ const AppContent: React.FC = () => {
       <main className="flex-grow min-h-0 overflow-auto p-4 container mx-auto w-full">
         <Suspense 
           fallback={
-            <div className="flex justify-center items-center h-64">
-              <p className="text-lg text-gray-500 dark:text-gray-400">Завантаження сторінки...</p>
-            </div>
+            <LoadingSpinner variant="page" size="large" text="Завантаження сторінки…" />
           }
         >
           {ActivePageComponent && <ActivePageComponent currentSearchTerm={currentSearchTerm} />}

@@ -9,6 +9,7 @@ import {
 import QuickAddProductForm from './QuickAddProductForm';
 import ProductDetailsModal from '../products/ProductDetailsModal';
 import { alertDialog, confirmDialog, notify } from '../../ui/feedback';
+import LoadingSpinner from '../common/LoadingSpinner';
 
 // Числовий ключ сортування номера (як бекенд _pn_sort_key): (prefix, base, suffix).
 // Бекенд get_products НЕ підтримує sort_by=productnumber → сортуємо тут, у картці.
@@ -283,7 +284,7 @@ const DeliveryCardModal: React.FC<Props> = ({ shipment, open, onClose }) => {
               <span>📦 {products.length} товарів</span>
               {bgSyncing && (
                 <span className="inline-flex items-center gap-1 text-gray-400" title="Фонова синхронізація з журналом">
-                  <span className="w-3 h-3 border-2 border-gray-300 border-t-gray-500 rounded-full animate-spin" />
+                  <LoadingSpinner variant="inline" size="small" text={null} />
                   синхронізація…
                 </span>
               )}
@@ -368,10 +369,7 @@ const DeliveryCardModal: React.FC<Props> = ({ shipment, open, onClose }) => {
         {/* Body */}
         <div className="flex-1 min-h-0 overflow-auto px-6 py-4">
           {loading && (
-            <div className="py-24 flex flex-col items-center justify-center gap-3 text-gray-400">
-              <div className="w-8 h-8 border-2 border-gray-300 border-t-gray-600 rounded-full animate-spin" />
-              <span className="text-sm">Завантаження…</span>
-            </div>
+            <LoadingSpinner variant="modal" size="large" text="Завантаження поставки…" />
           )}
           {!loading && (
             <>

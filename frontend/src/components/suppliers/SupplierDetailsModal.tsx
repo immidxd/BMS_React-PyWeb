@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { updateSupplier, type Supplier } from '../../services/referenceService';
+import LoadingSpinner from '../common/LoadingSpinner';
 
 interface Props {
   supplierId: number | null;
@@ -39,7 +40,7 @@ const SupplierDetailsModal: React.FC<Props> = ({ supplierId, open, onClose, onSa
           <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl leading-none">&times;</button>
         </div>
         {loading ? (
-          <div className="py-8 text-center text-gray-500">Завантаження...</div>
+          <LoadingSpinner variant="modal" text="Завантаження постачальника…" />
         ) : !supplier ? (
           <div className="py-8 text-center text-gray-500">Не знайдено</div>
         ) : (

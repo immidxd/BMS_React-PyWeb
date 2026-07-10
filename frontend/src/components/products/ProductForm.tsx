@@ -11,7 +11,6 @@ import {
     Divider, 
     Card, 
     message, 
-    Spin, 
     Space 
 } from 'antd';
 import { SaveOutlined, CloseOutlined, ArrowLeftOutlined } from '@ant-design/icons';
@@ -20,6 +19,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { productService } from '../../services/productService';
 import styled from 'styled-components';
 import { notify } from '../../ui/feedback';
+import LoadingSpinner from '../common/LoadingSpinner';
 
 const { TextArea } = Input;
 const { Option } = Select;
@@ -81,11 +81,7 @@ const ProductForm: React.FC<ProductFormProps> = ({
     
     // Відображаємо спінер під час завантаження
     if (mode === 'edit' && !product && loading) {
-        return (
-            <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '50vh' }}>
-                <Spin size="large" tip="Завантаження товару..." />
-            </div>
-        );
+        return <LoadingSpinner variant="page" size="large" text="Завантаження товару…" />;
     }
     
     return (
@@ -514,4 +510,4 @@ const ProductForm: React.FC<ProductFormProps> = ({
     );
 };
 
-export default ProductForm; 
+export default ProductForm;
