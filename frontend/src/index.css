@@ -347,3 +347,44 @@ table {
     transform: rotate(360deg);
   }
 } 
+/* ── Єдиний стиль тостів BMS (antd notification, клас .bms-toast) ────────────
+   Мінімалістична картка як у дизайн-системі: м'який радіус, тонка рамка,
+   акуратна тінь; повна підтримка темної теми (клас .dark на <html>). */
+.ant-notification .ant-notification-notice.bms-toast {
+  border-radius: 14px;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.12), 0 2px 8px rgba(0, 0, 0, 0.06);
+  padding: 14px 18px;
+  background: #ffffff;
+}
+.ant-notification .bms-toast .ant-notification-notice-message {
+  font-size: 14px;
+  font-weight: 600;
+  color: #111827;
+  margin-bottom: 0;
+}
+.ant-notification .bms-toast .ant-notification-notice-description {
+  font-size: 12.5px;
+  color: #6b7280;
+}
+.ant-notification .bms-toast .ant-notification-notice-close {
+  color: #9ca3af;
+}
+.ant-notification .bms-toast .ant-notification-notice-close:hover {
+  color: #374151;
+}
+/* Іконки типів — стримані кольори системи */
+.bms-toast.bms-toast-success .anticon-check-circle { color: #059669; }
+.bms-toast.bms-toast-error .anticon-close-circle { color: #dc2626; }
+.bms-toast.bms-toast-warning .anticon-exclamation-circle { color: #d97706; }
+.bms-toast.bms-toast-info .anticon-info-circle { color: #4b5563; }
+
+.dark .ant-notification .ant-notification-notice.bms-toast {
+  background: #111827;
+  border-color: rgba(255, 255, 255, 0.1);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45), 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+.dark .ant-notification .bms-toast .ant-notification-notice-message { color: #f9fafb; }
+.dark .ant-notification .bms-toast .ant-notification-notice-description { color: #9ca3af; }
+.dark .ant-notification .bms-toast .ant-notification-notice-close { color: #6b7280; }
+.dark .ant-notification .bms-toast .ant-notification-notice-close:hover { color: #d1d5db; }

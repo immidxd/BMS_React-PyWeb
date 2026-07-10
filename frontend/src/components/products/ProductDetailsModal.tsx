@@ -823,6 +823,9 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
   useEffect(() => {
     if (!open) return;
     const handleKey = (e: KeyboardEvent) => {
+      // Відкритий діалог системи feedback/Prom (клас .bms-dialog-host) обробляє
+      // клавіші сам — картка позаду не реагує (Esc не закриє її «наскрізь»).
+      if (document.querySelector('.bms-dialog-host')) return;
       if (e.key === 'Escape') {
         if (previewVisible) return;   // antd-прев'ю саме обробляє свій Esc
         // Esc при відкритій картці = ЛИШЕ закрити картку. Гасимо подію, щоб вона не

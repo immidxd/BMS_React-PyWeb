@@ -63,7 +63,7 @@ const PromPublishDialog: React.FC<Props> = ({ data, busy, onCancel, onConfirm })
   };
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
+    <div className="bms-dialog-host fixed inset-0 z-[100] flex items-center justify-center p-4">
       {/* Оверлей */}
       <div className="absolute inset-0 bg-black/45 backdrop-blur-[2px]" onClick={busy ? undefined : onCancel} />
 
