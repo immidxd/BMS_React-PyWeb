@@ -112,10 +112,13 @@ export function hiddenFieldsForType(typeName?: string | null): Set<string> {
     for (const m of [...SHOE_MEAS, ...CLOTH_MEAS_ALL]) hidden.add(`meas_${m}`);
   }
 
-  // 4) Матеріали-«Мембрана» / «Проміжна підошва» — лише взуття
+  // 4) Взуттєві позиції матеріалів — ЛИШЕ взуття: Мембрана, Проміжна підошва,
+  //    Устілка, Підошва. Для сумок/гаманців/одягу/аксесуарів — тільки Верх/Середина.
   if (cat !== 'shoe') {
     hidden.add('material_membrane');
     hidden.add('material_midsole');
+    hidden.add('material_insole');
+    hidden.add('material_sole');
   }
 
   return hidden;
