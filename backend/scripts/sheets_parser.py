@@ -5188,34 +5188,59 @@ def _reconcile_evolved_order_ghosts(session: Session, touched_ids: set) -> dict:
     try:
         # Групи (client_id, order_date), що мають touched-ордер, + їхні набори product_id.
         touched = session.query(Order).filter(Order.id.in_(touched_ids)).all()
-        def pidset(oid):
-            return frozenset(
-                r[0] for r in session.query(OrderItem.product_id)
-                .filter(OrderItem.order_id == oid).all()
-            )
+
+        # Batch-запит на product_id-и ВСІХ touched-замовлень ОДНИМ SQL (замість
+        # окремого запиту на кожне — на full-парсі touched_ids сягає тисяч ордерів,
+        # і N+1 тут же тримав прогрес-бар «на місці» (~5+ хв без progress_cb).
+        def _bulk_pidsets(order_ids) -> dict:
+            if not order_ids:
+                return {}
+            out: dict = {}
+            for oid, pid in (session.query(OrderItem.order_id, OrderItem.product_id)
+                              .filter(OrderItem.order_id.in_(order_ids)).all()):
+                out.setdefault(oid, set()).add(pid)
+            return {oid: frozenset(pids) for oid, pids in out.items()}
+
+        touched_pidsets = _bulk_pidsets([t.id for t in touched])
+
         # v8: групуємо і АНОНІМНІ (client_id IS NULL) — раніше їх пропускали
         # (`if t.client_id is None: continue`), тож evolved-set ghost анонімного
         # замовлення (як #Ф2261) не прибирався ні дедуп-рівнями, ні цим sweep.
         # Тепер None — повноправний ключ; для нього сиблінги шукаємо з IS NULL.
         groups: dict = {}  # (client_id|None, order_date) -> [frozenset]
         for t in touched:
-            groups.setdefault((t.client_id, t.order_date), []).append(pidset(t.id))
+            groups.setdefault((t.client_id, t.order_date), []).append(
+                touched_pidsets.get(t.id, frozenset()))
+
+        # Кандидати-сиблінги: РАНІШЕ окремий запит НА КОЖНУ групу (client_id,
+        # order_date) — на full-парсі це тисячі дрібних round-trip (сам домінуючий
+        # фактор зависання, більший за pidset N+1 вище). Тепер ОДИН запит по ВСІХ
+        # датах одразу, а розподіл по (client_id, order_date) — у Python (None
+        # порівнюється як звичайний ключ tuple, тож NULL-клієнти теж коректно
+        # групуються без окремого is_(None)-філтра).
+        distinct_dates = {odate for (_cid, odate) in groups.keys()}
+        candidates = (
+            session.query(Order).filter(
+                Order.order_date.in_(distinct_dates),
+                Order.id.notin_(touched_ids),
+                Order.order_status_id.is_(None),
+                Order.source_fingerprint.isnot(None),
+            ).all()
+            if distinct_dates else []
+        )
+        group_siblings: dict = {}  # (cid, odate) -> [Order]
+        for c in candidates:
+            group_siblings.setdefault((c.client_id, c.order_date), []).append(c)
+
+        sibling_pidsets = _bulk_pidsets([c.id for c in candidates])
 
         ghost_ids = []
         for (cid, odate), tsets_all in groups.items():
             tsets = [s for s in tsets_all if s]
             if not tsets:
                 continue
-            sib_q = session.query(Order).filter(
-                Order.order_date == odate,
-                Order.id.notin_(touched_ids),
-                Order.order_status_id.is_(None),
-                Order.source_fingerprint.isnot(None),
-            )
-            sib_q = sib_q.filter(Order.client_id.is_(None)) if cid is None \
-                else sib_q.filter(Order.client_id == cid)
-            for s in sib_q.all():
-                sset = pidset(s.id)
+            for s in group_siblings.get((cid, odate), []):
+                sset = sibling_pidsets.get(s.id, frozenset())
                 if not sset:
                     continue
                 # строгий containment із будь-яким touched-сиблінгом групи
