@@ -120,3 +120,53 @@ def lookup_variants(raw: str | None) -> list[str]:
         variants.add("#" + lower)
         variants.add(lower)
     return sorted(variants)
+
+
+# ── Effective ("key") product number ─────────────────────────────────────────
+# A product may have no real productnumber yet — e.g. a Воркспейс clone-row that
+# only carries a клон-номер, materialised with the sentinel productnumber '???'
+# (or blank / a __tmp_rename_ placeholder). In that case the FIRST clone number
+# is the natural key the user assigned, so we surface it as the display number
+# UNTIL a real productnumber is set. This must stay consistent everywhere the
+# number is shown (product list/detail, order items, frontend). Purely derived —
+# the stored productnumber is left untouched, so it auto-yields once a real
+# number appears.
+
+def is_unknown_productnumber(productnumber: str | None) -> bool:
+    """True when ``productnumber`` is a placeholder, not a real assigned number."""
+    if productnumber is None:
+        return True
+    s = productnumber.strip()
+    if not s:
+        return True
+    if s in ("???", "#???", "?"):
+        return True
+    return s.startswith("???_") or s.startswith("__tmp_rename_")
+
+
+def first_clone_number(clonednumbers: str | None) -> str | None:
+    """First клон-номер from a ``"А1; А2; ..."`` string, canonicalised (leading
+    ``#`` kept off — callers/UI add their own styling). Returns None if empty."""
+    if not clonednumbers:
+        return None
+    for part in re.split(r"[;,]", clonednumbers):
+        cand = part.strip()
+        if cand:
+            return cand.lstrip("#").strip() or None
+    return None
+
+
+def effective_product_number(
+    productnumber: str | None,
+    clonednumbers: str | None,
+) -> str | None:
+    """The "key" number to DISPLAY: the real productnumber, or — when there is
+    none — the first клон-номер. Returns the stored value (possibly a sentinel)
+    only when neither a real number nor a clone exists, so the caller can still
+    render its own "Невідомо" placeholder."""
+    if not is_unknown_productnumber(productnumber):
+        return productnumber
+    clone = first_clone_number(clonednumbers)
+    if clone:
+        return clone
+    return productnumber

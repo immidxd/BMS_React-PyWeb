@@ -23,6 +23,8 @@ export interface Material {
 export interface Product {
     id: number;
     productnumber: string;
+    // Ключовий номер для показу: реальний або перший клон-номер (backend-derived).
+    display_number?: string | null;
     clonednumbers?: string;
     official_photos_from?: string | null;
     model?: string;

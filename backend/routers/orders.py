@@ -9,6 +9,7 @@ from backend.models.database import get_db, SessionLocal
 from backend.models.models import Order, OrderItem, Client, Product, PaymentStatus, OrderStatus
 from backend.services.order_service import OrderDAO
 from backend.utils.order_status_logic import real_order_sql
+from backend.utils.productnumber_normalizer import effective_product_number
 
 
 def _apply_paid_auto_confirm(db: Session, data: dict) -> None:
@@ -357,7 +358,7 @@ def get_orders(
                    oi.discount_type, oi.discount_value,
                    oi.additional_operation, oi.additional_operation_value,
                    oi.notes, oi.created_at, oi.updated_at,
-                   p.productnumber, p.model, p.marking,
+                   p.productnumber, p.clonednumbers, p.model, p.marking,
                    {queue_exists} AS has_queue
             FROM order_items oi
             JOIN orders item_order ON item_order.id = oi.order_id
@@ -374,8 +375,9 @@ def get_orders(
         """
         item_rows = db.execute(sa_text(items_sql), {"oids": order_ids}).mappings().all()
         for ir in item_rows:
-            pnum = ir["productnumber"] or ""
-            pnum_display = pnum.lstrip("#") if pnum else (ir["notes"] or "—")
+            # Ключовий номер: реальний або перший клон-номер (поки нема реального).
+            eff_pnum = effective_product_number(ir["productnumber"], ir["clonednumbers"])
+            pnum_display = eff_pnum.lstrip("#") if eff_pnum else (ir["notes"] or "—")
             pname = " ".join(filter(None, [ir["model"], ir["marking"]])) or "—"
             items_by_order[ir["order_id"]].append({
                 "id": ir["id"],
@@ -535,7 +537,10 @@ async def get_order(order_id: int = Path(..., ge=1), db: Session = Depends(get_d
     # Prepare order items
     order_items = []
     for item in order.items:
-        product_number = item.product.productnumber if item.product else (item.notes or "—")
+        product_number = (
+            effective_product_number(item.product.productnumber, item.product.clonednumbers)
+            if item.product else (item.notes or "—")
+        )
         product_name = (f"{item.product.model or ''} {item.product.marking or ''}".strip() if item.product else "") or "—"
         
         order_items.append({

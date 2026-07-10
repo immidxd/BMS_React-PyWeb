@@ -24,6 +24,38 @@ export const UnknownIf: React.FC<{ value: any; label?: string; className?: strin
     return <span className={className}>{value}</span>;
 };
 
+// ── Ефективний ("ключовий") номер товару ────────────────────────────────────
+// Дзеркало backend utils.productnumber_normalizer.effective_product_number:
+// якщо реального productnumber нема (порожній/???/__tmp_rename_) — показуємо
+// ПЕРШИЙ клон-номер, поки реальний не з'явиться. Backend уже кладе готове
+// значення в `display_number`; ці хелпери — фолбек і для місць без нього.
+export const firstCloneNumber = (clonednumbers?: string | null): string => {
+    if (!clonednumbers) return '';
+    for (const part of String(clonednumbers).split(/[;,]/)) {
+        const cand = part.trim();
+        if (cand) return cand.replace(/^#/, '').trim();
+    }
+    return '';
+};
+
+// Повертає { value, isClone }: value — що показувати (без ведучого '#'),
+// isClone=true коли value походить із клон-номера (реального номера ще нема).
+export const effectiveProductNumber = (
+    productnumber?: string | null,
+    clonednumbers?: string | null,
+    displayNumber?: string | null,
+): { value: string; isClone: boolean } => {
+    const real = (productnumber || '').replace(/^#/, '').trim();
+    const realKnown = !isUnknownValue(real);
+    if (realKnown) return { value: real, isClone: false };
+    // Backend-derived display_number має пріоритет (єдине джерело правди).
+    const dn = (displayNumber || '').replace(/^#/, '').trim();
+    if (dn && !isUnknownValue(dn)) return { value: dn, isClone: true };
+    const clone = firstCloneNumber(clonednumbers);
+    if (clone) return { value: clone, isClone: true };
+    return { value: real, isClone: false };
+};
+
 // ── Стандартизація назв брендів (display-only) ──────────────────────────────
 // Кожне слово: першу літеру у верхній регістр, АЛЕ зберігаємо:
 //   • абревіатури з великих літер цілком: "UGG", "OLX"

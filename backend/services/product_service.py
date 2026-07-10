@@ -12,8 +12,10 @@ from schemas import product as schemas
 
 try:
     from backend.utils.order_status_logic import real_order_sql
+    from backend.utils.productnumber_normalizer import effective_product_number
 except ImportError:
     from utils.order_status_logic import real_order_sql
+    from utils.productnumber_normalizer import effective_product_number
 
 logger = logging.getLogger(__name__)
 
@@ -800,6 +802,11 @@ def get_products(
             product_dict = {
                 'id': m.get('id'),
                 'productnumber': m.get('productnumber'),
+                # Ключовий номер для показу: реальний, або перший клон-номер поки
+                # реального нема (див. effective_product_number). productnumber
+                # лишається сирим — UI розрізняє «клон-похідний» через display_number.
+                'display_number': effective_product_number(
+                    m.get('productnumber'), m.get('clonednumbers')),
                 'clonednumbers': m.get('clonednumbers'),
                 'official_photos_from': m.get('official_photos_from'),
                 'model': m.get('model'),
@@ -1700,6 +1707,10 @@ def get_product_with_relations(db: Session, product_id: int) -> Optional[Dict[st
             return None
 
         data = dict(result)
+        # Ключовий номер для показу (реальний або перший клон-номер) — див.
+        # effective_product_number. Дзеркалить логіку списку get_products.
+        data['display_number'] = effective_product_number(
+            data.get('productnumber'), data.get('clonednumbers'))
         # Parse materials JSON (PostgreSQL returns it as a string or None)
         import json as _json
         raw_mat = data.pop('materials_json', None)

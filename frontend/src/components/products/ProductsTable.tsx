@@ -26,7 +26,7 @@ import MergeCandidatesModal from './MergeCandidatesModal';
 import { LinkOutlined, LockFilled, PictureOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import { productService } from '../../services/productService';
-import { CopyOnClick, UnknownIf, isUnknownValue, BrandName, getProductDisplayStatus } from '../common/displayHelpers';
+import { CopyOnClick, UnknownIf, isUnknownValue, BrandName, getProductDisplayStatus, effectiveProductNumber } from '../common/displayHelpers';
 import { notify } from '../../ui/feedback';
 // Pagination is rendered at page level
 
@@ -291,7 +291,7 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
             notify.info({ message: 'Товар не продано і не заброньовано — немає замовлень для показу' });
             return;
         }
-        const label = (record.productnumber || '').replace(/^#/, '') || `ID ${record.id}`;
+        const label = effectiveProductNumber(record.productnumber, (record as any).clonednumbers, (record as any).display_number).value || `ID ${record.id}`;
         localStorage.setItem('bms_orders_pending_filter', JSON.stringify({
             product_id: record.id,
             product_label: label,
@@ -348,7 +348,9 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
             onCell: () => ({ className: 'bms-col-num' }),
             onHeaderCell: () => ({ className: 'bms-col-num' } as any),
             render: (text: string, record: Product) => {
-                const label = (text || '').replace(/^#/, '');
+                // Ключовий номер: реальний або перший клон-номер (поки нема реального).
+                const eff = effectiveProductNumber(text, (record as any).clonednumbers, (record as any).display_number);
+                const label = eff.value;
                 if (isUnknownValue(label)) {
                     return (
                         <div className="flex items-center justify-center gap-1.5">
@@ -384,6 +386,12 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
                     <div className="flex items-center justify-center gap-1.5">
                         <RowIndicators publishedTg={(record as any).published_tg} publishedOlx={(record as any).published_olx} publishedProm={(record as any).published_prom} />
                         {numberCell}
+                        {eff.isClone && (
+                            <span
+                                title="Реального номера ще нема — показано перший клон-номер"
+                                className="inline-flex px-1 py-0 rounded border border-slate-300 bg-slate-50 text-slate-500 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-400 text-[9px] font-semibold leading-tight"
+                            >клон</span>
+                        )}
                         <span className="invisible" aria-hidden="true">
                             <RowIndicators publishedTg={(record as any).published_tg} publishedOlx={(record as any).published_olx} publishedProm={(record as any).published_prom} />
                         </span>
@@ -779,7 +787,7 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
                   className="fixed z-[10000] w-60 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg py-1"
                 >
                   <div className="px-3 py-1.5 text-[11px] text-gray-400 dark:text-gray-500 border-b border-gray-100 dark:border-gray-700 truncate">
-                    {(rowMenuRecord.productnumber || '').replace(/^#/, '') || `ID ${rowMenuRecord.id}`}
+                    {effectiveProductNumber(rowMenuRecord.productnumber, (rowMenuRecord as any).clonednumbers, (rowMenuRecord as any).display_number).value || `ID ${rowMenuRecord.id}`}
                   </div>
                   {(() => {
                     const sold = rowMenuRecord.sold_count ?? 0;

@@ -3,7 +3,7 @@ import { productService } from '../../services/productService';
 import type { Product, ProductFilters } from '../../types/product';
 import { Tag, Spin, Image } from 'antd';
 import { CloseOutlined, PictureOutlined, LeftOutlined, RightOutlined, WarningOutlined, EditOutlined, CheckOutlined, PlusOutlined, SyncOutlined, EyeOutlined, EyeInvisibleOutlined, StarFilled, ShoppingOutlined, TableOutlined, InboxOutlined } from '@ant-design/icons';
-import { CopyOnClick, formatBrandName, getProductDisplayStatus, getConditionColor } from '../common/displayHelpers';
+import { CopyOnClick, formatBrandName, getProductDisplayStatus, getConditionColor, effectiveProductNumber } from '../common/displayHelpers';
 import { hiddenFieldsForType } from './productCategory';
 import { taskManager, emitProductPhotosChanged } from '../../services/taskManager';
 import PromPublishDialog from './PromPublishDialog';
@@ -1161,8 +1161,12 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
   };
 
   const activeImage = images[activeIdx];
-  const productTitle = p ? ([formatBrandName((p as any).brand_name), p.model].filter(Boolean).join(' ') || (p.productnumber || '').replace(/^#/, '')) : '';
+  // Ключовий номер для ПОКАЗУ: реальний або перший клон-номер (поки нема реального).
+  // pnumClean лишається РЕАЛЬНИМ номером (writeback/префікс фото key-ляться на нього).
+  const pnumEff = p ? effectiveProductNumber(p.productnumber, (p as any).clonednumbers, (p as any).display_number) : { value: '', isClone: false };
+  const productTitle = p ? ([formatBrandName((p as any).brand_name), p.model].filter(Boolean).join(' ') || pnumEff.value) : '';
   const pnumClean = (p?.productnumber || '').replace(/^#/, '');
+  const pnumDisplay = pnumEff.value;
   // Колонка-галерея присутня ЗАВЖДИ (стабільний макет: фото ліворуч, інфо праворуч).
   // Коли фото нема — показуємо плейсхолдер «Фото відсутнє», а не згортаємо колонку
   // (інакше макет «стрибає» між товарами — користувача це збиває).
@@ -1239,8 +1243,14 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-3 mb-1 flex-wrap">
                   <span className="text-xs font-mono text-gray-400 dark:text-gray-500 px-2 py-0.5 rounded bg-gray-100 dark:bg-gray-800">
-                    {pnumClean ? <CopyOnClick value={pnumClean} /> : '—'}
+                    {pnumDisplay ? <CopyOnClick value={pnumDisplay} /> : '—'}
                   </span>
+                  {pnumEff.isClone && (
+                    <span
+                      title="Реального номера ще нема — показано перший клон-номер"
+                      className="text-[10px] font-semibold px-1.5 py-0.5 rounded border border-slate-300 bg-slate-50 text-slate-500 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-400"
+                    >клон-номер</span>
+                  )}
                   {(p as any).type_name && (
                     <span className="text-xs text-gray-500 dark:text-gray-400">{(p as any).type_name}{(p as any).subtype_name ? ` · ${(p as any).subtype_name}` : ''}</span>
                   )}
