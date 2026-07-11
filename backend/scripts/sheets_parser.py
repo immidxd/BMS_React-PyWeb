@@ -1074,6 +1074,41 @@ _materials_cache: dict[str, int] = {}
 # Keyed by (table_name, lowercased_value) → id.
 _shoe_lookup_cache: dict[tuple[str, str], Optional[int]] = {}
 
+# ── Per-run reference-table lookup cache ─────────────────────────────────────
+# _get_or_create* раніше вантажили ЦІЛУ довідкову таблицю (brands 1103, colors
+# 697, …) на КОЖЕН товар → десятки млн зайвих завантажень (93% часу фази товарів).
+# Цей кеш індексує таблицю ОДИН раз за прогін: {cache_key: {norm_value: id}}.
+# Скидається на старті кожного run_* (щоб між прогонами перейменування/видалення
+# довідника не давало застарілих влучань). Кожен кеш-хіт валідується проти живої
+# сесії (session.query(model).get(id) / SELECT WHERE id) — id відкоченого/
+# видаленого рядка → міс → падаємо у звичайний scan+create, тож поведінка
+# ІДЕНТИЧНА некешованому коду.
+_ref_lookup_cache: dict[str, dict[str, int]] = {}
+_ref_lookup_loaded: set[str] = set()
+
+
+def _reset_ref_lookup_cache() -> None:
+    """Очистити per-run кеш довідкових лукапів. Викликати на старті кожного run_*."""
+    _ref_lookup_cache.clear()
+    _ref_lookup_loaded.clear()
+
+
+def _ref_cache_table(cache_key: str, loader) -> dict[str, int]:
+    """Повернути (лениво заповнений один раз) індекс {norm_value: id} для cache_key.
+
+    ``loader`` — callable, що повертає ітерабель (norm_value, id) для ВСІЄЇ таблиці;
+    викликається щонайбільше раз на прогін. Перший запис на ключ виграє (setdefault) —
+    дзеркалить «перший збіг у порядку сканування» лінійного пошуку (дублікатів
+    norm_value у довідниках немає — перевірено, тож це не впливає).
+    """
+    tbl = _ref_lookup_cache.setdefault(cache_key, {})
+    if cache_key not in _ref_lookup_loaded:
+        for nv, rid in loader():
+            if nv:
+                tbl.setdefault(nv, rid)
+        _ref_lookup_loaded.add(cache_key)
+    return tbl
+
 
 def _resolve_shoe_lookup_id(session, table: str, name_col: str, value: str) -> Optional[int]:
     """
@@ -2212,23 +2247,40 @@ def _get_or_create(session: Session, model, unique_field: str, value: str):
                 if target_brand:
                     return target_brand
 
-        # Step 3: Normal lookup by normalized key
-        all_rows = session.query(model).all()
-        for row in all_rows:
-            db_val = getattr(row, unique_field, None)
-            if db_val and _normalize_brand_key(db_val) == val_key:
+        # Step 3: Normal lookup by normalized key — кешовано (див. _ref_cache_table).
+        # Ключ кешу окремий ('brands:normkey'), бо порівняння тут через
+        # _normalize_brand_key, а не .lower() як у загальній гілці нижче.
+        btbl = _ref_cache_table(
+            "brands:normkey",
+            lambda: ((_normalize_brand_key(getattr(r, "brandname", None) or ""), r.id)
+                     for r in session.query(Brand).all()),
+        )
+        rid = btbl.get(val_key)
+        if rid is not None:
+            row = session.query(Brand).get(rid)
+            if row is not None:
                 return row
+            btbl.pop(val_key, None)  # відкочено/видалено → створити заново нижче
         obj = Brand(brandname=value, normalized_name=val_key)
         session.add(obj)
         session.flush()
+        btbl[val_key] = obj.id
         return obj
 
     val_lower = value.lower()
-    all_rows = session.query(model).all()
-    for row in all_rows:
-        db_val = getattr(row, unique_field, None)
-        if db_val and db_val.strip().lower() == val_lower:
+    # Кешований лукап (замість повнотабличного скану на кожен товар). Валідація
+    # через session.query().get(): стале id (rollback/видалення) → міс → створення.
+    gtbl = _ref_cache_table(
+        getattr(model, "__tablename__", model.__name__),
+        lambda: (((getattr(r, unique_field, None) or "").strip().lower(), r.id)
+                 for r in session.query(model).all()),
+    )
+    rid = gtbl.get(val_lower)
+    if rid is not None:
+        row = session.query(model).get(rid)
+        if row is not None:
             return row
+        gtbl.pop(val_lower, None)
     # Описові довідники (sole_types, toe_shapes, ...) канон у БД з малої літери.
     # WKWebView капіталізує перше слово автоматично — нормалізуємо, щоб не плодити
     # «Шнурівка» поряд із «шнурівка». Бренди/типи/стать тримаємо як ввів користувач.
@@ -2246,6 +2298,9 @@ def _get_or_create(session: Session, model, unique_field: str, value: str):
     obj = model(**{unique_field: insert_val})
     session.add(obj)
     session.flush()
+    # Занести новостворений рядок у кеш — щоб наступні товари цього ж прогону
+    # знайшли його без повторного скану (ключ той самий value.lower()).
+    gtbl[val_lower] = obj.id
 
     # Auto-classify new colors into color groups
     if model is Color:
@@ -3432,15 +3487,29 @@ def _get_or_create_subtype(session: Session, name: str, type_id: Optional[int]) 
     # Capitalize first letter
     name = _normalize_ref_name(name)
     name_lower = name.lower()
-    rows = session.execute(text("SELECT id, subtypename FROM subtypes")).fetchall()
-    for r in rows:
-        if r[1] and r[1].strip().lower() == name_lower:
-            return r[0]
+    # Кешований лукап (subtypes=173 рядки × товари = зайвий скан). Матч ЛИШЕ за
+    # subtypename (як і раніше — typeid тут не в умові пошуку, лише при вставці).
+    stbl = _ref_cache_table(
+        "subtypes",
+        lambda: ((str(r[1]).strip().lower(), r[0])
+                 for r in session.execute(text("SELECT id, subtypename FROM subtypes")).fetchall()
+                 if r[1]),
+    )
+    rid = stbl.get(name_lower)
+    if rid is not None:
+        exists = session.execute(
+            text("SELECT 1 FROM subtypes WHERE id = :i"), {"i": rid}
+        ).fetchone()
+        if exists:
+            return rid
+        stbl.pop(name_lower, None)  # відкочено/видалено → створити заново
     row = session.execute(
         text("INSERT INTO subtypes (subtypename, typeid) VALUES (:n, :t) RETURNING id"),
         {"n": name, "t": type_id}
     ).fetchone()
     session.flush()
+    if row:
+        stbl[name_lower] = row[0]
     return row[0] if row else None
 
 
@@ -5079,6 +5148,7 @@ def run_products_parsing(
           'full'  = all batch sheets
     force: True → обійти file-gate (manual-тригер завжди читає; див. _file_gate_check).
     """
+    _reset_ref_lookup_cache()  # per-run кеш довідкових лукапів (свіжий на кожен прогін)
     gc = get_gc()
     sh = gc.open_by_key(JOURNAL_ID)
 
@@ -5367,6 +5437,7 @@ def run_orders_parsing(
           'full'  = all date sheets
     force: True → обійти file-gate (manual-тригер завжди читає; див. _file_gate_check).
     """
+    _reset_ref_lookup_cache()  # свіжий per-run кеш довідкових лукапів
     gc = get_gc()
     sh = gc.open_by_key(ORDERS_ID)
 
@@ -5495,6 +5566,7 @@ def run_workspace_parsing(
     Parse Воркспейс1 → merge into products or add as new.
     Always processes the single sheet (no mode/pagination needed).
     """
+    _reset_ref_lookup_cache()  # свіжий per-run кеш довідкових лукапів
     gc = get_gc()
     sh = gc.open_by_key(WORKSPACE_ID)
     ws = sh.worksheet(WORKSPACE_SHEET)
