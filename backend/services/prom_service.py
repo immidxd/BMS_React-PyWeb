@@ -320,7 +320,7 @@ _PROM_SHOE_GROUP = 154833694      # група каталогу «Взуття»
 
 def _bms_product_for_export(db: Session, product_id: int) -> Optional[dict]:
     row = db.execute(text("""
-        SELECT p.id, p.productnumber, p.model, p.price, p.description, p.extranote,
+        SELECT p.id, p.productnumber, p.official_photos_from, p.model, p.price, p.description, p.extranote,
                b.brandname, t.typename, t.id AS typeid, st.subtypename, st.id AS subtypeid,
                c.colorname, g.gendername, p.season, p.year,
                co.countryname AS manufacturer, cond.conditionname,
@@ -1008,9 +1008,14 @@ def _build_keywords(bms: dict, lang: str = "uk") -> str:
     return ", ".join(t for t in tags if t)[:1400]
 
 
-def _select_images(product_number: str):
+def _select_images(product_number: str, borrowed_from: Optional[str] = None):
     """Публічні R2-URL фото + їхній тип. ТАБУ: якщо є ОФІЦІЙНІ — беремо ЛИШЕ офіційні
     (реальні НЕ домішуємо ніколи); якщо офіційних немає — реальні (не-дефектні).
+
+    ⚠️ Пріоритет (дзеркалить ендпоінт /products/{id}/images): власні official →
+    ПОЗИЧЕНІ official від донора (`official_photos_from`, коли товар ідентичний і
+    свої студійні не завантажені) → власні real → none. Без цього товар із
+    підтягнутими офіційними фото хибно публікувався «з реальними» (image_kind='real').
     Повертає (urls, kind), kind ∈ {'official','real','none'}."""
     try:
         from services.product_images import list_images
@@ -1022,9 +1027,20 @@ def _select_images(product_number: str):
         from urllib.parse import unquote
     imgs = list_images(product_number)
     official = [i for i in imgs if getattr(i, "kind", "") == "official"]
-    # Табу на змішування: офіційні → лише офіційні; інакше — реальні (без дефектних).
-    chosen = official if official else [i for i in imgs if getattr(i, "kind", "") != "defect"]
-    kind = "official" if official else ("real" if chosen else "none")
+    if official:
+        chosen, kind = official, "official"
+    else:
+        # Позичені офіційні від донора (один хоп, як в ендпоінті): якщо власних
+        # офіційних нема, а є official_photos_from — беремо офіційні донора.
+        donor = (borrowed_from or "").strip()
+        donor_official = []
+        if donor and donor.lstrip("#").lower() != (product_number or "").lstrip("#").lower():
+            donor_official = [i for i in list_images(donor) if getattr(i, "kind", "") == "official"]
+        if donor_official:
+            chosen, kind = donor_official, "official"
+        else:
+            chosen = [i for i in imgs if getattr(i, "kind", "") != "defect"]
+            kind = "real" if chosen else "none"
     urls = []
     for e in chosen[:10]:
         u = getattr(e, "url", "") or ""
@@ -1037,9 +1053,9 @@ def _select_images(product_number: str):
     return urls, kind
 
 
-def _product_image_urls(product_number: str) -> List[str]:
-    """Лише URL-и (тип див. _select_images). Офіційні або реальні, ніколи не змішані."""
-    return _select_images(product_number)[0]
+def _product_image_urls(product_number: str, borrowed_from: Optional[str] = None) -> List[str]:
+    """Лише URL-и (тип див. _select_images). Офіційні (свої/позичені) або реальні, ніколи не змішані."""
+    return _select_images(product_number, borrowed_from)[0]
 
 
 # Група каталогу продавця (categoryId у фіді = ГРУПА, не маркетплейс-категорія;
@@ -1124,7 +1140,7 @@ def build_export_feed(db: Session, product_id: int, category_id: int, available:
     rows = rows if rows is not None else _export_rows(db, product_id)
     if not rows:
         raise RuntimeError("Товар не знайдено")
-    imgs = _product_image_urls(rows[0]["productnumber"])
+    imgs = _product_image_urls(rows[0]["productnumber"], rows[0].get("official_photos_from"))
     group_id = _PROM_GROUP_SHOES
     items = "".join(_feed_item(r, r["_sku"], available, imgs, group_id) for r in rows)
     # ОДНА категорія «Обувь» (Prom сам вкладе під корінь). Фід-імпорт НЕ матчить
@@ -1240,7 +1256,7 @@ def export_product_to_prom(db: Session, product_id: int, as_draft: bool = False,
         return {"ok": False, "error": "Товар не знайдено"}
     base = rows[0]
     number = (base["productnumber"] or "").lstrip("#")
-    imgs, image_kind = _select_images(base["productnumber"])
+    imgs, image_kind = _select_images(base["productnumber"], base.get("official_photos_from"))
     cat = _prom_category_for(db, token, base)
     skus = [r["_sku"] for r in rows]
     cond_l = str(base.get("conditionname") or "").strip().lower()
