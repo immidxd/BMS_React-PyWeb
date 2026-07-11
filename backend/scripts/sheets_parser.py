@@ -4982,7 +4982,22 @@ def _parse_workspace_sheet(
             pass
         else:
             # ── NEW or REUSE PRODUCT (без auto-merge) ────────────────────
-            target_pnum = pnum if pnum else "???"
+            # Немає власного «Номера» → перший КЛОН-номер стає productnumber:
+            #   • унікальний природний ключ (уникає колізії «???» по унікальному
+            #     індексу (productnumber,size,color) — раніше багато безномерних
+            #     клон-рядків, як А1241, взаємно конфліктували й не персистились);
+            #   • показується як ключовий номер (директива користувача).
+            # Якщо й клонів нема — лишаємо "???" (буде «Невідомо» в UI).
+            if pnum:
+                target_pnum = pnum
+            else:
+                _first_clone = ""
+                if clones_raw:
+                    for _part in re.split(r"[;,]", clones_raw):
+                        if _part.strip():
+                            _first_clone = _part.strip()
+                            break
+                target_pnum = (_normalize_pnum(_first_clone) or _first_clone) if _first_clone else "???"
             from sqlalchemy.exc import IntegrityError as _IE
 
             # Idempotency: якщо pnum уже є в БД — reuse, без створення дубля
@@ -5074,10 +5089,20 @@ def _parse_workspace_sheet(
                     ownercountryid        = own_id,
                     is_lost               = True,  # Воркспейс/Старі = загублені (Фаза 3: пошук оригіналу)
                 )
-                session.add(product)
+                # ⚠️ SAVEPOINT на рядок: конфлікт унікальності (uix_products_num_size_color)
+                # раніше робив ПОВНИЙ session.rollback() → зносив УСІ накопичені цього
+                # прогону товари (воркспейс комітить лише в кінці). Через це більшість
+                # клон-рядків «???» (А1253, А1241, …) не персистились. begin_nested()
+                # відкочує ЛИШЕ проблемний рядок, решта партії лишається.
+                # session.add ВСЕРЕДИНІ savepoint + expunge при відкаті — інакше
+                # об'єкт лишиться в session.new і наступний autoflush повторить його
+                # (вже поза цим try) → краш усього прогону.
+                sp_ws = session.begin_nested()
                 try:
+                    session.add(product)
                     session.flush()
                     _apply_product_materials(session, product.id, materials_parsed, ws.title)
+                    sp_ws.commit()  # release savepoint (товар лишається в зовнішній txn)
                     added += 1
                     touched_product_ids.add(product.id)
                     logger.info(
@@ -5086,7 +5111,11 @@ def _parse_workspace_sheet(
                         scored_candidates[0][1] if scored_candidates else 0,
                     )
                 except _IE:
-                    session.rollback()
+                    sp_ws.rollback()  # відкат ЛИШЕ цього рядка, не всієї партії
+                    try:
+                        session.expunge(product)  # прибрати з session.new (не ретраїти)
+                    except Exception:
+                        pass
                     skipped += 1
                     logger.warning(
                         "[workspace] SKIPPED conflict pnum=%s", target_pnum,
