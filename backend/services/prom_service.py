@@ -1309,6 +1309,21 @@ def export_product_to_prom(db: Session, product_id: int, as_draft: bool = False,
                              f"Дублікати не створюю. Щоб перезаписати — підтверди примусово."}
     target_skus = [r["_sku"] for r in rows]
 
+    # ⚠️ Позначаємо публікацію «в процесі» ОДРАЗУ — ДО повільного імпорту (той може чекати
+    # слот Prom до ~3.6 хв). Кладемо skus у prom_draft_queue → prom_product_status повертає
+    # 'pending' → чіп «Prom» стає активним МИТТЄВО (на картці/списку при поверненні), а
+    # pending-гард вище відхиляє повторні кліки по тому ж товару. Без цього юзер, не бачачи
+    # зміни чіпа, тисне «Prom» багато разів → дублікати-імпорти. На збої імпорту знімаємо.
+    for s in target_skus:
+        _queue_draft(db, s)
+
+    def _unqueue_inflight():
+        try:
+            db.execute(text("DELETE FROM prom_draft_queue WHERE sku = ANY(:s)"), {"s": target_skus})
+            db.commit()
+        except Exception:
+            db.rollback()
+
     # Overrides з діалогу публікації: ціна — на всі рядки; назви — лише для одиночного
     # товару (у ростовки назва генерується на кожен розмір); характеристики — на всі
     # (розмірні _AUTO_PARAMS відфільтрує _feed_item і підставить авто по-розмірно).
@@ -1363,17 +1378,16 @@ def export_product_to_prom(db: Session, product_id: int, as_draft: bool = False,
                     _t.sleep(_PROM_BUSY_SLEEP_SEC)  # інший імпорт (наш попередній або кабінет) ще йде
                     continue
                 if busy:
+                    _unqueue_inflight()  # публікація не відбулась → знімаємо «pending», щоб чіп повернувся
                     return {"ok": False, "error": "На Prom досі виконується інший імпорт понад "
                             "3.5 хв (ймовірно, з кабінету) — це вже не наша черга. Зачекай кілька "
                             "хвилин і натисни «Prom» ще раз."}
+                _unqueue_inflight()
                 return {"ok": False, "error": f"Prom [{r.status_code}]: {str(msg)[:200]}"}
 
-        # Черга «дотягнути в дзеркало»: створення асинхронне (1-3 хв), тож кладемо КОЖЕН
-        # sku у prom_draft_queue — щойно товар зʼявиться в /products/list, синк-цикл впише
-        # його в дзеркало й зніме з черги (для миттєвого «pending»-статусу чіпа). Плюс
-        # короткий фоновий «швидкий» прохід, щоб устигнути за ~хвилину.
-        for s in target_skus:
-            _queue_draft(db, s)
+        # Успіх: skus уже в prom_draft_queue (позначені «в процесі» ще до імпорту вище) —
+        # лишаємо їх; синк-цикл (+ швидкий фоновий прохід нижче) впише товар у дзеркало,
+        # щойно він зʼявиться в /products/list (створення на Prom асинхронне, 1-3 хв).
         import threading as _th
 
         def _quick(pending):
@@ -1402,6 +1416,10 @@ def export_product_to_prom(db: Session, product_id: int, as_draft: bool = False,
                 "category_id": cat, "images": len(imgs), "import_id": import_id,
                 "name": _build_name(base, "uk"), "as_draft": False, "note": note}
     except Exception as e:
+        try:
+            _unqueue_inflight()  # неочікуваний збій → зняти «pending», щоб чіп не завис
+        except Exception:
+            pass
         logger.error(f"Prom export failed for {number}: {e}")
         return {"ok": False, "error": str(e)}
 

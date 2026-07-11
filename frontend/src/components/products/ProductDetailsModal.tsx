@@ -175,6 +175,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
   const [profileNote, setProfileNote] = useState<string | null>(null);
   const [promBusy, setPromBusy] = useState(false);  // експорт/видалення товару на Prom
   const [promPublished, setPromPublished] = useState(false);  // чіп-стан «на Prom»
+  const [promPublishing, setPromPublishing] = useState(false);  // публікація в процесі (фон, до ~3.6хв)
   const [promPreview, setPromPreview] = useState<any | null>(null);  // дані діалогу публікації
   // Згорнуті підрозділи (Матеріали/Інше/Примітки) — за замовчуванням приховані,
   // розкриваються кліком. У режимі редагування завжди розгорнуті (щоб редагувати).
@@ -288,7 +289,8 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     const pid = productId;
     const pnum = (product?.productnumber || '').replace(/^#/, '');
     const wasAlreadyOnProm = !!promPreview.already_on_prom;
-    setPromPreview(null);  // діалог закривається негайно — публікація йде у фоні
+    setPromPreview(null);       // діалог закривається негайно — публікація йде у фоні
+    setPromPublishing(true);    // ⚠️ чіп ОДРАЗУ в стан «публікується» → не можна наспамити повторно
     taskManager.run(
       `Публікація ${pnum || 'товару'} на Prom`,
       async () => {
@@ -314,7 +316,9 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
           setPromPublished(true);
         },
       },
-    ).catch(() => { /* помилку показав taskManager */ });
+    )
+      .catch(() => { /* помилку показав taskManager; чіп повернеться (нижче) */ })
+      .finally(() => { if (curPidRef.current === pid) setPromPublishing(false); });
   };
 
   // Видалення товару з Prom (з підтвердженням) — знімає всі лістинги (і розміри ростовки)
@@ -334,7 +338,10 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     finally { setPromBusy(false); }
   };
 
-  const promToggle = () => (promPublished ? promDeleteFlow() : promPublishFlow());
+  const promToggle = () => {
+    if (promBusy || promPublishing) return;  // публікація в процесі — ігноруємо повторні кліки
+    return promPublished ? promDeleteFlow() : promPublishFlow();
+  };
   // Єдиний стиль кнопок заголовка (Редагувати/Google/Таблиця/Поставка) — однаковий
   // вигляд і поведінка попри різні функції: без підкреслень, плавний перехід.
   const HDR_BTN = "px-3 py-2 rounded-lg text-sm font-medium border border-gray-200 dark:border-gray-700 text-gray-600 hover:text-gray-900 hover:bg-gray-50 dark:text-gray-300 dark:hover:text-gray-100 dark:hover:bg-gray-800 transition-colors duration-150 flex items-center gap-1.5 no-underline hover:no-underline";
@@ -1397,16 +1404,16 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                   <button
                     type="button"
                     onClick={promToggle}
-                    disabled={promBusy}
-                    className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold border transition-colors disabled:opacity-50 ${
-                      promPublished
+                    disabled={promBusy || promPublishing}
+                    className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold border transition-colors disabled:opacity-60 disabled:cursor-not-allowed ${
+                      (promPublished || promPublishing)
                         ? 'bg-violet-700 text-white border-violet-800 dark:bg-violet-600 dark:border-violet-500'
                         : 'bg-gray-50 text-gray-500 border-gray-200 hover:bg-gray-100 dark:bg-gray-800 dark:text-gray-400 dark:border-gray-700 dark:hover:bg-gray-700'
                     }`}
-                    title={promPublished ? 'Прибрати товар з Prom' : 'Опублікувати товар на Prom'}
+                    title={promPublishing ? 'Публікується на Prom…' : (promPublished ? 'Прибрати товар з Prom' : 'Опублікувати товар на Prom')}
                   >
-                    {promBusy ? <SyncOutlined spin className="text-[11px]" /> : <ShoppingOutlined className="text-[11px]" />}
-                    <span>Prom</span>
+                    {(promBusy || promPublishing) ? <SyncOutlined spin className="text-[11px]" /> : <ShoppingOutlined className="text-[11px]" />}
+                    <span>{promPublishing ? 'Публікую…' : 'Prom'}</span>
                   </button>
                 </div>
                 <h2 className="text-2xl font-semibold text-gray-900 dark:text-gray-50 truncate leading-tight">
