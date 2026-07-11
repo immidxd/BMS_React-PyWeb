@@ -245,12 +245,31 @@ def start_auto_full_quick() -> Optional[int]:
     global _auto_job_id
     sess = SessionLocal()
     try:
-        # Sweep orphaned jobs: status='running' but process is dead (older than 1h with no end).
-        cutoff = datetime.datetime.utcnow() - datetime.timedelta(hours=1)
+        # Sweep orphaned jobs: status running/queued but process is dead.
+        #   • started_at < 1h тому  → running/queued надто довго (процес помер);
+        #   • started_at IS NULL    → job так і не стартував (потік помер до старту).
+        #     Раніше такі були НЕВИДИМІ для sweep (NULL < cutoff = NULL/false) → один
+        #     застряглий queued-job ВІЧНО блокував авто-парс. Тепер ловимо їх за
+        #     updated_at (мітка створення, default=utcnow у моделі): queued>10хв без
+        #     старту = мертвий. NULL updated_at = легасі-орфан (до цього фіксу) → теж
+        #     прибираємо. Свіжостворений job має updated_at≈now → не зачіпається (без гонки).
+        from sqlalchemy import or_, and_
+        now = datetime.datetime.utcnow()
+        run_cutoff = now - datetime.timedelta(hours=1)
+        queue_cutoff = now - datetime.timedelta(minutes=10)
         orphans = (
             sess.query(ParsingJob)
             .filter(ParsingJob.status.in_(["queued", "running"]))
-            .filter(ParsingJob.started_at < cutoff)
+            .filter(or_(
+                ParsingJob.started_at < run_cutoff,
+                and_(
+                    ParsingJob.started_at.is_(None),
+                    or_(
+                        ParsingJob.updated_at < queue_cutoff,
+                        ParsingJob.updated_at.is_(None),
+                    ),
+                ),
+            ))
             .all()
         )
         for o in orphans:

@@ -570,7 +570,11 @@ class ParsingJob(Base):
     mode = Column(String, nullable=False)
     status = Column(String, default="queued")
     started_at = Column(DateTime, nullable=True)
-    updated_at = Column(DateTime, nullable=True)
+    # default=utcnow → надійна мітка «коли створено» навіть для job, що так і не
+    # стартував (started_at лишається NULL). Reaper використовує її, щоб прибирати
+    # завислі queued-джоби (інакше NULL started_at робив їх невидимими для sweep
+    # → один застряглий job вічно блокував фоновий авто-парс).
+    updated_at = Column(DateTime, nullable=True, default=datetime.utcnow)
     ended_at = Column(DateTime, nullable=True)
     total_items = Column(Integer, nullable=True)
     processed_items = Column(Integer, default=0)
