@@ -206,25 +206,29 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     if (!productId || catalogSaving) return;
     const next = !(catalogStatus?.is_published);
     // Товар «Загублений» (is_lost, Воркспейс/Match Finder) публічний каталог ЗАВЖДИ
-    // ховає, незалежно від is_published — щоб не дублювати щойно пережиту плутанину
-    // («опублікував, а його нема»), попереджаємо і просимо підтвердити ще на цьому кроці.
+    // ховає, незалежно від is_published. Підтвердження в діалозі одразу знімає
+    // is_lost (clear_lost) — товар реально зʼявляється, без другого кроку.
+    let clearLost = false;
     if (next && (p as any)?.is_lost) {
       const ok = await confirmDialog({
         title: 'Товар позначено «Загублений»',
-        body: 'Цей товар — кандидат на пошук оригіналу (Воркспейс/Match Finder). Навіть після '
-          + 'публікації він НЕ зʼявиться в публічному каталозі, доки з нього не знято позначку '
-          + '«Загублений». Опублікувати все одно?',
+        body: 'Цей товар — кандидат на пошук оригіналу (Воркспейс/Match Finder). Публікація в '
+          + 'каталозі автоматично зніме позначку «Загублений» (інакше товар лишиться прихованим). '
+          + 'Опублікувати?',
         okText: 'Опублікувати', kind: 'warning',
       });
       if (!ok) return;
+      clearLost = true;
     }
     setCatalogSaving(true);
     try {
       const r = await productService.setCatalogStatus(productId, {
         is_published: next,
         is_featured: next ? (catalogStatus?.is_featured ?? false) : false,
+        clear_lost: clearLost,
       });
       setCatalogStatus({ is_published: r.is_published, is_featured: r.is_featured });
+      if (clearLost) setProduct((prev) => (prev ? ({ ...prev, is_lost: false } as any) : prev));
       notify.success({ message: next ? 'Опубліковано в каталозі' : 'Знято з публікації', duration: 2 });
     } catch {
       notify.error({ message: 'Не вдалося оновити публікацію' });

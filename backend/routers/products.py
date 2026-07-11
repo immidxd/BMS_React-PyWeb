@@ -676,16 +676,23 @@ async def update_product_catalog_status(
     product_id: int = Path(..., ge=1, description="ID товару"),
     is_published: bool = Body(..., embed=True),
     is_featured: bool = Body(False, embed=True),
+    clear_lost: bool = Body(False, embed=True),
     db: Session = Depends(get_db),
 ):
     """Опублікувати/зняти товар у каталозі (+ «Рекомендований»). Upsert у
-    catalog_listings за productnumber — діє на всю картку (ростовку)."""
+    catalog_listings за productnumber — діє на всю картку (ростовку).
+    clear_lost=True (підтверджено користувачем у діалозі «Загублений») — заразом
+    знімає is_lost з усіх рядків номера, інакше публікація без ефекту (каталог
+    ховає is_lost незалежно від is_published)."""
     try:
         pnum = db.execute(
             text("SELECT productnumber FROM products WHERE id = :id"), {"id": product_id}
         ).scalar()
         if pnum is None:
             raise HTTPException(status_code=404, detail=f"Товар з ID {product_id} не знайдено")
+        if is_published and clear_lost:
+            db.execute(text("UPDATE products SET is_lost = false, updated_at = now() WHERE productnumber = :pn"),
+                      {"pn": pnum})
         # «Рекомендований» має сенс лише для опублікованого товару
         feat = bool(is_featured and is_published)
         db.execute(text("""

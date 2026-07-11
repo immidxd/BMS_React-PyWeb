@@ -244,7 +244,7 @@ export const productService = {
         return response.data;
     },
 
-    async setCatalogStatus(id: number, payload: { is_published: boolean; is_featured?: boolean }): Promise<{ success: boolean; productnumber: string; is_published: boolean; is_featured: boolean }> {
+    async setCatalogStatus(id: number, payload: { is_published: boolean; is_featured?: boolean; clear_lost?: boolean }): Promise<{ success: boolean; productnumber: string; is_published: boolean; is_featured: boolean }> {
         const response = await axios.patch(`${API_URL}/${id}/catalog`, payload);
         return response.data;
     },
