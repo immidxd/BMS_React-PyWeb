@@ -368,6 +368,124 @@ async def delete_product_from_delivery(
     return {"deleted": product_id}
 
 
+# ── Reconstruct a full sheet row from an existing product ─────────────────────
+def _product_full_sheet_map(detail: Dict[str, Any]) -> Dict[str, Any]:
+    """Зібрати ПОВНИЙ рядок аркуша з товару-з-реляціями (get_product_with_relations).
+
+    Повний, бо журнал-парсер при матчі очищає порожнім деякі поля
+    (clonednumbers/collection/gtin/geometric_shape/oldprice) — частковий рядок
+    призвів би до втрати даних на наступному парсі. Дзеркалить sheet_map з
+    add_product_to_delivery, але джерело — наявні дані товару.
+    """
+    def _meas(key):
+        v = detail.get(key)
+        return v if v is not None else None
+
+    # Матеріали (list {position, materialname}) → колонки за позицією.
+    mats: Dict[str, list] = {}
+    for m in (detail.get("materials") or []):
+        pos = (m.get("position") or "").strip()
+        nm = (m.get("materialname") or "").strip()
+        if pos and nm:
+            mats.setdefault(pos, []).append(nm)
+    _mat = lambda pos: "; ".join(mats.get(pos, [])) or None
+
+    sheet_map = {
+        "Номер": detail.get("productnumber"),
+        "Номера-клони": detail.get("clonednumbers"),
+        "Вид": detail.get("type_name"), "Підвид": detail.get("subtype_name"),
+        "Стиль": detail.get("style_name"), "Бренд": detail.get("brand_name"),
+        "Модель": detail.get("model"), "Маркування": detail.get("marking"),
+        "Рік": detail.get("year"), "Стать": detail.get("gender_name"),
+        "Сезон": detail.get("season"), "Колір": detail.get("color_name"),
+        "Опис": detail.get("description"), "Розмір": detail.get("sizeeu"),
+        "Буквений": detail.get("size_letter"), "СМ": detail.get("measurementscm"),
+        "Ціна": detail.get("price"), "Стара ціна": detail.get("oldprice"),
+        "Стан": detail.get("condition_name"), "Поточний стан": detail.get("current_condition_name"),
+        "Статус": detail.get("status_name") or "Непродано",
+        "Пакування": detail.get("packaging_name"),
+        "Країна-виробник": detail.get("manufacturer_country_name"),
+        "Країна-власник": detail.get("owner_country_name"),
+        "Екстра примітка": detail.get("extranote"),
+        "Колекція": detail.get("collection"), "GTIN": detail.get("gtin"),
+        "Геометрична форма": detail.get("geometric_shape"),
+        "Ширина": detail.get("width"), "Габарити": detail.get("dimensions"),
+        # Деталі (взуттєві lookup — назви)
+        "Тип підошви": detail.get("sole_type_name"), "Форма носка": detail.get("toe_shape_name"),
+        "Застібка": detail.get("fastening_type_name"), "Технології": detail.get("technology_name"),
+        "Колір підошви": detail.get("sole_color_name"), "Підкладка": detail.get("lining_name"),
+        "Тип каблука": detail.get("heel_type_name"), "Тип шнурівки": detail.get("lace_type_name"),
+        # Виміри (single: min==max → беремо min)
+        "Висота": _meas("measurements_height_min"),
+        "Товщина підошви": _meas("measurements_sole_thickness_min"),
+        "Підбор": _meas("measurements_heel_min"),
+        "Груди (н/о)": _meas("measurements_pog_min"), "Талія (н/о)": _meas("measurements_pot_min"),
+        "Бедра (н/о)": _meas("measurements_pob_min"), "Рукав": _meas("measurements_sleeve_min"),
+        "Довжина": _meas("measurements_length_min"),
+        # Матеріали
+        "Верх": _mat("upper"), "Середина": _mat("middle"), "Підошва": _mat("sole"),
+        "Проміжна підошва": _mat("midsole"), "Устілка": _mat("insole"), "Мембрана": _mat("membrane"),
+    }
+    return {k: v for k, v in sheet_map.items() if v not in (None, "")}
+
+
+@router.post("/api/deliveries/{delivery_id}/products/{product_id}/adopt")
+async def adopt_orphan_into_delivery(
+    delivery_id: int = Path(..., ge=1),
+    product_id: int = Path(..., ge=1),
+    db: Session = Depends(get_db),
+):
+    """Прийняти ОРФАНА (deliveryid IS NULL — воркспейс/загублений) у завіз.
+
+    Дописує ПОВНИЙ рядок товару у вкладку завозу (аркуш = джерело правди), потім
+    ставить deliveryid + is_lost=False. Аркуш — гейт: збій запису → БД не міняємо.
+    Лише для орфанів; товар, що вже в завозі, потребує справжнього переносу (окремо).
+    """
+    try:
+        from scripts.journal_writer import append_product_row, ADD_PRODUCT_ENABLED
+        from services.product_service import get_product_with_relations
+    except ImportError:
+        from backend.scripts.journal_writer import append_product_row, ADD_PRODUCT_ENABLED
+        from backend.services.product_service import get_product_with_relations
+
+    if not ADD_PRODUCT_ENABLED:
+        raise HTTPException(status_code=403, detail="Функція вимкнена (PARSER_ADD_PRODUCT=0)")
+
+    d = db.execute(text("SELECT id, deliveryname FROM deliveries WHERE id=:i"),
+                   {"i": delivery_id}).mappings().first()
+    if not d:
+        raise HTTPException(status_code=404, detail="Завіз не знайдено")
+    if not d["deliveryname"]:
+        raise HTTPException(status_code=400, detail="У завозу немає назви вкладки — неможливо дописати рядок")
+
+    p = db.execute(text("SELECT id, productnumber, deliveryid FROM products WHERE id=:pid"),
+                   {"pid": product_id}).mappings().first()
+    if not p:
+        raise HTTPException(status_code=404, detail="Товар не знайдено")
+    if p["deliveryid"] is not None:
+        raise HTTPException(status_code=409,
+                            detail="Товар уже належить завозу. Перенос між завозами — окрема дія (ще не реалізовано).")
+
+    detail = get_product_with_relations(db, product_id)
+    if not detail:
+        raise HTTPException(status_code=404, detail="Товар не знайдено (relations)")
+    field_values = _product_full_sheet_map(detail)
+
+    # Аркуш — гейт: спершу дописуємо рядок; лише при успіху міняємо БД.
+    try:
+        row_res = append_product_row(d["deliveryname"], field_values)
+    except Exception as e:
+        logger.error(f"adopt: append_product_row failed: {e}")
+        raise HTTPException(status_code=502, detail=f"Не вдалося дописати рядок у вкладку «{d['deliveryname']}»: {e}")
+
+    db.execute(text("UPDATE products SET deliveryid=:d, is_lost=false, updated_at=now() WHERE id=:pid"),
+               {"d": delivery_id, "pid": product_id})
+    db.commit()
+    logger.info(f"adopt: product {product_id} ({p['productnumber']}) → delivery {delivery_id} ({d['deliveryname']})")
+    return {"adopted": product_id, "deliveryid": delivery_id,
+            "deliveryname": d["deliveryname"], "sheet_row": row_res.get("row")}
+
+
 class NumberUpdate(BaseModel):
     productnumber: str
 
@@ -654,6 +772,17 @@ async def update_delivery_info(delivery_id: int = Path(..., ge=1),
             db.rollback()
             logger.warning(f"info DB-mirror failed (sheet ok): {e}")
     return res
+
+
+@router.get("/api/deliveries/names")
+async def get_delivery_names(db: Session = Depends(get_db)):
+    """Легкий список УСІХ завозів (id+назва) для дропдаунів (напр. «Прийняти у завіз»).
+    Без пагінації — лише два поля, найновіші зверху."""
+    rows = db.execute(text(
+        "SELECT id, deliveryname FROM deliveries WHERE deliveryname IS NOT NULL "
+        "ORDER BY deliverydate DESC NULLS LAST, id DESC"
+    )).mappings().all()
+    return {"items": [{"id": r["id"], "deliveryname": r["deliveryname"]} for r in rows]}
 
 
 @router.get("/api/deliveries")

@@ -181,6 +181,12 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
   const [openSections, setOpenSections] = useState<Record<string, boolean>>({});
   const toggleSection = (id: string) => setOpenSections((s) => ({ ...s, [id]: !s[id] }));
 
+  // ── «Прийняти у завіз» для орфанів (deliveryid=NULL: воркспейс/загублені) ────
+  const [adoptOpen, setAdoptOpen] = useState(false);
+  const [adoptDeliveries, setAdoptDeliveries] = useState<{ id: number; deliveryname: string }[]>([]);
+  const [adoptId, setAdoptId] = useState<number | null>(null);
+  const [adopting, setAdopting] = useState(false);
+
   // ── Публікація в публічний інтернет-каталог (Telegram Mini App) ────────────
   // Окремі endpoint-и (catalog_listings, ключ=productnumber → вся ростовка) →
   // це НЕ зачіпає збереження картки. Стан вантажиться/пишеться незалежно.
@@ -377,6 +383,40 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
         .catch(() => { /* best-effort */ });
     }
   }, [productId]);
+
+  // «Прийняти у завіз»: відкрити панель + підвантажити список завозів (для дропдауна).
+  const openAdopt = React.useCallback(async () => {
+    setAdoptOpen(true);
+    if (adoptDeliveries.length === 0) {
+      try {
+        const r = await fetch('/api/deliveries/names');
+        if (r.ok) {
+          const data = await r.json();
+          setAdoptDeliveries((data.items || []).map((d: any) => ({ id: d.id, deliveryname: d.deliveryname })));
+        }
+      } catch (e) { console.error('load deliveries', e); }
+    }
+  }, [adoptDeliveries.length]);
+
+  const doAdopt = React.useCallback(async () => {
+    if (!productId || !adoptId) return;
+    setAdopting(true);
+    try {
+      const r = await fetch(`/api/deliveries/${adoptId}/products/${productId}/adopt`, { method: 'POST' });
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({}));
+        throw new Error(err.detail || `HTTP ${r.status}`);
+      }
+      const res = await r.json();
+      notify.success({ message: `Товар прийнято у завіз «${res.deliveryname}»` });
+      setAdoptOpen(false); setAdoptId(null);
+      await loadProduct(false);  // deliveryid тепер є → кнопки «Поставка»/«Таблиця» зʼявляться
+    } catch (e: any) {
+      notify.error({ message: 'Не вдалося прийняти у завіз', description: e?.message });
+    } finally {
+      setAdopting(false);
+    }
+  }, [productId, adoptId, loadProduct]);
 
   // Фото вантажимо ОКРЕМО від товару. Спінер галереї тримаємо лише до soft-таймауту:
   // якщо Drive відповідає довго — показуємо плейсхолдер, але запит триває й фото
@@ -1388,6 +1428,49 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                   >
                     <TableOutlined style={{ fontSize: 14 }} /><span>Таблиця</span>
                   </button>
+                )}
+
+                {/* «Прийняти у завіз» — лише для орфанів (нема deliveryid: воркспейс/
+                    загублені). Дописує повний рядок у вкладку завозу + ставить
+                    deliveryid. Перенос уже-призначених товарів — окрема дія. */}
+                {!(p as any)?.deliveryid && (
+                  <div className="relative">
+                    <button
+                      onClick={() => (adoptOpen ? setAdoptOpen(false) : openAdopt())}
+                      className={HDR_BTN}
+                      title="Прийняти цей товар у завіз (дописати рядок у вкладку журналу)"
+                    >
+                      <InboxOutlined style={{ fontSize: 14 }} /><span>Прийняти у завіз</span>
+                    </button>
+                    {adoptOpen && (
+                      <div className="absolute right-0 top-full mt-1 z-50 w-72 p-3 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-lg">
+                        <div className="text-[11px] text-gray-500 dark:text-gray-400 mb-1.5">
+                          Оберіть завіз — рядок товару допишеться у його вкладку журналу.
+                        </div>
+                        <select
+                          value={adoptId ?? ''}
+                          onChange={(e) => setAdoptId(e.target.value ? Number(e.target.value) : null)}
+                          className="w-full text-sm px-2 py-1.5 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 text-gray-800 dark:text-gray-100 mb-2"
+                        >
+                          <option value="">— завіз —</option>
+                          {adoptDeliveries.map((d) => (
+                            <option key={d.id} value={d.id}>{d.deliveryname}</option>
+                          ))}
+                        </select>
+                        <div className="flex justify-end gap-2">
+                          <button
+                            onClick={() => { setAdoptOpen(false); setAdoptId(null); }}
+                            className="px-2.5 py-1 text-xs rounded border border-gray-200 dark:border-gray-700 text-gray-500 hover:bg-gray-50 dark:hover:bg-gray-700"
+                          >Скасувати</button>
+                          <button
+                            disabled={!adoptId || adopting}
+                            onClick={doAdopt}
+                            className="px-2.5 py-1 text-xs rounded bg-[#4267B2] text-white disabled:opacity-40 hover:opacity-90"
+                          >{adopting ? 'Приймаю…' : 'Прийняти'}</button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
                 )}
 
                 {/* «Знайти в Google» */}
