@@ -199,6 +199,19 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
   const toggleCatalogPublished = async () => {
     if (!productId || catalogSaving) return;
     const next = !(catalogStatus?.is_published);
+    // Товар «Загублений» (is_lost, Воркспейс/Match Finder) публічний каталог ЗАВЖДИ
+    // ховає, незалежно від is_published — щоб не дублювати щойно пережиту плутанину
+    // («опублікував, а його нема»), попереджаємо і просимо підтвердити ще на цьому кроці.
+    if (next && (p as any)?.is_lost) {
+      const ok = await confirmDialog({
+        title: 'Товар позначено «Загублений»',
+        body: 'Цей товар — кандидат на пошук оригіналу (Воркспейс/Match Finder). Навіть після '
+          + 'публікації він НЕ зʼявиться в публічному каталозі, доки з нього не знято позначку '
+          + '«Загублений». Опублікувати все одно?',
+        okText: 'Опублікувати', kind: 'warning',
+      });
+      if (!ok) return;
+    }
     setCatalogSaving(true);
     try {
       const r = await productService.setCatalogStatus(productId, {
