@@ -1315,12 +1315,19 @@ def export_product_to_prom(db: Session, product_id: int, as_draft: bool = False,
     try:
         import json as _json, time as _t
         payload = {"data": _json.dumps({"mark_missing_product_as": "none", "force_update": True})}
-        # Prom: 1 імпорт ЗА РАЗ («ограничение на запуск одновременных импортов»). Спершу
-        # серіалізуємо НАШІ імпорти локом (кілька публікацій підряд не стикаються), а якщо
-        # слот зайнятий кабінетом (400) — чекаємо й повторюємо (до ~48с), потім зрозуміла помилка.
+        # Prom: 1 імпорт ЗА РАЗ («ограничение на запуск одновременных импортов»). Наші
+        # виклики серіалізуються локом (нижче) — але сам Prom обробляє ПОПЕРЕДНІЙ імпорт
+        # АСИНХРОННО 1-3 хв (див. коментар до import_id нижче): якщо публікуєш товар Б
+        # одразу після успіху товару А, Prom-сервер ще фізично «зайнятий» довше, ніж старий
+        # бюджет очікування (~48с) чекав — звідси хибне «зачекай і натисни ще раз» попри
+        # робочу серіалізацію. Бюджет розширено до ~3.5 хв (з запасом над «1-3 хв»), щоб
+        # публікація «просто спрацьовувала» без ручного повтору. Виконується в пулі потоків
+        # (sync-роут) — довге очікування НЕ блокує сервер/інші запити.
         import_id = None
+        _PROM_BUSY_MAX_ATTEMPTS = 28
+        _PROM_BUSY_SLEEP_SEC = 8  # 27 повторів × 8с ≈ 216с (~3.6 хв)
         with _IMPORT_LOCK:
-            for attempt in range(7):
+            for attempt in range(_PROM_BUSY_MAX_ATTEMPTS):
                 r = requests.post(f"{PROM_API_BASE}/products/import_file",
                                   headers={"Authorization": f"Bearer {token}"},
                                   files={"file": ("feed.xml", feed.encode("utf-8"), "application/xml")},
@@ -1336,12 +1343,13 @@ def export_product_to_prom(db: Session, product_id: int, as_draft: bool = False,
                     msg = r.text
                 m = str(msg).lower()
                 busy = any(k in m for k in ("ограничен", "одновремен", "одночасн", "предыдущего импорт"))
-                if busy and attempt < 6:
-                    _t.sleep(7)           # інший імпорт (кабінет) ще йде — чекаємо звільнення слота
+                if busy and attempt < _PROM_BUSY_MAX_ATTEMPTS - 1:
+                    _t.sleep(_PROM_BUSY_SLEEP_SEC)  # інший імпорт (наш попередній або кабінет) ще йде
                     continue
                 if busy:
-                    return {"ok": False, "error": "На Prom зараз виконується інший імпорт (напевно з "
-                            "кабінету). Зачекай ~хвилину і натисни «Prom» ще раз."}
+                    return {"ok": False, "error": "На Prom досі виконується інший імпорт понад "
+                            "3.5 хв (ймовірно, з кабінету) — це вже не наша черга. Зачекай кілька "
+                            "хвилин і натисни «Prom» ще раз."}
                 return {"ok": False, "error": f"Prom [{r.status_code}]: {str(msg)[:200]}"}
 
         # Черга «дотягнути в дзеркало»: створення асинхронне (1-3 хв), тож кладемо КОЖЕН

@@ -278,23 +278,43 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     finally { setPromBusy(false); }
   };
 
-  // Підтвердження з діалогу: публікуємо з overrides (відредаговані назви/ціна/характеристики)
-  const promConfirmPublish = async (overrides: any) => {
+  // Підтвердження з діалогу: публікуємо з overrides (відредаговані назви/ціна/характеристики).
+  // ФОНОВА задача (taskManager): Prom обробляє попередній імпорт асинхронно 1-3 хв, тож
+  // бекенд може чекати слоту до ~3.5 хв (щоб публікація «просто спрацьовувала» без ручного
+  // повтору) — інлайн-очікування заблокувало б діалог. Закриваємо діалог ОДРАЗУ, публікація
+  // доробиться сама; можна одразу відкрити наступний товар і публікувати далі підряд.
+  const promConfirmPublish = (overrides: any) => {
     if (!productId || !promPreview) return;
-    setPromBusy(true);
-    try {
-      const ex = await fetch('/api/publications/prom/export-product', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ product_id: productId, as_draft: false,
-                               force: !!promPreview.already_on_prom, overrides }),
-      });
-      const r = await ex.json();
-      if (ex.ok) {
-        setPromPublished(true); setPromPreview(null);
-        notify.success({ message: r.note || 'Опубліковано на Prom.', duration: 4 });
-      } else notify.error({ message: `Prom: ${r.detail || ex.status}` });
-    } catch (e: any) { notify.error({ message: `Prom: ${e.message || 'Помилка'}` }); }
-    finally { setPromBusy(false); }
+    const pid = productId;
+    const pnum = (product?.productnumber || '').replace(/^#/, '');
+    const wasAlreadyOnProm = !!promPreview.already_on_prom;
+    setPromPreview(null);  // діалог закривається негайно — публікація йде у фоні
+    taskManager.run(
+      `Публікація ${pnum || 'товару'} на Prom`,
+      async () => {
+        const ex = await fetch('/api/publications/prom/export-product', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ product_id: pid, as_draft: false,
+                                 force: wasAlreadyOnProm, overrides }),
+        });
+        const r = await ex.json();
+        if (!ex.ok) {
+          const err: any = new Error(r.detail || `HTTP ${ex.status}`);
+          err.response = { data: { detail: r.detail } };
+          throw err;
+        }
+        return r;
+      },
+      {
+        silentSuccess: true,  // повідомлення формуємо самі — використовуємо r.note з бекенду
+        errorMsg: `Публікація ${pnum} на Prom`,
+        onSuccess: (r: any) => {
+          notify.success({ message: r.note || 'Опубліковано на Prom.', duration: 4 });
+          if (curPidRef.current !== pid) return;  // навігація геть — лише тост, стан не чіпаємо
+          setPromPublished(true);
+        },
+      },
+    ).catch(() => { /* помилку показав taskManager */ });
   };
 
   // Видалення товару з Prom (з підтвердженням) — знімає всі лістинги (і розміри ростовки)
