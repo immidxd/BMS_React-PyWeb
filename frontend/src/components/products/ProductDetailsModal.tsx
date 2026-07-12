@@ -650,6 +650,11 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     setEditMode(false);
     setSaveError(null);
     setOpenSections({});
+    // ⚠️ Prom-стан транзієнтний і ПЕР-ТОВАРНИЙ: скидаємо при переході, інакше «Публікую…»
+    // від попереднього товару «прилипає» до наступного й блокує кнопку (масове публікування
+    // ламалось). Реальний статус нового товару підтягне refreshPromStatus нижче.
+    setPromPublishing(false);
+    setPromBusy(false);
 
     const seq = ++loadSeqRef.current;
     if (!isNavigation) {

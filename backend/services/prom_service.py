@@ -321,6 +321,7 @@ _PROM_SHOE_GROUP = 154833694      # група каталогу «Взуття»
 def _bms_product_for_export(db: Session, product_id: int) -> Optional[dict]:
     row = db.execute(text("""
         SELECT p.id, p.productnumber, p.official_photos_from, p.model, p.price, p.description, p.extranote,
+               p.dimensions,
                b.brandname, t.typename, t.id AS typeid, st.subtypename, st.id AS subtypeid,
                c.colorname, g.gendername, p.season, p.year,
                co.countryname AS manufacturer, cond.conditionname,
@@ -1091,6 +1092,32 @@ def _export_rows(db: Session, product_id: int) -> List[dict]:
     return rows
 
 
+def _parse_dimensions(raw) -> tuple:
+    """«Габарити» → (width, height, length) у см для Prom-полів «Габаритні розміри».
+
+    Формат довільний: `29x49x18`, `48х39` (2 значення), змішані роздільники (латинська
+    `x` + кирилична `х` + `*`/`×`), десяткові через кому/крапку. Порядок у цій базі —
+    Ширина×Висота×Довжина(глибина). 2 значення → лише W×H (length=None). <2 → усе None.
+    """
+    if not raw:
+        return (None, None, None)
+    import re as _re
+    parts = [p.strip().replace(",", ".") for p in _re.split(r"[xх×*]", str(raw), flags=_re.IGNORECASE) if p.strip()]
+    nums = []
+    for p in parts:
+        m = _re.search(r"\d+(?:\.\d+)?", p)
+        if m:
+            try:
+                nums.append(float(m.group()))
+            except ValueError:
+                pass
+    if len(nums) < 2:
+        return (None, None, None)
+    w, h = nums[0], nums[1]
+    l = nums[2] if len(nums) >= 3 else None
+    return (w, h, l)
+
+
 def _feed_item(bms: dict, sku: str, available: bool, imgs: List[str], group_id: int) -> str:
     """Один <item> фіду для конкретного лістингу (розміру)."""
     # Overrides з діалогу публікації (ціна/назви/характеристики, ключі _ov_*);
@@ -1125,6 +1152,16 @@ def _feed_item(bms: dict, sku: str, available: bool, imgs: List[str], group_id: 
     parts.append(f"<description_ua><![CDATA[{desc_ua}]]></description_ua>")
     for u in imgs:
         parts.append(tag("image", u))
+    # Габаритні розміри Prom (сумки/рюкзаки/валізи мають «Габарити», взуття — ні):
+    # заповнюємо width/height/length (см) з поля dimensions, якщо наявні. Глибша
+    # інтеграція — Prom рахує доставку з цих полів замість «середнього по категорії».
+    _w, _h, _l = _parse_dimensions(bms.get("dimensions"))
+    if _w is not None:
+        parts.append(tag("width", _fmt_num(_w)))
+    if _h is not None:
+        parts.append(tag("height", _fmt_num(_h)))
+    if _l is not None:
+        parts.append(tag("length", _fmt_num(_l)))
     for pn, pv in params:
         parts.append(f'<param name={_xqattr(pn)}>{_xesc(pv)}</param>')
     parts.append("</item>")
