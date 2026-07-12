@@ -1067,16 +1067,42 @@ _PROM_GROUP_SHOES = 155060318     # «Обувь» (актуальна груп�
 _PROM_GROUP_SHOES_NAME = "Обувь"
 
 
+def _available_by_size(db: Session, productnumber: str) -> dict:
+    """{sizeeu → доступна к-сть} для номера. Доступно = GREATEST(quantity − sold, 0),
+    де sold — канонічна формула (Підтв+Оплач АБО Подарунок, мінус Повернення). Ключ
+    '' — для товарів без EU-розміру (сумки/аксесуари). Для наповнення Prom-«Залишки»."""
+    rows = db.execute(text("""
+        SELECT COALESCE(p.sizeeu, '') AS sz,
+               COALESCE(SUM(GREATEST(COALESCE(p.quantity,0) - COALESCE(s.sold_count,0), 0)), 0) AS avail
+        FROM products p
+        LEFT JOIN (
+            SELECT oi.product_id,
+                   GREATEST(COUNT(*) FILTER (WHERE o.order_status_id=7 OR (o.order_status_id=1 AND o.payment_status_id=1))
+                            - COUNT(*) FILTER (WHERE o.order_status_id=9), 0) AS sold_count
+            FROM order_items oi JOIN orders o ON o.id=oi.order_id
+            WHERE o.order_status_id IN (1,7,9)
+            GROUP BY oi.product_id
+        ) s ON s.product_id = p.id
+        WHERE p.productnumber = :pn
+        GROUP BY COALESCE(p.sizeeu, '')
+    """), {"pn": productnumber}).fetchall()
+    return {str(r[0]).strip(): int(r[1] or 0) for r in rows}
+
+
 def _export_rows(db: Session, product_id: int) -> List[dict]:
     """Рядки для експорту: 1 розмір → 1 лістинг (sku=номер); РОСТОВКА (N розмірів) →
-    N лістингів (sku=«номер-розмір»), кожен зі своїм єдиним розміром. Поле _sku — sku лістингу."""
+    N лістингів (sku=«номер-розмір»), кожен зі своїм єдиним розміром. Поле _sku — sku лістингу.
+    _qty — реальна доступна к-сть саме цього розміру (Prom-«Залишки»)."""
     bms = _bms_product_for_export(db, product_id)
     if not bms:
         return []
     num = (bms["productnumber"] or "").lstrip("#")
+    avail = _available_by_size(db, bms["productnumber"])
     sizes = [str(s).strip() for s in (bms.get("sizes") or []) if str(s).strip()]
     if len(sizes) <= 1:
         bms["_sku"] = num
+        # Одиничний лістинг = вся наявність номера (для товару без ростовки — його ж).
+        bms["_qty"] = sum(avail.values())
         return [bms]
     # Ростовка: у кожного розміру СВОЯ довжина устілки (см) — тягнемо по рядках номера.
     cm = {str(r[0]).strip(): (r[1] or r[2]) for r in db.execute(text(
@@ -1088,6 +1114,7 @@ def _export_rows(db: Session, product_id: int) -> List[dict]:
         r["sizes"] = [sz]
         r["_sku"] = f"{num}-{sz}"
         r["_insole"] = cm.get(sz)
+        r["_qty"] = avail.get(sz, 0)   # доступно саме цього розміру
         rows.append(r)
     return rows
 
@@ -1133,14 +1160,20 @@ def _feed_item(bms: dict, sku: str, available: bool, imgs: List[str], group_id: 
                   if str(n).strip() and str(v).strip() and str(n).strip() not in _AUTO_PARAMS] + auto_kept
     kw_ru = _build_keywords(bms, "ru"); kw_ua = _build_keywords(bms, "uk")
 
+    # Залишок = реальна доступна к-сть саме цього розміру/кольору (_qty з _export_rows).
+    # Розмір із 0 наявних → not_available + quantity 0: НЕ публікуємо розпроданий розмір
+    # як доступний (інакше оверсейл на Prom). available=False (draft) вимикає все.
+    qty = int(bms.get("_qty") or 0)
+    item_available = bool(available) and qty > 0
+
     def tag(t, v):
         return f"<{t}>{_xesc(str(v))}</{t}>"
     parts = [
-        f'<item id={_xqattr(sku)} available="{"true" if available else "false"}">',
+        f'<item id={_xqattr(sku)} available="{"true" if item_available else "false"}">',
         tag("price", price), tag("currencyId", "UAH"), tag("categoryId", group_id),
         tag("name", name_ru), tag("name_ua", name_ua), tag("vendorCode", sku),
-        tag("quantity_in_stock", 1),        # залишок: 1 (одиничний товар/розмір)
-        tag("presence", "available" if available else "not_available"),
+        tag("quantity_in_stock", qty),
+        tag("presence", "available" if item_available else "not_available"),
     ]
     if bms.get("brandname"):
         parts.append(tag("vendor", bms["brandname"]))
