@@ -248,18 +248,23 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     } finally { setCatalogSaving(false); }
   };
 
+  // Звірити чіп «Prom» з АВТОРИТЕТНИМ статусом бекенда (prom_products-дзеркало АБО
+  // prom_draft_queue='pending'). Викликаємо після публікації (успіх/збій) — бекенд
+  // сам ставить/знімає чергу, тож чіп завжди коректний і не «зависає» активним.
+  const refreshPromStatus = React.useCallback(async (pid: number) => {
+    try {
+      const r = await fetch(`/api/publications/prom/product-status/${pid}`);
+      if (r.ok) { const d = await r.json(); if (curPidRef.current === pid) setPromPublished(!!d.on_prom); }
+    } catch { /* ignore */ }
+  }, []);
+
   // Чіп «Prom»: живий статус з бекенда (включно з чернеткою/pending) — НЕ залежить від
   // on_display-синку, тож лишається активним одразу після публікації й при поверненні.
   useEffect(() => {
     if (!productId || !open) return;
-    let cancelled = false;
     setPromPublished(!!(product as any)?.published_prom);   // швидкий початковий хінт
-    fetch(`/api/publications/prom/product-status/${productId}`)
-      .then(r => (r.ok ? r.json() : null))
-      .then(d => { if (!cancelled && d) setPromPublished(!!d.on_prom); })
-      .catch(() => {});
-    return () => { cancelled = true; };
-  }, [productId, open, (product as any)?.published_prom]);
+    refreshPromStatus(productId);
+  }, [productId, open, (product as any)?.published_prom, refreshPromStatus]);
 
   // Публікація на Prom: прев'ю → ВЛАСНИЙ діалог (редагування назв/ціни/характеристик,
   // попередження про фото/стан всередині) → підтвердження → живий експорт з overrides.
@@ -311,14 +316,16 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
         silentSuccess: true,  // повідомлення формуємо самі — використовуємо r.note з бекенду
         errorMsg: `Публікація ${pnum} на Prom`,
         onSuccess: (r: any) => {
-          notify.success({ message: r.note || 'Опубліковано на Prom.', duration: 4 });
-          if (curPidRef.current !== pid) return;  // навігація геть — лише тост, стан не чіпаємо
-          setPromPublished(true);
+          notify.success({ message: r.note || 'Публікація в черзі на Prom.', duration: 5 });
         },
       },
     )
-      .catch(() => { /* помилку показав taskManager; чіп повернеться (нижче) */ })
-      .finally(() => { if (curPidRef.current === pid) setPromPublishing(false); });
+      .catch(() => { /* помилку показав taskManager; чіп звіримо нижче */ })
+      .finally(() => {
+        // Звіряємо чіп з бекендом (черга/дзеркало): успіх → 'pending' (активний),
+        // збій → бекенд зняв з черги → чіп повертається. Ніякого «зависання».
+        if (curPidRef.current === pid) { setPromPublishing(false); refreshPromStatus(pid); }
+      });
   };
 
   // Видалення товару з Prom (з підтвердженням) — знімає всі лістинги (і розміри ростовки)

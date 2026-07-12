@@ -1342,86 +1342,93 @@ def export_product_to_prom(db: Session, product_id: int, as_draft: bool = False,
     # ЖИВА публікація (available=true, on_display): Prom API НЕ показує чернетки в
     # /products/list, тож draft = невідстежуваний. Живий товар одразу видно в API —
     # дедуп/синк/бейдж/видалення працюють надійно. Створення асинхронне (1-3 хв).
-    feed = build_export_feed(db, product_id, cat, available=True, rows=rows)
     try:
+        feed = build_export_feed(db, product_id, cat, available=True, rows=rows)
+    except Exception as e:
+        _unqueue_inflight()  # фід не зібрався → зняти «pending», щоб чіп повернувся
+        logger.error(f"Prom feed build failed for {number}: {e}")
+        return {"ok": False, "error": str(e)}
+
+    n = len(target_skus)
+
+    # ── FIRE-AND-FORGET: імпорт у ФОНІ ──────────────────────────────────────────
+    # Prom обробляє 1 імпорт за раз + асинхронно 1-3 хв. При масовому публікуванні
+    # (кілька товарів підряд) слот зайнятий довго → раніше блокуючий запит із
+    # бюджетом ~3.6хв ПАДАВ на 3-4-му товарі («не вдалось опублікувати»). Тепер
+    # запит лише кладе в чергу (queue-early вище → чіп 'pending' одразу) і повертає
+    # 'queued'; сам import_file робить фоновий воркер, ТЕРПЛЯЧЕ чекаючи слот
+    # (серіалізація через _IMPORT_LOCK, до ~20хв). Тож публікуй скільки завгодно
+    # підряд — вони підуть по черзі БЕЗ збоїв. На реальному збої воркер знімає з черги
+    # → чіп повертається сам. Фід уже зібрано (з overrides) — передаємо рядком у тред.
+    import threading as _th
+
+    def _do_import_bg(_feed: str, _skus: list, _num: str):
         import json as _json, time as _t
+        from models.database import SessionLocal as _SL
         payload = {"data": _json.dumps({"mark_missing_product_as": "none", "force_update": True})}
-        # Prom: 1 імпорт ЗА РАЗ («ограничение на запуск одновременных импортов»). Наші
-        # виклики серіалізуються локом (нижче) — але сам Prom обробляє ПОПЕРЕДНІЙ імпорт
-        # АСИНХРОННО 1-3 хв (див. коментар до import_id нижче): якщо публікуєш товар Б
-        # одразу після успіху товару А, Prom-сервер ще фізично «зайнятий» довше, ніж старий
-        # бюджет очікування (~48с) чекав — звідси хибне «зачекай і натисни ще раз» попри
-        # робочу серіалізацію. Бюджет розширено до ~3.5 хв (з запасом над «1-3 хв»), щоб
-        # публікація «просто спрацьовувала» без ручного повтору. Виконується в пулі потоків
-        # (sync-роут) — довге очікування НЕ блокує сервер/інші запити.
+
+        def _drop_from_queue():
+            _db = _SL()
+            try:
+                _db.execute(text("DELETE FROM prom_draft_queue WHERE sku = ANY(:s)"), {"s": _skus})
+                _db.commit()
+            except Exception:
+                _db.rollback()
+            finally:
+                _db.close()
+
         import_id = None
-        _PROM_BUSY_MAX_ATTEMPTS = 28
-        _PROM_BUSY_SLEEP_SEC = 8  # 27 повторів × 8с ≈ 216с (~3.6 хв)
-        with _IMPORT_LOCK:
-            for attempt in range(_PROM_BUSY_MAX_ATTEMPTS):
-                r = requests.post(f"{PROM_API_BASE}/products/import_file",
-                                  headers={"Authorization": f"Bearer {token}"},
-                                  files={"file": ("feed.xml", feed.encode("utf-8"), "application/xml")},
-                                  data=payload, timeout=90)
-                if r.status_code < 400:
-                    import_id = (r.json() or {}).get("id")
-                    break
-                # Декодуємо повідомлення (r.text — з \u-escape, тож перевіряти треба ДЕКОДОВАНЕ).
-                try:
-                    j = r.json()
-                    msg = (j.get("error") or {}).get("message") or j.get("message") or r.text
-                except Exception:
-                    msg = r.text
-                m = str(msg).lower()
-                busy = any(k in m for k in ("ограничен", "одновремен", "одночасн", "предыдущего импорт"))
-                if busy and attempt < _PROM_BUSY_MAX_ATTEMPTS - 1:
-                    _t.sleep(_PROM_BUSY_SLEEP_SEC)  # інший імпорт (наш попередній або кабінет) ще йде
-                    continue
-                if busy:
-                    _unqueue_inflight()  # публікація не відбулась → знімаємо «pending», щоб чіп повернувся
-                    return {"ok": False, "error": "На Prom досі виконується інший імпорт понад "
-                            "3.5 хв (ймовірно, з кабінету) — це вже не наша черга. Зачекай кілька "
-                            "хвилин і натисни «Prom» ще раз."}
-                _unqueue_inflight()
-                return {"ok": False, "error": f"Prom [{r.status_code}]: {str(msg)[:200]}"}
-
-        # Успіх: skus уже в prom_draft_queue (позначені «в процесі» ще до імпорту вище) —
-        # лишаємо їх; синк-цикл (+ швидкий фоновий прохід нижче) впише товар у дзеркало,
-        # щойно він зʼявиться в /products/list (створення на Prom асинхронне, 1-3 хв).
-        import threading as _th
-
-        def _quick(pending):
-            import time as _t
-            from models.database import SessionLocal as _SL
-            for _ in range(24):          # ~4 хв швидких спроб
+        MAX_ATTEMPTS = 150  # 149 × 8с ≈ 20 хв терплячого очікування слоту (масова черга)
+        try:
+            with _IMPORT_LOCK:  # 1 наш імпорт за раз — публікації підряд шикуються сюди
+                for attempt in range(MAX_ATTEMPTS):
+                    try:
+                        r = requests.post(f"{PROM_API_BASE}/products/import_file",
+                                          headers={"Authorization": f"Bearer {token}"},
+                                          files={"file": ("feed.xml", _feed.encode("utf-8"), "application/xml")},
+                                          data=payload, timeout=90)
+                    except Exception as re:  # мережа/SSL — транзієнтне, повторюємо
+                        logger.warning(f"[prom-import] {_num} network error, retry: {re}")
+                        _t.sleep(8); continue
+                    if r.status_code < 400:
+                        import_id = (r.json() or {}).get("id"); break
+                    try:
+                        j = r.json(); msg = (j.get("error") or {}).get("message") or j.get("message") or r.text
+                    except Exception:
+                        msg = r.text
+                    busy = any(k in str(msg).lower() for k in ("ограничен", "одновремен", "одночасн", "предыдущего импорт"))
+                    if busy and attempt < MAX_ATTEMPTS - 1:
+                        _t.sleep(8); continue  # слот ще зайнятий (наш попередній/кабінет) — терпляче чекаємо
+                    _drop_from_queue()  # реальний збій або вичерпано бюджет → чіп повертається
+                    logger.error(f"[prom-import] {_num} FAILED [{r.status_code}]: {str(msg)[:200]}")
+                    return
+            logger.info(f"[prom-import] {_num} accepted import_id={import_id}")
+            # Швидкий прохід «дотягнути в дзеркало» (створення асинхронне 1-3 хв).
+            for _ in range(24):
                 _t.sleep(10)
                 _db = _SL()
                 try:
                     process_draft_queue(_db)
                     left = {x[0] for x in _db.execute(text("SELECT sku FROM prom_draft_queue")).fetchall()}
-                    if not (set(pending) & left):
+                    if not (set(_skus) & left):
                         break
                 except Exception:
                     pass
                 finally:
                     _db.close()
+        except Exception as e:
+            logger.error(f"[prom-import] {_num} crashed: {e}")
+            _drop_from_queue()
 
-        _th.Thread(target=_quick, args=(list(target_skus),), daemon=True).start()
+    _th.Thread(target=_do_import_bg, args=(feed, list(target_skus), number),
+               name=f"prom-import-{number}", daemon=True).start()
 
-        n = len(target_skus)
-        note = (f"Опубліковано на Prom {'товар' if n == 1 else f'{n} лістингів (по розміру)'} "
-                "(зʼявиться за 1-3 хв — створення на Prom асинхронне; вже видимий покупцям). "
-                "Перевір у кабінеті Prom; якщо щось не так — зніми чіпом «Prom».")
-        return {"ok": True, "sku": number, "skus": target_skus, "sizes_count": n,
-                "category_id": cat, "images": len(imgs), "import_id": import_id,
-                "name": _build_name(base, "uk"), "as_draft": False, "note": note}
-    except Exception as e:
-        try:
-            _unqueue_inflight()  # неочікуваний збій → зняти «pending», щоб чіп не завис
-        except Exception:
-            pass
-        logger.error(f"Prom export failed for {number}: {e}")
-        return {"ok": False, "error": str(e)}
+    note = (f"Публікація {number} у черзі — {'товар' if n == 1 else f'{n} лістингів (по розміру)'} "
+            "зʼявиться на Prom за 1-3 хв (створення асинхронне). Можна одразу публікувати "
+            "наступні — вони підуть по черзі. Стан оновиться сам (чіп «Prom»).")
+    return {"ok": True, "queued": True, "sku": number, "skus": target_skus, "sizes_count": n,
+            "category_id": cat, "images": len(imgs),
+            "name": _build_name(base, "uk"), "as_draft": False, "note": note}
 
 
 def delete_product_from_prom(db: Session, product_id: int) -> Dict:
