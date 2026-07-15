@@ -409,6 +409,7 @@ def _prom_category_for(db: Session, token: str, bms: dict) -> int:
 
 
 _GENDER_ADJ = {"чоловіча": "Чоловічі", "жіноча": "Жіночі", "дитяча": "Дитячі", "унісекс": "Унісекс"}
+_BAG_GENDER_ADJ = {"чоловіча": "Чоловіча", "жіноча": "Жіноча", "дитяча": "Дитяча", "унісекс": "Унісекс"}
 
 # Країна-власник бренду (публічні дані) → у дужках у описі: «Ecco (Данія)».
 BRAND_COUNTRY = {
@@ -478,6 +479,13 @@ def _cap(s):
 
 # Прикметник статі в назві — укр і рос.
 _GENDER_ADJ_RU = {"чоловіча": "Мужские", "жіноча": "Женские", "дитяча": "Детские", "унісекс": "Унисекс"}
+_BAG_GENDER_ADJ_RU = {"чоловіча": "Мужская", "жіноча": "Женская", "дитяча": "Детская", "унісекс": "Унисекс"}
+
+
+def _is_bag_type(bms: dict) -> bool:
+    """True for both real BMS spellings: Cyrillic ``Сумка`` and Latin-C ``Cумка``."""
+    typename = str(bms.get("typename") or "").strip().lower().replace("c", "с")
+    return typename == "сумка"
 
 
 def _val(bms: dict, key: str, lang: str, lower: bool = False) -> str:
@@ -495,18 +503,76 @@ def _val(bms: dict, key: str, lang: str, lower: bool = False) -> str:
 def _gender_adj(bms: dict, lang: str) -> Optional[str]:
     """Прикметник для назви/опису. ДИТЯЧЕ (за розміром/описом) завжди «Дитячі/Детские» —
     ніколи не «Унісекс/Чоловічі» (щоб Prom не кидав у дорослу категорію)."""
+    is_bag = _is_bag_type(bms)
     if _is_kids(bms):
+        if is_bag:
+            return "Детская" if lang == "ru" else "Дитяча"
         return "Детские" if lang == "ru" else "Дитячі"
     gl = str(bms.get("gendername") or "").strip().lower()
+    if is_bag:
+        return (_BAG_GENDER_ADJ_RU if lang == "ru" else _BAG_GENDER_ADJ).get(gl)
     return (_GENDER_ADJ_RU if lang == "ru" else _GENDER_ADJ).get(gl)
+
+
+def _feminize_color(value: str, lang: str) -> str:
+    """Inflect a masculine color adjective for a singular feminine bag title."""
+    def one(part: str) -> str:
+        part = part.strip()
+        if lang == "ru":
+            if part.endswith("ый"):
+                return part[:-2] + "ая"
+            if part.endswith("ий"):
+                return part[:-2] + "яя"
+            if part.endswith("ой"):
+                return part[:-2] + "ая"
+        else:
+            if part.endswith("ій"):
+                return part[:-2] + "я"
+            if part.endswith("ий"):
+                return part[:-2] + "а"
+        return part
+
+    return "/".join(one(part) for part in str(value or "").split("/"))
+
+
+def _title_color(bms: dict, lang: str) -> str:
+    if not _is_bag_type(bms):
+        return _val(bms, "colorname", lang, lower=True)
+
+    raw = str(bms.get("colorname") or "").strip().lower()
+    if not raw:
+        return ""
+    if lang != "ru":
+        return _feminize_color(raw, "uk")
+
+    # _val translates an exact whole cell, but bag colors frequently contain a
+    # slash-separated combination. Translate and inflect every part separately.
+    # If a rare color is absent from the RU map, keep a correct Ukrainian
+    # feminine fallback instead of producing malformed text such as
+    # «помаранчовяя» by applying Russian suffix rules to a Ukrainian adjective.
+    parts = []
+    for part in raw.split("/"):
+        part = part.strip()
+        translated = _COLOR_RU.get(part)
+        parts.append(
+            _feminize_color(translated.lower(), "ru")
+            if translated
+            else _feminize_color(part, "uk")
+        )
+    return "/".join(parts)
+
+
+def _title_type(bms: dict, lang: str) -> str:
+    """Normalize the legacy Latin-C bag spelling in customer-facing titles."""
+    return "сумка" if _is_bag_type(bms) else _val(bms, "typename", lang, lower=True)
 
 
 def _build_name(bms: dict, lang: str = "uk") -> str:
     """Назва: стать + тип + бренд + модель + колір + «N розмір» (число ПЕРЕД словом).
     lang='uk' (укр) або 'ru' (рос) — тип/колір/стать беруться відповідною мовою."""
     g = _gender_adj(bms, lang)
-    typ = _val(bms, "typename", lang, lower=True)
-    color = _val(bms, "colorname", lang, lower=True)
+    typ = _title_type(bms, lang)
+    color = _title_color(bms, lang)
     parts = [g, typ, bms.get("brandname"), bms.get("model"), color]
     name = " ".join(str(x).strip() for x in parts if x and str(x).strip())
     sizes = bms.get("sizes") or []
@@ -563,17 +629,37 @@ def _brand_with_country(brand: str, lang: str = "uk") -> str:
     return f"{brand} ({_country(c, lang)})" if c else str(brand or "")
 
 
+def _new_condition_word(bms: dict, lang: str, stock: bool = False) -> str:
+    """Return the grammatically correct ``new`` label for a Prom description.
+
+    BMS currently has both ``Сумка`` and the legacy look-alike ``Cумка`` (Latin
+    C). A bag is singular feminine, while footwear descriptions use plural.
+    """
+    is_bag = _is_bag_type(bms)
+    if lang == "ru":
+        value = "Новая" if is_bag else "Новые"
+    else:
+        value = "Нова" if is_bag else "Нові"
+    return f"{value} (Сток)" if stock else value
+
+
 def _condition_line(bms: dict, lang: str = "uk") -> Optional[str]:
     """Рядок «Стан» у описі. Новий/Хороший → «Нові…» (з пакуванням); Вживаний/
     Легковживаний/Пошкоджений → чесний реальний стан. lang керує мовою."""
     cond = str(bms.get("conditionname") or "").strip().lower()
     pack = str(bms.get("packagingname") or "").strip().lower()
     if cond in _COND_NEWLIKE:
+        # Порожнє пакування в BMS історично означає «без коробки». Для таких
+        # стокових товарів Prom має явно показувати «(Сток)». Так само коректно
+        # обробляємо довідникове значення «Без коробки», яке раніше помилково
+        # потрапляло у гілку «в коробці» лише через наявність слова «коробки».
+        if not pack or ("без" in pack and "коробк" in pack):
+            value = _new_condition_word(bms, lang, stock=True)
+            return f"{value}, без коробки"
         if "коробк" in pack:
-            return "Новые, в коробке" if lang == "ru" else "Нові, в коробці"
-        if not pack:
-            return "Новые, без коробки" if lang == "ru" else "Нові, без коробки"
-        return "Новые" if lang == "ru" else "Нові"
+            value = _new_condition_word(bms, lang)
+            return f"{value}, {'в коробке' if lang == 'ru' else 'в коробці'}"
+        return _new_condition_word(bms, lang)
     if cond in _COND_USED:                       # чесно показуємо реальний стан вживаного
         return _COND_DESC_RU.get(cond, "Б/у") if lang == "ru" else _cap(bms.get("conditionname"))
     return None
@@ -587,10 +673,10 @@ def _build_description(bms: dict, lang: str = "uk") -> str:
         return _DESC_LABELS_RU.get(uk_label, uk_label) if ru else uk_label
     brand = bms.get("brandname"); model = bms.get("model")
     g = _gender_adj(bms, lang) or ""
-    typ = _val(bms, "typename", lang, lower=True)
+    typ = _title_type(bms, lang)
     bm = " ".join(x for x in (brand, model) if x)
     head = " ".join(x for x in (g, typ) if x)
-    color = _val(bms, "colorname", lang, lower=True)
+    color = _title_color(bms, lang)
     title = f"{head} <b>{_xesc(bm)}</b>" + (f" {_xesc(color)}" if color else "")
 
     rows = []
@@ -631,7 +717,7 @@ _COLOR_RU = {
     "чорний": "Черный", "білий": "Белый", "сірий": "Серый", "червоний": "Красный",
     "синій": "Синий", "темно-синій": "Темно-синий", "блакитний": "Голубой",
     "зелений": "Зеленый", "салатовий": "Салатовый", "жовтий": "Желтый",
-    "помаранчевий": "Оранжевый", "оранжевий": "Оранжевый", "кораловий": "Коралловый",
+    "помаранчевий": "Оранжевый", "помаранчовий": "Оранжевый", "оранжевий": "Оранжевый", "кораловий": "Коралловый",
     "рожевий": "Розовый", "фіолетовий": "Фиолетовый", "бузковий": "Сиреневый",
     "коричневий": "Коричневый", "бежевий": "Бежевый", "світло-бежевий": "Бежевый",
     "золотий": "Золотой", "золотистий": "Золотой", "сріблястий": "Серебряный",
