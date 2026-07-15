@@ -27,17 +27,22 @@ export const ParsingStatus: React.FC<ParsingStatusProps> = ({ jobId = null, onCo
   // backwards when WS / poll payloads arrive out of order during a run.
   const percentRef = useRef(0);
 
-  // Auto-hide widget 5 seconds after parsing completes
+  // Auto-hide only SUCCESS. Failures/stalls must stay visible until the user
+  // explicitly closes them; otherwise a parser that never read Sheets looks
+  // indistinguishable from a successful run.
   const terminal = job?.status && ['succeeded','failed','canceled','stalled'].includes(job.status);
+  const succeeded = job?.status === 'succeeded';
+  const failed = job?.status === 'failed' || job?.status === 'stalled';
+  const canceled = job?.status === 'canceled';
   useEffect(() => {
-    if (terminal && onComplete) {
+    if (succeeded && onComplete) {
       autoHideRef.current = setTimeout(() => {
         onComplete();
         window.dispatchEvent(new Event('parsing-complete'));
       }, 5000);
     }
     return () => { if (autoHideRef.current) clearTimeout(autoHideRef.current); };
-  }, [terminal, onComplete]);
+  }, [succeeded, onComplete]);
 
   // Job-based live stream
   useEffect(() => {
@@ -137,7 +142,7 @@ export const ParsingStatus: React.FC<ParsingStatusProps> = ({ jobId = null, onCo
   let percent: number;
   if (showJob) {
     const p = Number(job?.percent);
-    percent = terminal ? 100 : Math.max(percentRef.current, Number.isFinite(p) ? p : percentRef.current);
+    percent = succeeded ? 100 : Math.max(percentRef.current, Number.isFinite(p) ? p : percentRef.current);
     percentRef.current = percent;
   } else {
     percent = (legacy && legacy.total > 0) ? Math.round((legacy.current / legacy.total) * 100) : 0;
@@ -146,19 +151,24 @@ export const ParsingStatus: React.FC<ParsingStatusProps> = ({ jobId = null, onCo
   const title = showJob ? `Парсинг (${job.mode || '...'})` : 'Парсинг даних';
   const terminalVisible = showJob && terminal;
   const subtitle = showJob
-    ? (terminalVisible ? 'Парсинг завершено' : `Статус: ${job.status}`)
+    ? (succeeded ? 'Парсинг завершено'
+      : failed ? 'Парсинг не виконано'
+      : canceled ? 'Парсинг скасовано'
+      : `Статус: ${job.status}`)
     : (legacy?.is_running ? 'Виконується...' : '');
   const statusLine = showJob ? `Статус: ${job.status}` : (showPendingJob ? 'З’єднання...' : (legacy?.task || ''));
+  const headerBg = failed ? '#b91c1c' : canceled ? '#92400e' : '#111';
+  const progressColor = failed ? '#dc2626' : canceled ? '#d97706' : '#111';
 
   return (
     <Fade in={visible} unmountOnExit timeout={250}>
     <Box sx={{ position: 'fixed', bottom: 16, right: 16, zIndex: 2000, width: 380 }}>
       <Paper elevation={6} sx={{ overflow: 'hidden' }}>
-        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', p: 1, bgcolor: '#111', color: '#fff', cursor: 'pointer' }} onClick={() => setExpanded(!expanded)}>
+        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', p: 1, bgcolor: headerBg, color: '#fff', cursor: 'pointer' }} onClick={() => setExpanded(!expanded)}>
           <Typography variant="subtitle2" sx={{ fontWeight: 'bold' }}>{subtitle || title}</Typography>
           <IconButton size="small" sx={{ color: 'inherit' }}>{expanded ? <ExpandMore/> : <ExpandLess/>}</IconButton>
         </Box>
-        <LinearProgress variant={Number.isFinite(percent) ? 'determinate' : 'indeterminate'} value={Number.isFinite(percent) ? Math.max(0, Math.min(100, percent)) : undefined} sx={{ height: 6, bgcolor: '#e5e5e5', '& .MuiLinearProgress-bar': { bgcolor: '#111' } }} />
+        <LinearProgress variant={Number.isFinite(percent) ? 'determinate' : 'indeterminate'} value={Number.isFinite(percent) ? Math.max(0, Math.min(100, percent)) : undefined} sx={{ height: 6, bgcolor: '#e5e5e5', '& .MuiLinearProgress-bar': { bgcolor: progressColor } }} />
         <Collapse in={expanded}>
           <Box sx={{ p: 2 }}>
             <Typography variant="body2" gutterBottom>{statusLine}</Typography>
@@ -176,9 +186,18 @@ export const ParsingStatus: React.FC<ParsingStatusProps> = ({ jobId = null, onCo
                 <Typography variant="caption" color="text.secondary">{legacy.current} / {legacy.total}</Typography>
               )}
             </Box>
+            {failed && job?.error_summary && (
+              <Alert severity="error" sx={{ mb: 1 }}>
+                {job.error_summary}
+              </Alert>
+            )}
             {terminalVisible && (
               <Box display="flex" alignItems="center" gap={1}>
-                <Chip label={`Завершено`} size="small" color="success" />
+                <Chip
+                  label={succeeded ? 'Завершено' : failed ? 'Помилка' : 'Скасовано'}
+                  size="small"
+                  color={succeeded ? 'success' : failed ? 'error' : 'warning'}
+                />
                 <Typography variant="caption" color="text.secondary">
                   {`Опрацьовано: ${job.processed_items ?? 0} за ${Math.max(0, Math.round(((job.ended_at ? new Date(job.ended_at).getTime() : Date.now()) - (job.started_at ? new Date(job.started_at).getTime() : Date.now()))/1000))}s`}
                 </Typography>
@@ -188,7 +207,16 @@ export const ParsingStatus: React.FC<ParsingStatusProps> = ({ jobId = null, onCo
               <Box sx={{ width: 8, height: 8, borderRadius: '50%', bgcolor: fresh ? 'green' : 'grey.500' }} />
               <Typography variant="caption" color="text.secondary">{lastPayloadTs ? `last ${Math.round((Date.now() - lastPayloadTs)/1000)}s` : '...'}</Typography>
               <Box flexGrow={1} />
-              {(showJob || showPendingJob) ? (
+              {terminalVisible ? (
+                <Button
+                  size="small"
+                  variant="contained"
+                  color={failed ? 'error' : succeeded ? 'success' : 'warning'}
+                  onClick={() => onComplete?.()}
+                >
+                  Закрити
+                </Button>
+              ) : (showJob || showPendingJob) ? (
                 <Button
                   size="small"
                   variant="outlined"
@@ -235,4 +263,4 @@ export const ParsingStatus: React.FC<ParsingStatusProps> = ({ jobId = null, onCo
     </Box>
     </Fade>
   );
-}; 
+};

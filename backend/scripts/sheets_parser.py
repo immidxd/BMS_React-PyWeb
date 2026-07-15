@@ -16,6 +16,7 @@ import os
 import re
 import time
 from datetime import datetime, date
+from pathlib import Path
 from typing import Optional, Callable
 
 import gspread
@@ -26,7 +27,38 @@ from sqlalchemy.orm import Session
 logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────────────────
-CREDS_PATH = "/Users/i.malashenko/Desktop/react-fastapi-app/mcp-google-sheets/working_credentials.json"
+try:
+    from services.runtime_config import credentials_file as _runtime_credentials_file
+except ImportError:
+    from backend.services.runtime_config import credentials_file as _runtime_credentials_file
+
+
+def get_credentials_path() -> str:
+    """Resolve Google credentials for every Sheets parser mode.
+
+    One resolver is shared by products/orders/full/workspace, manual runs,
+    startup auto-parse and the journal poller. No absolute machine path is
+    allowed here: dev-Mac and packaged Windows use runtime_config fallbacks.
+    """
+    resolved = _runtime_credentials_file("GOOGLE_SHEETS_CREDENTIALS_FILE")
+    if resolved:
+        return resolved
+
+    # Compatibility fallback for older developer setups that only define the
+    # key filename and keep it under backend/scripts/secure_creds/.
+    key_name = os.getenv("GOOGLE_SHEETS_JSON_KEY", "").strip()
+    if key_name:
+        candidate = Path(__file__).resolve().parent / "secure_creds" / key_name
+        if candidate.is_file():
+            return str(candidate.resolve())
+
+    raise FileNotFoundError(
+        "Google Sheets credentials не знайдено. Перевірте "
+        "GOOGLE_SHEETS_CREDENTIALS_FILE, BMS_DATA_DIR або "
+        "mcp-google-sheets/working_credentials.json."
+    )
+
+
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive",
@@ -920,7 +952,7 @@ SKIP_SHEETS_PATTERNS = re.compile(
 
 # ── GSheets client ────────────────────────────────────────────────────────────
 def get_gc() -> gspread.Client:
-    creds = Credentials.from_service_account_file(CREDS_PATH, scopes=SCOPES)
+    creds = Credentials.from_service_account_file(get_credentials_path(), scopes=SCOPES)
     gc = gspread.authorize(creds)
     # Таймаут HTTP-викликів до Google. БЕЗ нього мертвий сокет (типово після сну
     # Mac: TCP-з'єднання «напіввідкрите») висить ХВИЛИНАМИ/годинами — і будь-яка
@@ -4493,6 +4525,25 @@ def _parse_orders_sheet(
 
         if existing_order:
             # Оновлюємо існуюче замовлення (статуси, трекінг, тощо)
+            # Exact fingerprint може знайти старе parser-origin замовлення, яке
+            # колись створилось без client_id. Якщо поточний рядок уже однозначно
+            # розпізнав клієнта — дозаповнюємо ТІЛЬКИ порожню прив'язку. Наявного
+            # клієнта іншим автоматично не замінюємо (це потребує ручної звірки).
+            try:
+                from backend.utils.order_parser_logic import fill_missing_order_client
+            except ImportError:
+                from utils.order_parser_logic import fill_missing_order_client
+            if fill_missing_order_client(existing_order, client_id):
+                logger.info(
+                    "Order #%d: attached previously missing client_id=%d",
+                    existing_order.id, client_id,
+                )
+            elif client_id is not None and existing_order.client_id != client_id:
+                logger.warning(
+                    "Order #%d: parsed client_id=%d differs from existing client_id=%d; "
+                    "keeping existing link for safety",
+                    existing_order.id, client_id, existing_order.client_id,
+                )
             existing_order.order_status_id   = order_status_id
             existing_order.payment_status_id = pay_status_id
             existing_order.delivery_method_id= delivery_id
@@ -4609,23 +4660,14 @@ def _parse_orders_sheet(
             items_added += 1
             total_recalc += item_price
 
-        # Перераховуємо total_amount, якщо використано fallback-ціни з журналу
+        # Перераховуємо total_amount, якщо використано fallback-ціни з журналу.
+        # Статус products.statusid тут НАВМИСНО не змінюємо: це журнальний/ручний
+        # знімок. Живий «Продано» UI і публікації визначають через sold_count із
+        # order_items + orders (Підтверджено+Оплачено / Подарунок з урахуванням
+        # повернень). Старий блок нижче мав hardcode Продано=2, хоча у реальній БД
+        # id=2 означає Непродано, і зачіпав лише останній товар замовлення.
         if any_price_substituted and (not total_amount or total_amount <= 0):
             order.total_amount = total_recalc
-
-            # ── Автооновлення статусу на "Продано" ────────────────────────
-            # Якщо продукт залінкований і замовлення оплачене —
-            # ставимо "Продано" (id=2), якщо товар ще не має спецстатусу.
-            # Спецстатуси (Повернуто=6, Пошкоджений=8) не перезаписуються.
-            SOLD_STATUS_ID = 2
-            PAID_STATUSES = (pay_status_id,) if pay_status_id in (1, 2) else ()
-            SPECIAL_STATUSES = {6, 8}  # Повернуто, Пошкоджений
-            if (product
-                    and pay_status_id in (1, 2)
-                    and product.statusid not in SPECIAL_STATUSES
-                    and product.statusid != SOLD_STATUS_ID):
-                product.statusid = SOLD_STATUS_ID
-                product.updated_at = datetime.utcnow()
 
         session.commit()
 

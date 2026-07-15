@@ -37,7 +37,7 @@ import sys
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 logger = logging.getLogger("bms.runtime_config")
 
@@ -81,15 +81,25 @@ def credentials_file(env_var: str = "", filename: str = "working_credentials.jso
     """Шлях до файлу кредів сервіс-акаунта Google.
     Пріоритет: env (якщо заданий) → %BMS%/filename → legacy mcp-google-sheets/filename.
     У frozen-білді legacy-шляху нема → береться BMS-тека. Повертає None, якщо ніде нема.
+
+    Важливо: застарілий env-шлях не блокує portable fallback. Це трапляється після
+    перенесення каталогу проєкту або міграції Mac → Windows. Раніше такий шлях
+    повертався без перевірки, і всі режими парсингу падали вже у фоновому job.
     """
     if env_var:
         v = os.getenv(env_var)
         if v:
-            return v
+            env_path = Path(v).expanduser()
+            if not env_path.is_absolute():
+                env_path = _repo_root() / env_path
+            if env_path.is_file():
+                return str(env_path.resolve())
+            logger.warning("Credentials path from %s does not exist: %s; trying portable fallbacks",
+                           env_var, env_path)
     for cand in (config_dir() / filename,
                  _repo_root() / "mcp-google-sheets" / filename):
         if cand.is_file():
-            return str(cand)
+            return str(cand.resolve())
     return None
 
 

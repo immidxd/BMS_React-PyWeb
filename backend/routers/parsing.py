@@ -34,13 +34,14 @@ from services.parsing_service import (
 )
 from models.models import ParsingJob
 from models.database import get_db, SessionLocal
+from utils.parsing_modes import SHEETS_MODE_ROUTES, get_parsing_modes
 
 # Додаємо шлях до scripts
 scripts_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'scripts')
 sys.path.append(scripts_path)
 
 try:
-    from backend.scripts.unified_parser import UnifiedParser, ParsingMode, get_parsing_modes
+    from backend.scripts.unified_parser import UnifiedParser, ParsingMode
 except ImportError as e:
     # Defer logging until logger defined below
     # Fallback implementations
@@ -62,7 +63,7 @@ except ImportError as e:
         def cancel(self):
             pass
     
-    def get_parsing_modes():
+    def _legacy_get_parsing_modes():
         return [
             {
                 "id": "sheets_products_quick",
@@ -119,6 +120,26 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 if 'UnifiedParser' not in globals():
     logger.warning("UnifiedParser not available, using fallbacks")
+
+def _sheets_preflight_error() -> Optional[str]:
+    """Cheap local preflight shared by manual/auto/direct Sheets entrypoints."""
+    try:
+        try:
+            from scripts.sheets_parser import get_credentials_path
+        except ImportError:
+            from backend.scripts.sheets_parser import get_credentials_path
+        path = get_credentials_path()
+        if not os.path.isfile(path):
+            return f"Google Sheets credentials file is unavailable: {path}"
+        return None
+    except Exception as exc:
+        return str(exc)
+
+
+def _ensure_sheets_preflight() -> None:
+    error = _sheets_preflight_error()
+    if error:
+        raise HTTPException(status_code=503, detail=f"Парсинг не запущено: {error}")
 
 # Active parsing tasks
 active_parsing_tasks = {}
@@ -243,6 +264,10 @@ def start_auto_full_quick() -> Optional[int]:
     Job невидимий у UI: _run_sheets_job не бродкастить на legacy WS,
     а frontend не має jobId щоб показати ParsingStatus widget."""
     global _auto_job_id
+    preflight_error = _sheets_preflight_error()
+    if preflight_error:
+        logger.warning("Auto-parse skipped by preflight: %s", preflight_error)
+        return None
     sess = SessionLocal()
     try:
         # Sweep orphaned jobs: status running/queued but process is dead.
@@ -454,15 +479,13 @@ async def test_parsing_job(mode: str = "quick_update", db: Session = Depends(get
 @router.post("/run", tags=["parsing"])
 async def run_parsing_job(mode: str = "quick_update", params: Optional[Dict] = None, db: Session = Depends(get_db)):
     """Запускає парсинг. Sheets-режими (sheets_*) делегуються окремим handlers."""
-    # Manual parse → скасовуємо auto-job (якщо є), щоб не дублювати навантаження
-    _cancel_auto_if_running()
-    # ── Sheets режими: sheets_<target>_<speed> ──────────────────────────────
-    # mode examples: sheets_products_quick, sheets_orders_full, sheets_full_quick
-    if mode.startswith("sheets_"):
+    route = SHEETS_MODE_ROUTES.get(mode)
+    if route:
+        _ensure_sheets_preflight()
+        # Невалідний запит або відсутній key не повинні збивати живий auto-job.
+        _cancel_auto_if_running()
         import threading
-        parts = mode.split("_")  # ['sheets', target, speed]
-        target = parts[1] if len(parts) > 1 else "full"
-        speed  = parts[2] if len(parts) > 2 else "quick"
+        target, speed = route
         job = ParsingJob(mode=mode, status="queued")
         db.add(job)
         db.commit()
@@ -470,8 +493,8 @@ async def run_parsing_job(mode: str = "quick_update", params: Optional[Dict] = N
         t = threading.Thread(target=_run_sheets_job, args=(job.id, target, speed), daemon=True)
         t.start()
         return {"jobId": job.id, "mode": mode, "target": target, "speed": speed}
-    # Non-sheets modes: legacy UnifiedParser branch was removed — недосяжний з UI.
-    raise HTTPException(status_code=400, detail=f"Unsupported parsing mode '{mode}'. Use one of sheets_products_*, sheets_orders_*, sheets_full_*.")
+    allowed = ", ".join(SHEETS_MODE_ROUTES)
+    raise HTTPException(status_code=400, detail=f"Unsupported parsing mode '{mode}'. Allowed: {allowed}")
 
 @router.get("/jobs/{job_id}", tags=["parsing"])
 async def get_job(job_id: int, db: Session = Depends(get_db)):
@@ -767,6 +790,10 @@ async def delete_parsing_schedule(schedule_id: int, db: Session = Depends(get_db
 # ── Sheets parser endpoints ──────────────────────────────────────────────────
 def _run_sheets_job(job_id: int, target: str, mode: str):
     """Background thread: run sheets_parser and update ParsingJob row."""
+    if target not in {"products", "orders", "full", "workspace"}:
+        raise ValueError(f"Unsupported Sheets parsing target: {target}")
+    if mode not in {"quick", "full"}:
+        raise ValueError(f"Unsupported Sheets parsing speed: {mode}")
     import threading
     try:
         from scripts.sheets_parser import run_products_parsing, run_orders_parsing, run_full_parsing, run_workspace_parsing
@@ -775,6 +802,11 @@ def _run_sheets_job(job_id: int, target: str, mode: str):
 
     sess = SessionLocal()
     try:
+        # Повторна перевірка всередині worker закриває race: файл міг зникнути
+        # між HTTP-preflight та фактичним стартом фонового потоку.
+        preflight_error = _sheets_preflight_error()
+        if preflight_error:
+            raise RuntimeError(preflight_error)
         job = sess.query(ParsingJob).filter(ParsingJob.id == job_id).first()
         if not job:
             return
@@ -946,6 +978,9 @@ async def sheets_parse_products(mode: str = "quick", db: Session = Depends(get_d
     mode: quick (останні 30 аркушів) | full (всі аркуші)
     """
     import threading
+    if mode not in {"quick", "full"}:
+        raise HTTPException(status_code=400, detail="mode must be 'quick' or 'full'")
+    _ensure_sheets_preflight()
     _cancel_auto_if_running()
     job = ParsingJob(mode=f"sheets_products_{mode}", status="queued")
     db.add(job)
@@ -963,6 +998,9 @@ async def sheets_parse_orders(mode: str = "quick", db: Session = Depends(get_db)
     mode: quick (останні 30 аркушів) | full (всі аркуші)
     """
     import threading
+    if mode not in {"quick", "full"}:
+        raise HTTPException(status_code=400, detail="mode must be 'quick' or 'full'")
+    _ensure_sheets_preflight()
     _cancel_auto_if_running()
     job = ParsingJob(mode=f"sheets_orders_{mode}", status="queued")
     db.add(job)
@@ -980,6 +1018,9 @@ async def sheets_parse_full(mode: str = "quick", db: Session = Depends(get_db)):
     mode: quick | full
     """
     import threading
+    if mode not in {"quick", "full"}:
+        raise HTTPException(status_code=400, detail="mode must be 'quick' or 'full'")
+    _ensure_sheets_preflight()
     _cancel_auto_if_running()
     job = ParsingJob(mode=f"sheets_full_{mode}", status="queued")
     db.add(job)
@@ -998,6 +1039,7 @@ async def sheets_parse_workspace(db: Session = Depends(get_db)):
     Без співпадіння → новий запис (без номеру → productnumber='???').
     """
     import threading
+    _ensure_sheets_preflight()
     _cancel_auto_if_running()
     job = ParsingJob(mode="sheets_workspace", status="queued")
     db.add(job)

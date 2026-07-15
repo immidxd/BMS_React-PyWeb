@@ -776,51 +776,12 @@ class UnifiedParser:
 
 # Функції для використання з FastAPI
 def get_parsing_modes():
-    """Повертає доступні режими парсингу."""
-    return [
-        {
-            "id": "sheets_products_quick",
-            "name": "Товари — швидко (30 аркушів)",
-            "description": "Парсинг товарів з Google Sheets «Журнал» — останні 30 партій",
-            "icon": "⚡",
-            "estimated_time": "~2 хвилини"
-        },
-        {
-            "id": "sheets_products_full",
-            "name": "Товари — повний",
-            "description": "Парсинг усіх партій товарів з Google Sheets «Журнал»",
-            "icon": "📦",
-            "estimated_time": "~6 хвилин"
-        },
-        {
-            "id": "sheets_orders_quick",
-            "name": "Замовлення — швидко (30 аркушів)",
-            "description": "Парсинг замовлень з Google Sheets «Замовлення» — останні 30 аркушів",
-            "icon": "🛒",
-            "estimated_time": "~2 хвилини"
-        },
-        {
-            "id": "sheets_orders_full",
-            "name": "Замовлення — повний",
-            "description": "Парсинг усіх замовлень з Google Sheets «Замовлення»",
-            "icon": "�",
-            "estimated_time": "~6 хвилин"
-        },
-        {
-            "id": "sheets_full_quick",
-            "name": "Все — швидко (товари + замовлення)",
-            "description": "Швидкий парсинг і товарів, і замовлень (останні 30 аркушів кожного)",
-            "icon": "�",
-            "estimated_time": "~4 хвилини"
-        },
-        {
-            "id": "sheets_full_full",
-            "name": "Все — повний парсинг",
-            "description": "Повний парсинг усіх товарів і замовлень з Google Sheets",
-            "icon": "�",
-            "estimated_time": "~12 хвилин"
-        },
-    ]
+    """Backward-compatible export; metadata lives in a side-effect-free module."""
+    try:
+        from utils.parsing_modes import get_parsing_modes as _get_modes
+    except ImportError:
+        from backend.utils.parsing_modes import get_parsing_modes as _get_modes
+    return _get_modes()
 
 async def test_parser():
     """Тестова функція."""
@@ -833,4 +794,4 @@ async def test_parser():
     await parser.parse(ParsingMode.QUICK_UPDATE)
 
 if __name__ == "__main__":
-    asyncio.run(test_parser()) 
+    asyncio.run(test_parser())
