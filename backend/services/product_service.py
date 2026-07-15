@@ -216,6 +216,14 @@ _PRODUCT_FROM_SQL = """
             JOIN products p3 ON q.sku = TRIM(LEADING '#' FROM p3.productnumber)
                              OR q.sku LIKE TRIM(LEADING '#' FROM p3.productnumber) || '-%'
         ) prompub ON prompub.pnum = TRIM(LEADING '#' FROM p.productnumber)
+        LEFT JOIN (
+            -- Номери (без #), опубліковані в ПУБЛІЧНОМУ інтернет-каталозі (Telegram
+            -- Mini App): catalog_listings.is_published, ключ=productnumber → вся
+            -- ростовка. Узгоджено з чіпом «У каталозі» в картці товару.
+            SELECT DISTINCT TRIM(LEADING '#' FROM cl.productnumber) AS pnum
+            FROM catalog_listings cl
+            WHERE cl.is_published
+        ) catpub ON catpub.pnum = TRIM(LEADING '#' FROM p.productnumber)
         """
 
 
@@ -374,6 +382,8 @@ def _build_product_where(filters: Optional["schemas.ProductFilter"]) -> tuple:
                 _pub.append("olxpub.pnum IS NOT NULL")
             if 'prom' in filters.published_on:
                 _pub.append("prompub.pnum IS NOT NULL")
+            if 'catalog' in filters.published_on:
+                _pub.append("catpub.pnum IS NOT NULL")
             if _pub:
                 where_conditions.append("(" + " OR ".join(_pub) + ")")
 
@@ -626,7 +636,9 @@ def get_products(
                -- принцип «за номером» (одне оголошення покриває всю ростовку).
                (olxpub.pnum IS NOT NULL) AS published_olx,
                -- Опубліковано на Prom (товар on_display) — той самий принцип «за номером».
-               (prompub.pnum IS NOT NULL) AS published_prom
+               (prompub.pnum IS NOT NULL) AS published_prom,
+               -- У публічному інтернет-каталозі (catalog_listings) — «за номером».
+               (catpub.pnum IS NOT NULL) AS published_catalog
         FROM products p
         LEFT JOIN types t ON p.typeid = t.id
         LEFT JOIN brands b ON p.brandid = b.id  
@@ -732,6 +744,14 @@ def get_products(
             JOIN products p3 ON q.sku = TRIM(LEADING '#' FROM p3.productnumber)
                              OR q.sku LIKE TRIM(LEADING '#' FROM p3.productnumber) || '-%'
         ) prompub ON prompub.pnum = TRIM(LEADING '#' FROM p.productnumber)
+        LEFT JOIN (
+            -- Номери (без #), опубліковані в ПУБЛІЧНОМУ інтернет-каталозі (Telegram
+            -- Mini App): catalog_listings.is_published, ключ=productnumber → вся
+            -- ростовка. Узгоджено з чіпом «У каталозі» в картці товару.
+            SELECT DISTINCT TRIM(LEADING '#' FROM cl.productnumber) AS pnum
+            FROM catalog_listings cl
+            WHERE cl.is_published
+        ) catpub ON catpub.pnum = TRIM(LEADING '#' FROM p.productnumber)
         """
         
         where_conditions, params = _build_product_where(filters)
@@ -890,6 +910,7 @@ def get_products(
                 'published_tg': bool(m.get('published_tg', False)),
                 'published_olx': bool(m.get('published_olx', False)),
                 'published_prom': bool(m.get('published_prom', False)),
+                'published_catalog': bool(m.get('published_catalog', False)),
                 'has_photo': product_has_photo(m.get('productnumber'), _photo_set),
             }
             items.append(product_dict)

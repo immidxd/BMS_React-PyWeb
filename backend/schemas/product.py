@@ -432,6 +432,7 @@ class ProductList(BaseModel):
     published_tg: bool = False         # є published-пост у Telegram
     published_olx: bool = False        # є active/limited оголошення на OLX
     published_prom: bool = False       # є товар on_display на Prom
+    published_catalog: bool = False    # є в публічному інтернет-каталозі (catalog_listings)
     has_photo: bool = False            # має ≥1 фото (локально/Drive)
 
     class Config:

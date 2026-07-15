@@ -6,6 +6,9 @@ import { CloseOutlined, PictureOutlined, LeftOutlined, RightOutlined, WarningOut
 import { CopyOnClick, formatBrandName, getProductDisplayStatus, getConditionColor, effectiveProductNumber } from '../common/displayHelpers';
 import { hiddenFieldsForType } from './productCategory';
 import { taskManager, emitProductPhotosChanged } from '../../services/taskManager';
+import {
+  markPromImportAccepted, refreshPromLimitWatch, watchPromLimitStatus,
+} from '../../services/promLimitMonitor';
 import PromPublishDialog from './PromPublishDialog';
 import { confirmDialog, notify } from '../../ui/feedback';
 import LoadingSpinner from '../common/LoadingSpinner';
@@ -279,6 +282,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
       const d = await pv.json();
       if (!pv.ok) { notify.error({ message: `Prom: ${d.detail || pv.status}` }); return; }
       if (!d.image_count) { notify.warning({ message: 'У товару немає фото — Prom вимагає зображення.' }); return; }
+      watchPromLimitStatus(d);
       setPromPreview(d);            // відкриває діалог публікації
     } catch (e: any) { notify.error({ message: `Prom: ${e.message || 'Помилка'}` }); }
     finally { setPromBusy(false); }
@@ -316,11 +320,16 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
         silentSuccess: true,  // повідомлення формуємо самі — використовуємо r.note з бекенду
         errorMsg: `Публікація ${pnum} на Prom`,
         onSuccess: (r: any) => {
+          if (r?.import_id) markPromImportAccepted();
           notify.success({ message: r.note || 'Публікація в черзі на Prom.', duration: 5 });
         },
       },
     )
-      .catch(() => { /* помилку показав taskManager; чіп звіримо нижче */ })
+      .catch(() => {
+        // Відмова могла щойно створити нове вікно очікування; лише оновлюємо
+        // локальний таймер, не повторюючи публікацію автоматично.
+        void refreshPromLimitWatch();
+      })
       .finally(() => {
         // Звіряємо чіп з бекендом (черга/дзеркало): успіх → 'pending' (активний),
         // збій → бекенд зняв з черги → чіп повертається. Ніякого «зависання».

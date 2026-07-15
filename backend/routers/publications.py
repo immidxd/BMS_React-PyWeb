@@ -1106,6 +1106,41 @@ def prom_export_product(body: Dict[str, Any] = Body(...), db: Session = Depends(
     return r
 
 
+@router.get("/api/publications/prom/import-limit")
+async def prom_import_limit(db: Session = Depends(get_db)):
+    """Стан денного ліміту імпортів Prom (запобіжник): скільки наших імпортів сьогодні,
+    чи/коли спрацьовував ліміт + готовий limit_warning для попередження ДО публікації."""
+    return _prom().import_limit_status(db)
+
+
+@router.post("/api/publications/prom/import-progress")
+def prom_import_progress(body: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
+    """Read-only completion check for the extra UI notification after a Prom import."""
+    import_id = body.get("import_id")
+    skus = body.get("skus") or []
+    if not isinstance(skus, list):
+        raise HTTPException(status_code=400, detail="skus має бути списком")
+    if len(skus) > 500:
+        raise HTTPException(status_code=400, detail="Максимум 500 SKU за одну перевірку")
+    if import_id in (None, "") and not skus:
+        raise HTTPException(status_code=400, detail="Потрібен import_id або список SKU")
+    return _prom().prom_import_progress(db, import_id=import_id, skus=skus)
+
+
+@router.post("/api/publications/prom/export-products-batch")
+def prom_export_products_batch(body: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
+    """МАСОВА публікація: N товарів → ОДИН import_file (обходить денний ліміт Prom на
+    к-сть імпортів). product_ids — список id з буфера виділення. Пропущені (без фото/ціни)
+    повертаються в summary, а не як помилка."""
+    ids = body.get("product_ids")
+    if not isinstance(ids, list) or not ids:
+        raise HTTPException(status_code=400, detail="Немає product_ids")
+    r = _prom().export_products_batch(db, [int(p) for p in ids if p])
+    if not r.get("ok"):
+        raise HTTPException(status_code=400, detail=r.get("error", "Prom batch export failed"))
+    return r
+
+
 @router.post("/api/publications/prom/delete-product")
 async def prom_delete_product(body: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
     """Прибрати товар з Prom (усі лістинги/розміри) — status=deleted + чистка дзеркала."""

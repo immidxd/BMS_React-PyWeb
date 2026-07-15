@@ -8,15 +8,17 @@ interface SearchBarProps {
   placeholder?: string;
   showGlobalResults?: boolean;
   currentScope?: string;
+  initialValue?: string;   // початковий термін (пер-вкладковий пошук: key={tab}+initialValue)
 }
 
-const SearchBar: React.FC<SearchBarProps> = ({ 
+const SearchBar: React.FC<SearchBarProps> = ({
   onSearch,
   placeholder = "Пошук по базі...",
   showGlobalResults = false,
-  currentScope
+  currentScope,
+  initialValue = ''
 }) => {
-  const [searchTerm, setSearchTerm] = useState('');
+  const [searchTerm, setSearchTerm] = useState(initialValue);
   const [globalResults, setGlobalResults] = useState<GlobalSearchResponse | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [showDropdown, setShowDropdown] = useState(false);

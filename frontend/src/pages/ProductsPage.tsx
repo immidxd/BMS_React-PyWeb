@@ -8,12 +8,19 @@ import ProductFiltersPanel from '../components/filters/ProductFilters';
 import type { ProductFilter as ProductFilterType, ProductFilters as ProductFiltersType } from '../types/product';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useEffect as ReactUseEffect } from 'react';
-import { Button } from 'antd';
+import { Button, Dropdown } from 'antd';
 import { toast } from 'react-toastify';
 import Pagination from '../components/common/Pagination';
 import AddProductModal from '../components/shipments/AddProductModal';
-import { PlusOutlined, EyeOutlined, EyeInvisibleOutlined } from '@ant-design/icons';
+import { PlusOutlined, SendOutlined, CheckSquareOutlined, DownOutlined } from '@ant-design/icons';
 import LoadingSpinner from '../components/common/LoadingSpinner';
+import { useSelection } from '../services/selectionManager';
+import { taskManager } from '../services/taskManager';
+import { waitForPromImport, type PromImportProgress } from '../services/promImportMonitor';
+import {
+  markPromImportAccepted, refreshPromLimitWatch, watchPromLimitStatus,
+} from '../services/promLimitMonitor';
+import { notify } from '../ui/feedback';
 
 // Placeholder for actual filter components for Products
 
@@ -39,7 +46,10 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
   const [visibleOnly, setVisibleOnly] = useState<boolean>(false);
   const [sortBy, setSortBy] = useState<string>('delivery_date');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
-  const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([]);
+  // Виділення — ЄДИНИЙ глобальний буфер (selectionManager, поза React): переживає
+  // відкриття/закриття картки й перемикання вкладок; скидається лише за дією користувача.
+  const selection = useSelection();
+  const [selectionMode, setSelectionMode] = useState<boolean>(false);
   const [searchInsights, setSearchInsights] = useState<any>(null);
   const abortRef = useRef<AbortController | null>(null);
   const fetchIdRef = useRef(0);
@@ -190,6 +200,116 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
   };
 
   const handleRefresh = () => { setIsRefreshing(true); fetchProducts().finally(() => setIsRefreshing(false)); };
+
+  // Окрема read-only задача: лише спостерігає за вже відправленим імпортом.
+  // Вона не запускає повторну публікацію і не втручається в чергу/фід.
+  const monitorPromCompletion = (submission: any, submittedProducts: number) => {
+    const skus: string[] = Array.from(new Set<string>(
+      (Array.isArray(submission?.skus) ? submission.skus : [])
+        .map((sku: unknown) => String(sku).trim())
+        .filter((sku: string) => Boolean(sku)),
+    ));
+    const hasVisibleSkus = Array.isArray(submission?.visible_skus);
+    const monitorSkus: string[] = hasVisibleSkus
+      ? Array.from(new Set<string>(
+          submission.visible_skus
+            .map((sku: unknown) => String(sku).trim())
+            .filter((sku: string) => Boolean(sku)),
+        ))
+      : skus;
+    const expectedPositions = skus.length;
+    const knownUnavailable = hasVisibleSkus
+      ? Math.max(0, expectedPositions - monitorSkus.length)
+      : 0;
+    taskManager.run(
+      `Очікування завершення імпорту на Prom (${expectedPositions || submittedProducts})`,
+      () => waitForPromImport({ importId: submission?.import_id, skus: monitorSkus }),
+      {
+        silentSuccess: true,
+        errorMsg: 'Контроль завершення імпорту Prom',
+        onSuccess: (progress: PromImportProgress) => {
+          markPromImportAccepted();
+          const positions = expectedPositions || progress.found || progress.expected || 0;
+          const productHint = positions && positions !== submittedProducts
+            ? ` (${submittedProducts} товар(ів) BMS)`
+            : '';
+          const unavailable = knownUnavailable || progress.presence?.not_available || 0;
+          const availabilityHint = unavailable
+            ? ` ${unavailable} позицій завантажено як «немає в наявності».`
+            : '';
+          notify.success({
+            message: '✓ Імпорт на Prom завершено',
+            description: positions
+              ? `Prom підтвердив успішне завантаження ${positions} позицій${productHint}.${availabilityHint}`
+              : `Prom підтвердив успішне завершення імпорту.${availabilityHint}`,
+            duration: 9,
+          });
+          window.dispatchEvent(new CustomEvent('bms:prom-status-refresh'));
+        },
+      },
+    ).catch(() => { /* terminal PARTIAL/FATAL or timeout is shown by taskManager */ });
+  };
+
+  // Масова публікація на Prom: N товарів → ОДИН import_file на бекенді (економить
+  // доступні запуски імпорту). Фонова задача (taskManager) — не блокує UI; чіпи всіх
+  // товарів стають 'pending' одразу (queue-early на бекенді), решта з'явиться за 1-3 хв.
+  const sendSelectedToProm = () => {
+    const ids = selection.ids.slice();
+    if (ids.length === 0) return;
+    const n = ids.length;
+    selection.clear();
+    setSelectionMode(false);
+    // Проактивний запобіжник: якщо Prom нещодавно відхиляв імпорт — попереджаємо
+    // ОДРАЗУ (не блокуючи публікацію: батч = 1 імпорт, найімовірніше пройде).
+    fetch('/api/publications/prom/import-limit')
+      .then(r => r.ok ? r.json() : null)
+      .then(d => {
+        if (!d) return;
+        watchPromLimitStatus(d);
+        if (d.limit_warning) notify.warning({ message: d.limit_warning, duration: 8 });
+      })
+      .catch(() => { /* тихо */ });
+    taskManager.run(
+      `Публікація ${n} товар(ів) на Prom`,
+      async () => {
+        const res = await fetch('/api/publications/prom/export-products-batch', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ product_ids: ids }),
+        });
+        const r = await res.json();
+        if (!res.ok) {
+          const err: any = new Error(r.detail || `HTTP ${res.status}`);
+          err.response = { data: { detail: r.detail } };
+          throw err;
+        }
+        return r;
+      },
+      {
+        silentSuccess: true,
+        errorMsg: `Публікація ${n} товар(ів) на Prom`,
+        onSuccess: (r: any) => {
+          if (r?.import_id) markPromImportAccepted();
+          notify.success({ message: r.note || 'Публікація в черзі на Prom.', duration: 7 });
+          window.dispatchEvent(new CustomEvent('bms:prom-status-refresh'));
+          monitorPromCompletion(r, n);
+        },
+      },
+    ).catch(() => {
+      // Якщо Prom щойно відхилив імпорт, бекенд уже записав час — запускаємо
+      // лише локальне нагадування, не повторюючи саму публікацію.
+      void refreshPromLimitWatch();
+    }).finally(() => { fetchProducts(); });
+  };
+
+  // Esc — зняти виділення (дія користувача). Скидання буфера ЛИШЕ явними діями:
+  // Esc / кнопка «Зняти виділення» / вихід з режиму «Виділити».
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && selection.size > 0) selection.clear();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [selection.size, selection.clear]);
 
   const handleResetFilters = () => {
     setSelectedFilters({});
@@ -366,6 +486,33 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
               <option value="price_desc">Від найдорожчого</option>
               <option value="price_asc">Від найдешевшого</option>
             </select>
+            {/* Виділення (єдиний буфер selectionManager) + меню «Дії» над виділеним */}
+            <Button
+              icon={<CheckSquareOutlined />}
+              type={selectionMode ? 'primary' : 'default'}
+              onClick={() => setSelectionMode((m) => { const next = !m; if (!next) selection.clear(); return next; })}
+              title="Виділяти рядки товарів для масових дій"
+            >
+              {selectionMode ? (selection.size > 0 ? `Виділено: ${selection.size}` : 'Режим виділення') : 'Виділити'}
+            </Button>
+            {selection.size > 0 && (
+              <Dropdown
+                trigger={['click']}
+                menu={{
+                  items: [
+                    { key: 'prom', icon: <SendOutlined />, label: 'Відправити на PROM' },
+                    { type: 'divider' as const },
+                    { key: 'clear', label: 'Зняти виділення' },
+                  ],
+                  onClick: ({ key }) => {
+                    if (key === 'prom') sendSelectedToProm();
+                    else if (key === 'clear') selection.clear();
+                  },
+                }}
+              >
+                <Button>Дії ({selection.size}) <DownOutlined /></Button>
+              </Dropdown>
+            )}
             <Button type="primary" icon={<PlusOutlined />} onClick={() => setShowAddProduct(true)}>
               Додати товар
             </Button>
@@ -374,31 +521,6 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
               onClose={() => setShowAddProduct(false)}
               onAdded={() => fetchProducts()}
             />
-            <Button
-              disabled={selectedRowKeys.length === 0}
-              icon={<EyeOutlined />}
-              onClick={async () => {
-                if (selectedRowKeys.length === 0) return;
-                await productService.bulkUpdateProducts(selectedRowKeys as number[], { is_visible: true });
-                setSelectedRowKeys([]);
-                await fetchProducts();
-              }}
-            >
-              Увімкнути видимість
-            </Button>
-            <Button
-              disabled={selectedRowKeys.length === 0}
-              danger
-              icon={<EyeInvisibleOutlined />}
-              onClick={async () => {
-                if (selectedRowKeys.length === 0) return;
-                await productService.bulkUpdateProducts(selectedRowKeys as number[], { is_visible: false });
-                setSelectedRowKeys([]);
-                await fetchProducts();
-              }}
-            >
-              Вимкнути видимість
-            </Button>
           </div>
         </div>
 
@@ -423,8 +545,9 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
           onPageChange={(p) => setPage(p)}
           onVisibilityChange={async (id, isVisible) => { await productService.updateProductVisibility(id, isVisible); await fetchProducts(); }}
           onSortChange={(sb, sd) => { setSortBy(sb); setSortDir(sd); setPage(1); }}
-            selectedRowKeys={selectedRowKeys}
-            onSelectedRowKeysChange={setSelectedRowKeys}
+            selectionEnabled={selectionMode}
+            selectedRowKeys={selection.ids as React.Key[]}
+            onSelectedRowKeysChange={(keys) => selection.set(keys as number[])}
         />
         </div>
 

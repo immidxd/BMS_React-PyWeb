@@ -217,6 +217,9 @@ body {
   border-color: var(--bms-border);
 }
 
+/* keep-alive: неактивна вкладка лишається змонтованою, але прихована (стан зберігається). */
+.bms-tab-hidden { display: none !important; }
+
 .bms-header {
   padding: 10px 12px;
   background: var(--bms-surface);

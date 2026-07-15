@@ -22,6 +22,10 @@ BMS_React-PyWeb.git/
 
 # Ignore build backups
 frontend/build_backup_*/
+frontend/build.bak.*/
+
+# Ignore accidental nested frontend copies
+frontend/frontend/
 
 # Google service-account credentials — НІКОЛИ не комітити (тримати лише локально)
 backend/scripts/secure_creds/*.json

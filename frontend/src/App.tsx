@@ -1,4 +1,4 @@
-import React, { useState, useEffect, Suspense } from 'react';
+import React, { useState, useEffect, useRef, Suspense } from 'react';
 import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
 import { AppThemeProvider, useTheme } from './contexts/ThemeContext';
 import { FilterPanelProvider, useFilterPanel } from './contexts/FilterPanelContext';
@@ -10,6 +10,7 @@ import TaskCenter from './components/common/TaskCenter';
 import DevBadge from './components/common/DevBadge';
 import UpdateBanner from './components/common/UpdateBanner';
 import LoadingSpinner from './components/common/LoadingSpinner';
+import { refreshPromLimitWatch } from './services/promLimitMonitor';
 import { ToastContainer, toast } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
 import './App.css';
@@ -96,10 +97,35 @@ const TABS: TabConfig[] = [
 
 const AppContent: React.FC = () => {
   const [activeTab, setActiveTab] = useState<TabKey>(TABS[0].key);
-  const ActivePageComponent = TABS.find(tab => tab.key === activeTab)?.component;
   const { toggleFilterPanel } = useFilterPanel();
 
-  const [currentSearchTerm, setCurrentSearchTerm] = useState<string>('');
+  // Відновити орієнтовний таймер Prom після перезапуску програми. Це лише
+  // read-only перевірка статусу; жодних імпортів вона не запускає.
+  useEffect(() => {
+    void refreshPromLimitWatch();
+  }, []);
+
+  // ── Пам'ять вкладок (keep-alive) ─────────────────────────────────────────
+  // Раніше рендерилась ЛИШЕ активна сторінка → зміна вкладки демонтувала
+  // попередню й скидала весь її стан (фільтри/пошук/скрол/виділення). Тепер
+  // кожну ВІДВІДАНУ вкладку тримаємо змонтованою (ховаємо неактивні через CSS) —
+  // стан зберігається сам. Lazy-mount: монтуємо при першому відкритті.
+  const [visitedTabs, setVisitedTabs] = useState<Set<TabKey>>(() => new Set([TABS[0].key]));
+  useEffect(() => {
+    setVisitedTabs(prev => (prev.has(activeTab) ? prev : new Set(prev).add(activeTab)));
+  }, [activeTab]);
+
+  // Пошук — ПЕР-ВКЛАДКОВИЙ (інакше при keep-alive термін Товарів фільтрував би й
+  // Замовлення, бо обидві змонтовані). Кожна вкладка отримує свій термін.
+  const [searchByTab, setSearchByTab] = useState<Record<string, string>>({});
+
+  // Пер-вкладковий скрол: зберігаємо scrollTop <main> при скролі активної вкладки
+  // й відновлюємо при поверненні (без реструктуризації layout — [[feedback_layout_double_scroll]]).
+  const mainRef = useRef<HTMLElement | null>(null);
+  const scrollByTab = useRef<Record<string, number>>({});
+  React.useLayoutEffect(() => {
+    if (mainRef.current) mainRef.current.scrollTop = scrollByTab.current[activeTab] || 0;
+  }, [activeTab]);
   const [parsingDialogOpen, setParsingDialogOpen] = useState(false);
   const [mergePendingCount, setMergePendingCount] = useState<number>(0);
 
@@ -187,8 +213,7 @@ const AppContent: React.FC = () => {
   }, []);
   
   const handleGlobalSearch = (term: string) => {
-    console.log('Global search triggered:', term);
-    setCurrentSearchTerm(term);
+    setSearchByTab(prev => ({ ...prev, [activeTab]: term }));  // пер-вкладковий пошук
   };
 
   const [currentJobId, setCurrentJobId] = useState<number | null>(null);
@@ -273,6 +298,8 @@ const AppContent: React.FC = () => {
 
           <div className="flex-grow min-w-0">
             <SearchBar
+              key={activeTab}
+              initialValue={searchByTab[activeTab] || ''}
               onSearch={handleGlobalSearch}
               placeholder={`Пошук у розділі "${TABS.find(t=>t.key===activeTab)?.label}"...`}
               showGlobalResults={true}
@@ -296,13 +323,26 @@ const AppContent: React.FC = () => {
         </div>
       </header>
 
-      <main className="flex-grow min-h-0 overflow-auto p-4 container mx-auto w-full">
-        <Suspense 
+      <main
+        ref={mainRef}
+        onScroll={() => { if (mainRef.current) scrollByTab.current[activeTab] = mainRef.current.scrollTop; }}
+        className="flex-grow min-h-0 overflow-auto p-4 container mx-auto w-full"
+      >
+        <Suspense
           fallback={
             <LoadingSpinner variant="page" size="large" text="Завантаження сторінки…" />
           }
         >
-          {ActivePageComponent && <ActivePageComponent currentSearchTerm={currentSearchTerm} />}
+          {/* keep-alive: рендеримо КОЖНУ відвідану вкладку, ховаємо неактивні (не unmount) */}
+          {TABS.filter(t => visitedTabs.has(t.key)).map(t => {
+            const PageComponent = t.component;
+            const isActive = t.key === activeTab;
+            return (
+              <div key={t.key} className={isActive ? '' : 'bms-tab-hidden'}>
+                <PageComponent currentSearchTerm={searchByTab[t.key] || ''} />
+              </div>
+            );
+          })}
         </Suspense>
       </main>
 

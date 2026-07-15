@@ -99,6 +99,16 @@ const PromPublishDialog: React.FC<Props> = ({ data, busy, onCancel, onConfirm })
           </div>
         </div>
 
+        {/* Запобіжник денного ліміту імпортів Prom (проактивно, до публікації) */}
+        {data.limit_warning && (
+          <div className="px-5 pt-3">
+            <div className="flex items-start gap-2 px-3 py-2 rounded-lg text-xs bg-rose-50 text-rose-800 border border-rose-200 dark:bg-rose-900/20 dark:text-rose-300 dark:border-rose-800">
+              <WarningOutlined className="mt-0.5 shrink-0" />
+              <span>{data.limit_warning}</span>
+            </div>
+          </div>
+        )}
+
         {/* Попередження */}
         {warns.length > 0 && (
           <div className="px-5 pt-3 space-y-1.5">

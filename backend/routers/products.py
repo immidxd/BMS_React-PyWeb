@@ -51,7 +51,7 @@ async def get_products(
     color_group_ids: Optional[List[int]] = Query(None),
     statusids: Optional[List[int]] = Query(None),
     conditionids: Optional[List[int]] = Query(None),
-    published_on: Optional[List[str]] = Query(None, description="Де опубліковано: telegram|olx"),
+    published_on: Optional[List[str]] = Query(None, description="Де опубліковано: telegram|olx|prom|catalog"),
     # Нові фільтри
     styleid: Optional[int] = Query(None),
     styleids: Optional[List[int]] = Query(None),
