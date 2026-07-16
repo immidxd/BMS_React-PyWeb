@@ -37,8 +37,16 @@ def test_category_typo_and_latin_aliases():
     assert O.olx_category_for("Босоніжкиї", "Жіноча") == 2628
 
 
+def test_category_home_and_shoe_accessories():
+    assert O.olx_category_for("Взуття", "Жіноча") == O._OLX_CAT_WOMEN_OTHER
+    assert O.olx_category_for("Устілки", "Унісекс") == 3162
+    assert O.olx_category_for("Рушник", "Унісекс") == 529
+    assert O.olx_category_for("Плед", "Унісекс") == 529
+
+
 def test_category_unmapped_returns_none():
-    assert O.olx_category_for("Рушник", "Унісекс") is None
+    # товар без заданого типу / справжня екзотика — категорії немає (треба вручну)
+    assert O.olx_category_for("Компрес", "Унісекс") is None
     assert O.olx_category_for("", "Жіноча") is None
 
 
