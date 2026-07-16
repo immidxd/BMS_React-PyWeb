@@ -1036,6 +1036,62 @@ async def relink_olx(db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ── OLX створення оголошень (write v2) ───────────────────────────────────────
+@router.get("/api/publications/olx/product-status/{product_id}")
+async def olx_product_status(product_id: int, db: Session = Depends(get_db)):
+    r = _olx().olx_product_status(db, product_id)
+    if not r.get("ok"):
+        raise HTTPException(status_code=404, detail=r.get("error", "Товар не знайдено"))
+    return r
+
+
+@router.get("/api/publications/olx/packets/{category_id}")
+async def olx_packets(category_id: int, db: Session = Depends(get_db)):
+    return _olx().get_packets(db, category_id)
+
+
+@router.post("/api/publications/olx/config")
+async def olx_config(body: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
+    return _olx().save_config(db, **{k: v for k, v in body.items() if v is not None})
+
+
+@router.post("/api/publications/olx/create-advert")
+def olx_create_advert(body: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
+    """Створити (опублікувати) оголошення OLX з картки товару."""
+    pid = body.get("product_id")
+    if not pid:
+        raise HTTPException(status_code=400, detail="Немає product_id")
+    r = _olx().create_advert(db, int(pid), price=body.get("price"), force=bool(body.get("force")))
+    if not r.get("ok"):
+        # «вже на OLX» — не помилка, а сигнал фронту показати підтвердження
+        if r.get("already_on_olx"):
+            return r
+        raise HTTPException(
+            status_code=409 if r.get("need_category") else 400,
+            detail=r.get("error", "OLX create failed"),
+        )
+    return r
+
+
+@router.post("/api/publications/olx/create-batch")
+def olx_create_batch(body: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
+    ids = body.get("product_ids") or []
+    if not isinstance(ids, list) or not ids:
+        raise HTTPException(status_code=400, detail="Немає product_ids")
+    return _olx().create_adverts_batch(db, [int(x) for x in ids if x])
+
+
+# ── monoБазар (постинг заблоковано на партнерському доступі) ──────────────────
+@router.get("/api/publications/monobazar/status")
+def monobazar_status():
+    """Статус monoБазар: чесно повідомляє, що постинг очікує партнерський доступ."""
+    try:
+        from services import monobazar
+    except ImportError:
+        from backend.services import monobazar
+    return monobazar.get_status()
+
+
 # ── Prom.ua інтеграція (Фаза 2) ──────────────────────────────────────────────
 def _prom():
     try:

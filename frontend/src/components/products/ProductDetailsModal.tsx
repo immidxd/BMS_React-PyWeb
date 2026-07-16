@@ -12,6 +12,7 @@ import {
 import { waitForPromImport } from '../../services/promImportMonitor';
 import PromPublishDialog from './PromPublishDialog';
 import ShafaBridgeDialog, { type ShafaProductStatus } from './ShafaBridgeDialog';
+import OlxPublishDialog, { type OlxProductStatus } from './OlxPublishDialog';
 import { confirmDialog, notify } from '../../ui/feedback';
 import LoadingSpinner from '../common/LoadingSpinner';
 
@@ -185,6 +186,9 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
   const [shafaStatus, setShafaStatus] = useState<ShafaProductStatus | null>(null);
   const [shafaDialogOpen, setShafaDialogOpen] = useState(false);
   const [shafaBusy, setShafaBusy] = useState(false);
+  const [olxStatus, setOlxStatus] = useState<OlxProductStatus | null>(null);
+  const [olxDialogOpen, setOlxDialogOpen] = useState(false);
+  const [olxBusy, setOlxBusy] = useState(false);
   // Згорнуті підрозділи (Матеріали/Інше/Примітки) — за замовчуванням приховані,
   // розкриваються кліком. У режимі редагування завжди розгорнуті (щоб редагувати).
   const [openSections, setOpenSections] = useState<Record<string, boolean>>({});
@@ -308,6 +312,71 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     setShafaBusy(true);
     await refreshShafaStatus(productId, true);
     setShafaBusy(false);
+  };
+
+  // ── OLX: створення оголошення з картки ──────────────────────────────────
+  const refreshOlxStatus = React.useCallback(async (pid: number, openDialog = false) => {
+    try {
+      const r = await fetch(`/api/publications/olx/product-status/${pid}`);
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.detail || `HTTP ${r.status}`);
+      if (curPidRef.current === pid) setOlxStatus(d);
+      if (openDialog) setOlxDialogOpen(true);
+      return d as OlxProductStatus;
+    } catch (e: any) {
+      if (openDialog) notify.error({ message: `OLX: ${e.message || 'Не вдалося завантажити стан'}` });
+      return null;
+    }
+  }, []);
+
+  const openOlxDialog = async () => {
+    if (!productId || olxBusy) return;
+    setOlxBusy(true);
+    await refreshOlxStatus(productId, true);
+    setOlxBusy(false);
+  };
+
+  const olxSaveConfig = async (patch: Record<string, any>) => {
+    setOlxBusy(true);
+    try {
+      const r = await fetch('/api/publications/olx/config', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch),
+      });
+      if (!r.ok) throw new Error((await r.json()).detail || `HTTP ${r.status}`);
+      if (productId) await refreshOlxStatus(productId);
+    } catch (e: any) { notify.error({ message: `OLX: ${e.message || 'Помилка'}` }); }
+    finally { setOlxBusy(false); }
+  };
+
+  const olxPublish = async () => {
+    if (!productId) return;
+    const live = !!olxStatus?.on_olx;
+    const ok = await confirmDialog({
+      title: live ? 'Оновити оголошення на OLX?' : 'Опублікувати товар на OLX?',
+      body: (olxStatus?.pricing
+        ? `Ціна ${olxStatus.pricing.effective_price} грн (покриває пакет + рекламу + комісію). `
+        : '') + 'OLX бере плату за публікацію з активного пакета. Без активного пакета оголошення не стане видимим.',
+      okText: live ? 'Оновити' : 'Опублікувати', kind: 'warning',
+    });
+    if (!ok) return;
+    setOlxBusy(true);
+    try {
+      const r = await fetch('/api/publications/olx/create-advert', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ product_id: productId, force: live }),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.detail || `HTTP ${r.status}`);
+      if (d.needs_package) {
+        notify.warning({ message: 'OLX: оголошення створене, але потребує активного пакета публікацій.', duration: 9 });
+      } else {
+        notify.success({ message: d.note || 'Опубліковано на OLX.', duration: 7 });
+      }
+      window.dispatchEvent(new CustomEvent('bms:olx-status-refresh'));
+      await refreshOlxStatus(productId);
+    } catch (e: any) {
+      notify.error({ message: `OLX: ${e.message || 'Помилка публікації'}`, duration: 8 });
+    } finally { setOlxBusy(false); }
   };
 
   const shafaPost = async (path: string, extra: Record<string, any> = {}) => {
@@ -1685,6 +1754,32 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                     {shafaBusy && <SyncOutlined spin className="text-[10px]" />}
                     <span>Shafa</span>
                   </button>
+
+                  {/* OLX: створення оголошення на сайт. Зелений = опубліковано,
+                      бурштиновий = створено, але бракує пакета публікацій. */}
+                  <button
+                    type="button"
+                    onClick={openOlxDialog}
+                    disabled={olxBusy}
+                    className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold border transition-colors disabled:opacity-60 ${
+                      olxStatus?.on_olx || (product as any)?.published_olx
+                        ? 'bg-[#002f34] text-[#a9e000] border-[#002f34]'
+                        : olxStatus?.needs_package
+                          ? 'bg-amber-100 text-amber-800 border-amber-300 dark:bg-amber-900/30 dark:text-amber-300 dark:border-amber-700'
+                          : 'bg-gray-50 text-gray-500 border-gray-200 hover:bg-gray-100 dark:bg-gray-800 dark:text-gray-400 dark:border-gray-700 dark:hover:bg-gray-700'
+                    }`}
+                    title={
+                      olxStatus?.on_olx || (product as any)?.published_olx
+                        ? 'Опубліковано на OLX'
+                        : olxStatus?.needs_package
+                          ? 'Оголошення створене, але потрібен активний пакет публікацій OLX'
+                          : 'Опублікувати товар на OLX'
+                    }
+                  >
+                    <span className="inline-flex h-4 items-center justify-center rounded bg-[#002f34] px-1 text-[8px] leading-none text-[#a9e000] font-black">OLX</span>
+                    {olxBusy && <SyncOutlined spin className="text-[10px]" />}
+                    <span>OLX</span>
+                  </button>
                 </div>
                 <h2 className="text-2xl font-semibold text-gray-900 dark:text-gray-50 truncate leading-tight">
                   {productTitle ? <CopyOnClick value={productTitle} /> : productTitle}
@@ -2487,6 +2582,15 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
           onLinkExisting={linkExistingShafa}
           onUntrack={untrackShafa}
           onCreateProm={createPromForExistingShafa}
+        />
+      )}
+      {olxDialogOpen && olxStatus && (
+        <OlxPublishDialog
+          data={olxStatus}
+          busy={olxBusy}
+          onClose={() => { if (!olxBusy) setOlxDialogOpen(false); }}
+          onPublish={olxPublish}
+          onSaveConfig={olxSaveConfig}
         />
       )}
     </div>

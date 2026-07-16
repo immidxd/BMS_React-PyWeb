@@ -402,4 +402,520 @@ def get_status(db: Session) -> Dict:
         "active_count": db.execute(text(
             "SELECT COUNT(*) FROM olx_adverts WHERE status = ANY(:s)"
         ), {"s": list(OLX_PUBLISHED_STATUSES)}).scalar() or 0,
+        "config": _load_config(db),
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# OLX WRITE v2: створення оголошень (пост на сайт)
+# ══════════════════════════════════════════════════════════════════════════════
+OLX_TITLE_MAX = 70          # OLX обрізає довгі заголовки
+OLX_MAX_IMAGES = 8
+
+
+def _prom():
+    try:
+        from services import prom_service, olx_pricing
+    except ImportError:
+        from backend.services import prom_service, olx_pricing
+    return prom_service, olx_pricing
+
+
+def _api_post(access_token: str, path: str, body: dict) -> Tuple[int, dict]:
+    """POST на OLX partner API. Повертає (status_code, json|{})."""
+    resp = requests.post(
+        f"{OLX_API_BASE}{path}", json=body,
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "Version": OLX_API_VERSION,
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        }, timeout=40,
+    )
+    try:
+        data = resp.json()
+    except ValueError:
+        data = {"raw": resp.text[:400]}
+    return resp.status_code, data
+
+
+# ── Мапа типів BMS → категорії OLX (взуття) ──────────────────────────────────
+# Знайдено з живого дерева OLX: Жіноче взуття (2015) / Чоловіче (2014) / Дитяче.
+_OLX_CAT_WOMEN = {
+    "туфлі": 2619, "балетки": 2619, "мокасини": 2619,
+    "кросівки": 2623, "кеди": 2624,
+    "черевики": 2618, "чоботи": 2618, "ботінки": 2618,
+    "босоніжки": 2628, "сандалі": 2628, "шльопанці": 2628,
+}
+_OLX_CAT_MEN = {
+    "туфлі": 2695, "мокасини": 2695, "балетки": 2695,
+    "кросівки": 2687, "кеди": 2688,
+    "черевики": 2689, "чоботи": 2689, "ботінки": 2689,
+    "босоніжки": 2695, "сандалі": 2695, "шльопанці": 2695,
+}
+_OLX_CAT_WOMEN_OTHER = 2665
+_OLX_CAT_MEN_OTHER = 2727
+_OLX_CAT_KIDS = 542
+
+
+def olx_category_for(typename: Optional[str], gendername: Optional[str]) -> Optional[int]:
+    """Категорія OLX за типом+статтю BMS. None — якщо тип не взуттєвий (напр. сумка)."""
+    t = str(typename or "").strip().lower()
+    g = str(gendername or "").strip().lower()
+    if not t:
+        return None
+    is_kids = any(k in g for k in ("діт", "дит", "дів", "хлоп"))
+    is_men = g.startswith("чол")
+    if is_kids:
+        return _OLX_CAT_KIDS
+    table = _OLX_CAT_MEN if is_men else _OLX_CAT_WOMEN   # унісекс/жіноче → жіноче дерево
+    if t in table:
+        return table[t]
+    # Взуттєвий, але тип не в мапі → «Інше взуття» відповідної статі.
+    shoe_like = any(t.startswith(p) for p in (
+        "череви", "чобо", "боті", "кросів", "кед", "туфл", "босон", "санда",
+        "мокас", "балет", "шльоп", "сліп", "лофер", "уги", "угі"))
+    if shoe_like:
+        return _OLX_CAT_MEN_OTHER if is_men else _OLX_CAT_WOMEN_OTHER
+    return None  # не взуття (сумка/валіза/аксесуар) — категорію треба задати окремо
+
+
+# ── Конфіг ────────────────────────────────────────────────────────────────────
+def _load_config(db: Session) -> dict:
+    row = db.execute(text("""
+        SELECT ad_spend, advertiser_type, use_delivery, branch_payment,
+               default_city_id, default_district_id, default_lat, default_lon,
+               contact_name, contact_phone, updated_at
+        FROM olx_config WHERE id = 1
+    """)).mappings().first()
+    if not row:
+        return {"ad_spend": 0, "advertiser_type": "business", "use_delivery": True,
+                "branch_payment": False}
+    d = dict(row)
+    d["ad_spend"] = float(d.get("ad_spend") or 0)
+    return d
+
+
+def save_config(db: Session, **fields) -> dict:
+    allowed = {"ad_spend", "advertiser_type", "use_delivery", "branch_payment",
+               "default_city_id", "default_district_id", "default_lat", "default_lon",
+               "contact_name", "contact_phone"}
+    sets, params = [], {}
+    for k, v in fields.items():
+        if k in allowed and v is not None:
+            sets.append(f"{k} = :{k}")
+            params[k] = v
+    if sets:
+        db.execute(text(
+            f"UPDATE olx_config SET {', '.join(sets)}, updated_at = now() WHERE id = 1"), params)
+        db.commit()
+    return _load_config(db)
+
+
+def _ensure_defaults(db: Session, access: str, cfg: dict) -> dict:
+    """Заповнити контакт/локацію з акаунта OLX, якщо в конфізі порожньо."""
+    if cfg.get("contact_phone") and cfg.get("default_city_id"):
+        return cfg
+    patch = {}
+    try:
+        me = (_api_get(access, "/api/partner/users/me", {}) or {}).get("data") or {}
+        if not cfg.get("contact_name") and me.get("name"):
+            patch["contact_name"] = me["name"][:120]
+        if not cfg.get("contact_phone") and me.get("phone"):
+            patch["contact_phone"] = me["phone"][:40]
+    except Exception:
+        pass
+    if not cfg.get("default_city_id"):
+        # Взяти локацію з будь-якого наявного оголошення акаунта.
+        try:
+            advs = _fetch_all_adverts(access, page_limit=1, max_pages=1)
+            if advs:
+                l = advs[0].get("location") or {}
+                if l.get("city_id"):
+                    patch.update({"default_city_id": l.get("city_id"),
+                                  "default_district_id": l.get("district_id"),
+                                  "default_lat": str(l.get("latitude") or "") or None,
+                                  "default_lon": str(l.get("longitude") or "") or None})
+        except Exception:
+            pass
+    if patch:
+        cfg = save_config(db, **patch)
+    return cfg
+
+
+# ── Пакети (LISTING_FEE) та атрибути категорії — з кешем у пам'яті ────────────
+_PACKETS_CACHE: Dict[int, dict] = {}
+_ATTR_DEFS_CACHE: Dict[int, list] = {}
+
+
+def get_packets(db: Session, category_id: int) -> dict:
+    """Живі пакети публікацій для категорії + обрана вартість 1 оголошення."""
+    _, olx_pricing = _prom()
+    if category_id in _PACKETS_CACHE:
+        return _PACKETS_CACHE[category_id]
+    access = get_access_token(db)
+    if not access:
+        return {"ok": False, "error": "OLX не авторизовано", "packets": [],
+                "unit_cost": olx_pricing.DEFAULT_PACKET_UNIT_UAH}
+    try:
+        data = _api_get(access, "/api/partner/packets", {"category_id": category_id})
+        packets = data.get("data") or []
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:200], "packets": [],
+                "unit_cost": olx_pricing.DEFAULT_PACKET_UNIT_UAH}
+    base = [p for p in packets if p.get("type") == "base"] or packets
+    unit = olx_pricing.packet_unit_from_packets(base) or olx_pricing.DEFAULT_PACKET_UNIT_UAH
+    result = {"ok": True, "category_id": category_id, "packets": base, "unit_cost": unit}
+    _PACKETS_CACHE[category_id] = result
+    return result
+
+
+def _attr_defs(access: str, category_id: int) -> list:
+    if category_id in _ATTR_DEFS_CACHE:
+        return _ATTR_DEFS_CACHE[category_id]
+    try:
+        data = _api_get(access, f"/api/partner/categories/{category_id}/attributes", {})
+        defs = data.get("data") or []
+    except Exception:
+        defs = []
+    _ATTR_DEFS_CACHE[category_id] = defs
+    return defs
+
+
+def _match_value_code(defs: list, code: str, label: Optional[str]) -> Optional[str]:
+    """Знайти OLX-код значення атрибута за label BMS (регістронезалежно)."""
+    if not label:
+        return None
+    want = str(label).strip().lower()
+    for d in defs:
+        if d.get("code") != code:
+            continue
+        for v in d.get("values") or []:
+            if str(v.get("label", "")).strip().lower() == want:
+                return v.get("code")
+        # м'який збіг для розмірів «38.5» → «38_5»
+        if code == "size":
+            norm = want.replace(".", "_").replace(",", "_")
+            for v in d.get("values") or []:
+                if str(v.get("code", "")).lower() == norm:
+                    return v.get("code")
+    return None
+
+
+def _build_attributes(defs: list, product: dict) -> list:
+    """Атрибути OLX з даних BMS. `state` обов'язковий; решта — за наявності збігу."""
+    attrs = []
+    cond = str(product.get("conditionname") or "").lower()
+    state = "new" if ("нов" in cond) else "used"
+    attrs.append({"code": "state", "value": state})
+    # Розмір — лише якщо один (ростовка = багато розмірів → не ставимо в атрибут).
+    sizes = [s for s in (product.get("sizes") or []) if s]
+    if len(sizes) == 1:
+        sc = _match_value_code(defs, "size", str(sizes[0]))
+        if sc:
+            attrs.append({"code": "size", "value": sc})
+    for code, label in (("color", product.get("colorname")),
+                        ("brand", product.get("brandname"))):
+        vc = _match_value_code(defs, code, label)
+        if vc:
+            attrs.append({"code": code, "value": vc})
+    return attrs
+
+
+def _pricing_for(db: Session, product: dict, cfg: dict, category_id: int,
+                 current_price: Optional[float] = None) -> dict:
+    prom_service, olx_pricing = _prom()
+    try:
+        kids = prom_service._is_kids(product)
+    except Exception:
+        kids = False
+    unit = get_packets(db, category_id).get("unit_cost") if category_id else None
+    return olx_pricing.price_economics(
+        product.get("price"), product.get("typename") or "",
+        packet_unit=unit, ad_spend=cfg.get("ad_spend", 0),
+        is_business=(cfg.get("advertiser_type", "business") == "business"),
+        use_delivery=bool(cfg.get("use_delivery", True)),
+        branch_payment=bool(cfg.get("branch_payment", False)),
+        current_olx_price=current_price,
+    )
+
+
+def _build_olx_description(product: dict) -> str:
+    """Опис для OLX — ЧИСТИЙ ТЕКСТ (OLX не рендерить HTML), кілька рядків."""
+    prom_service, _ = _prom()
+    brand = product.get("brandname") or ""
+    typ = product.get("typename") or "Взуття"
+    color = product.get("colorname") or ""
+    gender = product.get("gendername") or ""
+    cond = product.get("conditionname") or ""
+    sizes = [str(s) for s in (product.get("sizes") or []) if s]
+    mats = ", ".join(v for v in (product.get("materials") or {}).values() if v)
+    head = " ".join(x for x in (gender, typ.lower(), brand, color.lower()) if x).strip()
+    lines = [head.capitalize() if head else typ]
+    facts = []
+    if brand:
+        facts.append(f"Бренд: {brand}")
+    facts.append(f"Тип: {typ}")
+    if color:
+        facts.append(f"Колір: {color}")
+    if cond:
+        facts.append(f"Стан: {cond}")
+    if mats:
+        facts.append(f"Матеріал: {mats}")
+    if product.get("season"):
+        facts.append(f"Сезон: {product.get('season')}")
+    if product.get("manufacturer"):
+        facts.append(f"Виробник: {product.get('manufacturer')}")
+    if sizes:
+        facts.append(f"Розмір{'и' if len(sizes) > 1 else ''}: {', '.join(sizes)}")
+    lines += ["", *[f"• {f}" for f in facts]]
+    extra = (product.get("description") or "").strip()
+    if extra and "<" not in extra:  # не тягнемо HTML-опис
+        lines += ["", extra]
+    lines += ["", "Швидка відправка Новою поштою / Укрпоштою.",
+              "Пишіть — відповім на всі питання."]
+    text_out = "\n".join(lines).strip()
+    return text_out[:8000]
+
+
+def build_advert_payload(product: dict, category_id: int, price: int, cfg: dict,
+                         defs: list, image_urls: list) -> dict:
+    prom_service, _ = _prom()
+    title = (prom_service._build_name(product, "uk") or product.get("productnumber") or "Товар")[:OLX_TITLE_MAX]
+    description = _build_olx_description(product)
+    payload = {
+        "title": title,
+        "description": description,
+        "category_id": int(category_id),
+        "advertiser_type": cfg.get("advertiser_type", "business"),
+        "contact": {"name": cfg.get("contact_name") or "Продавець",
+                    "phone": cfg.get("contact_phone") or ""},
+        "location": {"city_id": cfg.get("default_city_id")},
+        "price": {"value": int(price), "currency": "UAH", "negotiable": False},
+        "images": [{"url": u} for u in (image_urls or [])[:OLX_MAX_IMAGES]],
+        "attributes": _build_attributes(defs, product),
+        # Наш ref для зворотного лінка при sync (external_id = чистий номер).
+        "external_id": str(product.get("productnumber") or "").lstrip("#")[:120] or None,
+    }
+    loc = payload["location"]
+    if cfg.get("default_district_id"):
+        loc["district_id"] = cfg["default_district_id"]
+    if cfg.get("default_lat") and cfg.get("default_lon"):
+        loc["latitude"] = cfg["default_lat"]
+        loc["longitude"] = cfg["default_lon"]
+    return payload
+
+
+def _upsert_created(db: Session, product_id: int, number: str, advert: dict,
+                    needs_package: bool, last_error: Optional[str]) -> None:
+    price_obj = advert.get("price") or {}
+    url = advert.get("url")
+    if isinstance(url, dict):
+        url = url.get("href")
+    db.execute(text("""
+        INSERT INTO olx_adverts (
+            olx_id, product_id, product_number_raw, title, description, status,
+            url, external_id, category_id, price, currency, created_by_bms,
+            needs_package, last_error, last_synced_at
+        ) VALUES (
+            :olx_id, :pid, :raw, :title, :descr, :status,
+            :url, :ext, :cat, :price, :cur, TRUE, :needs, :err, now()
+        )
+        ON CONFLICT (olx_id) DO UPDATE SET
+            product_id=EXCLUDED.product_id, product_number_raw=EXCLUDED.product_number_raw,
+            title=EXCLUDED.title, status=EXCLUDED.status, url=EXCLUDED.url,
+            external_id=EXCLUDED.external_id, category_id=EXCLUDED.category_id,
+            price=EXCLUDED.price, currency=EXCLUDED.currency, created_by_bms=TRUE,
+            needs_package=EXCLUDED.needs_package, last_error=EXCLUDED.last_error,
+            last_synced_at=now()
+    """), {
+        "olx_id": advert.get("id"), "pid": product_id,
+        "raw": str(number).lstrip("#")[:50],
+        "title": (advert.get("title") or "")[:300], "descr": advert.get("description"),
+        "status": advert.get("status"), "url": (url or "")[:500] or None,
+        "ext": (advert.get("external_id") or "")[:120] or None,
+        "cat": advert.get("category_id"),
+        "price": price_obj.get("value"), "cur": (price_obj.get("currency") or "UAH")[:8],
+        "needs": needs_package, "err": last_error,
+    })
+    db.commit()
+
+
+# Статуси OLX, що означають «оголошення живе/видиме». Решта після створення —
+# ознака, що бракує активного пакета або триває модерація.
+_LIVE_STATUSES = {"active", "limited"}
+_PACKAGE_STATUSES = {"unpaid", "payment_waiting", "outdated", "disabled", "new"}
+
+
+def create_advert(db: Session, product_id: int, price: Optional[float] = None,
+                  force: bool = False) -> dict:
+    """Створити (опублікувати) оголошення OLX з картки товару BMS."""
+    if not is_configured():
+        return {"ok": False, "error": "OLX не налаштовано (OLX_CLIENT_ID/SECRET)"}
+    access = get_access_token(db)
+    if not access:
+        return {"ok": False, "error": "OLX не авторизовано — пройдіть OAuth"}
+    prom_service, _ = _prom()
+    product = prom_service._bms_product_for_export(db, int(product_id))
+    if not product:
+        return {"ok": False, "error": "Товар не знайдено"}
+    number = str(product.get("productnumber") or "").lstrip("#")
+    category_id = olx_category_for(product.get("typename"), product.get("gendername"))
+    if not category_id:
+        return {"ok": False, "need_category": True,
+                "error": f"Категорію OLX для типу «{product.get('typename')}» не визначено"}
+
+    # Уже є активне оголошення на цей номер?
+    existing = db.execute(text("""
+        SELECT olx_id, status, url FROM olx_adverts
+        WHERE (product_id = :pid OR product_number_raw = :num)
+          AND status = ANY(:live) LIMIT 1
+    """), {"pid": int(product_id), "num": number, "live": list(_LIVE_STATUSES)}).mappings().first()
+    if existing and not force:
+        return {"ok": False, "already_on_olx": True, "olx_id": existing["olx_id"],
+                "url": existing["url"], "error": "Товар уже опубліковано на OLX"}
+
+    images = prom_service._product_image_urls(product.get("productnumber"),
+                                              product.get("official_photos_from"))
+    if not images:
+        return {"ok": False, "error": f"{number}: немає фото — OLX відхилить оголошення"}
+
+    cfg = _ensure_defaults(db, access, _load_config(db))
+    if not cfg.get("contact_phone"):
+        return {"ok": False, "error": "Не задано контактний телефон OLX (Налаштування)"}
+    if not cfg.get("default_city_id"):
+        return {"ok": False, "error": "Не задано місто OLX (Налаштування)"}
+
+    pricing = _pricing_for(db, product, cfg, category_id)
+    if not pricing.get("margin_safe") or not pricing.get("effective_price"):
+        return {"ok": False, "error": "Не вдалося порахувати ціну із захищеною маржею",
+                "pricing": pricing}
+    final_price = int(price or pricing["effective_price"])
+
+    defs = _attr_defs(access, category_id)
+    payload = build_advert_payload(product, category_id, final_price, cfg, defs, images)
+
+    sc, resp = _api_post(access, "/api/partner/adverts", payload)
+    if sc >= 400:
+        val = ((resp.get("error") or {}).get("validation")) if isinstance(resp, dict) else None
+        msg = "; ".join(f"{v.get('field')}: {v.get('detail')}" for v in (val or [])[:6]) \
+            or (resp.get("error", {}).get("detail") if isinstance(resp, dict) else str(resp)[:200])
+        return {"ok": False, "error": f"OLX відхилив [{sc}]: {msg}", "validation": val,
+                "pricing": pricing}
+
+    advert = resp.get("data") or {}
+    status = advert.get("status")
+    # Активація (best-effort): якщо оголошення ще не «живе», пробуємо команду
+    # activate — саме тут OLX і скаже, що бракує пакета публікацій.
+    needs_package = False
+    package_note = None
+    if status not in _LIVE_STATUSES and advert.get("id"):
+        act_sc, act = _api_post(access, f"/api/partner/adverts/{advert['id']}/commands",
+                                {"command": "activate"})
+        if act_sc >= 400:
+            needs_package = True
+            err = (act.get("error", {}) if isinstance(act, dict) else {})
+            package_note = err.get("detail") or "Потрібен активний пакет публікацій OLX"
+        else:
+            # перечитати статус
+            try:
+                fresh = _api_get(access, f"/api/partner/adverts/{advert['id']}", {})
+                advert = fresh.get("data") or advert
+                status = advert.get("status")
+            except Exception:
+                pass
+    if status in _PACKAGE_STATUSES:
+        needs_package = True
+
+    _upsert_created(db, int(product_id), number, advert, needs_package, package_note)
+    url = advert.get("url")
+    if isinstance(url, dict):
+        url = url.get("href")
+    note = ("Оголошення опубліковано на OLX." if not needs_package else
+            "Оголошення створено, але НЕ активне: бракує пакета публікацій OLX. "
+            "Активуй пакет у кабінеті OLX — воно з'явиться автоматично.")
+    return {"ok": True, "olx_id": advert.get("id"), "status": status, "url": url,
+            "needs_package": needs_package, "pricing": pricing, "price": final_price,
+            "note": note}
+
+
+def create_adverts_batch(db: Session, product_ids: List[int]) -> dict:
+    ids = [int(x) for x in (product_ids or []) if x]
+    if not ids:
+        return {"ok": False, "error": "Не вибрано товарів"}
+    if len(ids) > 200:
+        return {"ok": False, "error": "За раз максимум 200 товарів"}
+    created, need_pkg, already, skipped = 0, 0, 0, []
+    first_error = None
+    for pid in ids:
+        try:
+            r = create_advert(db, pid)
+        except Exception as e:
+            skipped.append({"product_id": pid, "reason": str(e)[:160]})
+            continue
+        if r.get("ok"):
+            created += 1
+            if r.get("needs_package"):
+                need_pkg += 1
+        elif r.get("already_on_olx"):
+            already += 1
+        else:
+            skipped.append({"product_id": pid, "reason": r.get("error")})
+            first_error = first_error or r.get("error")
+    note = (f"OLX: опубліковано {created}"
+            + (f" (з них {need_pkg} чекають активації пакета)" if need_pkg else "")
+            + (f", вже було {already}" if already else "")
+            + (f", пропущено {len(skipped)}" if skipped else "") + ".")
+    return {"ok": created > 0 or already > 0, "created": created,
+            "needs_package": need_pkg, "already": already, "skipped": skipped,
+            "note": note, "error": None if (created or already) else (first_error or "Жоден товар не опубліковано")}
+
+
+def olx_product_status(db: Session, product_id: int) -> dict:
+    """Стан товару щодо OLX для картки: ціна, категорія, вартість пакета, оголошення."""
+    prom_service, _ = _prom()
+    product = prom_service._bms_product_for_export(db, int(product_id))
+    if not product:
+        return {"ok": False, "error": "Товар не знайдено"}
+    number = str(product.get("productnumber") or "").lstrip("#")
+    category_id = olx_category_for(product.get("typename"), product.get("gendername"))
+    adv = db.execute(text("""
+        SELECT olx_id, status, url, price, needs_package, last_error, created_by_bms
+        FROM olx_adverts
+        WHERE product_id = :pid OR product_number_raw = :num
+        ORDER BY (status = ANY(:live)) DESC, last_synced_at DESC LIMIT 1
+    """), {"pid": int(product_id), "num": number, "live": list(_LIVE_STATUSES)}).mappings().first()
+    cfg = _load_config(db)
+    warnings: List[str] = []
+    st = get_status(db)
+    if not st.get("authorized"):
+        warnings.append("OLX не авторизовано — пройдіть одноразову авторизацію.")
+    if not category_id:
+        warnings.append(f"Тип «{product.get('typename')}» не мапиться на категорію взуття OLX.")
+    try:
+        images = prom_service._product_image_urls(product.get("productnumber"),
+                                                  product.get("official_photos_from"))
+    except Exception:
+        images = []
+    if not images:
+        warnings.append("Немає фото — OLX не прийме оголошення.")
+    pricing = _pricing_for(db, product, cfg, category_id,
+                           current_price=(adv or {}).get("price")) if category_id else None
+    packet_unit = get_packets(db, category_id).get("unit_cost") if category_id else None
+    live = bool(adv and adv.get("status") in _LIVE_STATUSES)
+    if adv and adv.get("needs_package"):
+        warnings.append("Оголошення створене, але потребує активного пакета публікацій OLX.")
+    warnings.append("OLX бере плату за публікацію (пакет), а не % з продажу; "
+                    + (f"~{packet_unit:.0f} грн/оголошення." if packet_unit else "вартість — з активного пакета."))
+    return {
+        "ok": True, "productnumber": number, "typename": product.get("typename"),
+        "gendername": product.get("gendername"), "category_id": category_id,
+        "authorized": bool(st.get("authorized")),
+        "on_olx": live, "olx_status": (adv or {}).get("status"),
+        "olx_url": (adv or {}).get("url"), "olx_id": (adv or {}).get("olx_id"),
+        "needs_package": bool(adv and adv.get("needs_package")),
+        "created_by_bms": bool(adv and adv.get("created_by_bms")),
+        "last_error": (adv or {}).get("last_error"),
+        "image_count": len(images), "packet_unit": packet_unit,
+        "pricing": pricing, "config": cfg, "warnings": warnings,
     }

@@ -309,6 +309,66 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
   // Масова Shafa-дія: вже наявні Prom-товари лише позначаються готовими до
   // глобального мосту; відсутні збираються в ОДИН існуючий Prom import_file.
   // Ніякого приватного/недокументованого Shafa API.
+  // Пакетна публікація на OLX: кожен товар → окреме оголошення. OLX бере плату
+  // за публікацію з активного пакета — попереджаємо й рахуємо, скільки чекає пакета.
+  const sendSelectedToOlx = async () => {
+    const ids = selection.ids.slice();
+    if (!ids.length) return;
+    try {
+      const sr = await fetch('/api/publications/olx/status');
+      const status = await sr.json();
+      if (!sr.ok) throw new Error(status.detail || `HTTP ${sr.status}`);
+      if (!status.authorized) {
+        notify.error({ message: 'OLX не авторизовано. Пройдіть авторизацію в розділі «Публікації».', duration: 8 });
+        return;
+      }
+    } catch (e: any) {
+      notify.error({ message: `OLX: ${e.message || 'Не вдалося перевірити статус'}` });
+      return;
+    }
+    const n = ids.length;
+    const confirmed = await confirmDialog({
+      title: `Опублікувати ${n} товар(ів) на OLX?`,
+      body: 'OLX бере плату за публікацію з активного пакета (≈25–32 грн/оголошення). '
+        + 'Товари без активного пакета створяться, але не стануть видимими, доки пакет не активовано. '
+        + 'Ціна кожного рахується індивідуально (пакет + реклама + комісія OLX Доставки).',
+      okText: 'Опублікувати', kind: 'warning',
+    });
+    if (!confirmed) return;
+    selection.clear();
+    setSelectionMode(false);
+    taskManager.run(
+      `Публікація ${n} товар(ів) на OLX`,
+      async () => {
+        const res = await fetch('/api/publications/olx/create-batch', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ product_ids: ids }),
+        });
+        const r = await res.json();
+        if (!res.ok) {
+          const err: any = new Error(r.detail || `HTTP ${res.status}`);
+          err.response = { data: { detail: r.detail } };
+          throw err;
+        }
+        return r;
+      },
+      {
+        silentSuccess: true,
+        errorMsg: `Публікація ${n} товар(ів) на OLX`,
+        onSuccess: (r: any) => {
+          notify.success({ message: r.note || 'Опубліковано на OLX.', duration: 9 });
+          if (r?.needs_package) {
+            notify.warning({
+              message: `${r.needs_package} товар(ів) чекають активації пакета публікацій OLX у кабінеті.`,
+              duration: 11,
+            });
+          }
+          window.dispatchEvent(new CustomEvent('bms:olx-status-refresh'));
+        },
+      },
+    );
+  };
+
   const sendSelectedToShafa = async () => {
     const ids = selection.ids.slice();
     if (!ids.length) return;
@@ -594,12 +654,14 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
                   items: [
                     { key: 'prom', icon: <SendOutlined />, label: 'Відправити на PROM' },
                     { key: 'shafa', icon: <span className="inline-flex h-4 w-4 items-center justify-center rounded bg-black text-[9px] leading-none text-white font-black">S</span>, label: 'Відправити на Shafa' },
+                    { key: 'olx', icon: <span className="inline-flex h-4 items-center justify-center rounded bg-[#002f34] px-1 text-[8px] leading-none text-[#a9e000] font-black">OLX</span>, label: 'Відправити на OLX' },
                     { type: 'divider' as const },
                     { key: 'clear', label: 'Зняти виділення' },
                   ],
                   onClick: ({ key }) => {
                     if (key === 'prom') sendSelectedToProm();
                     else if (key === 'shafa') void sendSelectedToShafa();
+                    else if (key === 'olx') void sendSelectedToOlx();
                     else if (key === 'clear') selection.clear();
                   },
                 }}
