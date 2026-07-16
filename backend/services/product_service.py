@@ -198,10 +198,15 @@ _PRODUCT_FROM_SQL = """
             WHERE tp2.tg_status = 'published' AND p2.productnumber IS NOT NULL
         ) tgpub ON tgpub.pnum = TRIM(LEADING '#' FROM p.productnumber)
         LEFT JOIN (
-            SELECT DISTINCT TRIM(LEADING '#' FROM p2.productnumber) AS pnum
+            -- Найкращий OLX-стан за номером: 'active' = повністю ПУБЛІЧНЕ,
+            -- 'limited' = створене, але з обмеженою видимістю (потрібен пакет).
+            SELECT TRIM(LEADING '#' FROM p2.productnumber) AS pnum,
+                   CASE MAX(CASE oa.status WHEN 'active' THEN 3 WHEN 'limited' THEN 2 ELSE 1 END)
+                        WHEN 3 THEN 'active' WHEN 2 THEN 'limited' ELSE 'other' END AS olx_status
             FROM olx_adverts oa
             JOIN products p2 ON p2.id = oa.product_id
             WHERE oa.status IN ('active', 'limited') AND p2.productnumber IS NOT NULL
+            GROUP BY TRIM(LEADING '#' FROM p2.productnumber)
         ) olxpub ON olxpub.pnum = TRIM(LEADING '#' FROM p.productnumber)
         LEFT JOIN (
             -- Номери (без #), що Є на Prom: лістинг у дзеркалі (будь-який статус, крім
@@ -660,7 +665,10 @@ def get_products(
                (tgpub.pnum IS NOT NULL) AS published_tg,
                -- Опубліковано на OLX (active/limited оголошення) — той самий
                -- принцип «за номером» (одне оголошення покриває всю ростовку).
-               (olxpub.pnum IS NOT NULL) AS published_olx,
+               -- Зелена OLX-іконка ЛИШЕ для повністю публічного ('active');
+               -- 'limited' показуємо окремо (olx_status) як «потрібен пакет».
+               (olxpub.olx_status = 'active') AS published_olx,
+               olxpub.olx_status,
                -- Опубліковано на Prom (товар on_display) — той самий принцип «за номером».
                (prompub.pnum IS NOT NULL) AS published_prom,
                -- Shafa: published=true лише з доказом фактичного оголошення (URL/ID).
@@ -754,11 +762,14 @@ def get_products(
             WHERE tp2.tg_status = 'published' AND p2.productnumber IS NOT NULL
         ) tgpub ON tgpub.pnum = TRIM(LEADING '#' FROM p.productnumber)
         LEFT JOIN (
-            -- Номери (без #), що мають ≥1 active/limited оголошення на OLX.
-            SELECT DISTINCT TRIM(LEADING '#' FROM p2.productnumber) AS pnum
+            -- Найкращий OLX-стан за номером: active (публічне) / limited (обмежене).
+            SELECT TRIM(LEADING '#' FROM p2.productnumber) AS pnum,
+                   CASE MAX(CASE oa.status WHEN 'active' THEN 3 WHEN 'limited' THEN 2 ELSE 1 END)
+                        WHEN 3 THEN 'active' WHEN 2 THEN 'limited' ELSE 'other' END AS olx_status
             FROM olx_adverts oa
             JOIN products p2 ON p2.id = oa.product_id
             WHERE oa.status IN ('active', 'limited') AND p2.productnumber IS NOT NULL
+            GROUP BY TRIM(LEADING '#' FROM p2.productnumber)
         ) olxpub ON olxpub.pnum = TRIM(LEADING '#' FROM p.productnumber)
         LEFT JOIN (
             -- Номери (без #), що Є на Prom: лістинг у дзеркалі (будь-який статус, крім
@@ -959,6 +970,7 @@ def get_products(
                 'is_rostovka': bool(m.get('is_rostovka', False)),
                 'published_tg': bool(m.get('published_tg', False)),
                 'published_olx': bool(m.get('published_olx', False)),
+                'olx_status': m.get('olx_status'),
                 'published_prom': bool(m.get('published_prom', False)),
                 'published_shafa': bool(m.get('published_shafa', False)),
                 'shafa_status': m.get('shafa_status'),

@@ -148,7 +148,8 @@ export interface Product {
 
     // Маркери рядка
     published_tg?: boolean;    // опубліковано в Telegram
-    published_olx?: boolean;   // опубліковано на OLX
+    published_olx?: boolean;   // ПУБЛІЧНЕ (active) оголошення на OLX
+    olx_status?: 'active' | 'limited' | 'other' | null;  // limited = потрібен пакет
     published_prom?: boolean;  // опубліковано на Prom
     published_shafa?: boolean; // підтверджено реальним URL/ID Shafa
     shafa_status?: 'waiting_prom' | 'bridge_ready' | 'confirmed' | 'manual_existing' | null;

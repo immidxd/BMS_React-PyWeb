@@ -430,7 +430,8 @@ class ProductList(BaseModel):
     pending_candidates_count: int = 0  # merge-candidate UX badge
     is_rostovka: bool = False          # набір розмірів (маркер у списку)
     published_tg: bool = False         # є published-пост у Telegram
-    published_olx: bool = False        # є active/limited оголошення на OLX
+    published_olx: bool = False        # є ПУБЛІЧНЕ (active) оголошення на OLX
+    olx_status: Optional[str] = None   # active (публічне) | limited (потрібен пакет)
     published_prom: bool = False       # є товар on_display на Prom
     published_shafa: bool = False      # підтверджено реальним URL/ID Shafa
     shafa_status: Optional[str] = None # waiting_prom|bridge_ready|confirmed|manual_existing

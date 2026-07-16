@@ -293,6 +293,13 @@ def _upsert_advert(db: Session, advert: dict) -> Tuple[bool, bool]:
         if pid:
             raw, product_id = cand, pid
             break
+    # BMS-створені оголошення несуть external_id = чистий номер (напр. «А1256»),
+    # який регекс кандидатів не ловить (без # чи Ф). Лінкуємо за ним напряму.
+    if not product_id:
+        ext_id = (advert.get("external_id") or "").strip()
+        pid = _resolve_product_id(db, ext_id) if ext_id else None
+        if pid:
+            raw, product_id = ext_id, pid
 
     price_obj = advert.get("price") or {}
     price = price_obj.get("value") if isinstance(price_obj, dict) else None
@@ -310,13 +317,14 @@ def _upsert_advert(db: Session, advert: dict) -> Tuple[bool, bool]:
             :url, :ext, :cat, :price, :cur, :posted, :valid, now()
         )
         ON CONFLICT (olx_id) DO UPDATE SET
-            product_id         = EXCLUDED.product_id,
-            product_number_raw = EXCLUDED.product_number_raw,
+            -- Не втрачаємо вже наявний лінк, якщо sync цього разу не визначив номер.
+            product_id         = COALESCE(EXCLUDED.product_id, olx_adverts.product_id),
+            product_number_raw = COALESCE(EXCLUDED.product_number_raw, olx_adverts.product_number_raw),
             title              = EXCLUDED.title,
             description        = EXCLUDED.description,
             status             = EXCLUDED.status,
             url                = EXCLUDED.url,
-            external_id        = EXCLUDED.external_id,
+            external_id        = COALESCE(EXCLUDED.external_id, olx_adverts.external_id),
             category_id        = EXCLUDED.category_id,
             price              = EXCLUDED.price,
             currency           = EXCLUDED.currency,
@@ -581,10 +589,75 @@ def _learn_category(db: Session, product: dict) -> Optional[int]:
     return None
 
 
+# ── Дерево категорій + спуск до ЛИСТА (OLX постить лише в листові) ────────────
+_CATEGORY_TREE_CACHE: dict = {}
+
+
+def _category_tree(access: str) -> dict:
+    """{byid, children} усього дерева категорій OLX (кеш у пам'яті)."""
+    if _CATEGORY_TREE_CACHE:
+        return _CATEGORY_TREE_CACHE
+    try:
+        cats = (_api_get(access, "/api/partner/categories", {}) or {}).get("data") or []
+    except Exception:
+        return {"byid": {}, "children": {}}
+    byid = {c["id"]: c for c in cats}
+    children: Dict[Optional[int], list] = {}
+    for c in cats:
+        children.setdefault(c.get("parent_id"), []).append(c)
+    if byid:
+        _CATEGORY_TREE_CACHE.update({"byid": byid, "children": children})
+    return {"byid": byid, "children": children}
+
+
+def _descend_to_leaf(access: str, cat_id: int, product: dict) -> int:
+    """Спустити (можливо батьківську) категорію до ЛИСТА. Матч дитини за
+    підтипом/типом BMS; інакше «Інше…»; інакше перша дитина."""
+    tree = _category_tree(access)
+    byid, children = tree.get("byid", {}), tree.get("children", {})
+    if not byid or cat_id not in byid:
+        return cat_id
+    def _base(s: str) -> str:
+        # нормалізація для толерантності до множини/відмінка: балетки↔балетк
+        return str(s or "").strip().lower().rstrip("иіяьа")
+    want = [w for w in (_base(product.get("subtypename")), _base(product.get("typename"))) if w]
+    cur, seen = cat_id, set()
+    for _ in range(6):
+        kids = children.get(cur, [])
+        if not kids:
+            return cur  # лист
+        pick = None
+        # 1) збіг за ПОВНОЮ назвою дитини (не префіксом!) — щоб «Кросівки» не
+        #    впіймали «Кросівки-шкарпетки», а «Штани» — «Штани чінос».
+        for w in want:
+            for ch in kids:
+                if _base(ch.get("name")) == w:
+                    pick = ch
+                    break
+            if pick:
+                break
+        if not pick:                                     # 2) «Інше/Інша/Інший»
+            pick = next((ch for ch in kids
+                         if str(ch.get("name") or "").strip().lower().startswith("інш")), None)
+        if not pick:                                     # 3) перша дитина
+            pick = kids[0]
+        if pick["id"] in seen:
+            return pick["id"]
+        seen.add(pick["id"])
+        cur = pick["id"]
+    return cur
+
+
 def resolve_category(db: Session, product: dict) -> Optional[int]:
-    """Категорія OLX: статична мапа → навчання з наявних оголошень → None."""
-    return olx_category_for(product.get("typename"), product.get("gendername")) \
+    """Категорія OLX (ЗАВЖДИ листова): статична мапа → навчання → спуск до листа."""
+    base = olx_category_for(product.get("typename"), product.get("gendername")) \
         or _learn_category(db, product)
+    if not base:
+        return None
+    access = get_access_token(db)
+    if not access:
+        return base
+    return _descend_to_leaf(access, base, product)
 
 
 # ── Конфіг ────────────────────────────────────────────────────────────────────
@@ -894,8 +967,13 @@ def _upsert_created(db: Session, product_id: int, number: str, advert: dict,
 
 # Статуси OLX, що означають «оголошення живе/видиме». Решта після створення —
 # ознака, що бракує активного пакета або триває модерація.
-_LIVE_STATUSES = {"active", "limited"}
-_PACKAGE_STATUSES = {"unpaid", "payment_waiting", "outdated", "disabled", "new"}
+# ЛИШЕ 'active' = повністю ПУБЛІЧНЕ (перевірено: anonymous GET → 200).
+# 'limited' = створене й активоване, але з ОБМЕЖЕНОЮ видимістю (anonymous → 404):
+# вичерпано безкоштовний ліміт → потрібен активний пакет публікацій.
+_LIVE_STATUSES = {"active"}
+_LIMITED_STATUS = "limited"
+_DRAFT_STATUSES = {"new", "unactivated", "draft"}
+_PACKAGE_STATUSES = {"limited", "unpaid", "payment_waiting", "outdated", "disabled", "new"}
 
 
 def create_advert(db: Session, product_id: int, price: Optional[float] = None,
@@ -956,19 +1034,15 @@ def create_advert(db: Session, product_id: int, price: Optional[float] = None,
 
     advert = resp.get("data") or {}
     status = advert.get("status")
-    # Активація (best-effort): якщо оголошення ще не «живе», пробуємо команду
-    # activate — саме тут OLX і скаже, що бракує пакета публікацій.
     needs_package = False
     package_note = None
-    if status not in _LIVE_STATUSES and advert.get("id"):
+    # Активація потрібна лише для ЧЕРНЕТКИ (new/unactivated). 'limited' уже
+    # активоване — просто з обмеженою видимістю (потрібен пакет), тож команду
+    # activate не шлемо (не допоможе).
+    if status in _DRAFT_STATUSES and advert.get("id"):
         act_sc, act = _api_post(access, f"/api/partner/adverts/{advert['id']}/commands",
                                 {"command": "activate"})
-        if act_sc >= 400:
-            needs_package = True
-            err = (act.get("error", {}) if isinstance(act, dict) else {})
-            package_note = err.get("detail") or "Потрібен активний пакет публікацій OLX"
-        else:
-            # перечитати статус
+        if act_sc < 400:
             try:
                 fresh = _api_get(access, f"/api/partner/adverts/{advert['id']}", {})
                 advert = fresh.get("data") or advert
@@ -977,17 +1051,28 @@ def create_advert(db: Session, product_id: int, price: Optional[float] = None,
                 pass
     if status in _PACKAGE_STATUSES:
         needs_package = True
+        package_note = (
+            "Обмежена видимість (limited): вичерпано безкоштовний ліміт публікацій — "
+            "оголошення НЕ показується в публічному пошуку, доки не активовано пакет OLX."
+            if status == _LIMITED_STATUS else
+            "Потрібен активний пакет публікацій OLX.")
 
     _upsert_created(db, int(product_id), number, advert, needs_package, package_note)
     url = advert.get("url")
     if isinstance(url, dict):
         url = url.get("href")
-    note = ("Оголошення опубліковано на OLX." if not needs_package else
-            "Оголошення створено, але НЕ активне: бракує пакета публікацій OLX. "
-            "Активуй пакет у кабінеті OLX — воно з'явиться автоматично.")
+    if status in _LIVE_STATUSES:
+        note = "Оголошення опубліковано на OLX (повністю видиме)."
+    elif status == _LIMITED_STATUS:
+        note = ("Оголошення СТВОРЕНО, але має ОБМЕЖЕНУ видимість (limited) — воно не в "
+                "публічному пошуку, бо вичерпано безкоштовний ліміт. Активуй пакет "
+                "публікацій OLX, щоб зробити його повністю видимим.")
+    else:
+        note = ("Оголошення створено, але ще не активне (потрібен пакет публікацій OLX). "
+                "Активуй пакет у кабінеті OLX.")
     return {"ok": True, "olx_id": advert.get("id"), "status": status, "url": url,
-            "needs_package": needs_package, "pricing": pricing, "price": final_price,
-            "note": note}
+            "needs_package": needs_package, "limited": status == _LIMITED_STATUS,
+            "pricing": pricing, "price": final_price, "note": note}
 
 
 def create_adverts_batch(db: Session, product_ids: List[int]) -> dict:
@@ -1053,8 +1138,16 @@ def olx_product_status(db: Session, product_id: int) -> dict:
     pricing = _pricing_for(db, product, cfg, category_id,
                            current_price=(adv or {}).get("price")) if category_id else None
     packet_unit = get_packets(db, category_id).get("unit_cost") if category_id else None
-    live = bool(adv and adv.get("status") in _LIVE_STATUSES)
-    if adv and adv.get("needs_package"):
+    adv_status = (adv or {}).get("status")
+    live = adv_status in _LIVE_STATUSES                     # лише 'active' = публічне
+    # «Потрібен пакет» визначаємо ЗІ СТАТУСУ (limited/…), а не лише зі збереженого
+    # прапорця — навіть якщо прапорець застарів, реальність показуємо правильно.
+    needs_pkg = bool(adv and (adv.get("needs_package") or adv_status in _PACKAGE_STATUSES))
+    if adv_status == _LIMITED_STATUS:
+        warnings.append("Оголошення СТВОРЕНО, але має обмежену видимість (limited): "
+                        "його немає в публічному пошуку, бо вичерпано безкоштовний ліміт — "
+                        "активуй пакет публікацій OLX.")
+    elif needs_pkg:
         warnings.append("Оголошення створене, але потребує активного пакета публікацій OLX.")
     warnings.append("OLX бере плату за публікацію (пакет), а не % з продажу; "
                     + (f"~{packet_unit:.0f} грн/оголошення." if packet_unit else "вартість — з активного пакета."))
@@ -1062,9 +1155,9 @@ def olx_product_status(db: Session, product_id: int) -> dict:
         "ok": True, "productnumber": number, "typename": product.get("typename"),
         "gendername": product.get("gendername"), "category_id": category_id,
         "authorized": bool(st.get("authorized")),
-        "on_olx": live, "olx_status": (adv or {}).get("status"),
+        "on_olx": live, "olx_status": adv_status, "limited": adv_status == _LIMITED_STATUS,
         "olx_url": (adv or {}).get("url"), "olx_id": (adv or {}).get("olx_id"),
-        "needs_package": bool(adv and adv.get("needs_package")),
+        "needs_package": needs_pkg,
         "created_by_bms": bool(adv and adv.get("created_by_bms")),
         "last_error": (adv or {}).get("last_error"),
         "image_count": len(images), "packet_unit": packet_unit,
