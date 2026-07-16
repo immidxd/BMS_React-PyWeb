@@ -35,6 +35,9 @@ aiohttp==3.13.5
 httpx==0.28.1
 anyio==4.9.0
 
+# Cloudflare R2 (S3-compatible storage for product photos)
+boto3==1.43.49
+
 # Utilities
 python-dotenv==1.1.0
 python-multipart==0.0.28

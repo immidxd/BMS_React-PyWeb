@@ -95,6 +95,16 @@ const PromGlyph: React.FC<{ size?: number }> = ({ size = 13 }) => {
     );
 };
 
+// Компактний фірмовий маркер Shafa: чорний знак із білою S. Стан мосту
+// передає tooltip/прозорість, а не підміна брендового кольору.
+const ShafaGlyph: React.FC<{ size?: number }> = ({ size = 13 }) => (
+    <span style={{
+        width: size, height: size, borderRadius: 4, color: '#fff', background: '#000000',
+        fontSize: Math.max(size - 5, 7), fontWeight: 900, lineHeight: 1,
+        display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+    }}>S</span>
+);
+
 // Маркер «У каталозі» (публічний інтернет-каталог / Telegram Mini App) —
 // вітрина-магазин (Material storefront), інлайн SVG під currentColor.
 // Колір emerald-500 — та сама семантика, що активний чіп «У каталозі» в картці.
@@ -104,8 +114,8 @@ export const CatalogGlyph: React.FC<{ size?: number }> = ({ size = 12 }) => (
     </svg>
 );
 
-const RowIndicators: React.FC<{ publishedTg?: boolean; publishedOlx?: boolean; publishedProm?: boolean; publishedCatalog?: boolean }> = ({ publishedTg, publishedOlx, publishedProm, publishedCatalog }) => {
-    if (!publishedTg && !publishedOlx && !publishedProm && !publishedCatalog) return null;
+const RowIndicators: React.FC<{ publishedTg?: boolean; publishedOlx?: boolean; publishedProm?: boolean; publishedShafa?: boolean; shafaStatus?: string | null; publishedCatalog?: boolean }> = ({ publishedTg, publishedOlx, publishedProm, publishedShafa, shafaStatus, publishedCatalog }) => {
+    if (!publishedTg && !publishedOlx && !publishedProm && !publishedShafa && !shafaStatus && !publishedCatalog) return null;
     return (
         <span className="inline-flex items-center gap-1 leading-none select-none shrink-0">
             {publishedTg && (
@@ -123,6 +133,28 @@ const RowIndicators: React.FC<{ publishedTg?: boolean; publishedOlx?: boolean; p
                     <span style={{ display: 'inline-flex' }}><PromGlyph size={11} /></span>
                 </Tooltip>
             )}
+            {(publishedShafa || !!shafaStatus) && (() => {
+                // Shafa — пасивний авто-експорт Prom, тому іконка НЕ нагадує про
+                // дії: суцільна чорна = підтверджено реальним оголошенням,
+                // приглушена = автоекспорт триває сам. Жодних помаранчевих
+                // «зроби щось» — проблеми показує лише картка товару.
+                const confirmed = shafaStatus === 'confirmed' || shafaStatus === 'manual_existing';
+                const tip = confirmed
+                    ? 'Підтверджено на Shafa (знайдено реальне оголошення)'
+                    : shafaStatus === 'bridge_ready'
+                        ? 'Prom автоматично експортує цей товар на Shafa — дій не потрібно'
+                        : 'Prom ще обробляє товар; далі він автоматично піде на Shafa';
+                return (
+                    <Tooltip title={tip}>
+                        <span style={{
+                            display: 'inline-flex',
+                            opacity: confirmed ? 1 : (shafaStatus === 'bridge_ready' ? 0.5 : 0.32),
+                        }}>
+                            <ShafaGlyph size={11} />
+                        </span>
+                    </Tooltip>
+                );
+            })()}
             {publishedCatalog && (
                 <Tooltip title="У публічному каталозі">
                     <span style={{ color: '#10B981', display: 'inline-flex' }}><CatalogGlyph size={11} /></span>
@@ -371,10 +403,10 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
                 if (isUnknownValue(label)) {
                     return (
                         <div className="flex items-center justify-center gap-1.5">
-                            <RowIndicators publishedTg={(record as any).published_tg} publishedOlx={(record as any).published_olx} publishedProm={(record as any).published_prom} publishedCatalog={(record as any).published_catalog} />
+                            <RowIndicators publishedTg={record.published_tg} publishedOlx={record.published_olx} publishedProm={record.published_prom} publishedShafa={record.published_shafa} shafaStatus={record.shafa_status} publishedCatalog={record.published_catalog} />
                             <UnknownIf value={label} className="text-xs font-medium" />
                             <span className="invisible" aria-hidden="true">
-                                <RowIndicators publishedTg={(record as any).published_tg} publishedOlx={(record as any).published_olx} publishedProm={(record as any).published_prom} publishedCatalog={(record as any).published_catalog} />
+                                <RowIndicators publishedTg={record.published_tg} publishedOlx={record.published_olx} publishedProm={record.published_prom} publishedShafa={record.published_shafa} shafaStatus={record.shafa_status} publishedCatalog={record.published_catalog} />
                             </span>
                         </div>
                     );
@@ -401,7 +433,7 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
                 );
                 return (
                     <div className="flex items-center justify-center gap-1.5">
-                        <RowIndicators publishedTg={(record as any).published_tg} publishedOlx={(record as any).published_olx} publishedProm={(record as any).published_prom} publishedCatalog={(record as any).published_catalog} />
+                        <RowIndicators publishedTg={record.published_tg} publishedOlx={record.published_olx} publishedProm={record.published_prom} publishedShafa={record.published_shafa} shafaStatus={record.shafa_status} publishedCatalog={record.published_catalog} />
                         {numberCell}
                         {eff.isClone && (
                             <span
@@ -410,7 +442,7 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
                             >клон</span>
                         )}
                         <span className="invisible" aria-hidden="true">
-                            <RowIndicators publishedTg={(record as any).published_tg} publishedOlx={(record as any).published_olx} publishedProm={(record as any).published_prom} publishedCatalog={(record as any).published_catalog} />
+                            <RowIndicators publishedTg={record.published_tg} publishedOlx={record.published_olx} publishedProm={record.published_prom} publishedShafa={record.published_shafa} shafaStatus={record.shafa_status} publishedCatalog={record.published_catalog} />
                         </span>
                     </div>
                 );

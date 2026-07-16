@@ -9,7 +9,9 @@ import { taskManager, emitProductPhotosChanged } from '../../services/taskManage
 import {
   markPromImportAccepted, refreshPromLimitWatch, watchPromLimitStatus,
 } from '../../services/promLimitMonitor';
+import { waitForPromImport } from '../../services/promImportMonitor';
 import PromPublishDialog from './PromPublishDialog';
+import ShafaBridgeDialog, { type ShafaProductStatus } from './ShafaBridgeDialog';
 import { confirmDialog, notify } from '../../ui/feedback';
 import LoadingSpinner from '../common/LoadingSpinner';
 
@@ -180,6 +182,9 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
   const [promPublished, setPromPublished] = useState(false);  // чіп-стан «на Prom»
   const [promPublishing, setPromPublishing] = useState(false);  // публікація в процесі (фон, до ~3.6хв)
   const [promPreview, setPromPreview] = useState<any | null>(null);  // дані діалогу публікації
+  const [shafaStatus, setShafaStatus] = useState<ShafaProductStatus | null>(null);
+  const [shafaDialogOpen, setShafaDialogOpen] = useState(false);
+  const [shafaBusy, setShafaBusy] = useState(false);
   // Згорнуті підрозділи (Матеріали/Інше/Примітки) — за замовчуванням приховані,
   // розкриваються кліком. У режимі редагування завжди розгорнуті (щоб редагувати).
   const [openSections, setOpenSections] = useState<Record<string, boolean>>({});
@@ -261,6 +266,22 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     } catch { /* ignore */ }
   }, []);
 
+  const refreshShafaStatus = React.useCallback(async (pid: number, openDialog = false) => {
+    try {
+      const r = await fetch(`/api/publications/shafa/product-status/${pid}`);
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.detail || `HTTP ${r.status}`);
+      if (curPidRef.current === pid) {
+        setShafaStatus(d);
+        if (openDialog) setShafaDialogOpen(true);
+      }
+      return d as ShafaProductStatus;
+    } catch (e: any) {
+      if (openDialog) notify.error({ message: `Shafa: ${e.message || 'Не вдалося завантажити стан'}` });
+      return null;
+    }
+  }, []);
+
   // Чіп «Prom»: живий статус з бекенда (включно з чернеткою/pending) — НЕ залежить від
   // on_display-синку, тож лишається активним одразу після публікації й при поверненні.
   useEffect(() => {
@@ -268,6 +289,200 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     setPromPublished(!!(product as any)?.published_prom);   // швидкий початковий хінт
     refreshPromStatus(productId);
   }, [productId, open, (product as any)?.published_prom, refreshPromStatus]);
+
+  useEffect(() => {
+    if (!productId || !open) return;
+    setShafaStatus({
+      productnumber: String(product?.productnumber || '').replace(/^#/, ''),
+      state: ((product as any)?.shafa_status || 'not_requested'),
+      bridge_enabled: false,
+      on_prom: !!(product as any)?.published_prom,
+      verified: !!(product as any)?.published_shafa,
+      tracked: !!(product as any)?.shafa_status,
+    } as ShafaProductStatus);
+    void refreshShafaStatus(productId);
+  }, [productId, open, (product as any)?.shafa_status, (product as any)?.published_shafa, (product as any)?.published_prom, refreshShafaStatus]);
+
+  const openShafaDialog = async () => {
+    if (!productId || shafaBusy) return;
+    setShafaBusy(true);
+    await refreshShafaStatus(productId, true);
+    setShafaBusy(false);
+  };
+
+  const shafaPost = async (path: string, extra: Record<string, any> = {}) => {
+    if (!productId) return null;
+    setShafaBusy(true);
+    try {
+      const r = await fetch(`/api/publications/shafa/${path}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ product_id: productId, ...extra }),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.detail || `HTTP ${r.status}`);
+      if (curPidRef.current === productId) setShafaStatus(d);
+      window.dispatchEvent(new CustomEvent('bms:shafa-status-refresh'));
+      return d;
+    } catch (e: any) {
+      notify.error({ message: `Shafa: ${e.message || 'Помилка'}`, duration: 7 });
+      return null;
+    } finally { setShafaBusy(false); }
+  };
+
+  const enableShafaBridge = async () => {
+    if (!(await confirmDialog({
+      title: 'Міст уже реально підключено в Prom?',
+      body: 'Ця кнопка нічого не вмикає на Shafa. Вона лише записує в BMS, що ви вже підключили «Експорт товарів на Shafa.ua» у кабінеті Prom. Міст глобальний і обробляє всі доступні сумісні товари Prom.',
+      okText: 'Так, уже підключив у Prom', kind: 'warning',
+    }))) return;
+    setShafaBusy(true);
+    try {
+      const r = await fetch('/api/publications/shafa/config', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ bridge_enabled: true }),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.detail || `HTTP ${r.status}`);
+      if (productId) await refreshShafaStatus(productId);
+      notify.success({ message: 'BMS запам’ятав ваше підтвердження. Реальний стан мосту перевіряється лише в Prom.', duration: 6 });
+    } catch (e: any) { notify.error({ message: `Shafa: ${e.message || 'Помилка'}` }); }
+    finally { setShafaBusy(false); }
+  };
+
+  const disableShafaBridge = async () => {
+    if (!(await confirmDialog({
+      title: 'Позначити міст Prom→Shafa вимкненим?',
+      body: 'BMS перестане готувати нові товари для Shafa. Наявні оголошення на Shafa та Prom не зміняться.',
+      okText: 'Позначити вимкненим', kind: 'warning',
+    }))) return;
+    setShafaBusy(true);
+    try {
+      const r = await fetch('/api/publications/shafa/config', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ bridge_enabled: false }),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.detail || `HTTP ${r.status}`);
+      if (productId) await refreshShafaStatus(productId);
+    } catch (e: any) { notify.error({ message: `Shafa: ${e.message || 'Помилка'}` }); }
+    finally { setShafaBusy(false); }
+  };
+
+  const monitorShafaPromCompletion = (submission: any, pid: number, pnum: string) => {
+    const skus = Array.from(new Set<string>(
+      (Array.isArray(submission?.visible_skus) && submission.visible_skus.length
+        ? submission.visible_skus
+        : (submission?.skus || []))
+        .map((sku: unknown) => String(sku).trim()).filter(Boolean),
+    ));
+    taskManager.run(
+      `Контроль Prom→Shafa ${pnum}`,
+      () => waitForPromImport({ importId: submission?.import_id, skus }),
+      {
+        silentSuccess: true,
+        errorMsg: `Prom не підтвердив товар ${pnum} для Shafa`,
+        onSuccess: () => {
+          markPromImportAccepted();
+          void (async () => {
+            try {
+              const fr = await fetch('/api/publications/shafa/finalize-product', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ product_id: pid, skus }),
+              });
+              const fd = await fr.json();
+              if (!fr.ok) throw new Error(fd.detail || `HTTP ${fr.status}`);
+              if (curPidRef.current === pid) setShafaStatus(fd);
+              notify.success({
+                message: '✓ Prom підтвердив товар для Shafa',
+                description: fd.note || 'Глобальний міст Shafa синхронізує товар автоматично.',
+                duration: 9,
+              });
+              window.dispatchEvent(new CustomEvent('bms:prom-status-refresh'));
+              window.dispatchEvent(new CustomEvent('bms:shafa-status-refresh'));
+            } catch (e: any) {
+              notify.warning({ message: `Prom завершив імпорт, але BMS ще синхронізує дзеркало: ${e.message || e}`, duration: 8 });
+            }
+          })();
+        },
+      },
+    ).catch(() => { void refreshPromLimitWatch(); });
+  };
+
+  const prepareForShafa = async () => {
+    if (!productId || shafaBusy) return;
+    const pid = productId;
+    const pnum = String(product?.productnumber || '').replace(/^#/, '');
+    setShafaDialogOpen(false);
+    setShafaBusy(true);
+    taskManager.run(
+      `Автопублікація ${pnum} на Shafa`,
+      async () => {
+        const r = await fetch('/api/publications/shafa/publish-product', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ product_id: pid }),
+        });
+        const d = await r.json();
+        if (!r.ok) {
+          const err: any = new Error(d.detail || `HTTP ${r.status}`);
+          err.response = { data: { detail: d.detail } };
+          throw err;
+        }
+        return d;
+      },
+      {
+        silentSuccess: true,
+        errorMsg: `Автопублікація ${pnum} на Shafa`,
+        onSuccess: (d: any) => {
+          if (curPidRef.current === pid) setShafaStatus(d);
+          if (d?.import_id) markPromImportAccepted();
+          notify.success({ message: d.note || 'Товар передано офіційному мосту Shafa.', duration: 8 });
+          window.dispatchEvent(new CustomEvent('bms:shafa-status-refresh'));
+          if (d?.queued && (d?.import_id || d?.skus?.length)) {
+            monitorShafaPromCompletion(d, pid, pnum);
+          } else {
+            window.dispatchEvent(new CustomEvent('bms:prom-status-refresh'));
+          }
+        },
+      },
+    ).catch(() => { void refreshPromLimitWatch(); })
+      .finally(() => {
+        setShafaBusy(false);
+        if (curPidRef.current === pid) {
+          void refreshShafaStatus(pid);
+          void refreshPromStatus(pid);
+        }
+      });
+  };
+
+  const confirmOnShafa = async (url?: string) => {
+    const d = await shafaPost('confirm-product', { url });
+    if (d) notify.success({ message: 'Посилання збережено: тепер публікацію Shafa підтверджено доказом.', duration: 5 });
+  };
+
+  const linkExistingShafa = async (url?: string) => {
+    const d = await shafaPost('link-existing', { url });
+    if (d) notify.success({ message: 'Існуюче оголошення Shafa зв’язано з карткою BMS через URL.', duration: 5 });
+  };
+
+  const untrackShafa = async () => {
+    if (!(await confirmDialog({
+      title: 'Зняти лише позначку Shafa в BMS?',
+      body: 'Віддалене оголошення не буде видалено: Shafa не має публічного API видалення. Глобальний міст Prom також може створити його знову.',
+      okText: 'Зняти позначку', kind: 'warning',
+    }))) return;
+    const d = await shafaPost('untrack-product');
+    if (d) notify.success({ message: d.note, duration: 6 });
+  };
+
+  const createPromForExistingShafa = async () => {
+    if (shafaStatus?.state === 'manual_existing' && !(await confirmDialog({
+      title: 'Створити джерело на Prom?',
+      body: 'Офіційного зворотного імпорту Shafa→Prom немає. BMS створить товар на Prom зі своєї картки; глобальний міст може додати дублікат на Shafa.',
+      okText: 'Продовжити', kind: 'warning',
+    }))) return;
+    setShafaDialogOpen(false);
+    await promPublishFlow();
+  };
 
   // Публікація на Prom: прев'ю → ВЛАСНИЙ діалог (редагування назв/ціни/характеристик,
   // попередження про фото/стан всередині) → підтвердження → живий експорт з overrides.
@@ -333,7 +548,11 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
       .finally(() => {
         // Звіряємо чіп з бекендом (черга/дзеркало): успіх → 'pending' (активний),
         // збій → бекенд зняв з черги → чіп повертається. Ніякого «зависання».
-        if (curPidRef.current === pid) { setPromPublishing(false); refreshPromStatus(pid); }
+        if (curPidRef.current === pid) {
+          setPromPublishing(false);
+          refreshPromStatus(pid);
+          refreshShafaStatus(pid);
+        }
       });
   };
 
@@ -664,6 +883,8 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     // ламалось). Реальний статус нового товару підтягне refreshPromStatus нижче.
     setPromPublishing(false);
     setPromBusy(false);
+    setShafaDialogOpen(false);
+    setShafaBusy(false);
 
     const seq = ++loadSeqRef.current;
     if (!isNavigation) {
@@ -1435,6 +1656,34 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                   >
                     {(promBusy || promPublishing) ? <SyncOutlined spin className="text-[11px]" /> : <ShoppingOutlined className="text-[11px]" />}
                     <span>{promPublishing ? 'Публікую…' : 'Prom'}</span>
+                  </button>
+
+                  {/* Shafa: окремий UX, але без фальшивого direct API. Брендовий
+                      знак завжди чорний із білою S; бурштиновий = міст у процесі. */}
+                  <button
+                    type="button"
+                    onClick={openShafaDialog}
+                    disabled={shafaBusy}
+                    className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold border transition-colors disabled:opacity-60 ${
+                      shafaStatus?.verified
+                        ? 'bg-gray-900 text-white border-black dark:bg-black dark:border-gray-600'
+                        : shafaStatus?.tracked
+                          ? 'bg-amber-100 text-amber-800 border-amber-300 dark:bg-amber-900/30 dark:text-amber-300 dark:border-amber-700'
+                          : 'bg-gray-50 text-gray-500 border-gray-200 hover:bg-gray-100 dark:bg-gray-800 dark:text-gray-400 dark:border-gray-700 dark:hover:bg-gray-700'
+                    }`}
+                    title={
+                      shafaStatus?.verified
+                        ? 'Фактично підтверджено URL оголошення Shafa'
+                        : shafaStatus?.state === 'bridge_ready'
+                          ? 'Автоматично очікується на Shafa через Prom; ще не підтверджено фактичну появу'
+                          : shafaStatus?.state === 'waiting_prom'
+                            ? 'Prom обробляє товар; після підтвердження він автоматично піде на Shafa'
+                            : 'Відкрити контроль мосту Prom→Shafa'
+                    }
+                  >
+                    <span className="inline-flex h-4 w-4 items-center justify-center rounded bg-black text-[9px] leading-none text-white font-black ring-1 ring-white/20">S</span>
+                    {shafaBusy && <SyncOutlined spin className="text-[10px]" />}
+                    <span>Shafa</span>
                   </button>
                 </div>
                 <h2 className="text-2xl font-semibold text-gray-900 dark:text-gray-50 truncate leading-tight">
@@ -2224,6 +2473,20 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
           busy={promBusy}
           onCancel={() => { if (!promBusy) setPromPreview(null); }}
           onConfirm={promConfirmPublish}
+        />
+      )}
+      {shafaDialogOpen && shafaStatus && (
+        <ShafaBridgeDialog
+          data={shafaStatus}
+          busy={shafaBusy}
+          onClose={() => { if (!shafaBusy) setShafaDialogOpen(false); }}
+          onEnableBridge={enableShafaBridge}
+          onDisableBridge={disableShafaBridge}
+          onPrepare={prepareForShafa}
+          onConfirm={confirmOnShafa}
+          onLinkExisting={linkExistingShafa}
+          onUntrack={untrackShafa}
+          onCreateProm={createPromForExistingShafa}
         />
       )}
     </div>

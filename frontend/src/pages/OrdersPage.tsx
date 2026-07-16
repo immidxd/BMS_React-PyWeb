@@ -76,7 +76,7 @@ const CHANNEL_COLORS: Record<string, string> = {
   'OLX':       'bg-teal-100 text-teal-700 border-teal-200',
   'Prom':      'bg-indigo-100 text-indigo-700 border-indigo-200',   // фірмовий фіолет Prom.ua
   'Grailed':   'bg-gray-200 text-gray-800 border-gray-400',
-  'Shafa':     'bg-gray-900 text-gray-100 border-gray-600',
+  'Shafa':     'bg-black text-white border-black',
   'Магазин':   'bg-green-100 text-green-700 border-green-200',
   'GRAILED':   'bg-gray-200 text-gray-800 border-gray-400',
 };

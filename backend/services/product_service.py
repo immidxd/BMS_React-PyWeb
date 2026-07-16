@@ -217,6 +217,27 @@ _PRODUCT_FROM_SQL = """
                              OR q.sku LIKE TRIM(LEADING '#' FROM p3.productnumber) || '-%'
         ) prompub ON prompub.pnum = TRIM(LEADING '#' FROM p.productnumber)
         LEFT JOIN (
+            SELECT productnumber AS pnum,
+                   CASE MAX(CASE
+                       WHEN status = 'confirmed'
+                            AND (NULLIF(BTRIM(shafa_url), '') IS NOT NULL
+                                 OR NULLIF(BTRIM(shafa_listing_id), '') IS NOT NULL) THEN 4
+                       WHEN status = 'manual_existing'
+                            AND (NULLIF(BTRIM(shafa_url), '') IS NOT NULL
+                                 OR NULLIF(BTRIM(shafa_listing_id), '') IS NOT NULL) THEN 3
+                       WHEN status IN ('confirmed','manual_existing','bridge_ready') THEN 2
+                       WHEN status = 'waiting_prom' THEN 1
+                       ELSE 0 END)
+                       WHEN 4 THEN 'confirmed'
+                       WHEN 3 THEN 'manual_existing'
+                       WHEN 2 THEN 'bridge_ready'
+                       WHEN 1 THEN 'waiting_prom'
+                   END AS shafa_status
+            FROM shafa_publications
+            WHERE status IN ('waiting_prom','bridge_ready','confirmed','manual_existing')
+            GROUP BY productnumber
+        ) shafapub ON shafapub.pnum = TRIM(LEADING '#' FROM p.productnumber)
+        LEFT JOIN (
             -- Номери (без #), опубліковані в ПУБЛІЧНОМУ інтернет-каталозі (Telegram
             -- Mini App): catalog_listings.is_published, ключ=productnumber → вся
             -- ростовка. Узгоджено з чіпом «У каталозі» в картці товару.
@@ -382,6 +403,11 @@ def _build_product_where(filters: Optional["schemas.ProductFilter"]) -> tuple:
                 _pub.append("olxpub.pnum IS NOT NULL")
             if 'prom' in filters.published_on:
                 _pub.append("prompub.pnum IS NOT NULL")
+            if 'shafa' in filters.published_on:
+                # Shafa-фільтр охоплює весь чесний pipeline: жовті очікувані
+                # стани та чорні підтверджені. published_shafa у відповіді все
+                # одно true лише за реального URL/ID.
+                _pub.append("shafapub.shafa_status IN ('waiting_prom','bridge_ready','confirmed','manual_existing')")
             if 'catalog' in filters.published_on:
                 _pub.append("catpub.pnum IS NOT NULL")
             if _pub:
@@ -637,6 +663,9 @@ def get_products(
                (olxpub.pnum IS NOT NULL) AS published_olx,
                -- Опубліковано на Prom (товар on_display) — той самий принцип «за номером».
                (prompub.pnum IS NOT NULL) AS published_prom,
+               -- Shafa: published=true лише з доказом фактичного оголошення (URL/ID).
+               (shafapub.shafa_status IN ('confirmed','manual_existing')) AS published_shafa,
+               shafapub.shafa_status,
                -- У публічному інтернет-каталозі (catalog_listings) — «за номером».
                (catpub.pnum IS NOT NULL) AS published_catalog
         FROM products p
@@ -744,6 +773,27 @@ def get_products(
             JOIN products p3 ON q.sku = TRIM(LEADING '#' FROM p3.productnumber)
                              OR q.sku LIKE TRIM(LEADING '#' FROM p3.productnumber) || '-%'
         ) prompub ON prompub.pnum = TRIM(LEADING '#' FROM p.productnumber)
+        LEFT JOIN (
+            SELECT productnumber AS pnum,
+                   CASE MAX(CASE
+                       WHEN status = 'confirmed'
+                            AND (NULLIF(BTRIM(shafa_url), '') IS NOT NULL
+                                 OR NULLIF(BTRIM(shafa_listing_id), '') IS NOT NULL) THEN 4
+                       WHEN status = 'manual_existing'
+                            AND (NULLIF(BTRIM(shafa_url), '') IS NOT NULL
+                                 OR NULLIF(BTRIM(shafa_listing_id), '') IS NOT NULL) THEN 3
+                       WHEN status IN ('confirmed','manual_existing','bridge_ready') THEN 2
+                       WHEN status = 'waiting_prom' THEN 1
+                       ELSE 0 END)
+                       WHEN 4 THEN 'confirmed'
+                       WHEN 3 THEN 'manual_existing'
+                       WHEN 2 THEN 'bridge_ready'
+                       WHEN 1 THEN 'waiting_prom'
+                   END AS shafa_status
+            FROM shafa_publications
+            WHERE status IN ('waiting_prom','bridge_ready','confirmed','manual_existing')
+            GROUP BY productnumber
+        ) shafapub ON shafapub.pnum = TRIM(LEADING '#' FROM p.productnumber)
         LEFT JOIN (
             -- Номери (без #), опубліковані в ПУБЛІЧНОМУ інтернет-каталозі (Telegram
             -- Mini App): catalog_listings.is_published, ключ=productnumber → вся
@@ -910,6 +960,8 @@ def get_products(
                 'published_tg': bool(m.get('published_tg', False)),
                 'published_olx': bool(m.get('published_olx', False)),
                 'published_prom': bool(m.get('published_prom', False)),
+                'published_shafa': bool(m.get('published_shafa', False)),
+                'shafa_status': m.get('shafa_status'),
                 'published_catalog': bool(m.get('published_catalog', False)),
                 'has_photo': product_has_photo(m.get('productnumber'), _photo_set),
             }

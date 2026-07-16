@@ -150,6 +150,9 @@ export interface Product {
     published_tg?: boolean;    // опубліковано в Telegram
     published_olx?: boolean;   // опубліковано на OLX
     published_prom?: boolean;  // опубліковано на Prom
+    published_shafa?: boolean; // підтверджено реальним URL/ID Shafa
+    shafa_status?: 'waiting_prom' | 'bridge_ready' | 'confirmed' | 'manual_existing' | null;
+    published_catalog?: boolean;
     has_photo?: boolean;       // має ≥1 фото
 }
 
@@ -246,6 +249,7 @@ export interface ProductFilter {
     colors?: number[];
     countries?: number[];
     only_unsold?: boolean;
+    published_on?: string[];
     visible_only?: boolean;
     shipment_id?: number;
 }

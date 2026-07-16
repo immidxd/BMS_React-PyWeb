@@ -525,10 +525,10 @@ async def _prom_sync_cycle() -> None:
 
     def _run():
         try:
-            from services import prom_service
+            from services import prom_service, shafa_service
             from models.database import SessionLocal
         except ImportError:
-            from backend.services import prom_service
+            from backend.services import prom_service, shafa_service
             from backend.models.database import SessionLocal
         db = SessionLocal()
         try:
@@ -542,7 +542,29 @@ async def _prom_sync_cycle() -> None:
                 dq = prom_service.process_draft_queue(db)
             except Exception as _e:
                 dq = {"error": str(_e)}
-            logger.info(f"Prom-sync: products={rp} orders={ro} drafts={dq}")
+            # Офіційний міст глобальний. Після кожного Prom-read-sync автоматично
+            # віддзеркалюємо локально: pending -> waiting_prom, живий+наявний ->
+            # bridge_ready. Фактичним Shafa оголошенням це не прикидається.
+            try:
+                sr = shafa_service.reconcile_expected_from_prom(db)
+            except Exception as _e:
+                db.rollback()
+                sr = {"error": str(_e)}
+            # Чесна верифікація: публічно (без токенів) звіряємо ВЖЕ ВІДОМІ
+            # Shafa-оголошення — тримаємо confirmed сам і синхронізуємо реальну
+            # наявність з боку Shafa. Автовиявлення нових тут не робимо.
+            try:
+                from services import shafa_reader
+            except ImportError:
+                from backend.services import shafa_reader
+            try:
+                svr = shafa_reader.reconcile_confirmed(db)
+            except Exception as _e:
+                db.rollback()
+                svr = {"error": str(_e)}
+            logger.info(
+                f"Prom-sync: products={rp} orders={ro} drafts={dq} "
+                f"shafa={sr} shafa_verify={svr}")
         finally:
             db.close()
 

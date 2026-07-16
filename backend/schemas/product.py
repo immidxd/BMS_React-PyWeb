@@ -432,6 +432,8 @@ class ProductList(BaseModel):
     published_tg: bool = False         # є published-пост у Telegram
     published_olx: bool = False        # є active/limited оголошення на OLX
     published_prom: bool = False       # є товар on_display на Prom
+    published_shafa: bool = False      # підтверджено реальним URL/ID Shafa
+    shafa_status: Optional[str] = None # waiting_prom|bridge_ready|confirmed|manual_existing
     published_catalog: bool = False    # є в публічному інтернет-каталозі (catalog_listings)
     has_photo: bool = False            # має ≥1 фото (локально/Drive)
 
@@ -532,4 +534,4 @@ class ProductFilters(BaseModel):
     size_ranges: Dict[str, List[str]]
 
     class Config:
-        from_attributes = True 
+        from_attributes = True

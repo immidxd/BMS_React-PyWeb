@@ -20,7 +20,7 @@ import { waitForPromImport, type PromImportProgress } from '../services/promImpo
 import {
   markPromImportAccepted, refreshPromLimitWatch, watchPromLimitStatus,
 } from '../services/promLimitMonitor';
-import { notify } from '../ui/feedback';
+import { confirmDialog, notify } from '../ui/feedback';
 
 // Placeholder for actual filter components for Products
 
@@ -203,7 +203,11 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
 
   // Окрема read-only задача: лише спостерігає за вже відправленим імпортом.
   // Вона не запускає повторну публікацію і не втручається в чергу/фід.
-  const monitorPromCompletion = (submission: any, submittedProducts: number) => {
+  const monitorPromCompletion = (
+    submission: any,
+    submittedProducts: number,
+    onConfirmed?: (skus: string[]) => void,
+  ) => {
     const skus: string[] = Array.from(new Set<string>(
       (Array.isArray(submission?.skus) ? submission.skus : [])
         .map((sku: unknown) => String(sku).trim())
@@ -245,6 +249,7 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
             duration: 9,
           });
           window.dispatchEvent(new CustomEvent('bms:prom-status-refresh'));
+          onConfirmed?.(monitorSkus);
         },
       },
     ).catch(() => { /* terminal PARTIAL/FATAL or timeout is shown by taskManager */ });
@@ -299,6 +304,93 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
       // лише локальне нагадування, не повторюючи саму публікацію.
       void refreshPromLimitWatch();
     }).finally(() => { fetchProducts(); });
+  };
+
+  // Масова Shafa-дія: вже наявні Prom-товари лише позначаються готовими до
+  // глобального мосту; відсутні збираються в ОДИН існуючий Prom import_file.
+  // Ніякого приватного/недокументованого Shafa API.
+  const sendSelectedToShafa = async () => {
+    const ids = selection.ids.slice();
+    if (!ids.length) return;
+    try {
+      const sr = await fetch('/api/publications/shafa/status');
+      const status = await sr.json();
+      if (!sr.ok) throw new Error(status.detail || `HTTP ${sr.status}`);
+      if (!status.bridge_enabled) {
+        const confirmed = await confirmDialog({
+          title: 'Чи вже увімкнено міст Prom→Shafa?',
+          body: 'Перед пакетною дією відкрий у Prom: Маркет → Всі додатки → «Експорт товарів на Shafa.ua», введи телефон Shafa та код. Підтверджуй лише після фактичного ввімкнення.',
+          okText: 'Так, увімкнено', kind: 'warning',
+        });
+        if (!confirmed) return;
+        const cr = await fetch('/api/publications/shafa/config', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ bridge_enabled: true }),
+        });
+        const cd = await cr.json();
+        if (!cr.ok) throw new Error(cd.detail || `HTTP ${cr.status}`);
+      }
+    } catch (e: any) {
+      notify.error({ message: `Shafa: ${e.message || 'Не вдалося перевірити міст'}` });
+      return;
+    }
+
+    const n = ids.length;
+    selection.clear();
+    setSelectionMode(false);
+    taskManager.run(
+      `Підготовка ${n} товар(ів) для Shafa`,
+      async () => {
+        const res = await fetch('/api/publications/shafa/prepare-products-batch', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ product_ids: ids }),
+        });
+        const r = await res.json();
+        if (!res.ok) {
+          const err: any = new Error(r.detail || `HTTP ${res.status}`);
+          err.response = { data: { detail: r.detail } };
+          throw err;
+        }
+        return r;
+      },
+      {
+        silentSuccess: true,
+        errorMsg: `Підготовка ${n} товар(ів) для Shafa`,
+        onSuccess: (r: any) => {
+          if (r?.import_id) markPromImportAccepted();
+          notify.success({ message: r.note || 'Товари передано мосту Prom→Shafa.', duration: 8 });
+          if (r.limit_warning) notify.warning({ message: r.limit_warning, duration: 10 });
+          notify.warning({
+            message: 'Замовлення Shafa обробляються у кабінеті Shafa; BMS не має доступу до них через API.',
+            duration: 8,
+          });
+          window.dispatchEvent(new CustomEvent('bms:shafa-status-refresh'));
+          if (r?.import_id || (Array.isArray(r?.skus) && r.skus.length)) {
+            monitorPromCompletion(r, r.waiting_prom || n, (confirmedSkus) => {
+              void (async () => {
+                try {
+                  const fr = await fetch('/api/publications/shafa/finalize-products-batch', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ product_ids: ids, skus: confirmedSkus }),
+                  });
+                  const fd = await fr.json();
+                  if (!fr.ok) throw new Error(fd.detail || `HTTP ${fr.status}`);
+                  notify.success({
+                    message: '✓ Пакет Prom підтверджено для Shafa',
+                    description: fd.note || 'Глобальний міст Shafa синхронізує товари автоматично.',
+                    duration: 9,
+                  });
+                  window.dispatchEvent(new CustomEvent('bms:shafa-status-refresh'));
+                  fetchProducts();
+                } catch (e: any) {
+                  notify.warning({ message: `Prom підтвердив пакет, але BMS ще синхронізує Shafa-стан: ${e.message || e}`, duration: 8 });
+                }
+              })();
+            });
+          }
+        },
+      },
+    ).catch(() => { void refreshPromLimitWatch(); }).finally(() => { fetchProducts(); });
   };
 
   // Esc — зняти виділення (дія користувача). Скидання буфера ЛИШЕ явними діями:
@@ -501,11 +593,13 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
                 menu={{
                   items: [
                     { key: 'prom', icon: <SendOutlined />, label: 'Відправити на PROM' },
+                    { key: 'shafa', icon: <span className="inline-flex h-4 w-4 items-center justify-center rounded bg-black text-[9px] leading-none text-white font-black">S</span>, label: 'Відправити на Shafa' },
                     { type: 'divider' as const },
                     { key: 'clear', label: 'Зняти виділення' },
                   ],
                   onClick: ({ key }) => {
                     if (key === 'prom') sendSelectedToProm();
+                    else if (key === 'shafa') void sendSelectedToShafa();
                     else if (key === 'clear') selection.clear();
                   },
                 }}

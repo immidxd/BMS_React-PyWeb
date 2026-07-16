@@ -54,6 +54,8 @@ _COLLECT = [
     "dotenv",
     "requests",
     "certifi",
+    "boto3",           # Cloudflare R2 client (lazy import in r2_storage)
+    "botocore",        # boto3 runtime + service models/config
     "anyio",
     "bs4",             # beautifulsoup4
     "lxml",

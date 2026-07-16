@@ -321,7 +321,7 @@ _PROM_SHOE_GROUP = 154833694      # група каталогу «Взуття»
 def _bms_product_for_export(db: Session, product_id: int) -> Optional[dict]:
     row = db.execute(text("""
         SELECT p.id, p.productnumber, p.official_photos_from, p.model, p.price, p.description, p.extranote,
-               p.dimensions,
+               p.dimensions, p.gtin,
                b.brandname, t.typename, t.id AS typeid, st.subtypename, st.id AS subtypeid,
                c.colorname, g.gendername, p.season, p.year,
                co.countryname AS manufacturer, cond.conditionname,
@@ -859,6 +859,25 @@ def _fmt_num(f: float) -> str:
     return str(int(f)) if float(f).is_integer() else str(f)
 
 
+def normalize_gtin(value) -> Optional[str]:
+    """Повернути валідний GTIN-8/12/13/14 або None.
+
+    Prom офіційно підтримує тег ``<gtin>``. Невалідне значення краще не
+    відправляти: маркетплейс використовує контрольну цифру GS1 і може обмежити
+    товар із помилковим кодом. Пробіли/дефіси, якими інколи форматують EAN,
+    безпечно прибираємо.
+    """
+    raw = re.sub(r"[\s-]+", "", str(value or "").strip())
+    if not raw or not raw.isdigit() or len(raw) not in (8, 12, 13, 14):
+        return None
+    body, check = raw[:-1], int(raw[-1])
+    total = 0
+    for idx, ch in enumerate(reversed(body)):
+        total += int(ch) * (3 if idx % 2 == 0 else 1)
+    expected = (10 - (total % 10)) % 10
+    return raw if expected == check else None
+
+
 def _build_params(bms: dict) -> List[tuple]:
     """(назва, значення) для <param> — атрибути КАТЕГОРІЇ Prom. Назви — рос., точно як у
     шаблоні (перевірено на реальних лістингах). Максимальне автозаповнення з наявних даних;
@@ -1191,15 +1210,18 @@ def _export_rows(db: Session, product_id: int) -> List[dict]:
         bms["_qty"] = sum(avail.values())
         return [bms]
     # Ростовка: у кожного розміру СВОЯ довжина устілки (см) — тягнемо по рядках номера.
-    cm = {str(r[0]).strip(): (r[1] or r[2]) for r in db.execute(text(
-        "SELECT sizeeu, measurementscm_max, measurementscm_min FROM products "
+    size_meta = {str(r[0]).strip(): {"insole": (r[1] or r[2]), "gtin": r[3]}
+                 for r in db.execute(text(
+        "SELECT sizeeu, measurementscm_max, measurementscm_min, gtin FROM products "
         "WHERE productnumber = :n AND sizeeu IS NOT NULL"), {"n": bms["productnumber"]}).fetchall()}
     rows = []
     for sz in sizes:
         r = dict(bms)
         r["sizes"] = [sz]
         r["_sku"] = f"{num}-{sz}"
-        r["_insole"] = cm.get(sz)
+        r["_insole"] = (size_meta.get(sz) or {}).get("insole")
+        # GTIN є per-item: у ростовки кожен розмір отримує код свого рядка.
+        r["gtin"] = (size_meta.get(sz) or {}).get("gtin")
         r["_qty"] = avail.get(sz, 0)   # доступно саме цього розміру
         rows.append(r)
     return rows
@@ -1263,6 +1285,10 @@ def _feed_item(bms: dict, sku: str, available: bool, imgs: List[str], group_id: 
     ]
     if bms.get("brandname"):
         parts.append(tag("vendor", bms["brandname"]))
+    gtin = normalize_gtin(bms.get("gtin"))
+    if gtin:
+        # Офіційне поле Prom «Міжнародний код маркування (GTIN)».
+        parts.append(tag("gtin", gtin))
     if kw_ru:                               # рос-теги → поле «Пошукові запити (Російська)»
         parts.append(tag("keywords", kw_ru))
     if kw_ua:                               # укр-теги → поле «Пошукові запити (Українська)»
@@ -1592,6 +1618,43 @@ def _prom_products_by_skus(token: str, skus: List[str], max_pages: int = 10) -> 
     return found
 
 
+def sync_products_by_skus(db: Session, skus: List[str]) -> Dict:
+    """Точково оновити локальне дзеркало після офіційного SUCCESS імпорту."""
+    cfg = _load_config(db)
+    if not cfg:
+        return {"ok": False, "error": "Prom токен не задано"}
+    wanted = list(dict.fromkeys(str(s).strip() for s in (skus or []) if str(s).strip()))
+    if not wanted:
+        return {"ok": False, "error": "Немає SKU для синхронізації"}
+    try:
+        found = _prom_products_by_skus(cfg["api_token"], wanted)
+        for sku, product in found.items():
+            db.execute(text("""
+                INSERT INTO prom_products
+                    (prom_id, product_id, sku, name, presence, status, price, url, last_synced_at)
+                VALUES (:id, :pid, :sku, :name, :presence, :status, :price, :url, now())
+                ON CONFLICT (prom_id) DO UPDATE SET
+                    product_id=EXCLUDED.product_id, sku=EXCLUDED.sku, name=EXCLUDED.name,
+                    presence=EXCLUDED.presence, status=EXCLUDED.status, price=EXCLUDED.price,
+                    url=COALESCE(EXCLUDED.url, prom_products.url), last_synced_at=now()
+            """), {
+                "id": product.get("id"), "pid": _resolve_product_id(db, sku), "sku": sku[:80],
+                "name": (product.get("name") or "")[:400], "presence": product.get("presence"),
+                "status": product.get("status"), "price": product.get("price"),
+                "url": (product.get("url") or "")[:500] or None,
+            })
+        if found:
+            db.execute(text("DELETE FROM prom_draft_queue WHERE sku = ANY(:skus)"),
+                       {"skus": list(found.keys())})
+        db.commit()
+        missing = [sku for sku in wanted if sku not in found]
+        return {"ok": not missing, "found": len(found), "expected": len(wanted),
+                "missing_skus": missing}
+    except Exception as exc:
+        db.rollback()
+        return {"ok": False, "error": str(exc)}
+
+
 def _import_status_details(data: dict) -> Dict:
     details = {key: data[key] for key in _IMPORT_COUNT_FIELDS if data.get(key) is not None}
     if data.get("message"):
@@ -1738,23 +1801,35 @@ def prom_product_status(db: Session, product_id: int) -> Dict:
     number = (rows[0]["productnumber"] or "").lstrip("#")
     skus = list({number} | {r["_sku"] for r in rows})
     row = db.execute(text(
-        "SELECT status FROM prom_products WHERE sku = ANY(:s) AND COALESCE(status,'') <> 'deleted' "
+        "SELECT status, presence, price, last_synced_at, url "
+        "FROM prom_products WHERE sku = ANY(:s) AND COALESCE(status,'') <> 'deleted' "
         "ORDER BY (status = 'on_display') DESC LIMIT 1"), {"s": skus}).fetchone()
     if row:
-        return {"on_prom": True, "status": row[0] or "draft"}
+        return {
+            "on_prom": True,
+            "status": row[0] or "draft",
+            "presence": row[1],
+            "price": float(row[2]) if row[2] is not None else None,
+            "last_synced_at": row[3],
+            "url": row[4],
+        }
     if db.execute(text("SELECT 1 FROM prom_draft_queue WHERE sku = ANY(:s) LIMIT 1"), {"s": skus}).fetchone():
-        return {"on_prom": True, "status": "pending"}
-    return {"on_prom": False, "status": None}
+        return {"on_prom": True, "status": "pending", "presence": None, "price": None,
+                "last_synced_at": None, "url": None}
+    return {"on_prom": False, "status": None, "presence": None, "price": None,
+            "last_synced_at": None, "url": None}
 
 
 # ── Спільна подача ОДНОГО фіду (single або BATCH) ────────────────────────────
-def build_batch_feed(db: Session, product_ids: List[int], available: bool = True):
+def build_batch_feed(db: Session, product_ids: List[int], available: bool = True,
+                     price_overrides: Optional[Dict[int, float]] = None):
     """ОДИН Prom-фід із БАГАТЬОХ товарів (кожен зі своїми фото/розмірами/залишками) →
     один import_file (проти денного ліміту Prom на к-сть імпортів). Повертає
     (feed, included_skus, skipped) де skipped=[(product_id, причина)]."""
     _refresh_brand_countries(db)
     group_id = _PROM_GROUP_SHOES
     all_items, included_skus, skipped = [], [], []
+    price_overrides = price_overrides or {}
     for pid in product_ids:
         try:
             rows = _export_rows(db, pid)
@@ -1769,6 +1844,10 @@ def build_batch_feed(db: Session, product_ids: List[int], available: bool = True
         imgs = _product_image_urls(base["productnumber"], base.get("official_photos_from"))
         if not imgs:
             skipped.append((pid, f"{num}: нема фото")); continue
+        override_price = _num(price_overrides.get(int(pid)))
+        if override_price:
+            for row in rows:
+                row["_ov_price"] = override_price
         all_items.append("".join(_feed_item(r, r["_sku"], available, imgs, group_id) for r in rows))
         included_skus.extend(r["_sku"] for r in rows)
     if not all_items:
@@ -1923,7 +2002,8 @@ def _submit_feed(db: Session, token: str, feed: str, target_skus: list, label: s
     return {"ok": False, "error": f"Prom [{r.status_code}]: {str(msg)[:200]}"}
 
 
-def export_products_batch(db: Session, product_ids: List[int]) -> Dict:
+def export_products_batch(db: Session, product_ids: List[int],
+                          price_overrides: Optional[Dict[int, float]] = None) -> Dict:
     """МАСОВА публікація: N товарів → ОДИН import_file (обходить денний ліміт Prom).
     Пропущені (без фото/ціни/не знайдені) — у summary. Слот зайнятий → чітке повідомлення."""
     cfg = _load_config(db)
@@ -1934,7 +2014,13 @@ def export_products_batch(db: Session, product_ids: List[int]) -> Dict:
     if not ids:
         return {"ok": False, "error": "Не вибрано товарів"}
 
-    feed, included_skus, skipped = build_batch_feed(db, ids, available=True)
+    if price_overrides:
+        feed, included_skus, skipped = build_batch_feed(
+            db, ids, available=True, price_overrides=price_overrides,
+        )
+    else:
+        # Зберігаємо стару сигнатуру виклику для Prom-only шляху та його mock-тестів.
+        feed, included_skus, skipped = build_batch_feed(db, ids, available=True)
     if not included_skus:
         reasons = "; ".join(f"{r}" for _, r in skipped[:10])
         return {"ok": False, "error": f"Жоден товар не готовий до публікації. Причини: {reasons}"}
@@ -2094,6 +2180,95 @@ def export_product_to_prom(db: Session, product_id: int, as_draft: bool = False,
     return {"ok": True, "queued": True, "import_id": res.get("import_id"),
             "sku": number, "skus": target_skus, "sizes_count": n, "category_id": cat,
             "images": len(imgs), "name": _build_name(base, "uk"), "as_draft": False, "note": note}
+
+
+def update_products_for_bridge(db: Session, price_by_product: Dict[int, float]) -> Dict:
+    """Один офіційний products/edit для вже наявних Prom-лістингів.
+
+    Shafa-міст копіює ціну/наявність із Prom, тому перед мостом вирівнюємо всі
+    SKU товару до безпечної ціни й живого стану. Не створює нових товарів.
+    """
+    cfg = _load_config(db)
+    if not cfg:
+        return {"ok": False, "error": "Prom токен не задано"}
+    payload, local_rows, missing = [], [], []
+    for raw_pid, raw_price in (price_by_product or {}).items():
+        pid, price = int(raw_pid), _num(raw_price)
+        if not price:
+            missing.append({"product_id": pid, "reason": "немає безпечної ціни"})
+            continue
+        rows = _export_rows(db, pid)
+        if not rows:
+            missing.append({"product_id": pid, "reason": "товар не знайдено"})
+            continue
+        skus = [r["_sku"] for r in rows]
+        mirrors = db.execute(text("""
+            SELECT prom_id, sku FROM prom_products
+            WHERE sku = ANY(:skus) AND COALESCE(status, '') <> 'deleted'
+        """), {"skus": skus}).fetchall()
+        by_sku = {str(row[1]): int(row[0]) for row in mirrors}
+        for row in rows:
+            sku = str(row["_sku"])
+            prom_id = by_sku.get(sku)
+            if not prom_id:
+                missing.append({"product_id": pid, "sku": sku, "reason": "немає у дзеркалі Prom"})
+                continue
+            presence = "available" if int(row.get("_qty") or 0) > 0 else "not_available"
+            payload.append({"id": prom_id, "price": float(price),
+                            "presence": presence, "status": "on_display"})
+            local_rows.append((prom_id, float(price), presence))
+    if not payload:
+        return {"ok": False, "error": "Не знайдено наявних Prom-лістингів для оновлення",
+                "missing": missing}
+    try:
+        _api_post(cfg["api_token"], "/products/edit", payload)
+        for prom_id, price, presence in local_rows:
+            db.execute(text("""
+                UPDATE prom_products
+                SET price=:price, presence=:presence, status='on_display', last_synced_at=now()
+                WHERE prom_id=:id
+            """), {"id": prom_id, "price": price, "presence": presence})
+        db.commit()
+        return {"ok": True, "updated": len(payload),
+                "skus": [str(item.get("id")) for item in payload], "missing": missing}
+    except Exception as exc:
+        db.rollback()
+        logger.error("Prom bridge price/availability update failed: %s", exc)
+        return {"ok": False, "error": str(exc), "missing": missing}
+
+
+def ensure_product_live(db: Session, product_id: int, price: float) -> Dict:
+    """Зробити товар живим на Prom за безпечною ціною або створити його фідом."""
+    rows = _export_rows(db, int(product_id))
+    if not rows:
+        return {"ok": False, "error": "Товар не знайдено"}
+    skus = [r["_sku"] for r in rows]
+    mirrored = db.execute(text("""
+        SELECT COUNT(DISTINCT sku) FROM prom_products
+        WHERE sku = ANY(:skus) AND COALESCE(status, '') <> 'deleted'
+    """), {"skus": skus}).scalar() or 0
+    pending = db.execute(text(
+        "SELECT COUNT(DISTINCT sku) FROM prom_draft_queue WHERE sku = ANY(:skus)"
+    ), {"skus": skus}).scalar() or 0
+    if int(mirrored) == len(set(skus)):
+        updated = update_products_for_bridge(db, {int(product_id): float(price)})
+        if not updated.get("ok"):
+            return updated
+        return {"ok": True, "queued": False, "updated_existing": True,
+                "updated": updated.get("updated", 0), "sku": skus[0], "skus": skus,
+                "visible_skus": [r["_sku"] for r in rows if int(r.get("_qty") or 0) > 0],
+                "price": float(price),
+                "note": "Prom підтвердив ціну й наявність; глобальний міст Shafa синхронізує товар автоматично."}
+    if pending:
+        return {"ok": True, "queued": True, "updated_existing": False,
+                "sku": skus[0], "skus": skus,
+                "visible_skus": [r["_sku"] for r in rows if int(r.get("_qty") or 0) > 0],
+                "price": float(price),
+                "note": "Prom уже обробляє цей товар. BMS дочекається офіційного підтвердження автоматично."}
+    return export_product_to_prom(
+        db, int(product_id), as_draft=False, preview=False, force=False,
+        overrides={"price": float(price)},
+    )
 
 
 def delete_product_from_prom(db: Session, product_id: int) -> Dict:

@@ -1067,6 +1067,7 @@ async def sync_prom_products(db: Session = Depends(get_db)):
     r = _prom().sync_products(db)
     if not r.get("ok"):
         raise HTTPException(status_code=400, detail=r.get("error", "Prom sync failed"))
+    r["shafa_reconciliation"] = _reconcile_shafa_after_prom(db)
     return r
 
 
@@ -1099,7 +1100,10 @@ def prom_export_product(body: Dict[str, Any] = Body(...), db: Session = Depends(
     r = _prom().export_product_to_prom(
         db, int(pid), as_draft=body.get("as_draft", False), preview=bool(body.get("preview")),
         force=bool(body.get("force")),
-        overrides=body.get("overrides") if isinstance(body.get("overrides"), dict) else None)
+        overrides=body.get("overrides") if isinstance(body.get("overrides"), dict) else None,
+    )
+    if not body.get("preview") and (r.get("ok") or r.get("already_on_prom")):
+        r["shafa_reconciliation"] = _reconcile_shafa_after_prom(db)
     # «вже на Prom» — не помилка, а сигнал фронту показати підтвердження перезапису
     if not r.get("ok") and not r.get("already_on_prom"):
         raise HTTPException(status_code=400, detail=r.get("error", "Prom export failed"))
@@ -1138,6 +1142,7 @@ def prom_export_products_batch(body: Dict[str, Any] = Body(...), db: Session = D
     r = _prom().export_products_batch(db, [int(p) for p in ids if p])
     if not r.get("ok"):
         raise HTTPException(status_code=400, detail=r.get("error", "Prom batch export failed"))
+    r["shafa_reconciliation"] = _reconcile_shafa_after_prom(db)
     return r
 
 
@@ -1168,3 +1173,170 @@ async def prom_orders_list(limit: int = Query(100, ge=1, le=500), db: Session = 
         FROM prom_orders ORDER BY date_created DESC NULLS LAST LIMIT :lim
     """), {"lim": limit}).mappings().all()
     return {"orders": [dict(r) for r in rows], "total": len(rows)}
+
+
+# ── Shafa: офіційний глобальний міст через Prom (без приватних API) ──────────
+def _shafa():
+    try:
+        from services import shafa_service
+    except ImportError:
+        from backend.services import shafa_service
+    return shafa_service
+
+
+def _reconcile_shafa_after_prom(db: Session) -> dict:
+    """Shafa не повинна ламати успішну Prom-дію, навіть якщо її локальна звірка впала."""
+    try:
+        return _shafa().reconcile_expected_from_prom(db)
+    except Exception as exc:
+        db.rollback()
+        logger.warning("Shafa reconciliation after Prom action failed: %s", exc)
+        return {"ok": False, "error": str(exc)}
+
+
+@router.get("/api/publications/shafa/status")
+async def shafa_status(db: Session = Depends(get_db)):
+    return _shafa().get_status(db)
+
+
+@router.post("/api/publications/shafa/reconcile")
+def shafa_reconcile(db: Session = Depends(get_db)):
+    """Примусово перерахувати очікувані Shafa-стани з локального дзеркала Prom."""
+    r = _shafa().reconcile_expected_from_prom(db)
+    if not r.get("ok"):
+        raise HTTPException(status_code=400, detail=r.get("error", "Shafa reconcile failed"))
+    return r
+
+
+@router.post("/api/publications/shafa/config")
+async def shafa_config(body: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
+    enabled = body.get("bridge_enabled") if "bridge_enabled" in body else None
+    r = _shafa().save_bridge_config(db, enabled=enabled)
+    if not r.get("ok"):
+        raise HTTPException(status_code=400, detail=r.get("error", "Shafa config failed"))
+    return r
+
+
+@router.get("/api/publications/shafa/product-status/{product_id}")
+async def shafa_product_status(product_id: int, db: Session = Depends(get_db)):
+    r = _shafa().product_status(db, product_id)
+    if not r.get("ok"):
+        raise HTTPException(status_code=404, detail=r.get("error", "Товар не знайдено"))
+    return r
+
+
+@router.post("/api/publications/shafa/verify-product")
+def shafa_verify_product(body: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
+    """Публічно (без токенів) перечитати відоме оголошення Shafa зараз:
+    звірити наявність і власника без чекання фонового циклу."""
+    pid = body.get("product_id")
+    if not pid:
+        raise HTTPException(status_code=400, detail="Немає product_id")
+    try:
+        from services import shafa_reader
+    except ImportError:
+        from backend.services import shafa_reader
+    r = shafa_reader.verify_product(db, int(pid))
+    if not r.get("ok"):
+        raise HTTPException(status_code=400, detail=r.get("error", "Shafa verify failed"))
+    # Повертаємо оновлений повний статус (з новою наявністю/перевіркою).
+    return _shafa().product_status(db, int(pid))
+
+
+@router.post("/api/publications/shafa/prepare-product")
+def shafa_prepare_product(body: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
+    pid = body.get("product_id")
+    if not pid:
+        raise HTTPException(status_code=400, detail="Немає product_id")
+    r = _shafa().prepare_product(db, int(pid), force=bool(body.get("force")))
+    if not r.get("ok"):
+        raise HTTPException(
+            status_code=409 if r.get("duplicate_risk") else 400,
+            detail=r.get("error", "Shafa prepare failed"),
+        )
+    return r
+
+
+@router.post("/api/publications/shafa/publish-product")
+def shafa_publish_product(body: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
+    """One-click: захищена ціна -> Prom -> офіційний глобальний міст Shafa."""
+    pid = body.get("product_id")
+    if not pid:
+        raise HTTPException(status_code=400, detail="Немає product_id")
+    r = _shafa().publish_product(db, int(pid), force=bool(body.get("force")))
+    if not r.get("ok"):
+        raise HTTPException(
+            status_code=409 if r.get("duplicate_risk") else 400,
+            detail=r.get("error", "Shafa publish failed"),
+        )
+    return r
+
+
+@router.post("/api/publications/shafa/finalize-product")
+def shafa_finalize_product(body: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
+    """Точкове завершення після офіційного SUCCESS імпорту Prom."""
+    pid = body.get("product_id")
+    skus = body.get("skus") or []
+    if not pid:
+        raise HTTPException(status_code=400, detail="Немає product_id")
+    if not isinstance(skus, list) or not skus:
+        raise HTTPException(status_code=400, detail="Немає skus")
+    r = _shafa().finalize_product(db, int(pid), skus)
+    if not r.get("ok"):
+        raise HTTPException(status_code=400, detail=r.get("error", "Shafa finalize failed"))
+    return r
+
+
+@router.post("/api/publications/shafa/finalize-products-batch")
+def shafa_finalize_products_batch(body: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
+    ids = body.get("product_ids") or []
+    skus = body.get("skus") or []
+    if not isinstance(ids, list) or not ids:
+        raise HTTPException(status_code=400, detail="Немає product_ids")
+    if not isinstance(skus, list) or not skus:
+        raise HTTPException(status_code=400, detail="Немає skus")
+    return _shafa().finalize_products_batch(db, ids, skus)
+
+
+@router.post("/api/publications/shafa/confirm-product")
+async def shafa_confirm_product(body: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
+    pid = body.get("product_id")
+    if not pid:
+        raise HTTPException(status_code=400, detail="Немає product_id")
+    r = _shafa().confirm_product(db, int(pid), body.get("url"))
+    if not r.get("ok"):
+        raise HTTPException(status_code=400, detail=r.get("error", "Shafa confirm failed"))
+    return r
+
+
+@router.post("/api/publications/shafa/link-existing")
+async def shafa_link_existing(body: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
+    pid = body.get("product_id")
+    if not pid:
+        raise HTTPException(status_code=400, detail="Немає product_id")
+    r = _shafa().link_existing(db, int(pid), body.get("url"))
+    if not r.get("ok"):
+        raise HTTPException(status_code=400, detail=r.get("error", "Shafa link failed"))
+    return r
+
+
+@router.post("/api/publications/shafa/untrack-product")
+async def shafa_untrack_product(body: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
+    pid = body.get("product_id")
+    if not pid:
+        raise HTTPException(status_code=400, detail="Немає product_id")
+    r = _shafa().untrack_product(db, int(pid))
+    if not r.get("ok"):
+        raise HTTPException(status_code=400, detail=r.get("error", "Shafa untrack failed"))
+    return r
+
+
+@router.post("/api/publications/shafa/prepare-products-batch")
+def shafa_prepare_products_batch(body: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
+    ids = body.get("product_ids")
+    if not isinstance(ids, list) or not ids:
+        raise HTTPException(status_code=400, detail="Немає product_ids")
+    r = _shafa().prepare_products_batch(db, ids)
+    if not r.get("ok"):
+        raise HTTPException(status_code=400, detail=r.get("error", "Shafa batch failed"))
+    return r

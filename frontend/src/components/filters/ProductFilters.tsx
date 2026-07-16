@@ -95,12 +95,20 @@ const CatalogFilterGlyph: React.FC = () => (
   </svg>
 );
 
-type PublicationPlatform = { key: string; label: string; icon?: string; svg?: React.ReactNode };
+const ShafaFilterGlyph: React.FC = () => (
+  <svg viewBox="0 0 18 18" width={18} height={18} aria-hidden focusable="false">
+    <rect width="18" height="18" rx="5" fill="#000000" />
+    <text x="9" y="12.2" textAnchor="middle" fontSize="10" fontWeight="900" fill="white">S</text>
+  </svg>
+);
+
+type PublicationPlatform = { key: string; label: string; icon?: string; svg?: React.ReactNode; tone?: 'emerald' | 'black' };
 const PUBLICATION_PLATFORMS: PublicationPlatform[] = [
   { key: 'telegram', label: 'Telegram', icon: '/media-logos/telegram-logo.png' },
   { key: 'olx',      label: 'OLX',      icon: '/media-logos/olx-mark-emerald.png' },
   { key: 'prom',     label: 'Prom',     icon: '/media-logos/prom-logo.png' },
-  { key: 'catalog',  label: 'Каталог',  svg: <CatalogFilterGlyph /> },
+  { key: 'shafa',    label: 'Shafa',    svg: <ShafaFilterGlyph />, tone: 'black' },
+  { key: 'catalog',  label: 'Каталог',  svg: <CatalogFilterGlyph />, tone: 'emerald' },
   // { key: 'instagram', label: 'Instagram', icon: '/media-logos/instagram.png' },
 ];
 
@@ -115,8 +123,12 @@ function PlatformChip({ platform, active, onClick }: {
   const renderContent = () => {
     if (platform.svg) {
       return (
-        <span className={active ? 'text-emerald-500' : 'text-gray-400 dark:text-gray-500'}
-              style={{ display: 'inline-flex' }}>
+        <span
+          className={active
+            ? (platform.tone === 'black' ? 'text-black' : 'text-emerald-500')
+            : 'text-gray-400 dark:text-gray-500'}
+          style={{ display: 'inline-flex', opacity: platform.tone === 'black' && !active ? 0.35 : 1 }}
+        >
           {platform.svg}
         </span>
       );
