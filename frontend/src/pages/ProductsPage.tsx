@@ -491,7 +491,18 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
     useEffect(() => {
       const handler = () => { fetchProductsRef.current(); };
       window.addEventListener('parsing-complete', handler);
-      return () => window.removeEventListener('parsing-complete', handler);
+      // Після будь-якої дії публікації (у картці чи пакетно, УСПІХ чи ПОМИЛКА)
+      // список має показувати РЕАЛЬНИЙ стан бекенда, а не застарілі іконки.
+      // Легкий дебаунс — щоб серія подій дала один рефетч.
+      let t: any;
+      const debounced = () => { clearTimeout(t); t = setTimeout(() => fetchProductsRef.current(), 400); };
+      const pubEvents = ['bms:prom-status-refresh', 'bms:shafa-status-refresh', 'bms:olx-status-refresh'];
+      pubEvents.forEach((e) => window.addEventListener(e, debounced));
+      return () => {
+        window.removeEventListener('parsing-complete', handler);
+        clearTimeout(t);
+        pubEvents.forEach((e) => window.removeEventListener(e, debounced));
+      };
     }, []);
 
     // ⌘/Ctrl+U — увімкнути/вимкнути «Тільки непродані».

@@ -260,13 +260,29 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     } finally { setCatalogSaving(false); }
   };
 
+  // Прапорці іконок, які показує РЯДОК у списку (з product-пропа). Тримаємо в ref,
+  // щоб порівнювати з авторитетним станом бекенда й авто-зцілювати застарілий рядок.
+  const rowPublishedRef = useRef<{ prom: boolean; olx: boolean; shafa: boolean }>({ prom: false, olx: false, shafa: false });
+  rowPublishedRef.current = {
+    prom: !!(product as any)?.published_prom,
+    olx: !!(product as any)?.published_olx,
+    shafa: !!(product as any)?.published_shafa,
+  };
+  // Якщо авторитетний стан бекенда РОЗІЙШОВСЯ з тим, що показує рядок — просимо
+  // список перечитатися (рядок покаже реальні іконки, а не застарілі).
+  const healRowIfStale = (platform: 'prom' | 'olx' | 'shafa', real: boolean) => {
+    if (real !== rowPublishedRef.current[platform]) {
+      window.dispatchEvent(new CustomEvent(`bms:${platform}-status-refresh`));
+    }
+  };
+
   // Звірити чіп «Prom» з АВТОРИТЕТНИМ статусом бекенда (prom_products-дзеркало АБО
   // prom_draft_queue='pending'). Викликаємо після публікації (успіх/збій) — бекенд
   // сам ставить/знімає чергу, тож чіп завжди коректний і не «зависає» активним.
   const refreshPromStatus = React.useCallback(async (pid: number) => {
     try {
       const r = await fetch(`/api/publications/prom/product-status/${pid}`);
-      if (r.ok) { const d = await r.json(); if (curPidRef.current === pid) setPromPublished(!!d.on_prom); }
+      if (r.ok) { const d = await r.json(); if (curPidRef.current === pid) { setPromPublished(!!d.on_prom); healRowIfStale('prom', !!d.on_prom); } }
     } catch { /* ignore */ }
   }, []);
 
@@ -277,6 +293,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
       if (!r.ok) throw new Error(d.detail || `HTTP ${r.status}`);
       if (curPidRef.current === pid) {
         setShafaStatus(d);
+        healRowIfStale('shafa', !!d.verified);
         if (openDialog) setShafaDialogOpen(true);
       }
       return d as ShafaProductStatus;
@@ -320,7 +337,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
       const r = await fetch(`/api/publications/olx/product-status/${pid}`);
       const d = await r.json();
       if (!r.ok) throw new Error(d.detail || `HTTP ${r.status}`);
-      if (curPidRef.current === pid) setOlxStatus(d);
+      if (curPidRef.current === pid) { setOlxStatus(d); healRowIfStale('olx', !!d.on_olx); }
       if (openDialog) setOlxDialogOpen(true);
       return d as OlxProductStatus;
     } catch (e: any) {
@@ -372,11 +389,14 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
       } else {
         notify.success({ message: d.note || 'Опубліковано на OLX.', duration: 7 });
       }
-      window.dispatchEvent(new CustomEvent('bms:olx-status-refresh'));
       await refreshOlxStatus(productId);
     } catch (e: any) {
       notify.error({ message: `OLX: ${e.message || 'Помилка публікації'}`, duration: 8 });
-    } finally { setOlxBusy(false); }
+    } finally {
+      setOlxBusy(false);
+      // І успіх, і збій → синхронізувати рядок у списку (реальний стан OLX).
+      window.dispatchEvent(new CustomEvent('bms:olx-status-refresh'));
+    }
   };
 
   const shafaPost = async (path: string, extra: Record<string, any> = {}) => {
@@ -622,6 +642,9 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
           refreshPromStatus(pid);
           refreshShafaStatus(pid);
         }
+        // І УСПІХ, І ЗБІЙ мають синхронізувати РЯДОК у списку (іконки), щоб він
+        // не лишався з застарілим станом після невдалої відправки.
+        window.dispatchEvent(new CustomEvent('bms:prom-status-refresh'));
       });
   };
 
@@ -639,7 +662,10 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
       if (r.ok) { setPromPublished(false); notify.success({ message: `Знято з Prom (${d.deleted ?? 1}).`, duration: 3 }); }
       else notify.error({ message: `Prom: ${d.detail || r.status}` });
     } catch (e: any) { notify.error({ message: `Prom: ${e.message || 'Помилка'}` }); }
-    finally { setPromBusy(false); }
+    finally {
+      setPromBusy(false);
+      window.dispatchEvent(new CustomEvent('bms:prom-status-refresh'));  // синхронізувати рядок
+    }
   };
 
   const promToggle = () => {
