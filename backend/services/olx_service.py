@@ -439,45 +439,147 @@ def _api_post(access_token: str, path: str, body: dict) -> Tuple[int, dict]:
     return resp.status_code, data
 
 
-# ── Мапа типів BMS → категорії OLX (взуття) ──────────────────────────────────
-# Знайдено з живого дерева OLX: Жіноче взуття (2015) / Чоловіче (2014) / Дитяче.
+# ── Мапа типів BMS → категорії OLX (усі товари: взуття/сумки/одяг/аксесуари) ──
+# Ідентифікатори взято з живого дерева категорій OLX. Стать: Жіноче взуття 2015,
+# Чоловіче 2014, Дитяче 542; одяг — Жіночий 2016 / Чоловічий 2107.
 _OLX_CAT_WOMEN = {
-    "туфлі": 2619, "балетки": 2619, "мокасини": 2619,
-    "кросівки": 2623, "кеди": 2624,
-    "черевики": 2618, "чоботи": 2618, "ботінки": 2618,
-    "босоніжки": 2628, "сандалі": 2628, "шльопанці": 2628,
+    "туфлі": 2619, "балетки": 2619, "мокасини": 2619, "лофери": 2619,
+    "кросівки": 2623, "кеди": 2624, "сліпони": 2624,
+    "черевики": 2618, "чоботи": 2618, "ботинки": 2618, "напівботинки": 2618,
+    "напівсапоги": 2618, "сапоги": 2618, "уги": 2618, "валянки": 2618, "дутики": 2618,
+    "босоніжки": 2628, "сандалі": 2628, "шльопанці": 2628, "сабо": 2628,
+    "в'єтнамки": 2628, "тапки": 2665, "тапочки": 2665,
 }
 _OLX_CAT_MEN = {
-    "туфлі": 2695, "мокасини": 2695, "балетки": 2695,
-    "кросівки": 2687, "кеди": 2688,
-    "черевики": 2689, "чоботи": 2689, "ботінки": 2689,
-    "босоніжки": 2695, "сандалі": 2695, "шльопанці": 2695,
+    "туфлі": 2695, "мокасини": 2695, "балетки": 2695, "лофери": 2695, "топсайдери": 2695,
+    "кросівки": 2687, "кеди": 2688, "сліпони": 2688,
+    "черевики": 2689, "чоботи": 2689, "ботинки": 2689, "напівботинки": 2689,
+    "напівсапоги": 2689, "сапоги": 2689, "уги": 2689, "валянки": 2689, "дутики": 2689,
+    "босоніжки": 2695, "сандалі": 2695, "шльопанці": 2695, "сабо": 2695,
+    "в'єтнамки": 2695, "тапки": 2727, "тапочки": 2727,
 }
 _OLX_CAT_WOMEN_OTHER = 2665
 _OLX_CAT_MEN_OTHER = 2727
 _OLX_CAT_KIDS = 542
 
+# Не-взуття. Значення: int (стать не важлива) або {ч,ж} (гендерна категорія).
+_OLX_MISC: Dict[str, Any] = {
+    # Сумки / подорож / переноска
+    "сумка": 552, "рюкзак": 3142, "валіза": 3208, "гаманець": 3143,
+    "портмоне": 3143, "косметичка": 3143, "пенал": 3143, "парасолька": 3144,
+    "набір": 552,
+    # Аксесуари
+    "ремінь": 3158, "пасок": 3158, "окуляри": 3148, "шарф": 3147,
+    "рукавиці": 3147, "рукавички": 3147, "краватка": 3149,
+    "шапка": 2141, "кепка": 2131, "капелюх": 2144, "тюрбан": 2141, "бандана": 2141,
+    # Парфумерія
+    "парфуми": 2728, "духи": 2728,
+    # Верх (гендерний)
+    "футболка": {"ч": 2736, "ж": 2838}, "майка": {"ч": 2736, "ж": 2838},
+    "сорочка": {"ч": 2737, "ж": 2868}, "блуза": {"ж": 2839}, "туніка": {"ж": 2839},
+    "светр": {"ч": 2738, "ж": 2855}, "кофта": {"ч": 2738, "ж": 2840},
+    "джемпер": {"ч": 2738, "ж": 2840}, "кардиган": {"ч": 2738, "ж": 2869},
+    "худі": {"ч": 2738, "ж": 2880}, "толстовка": {"ч": 2738, "ж": 2900},
+    # Верхній одяг
+    "куртка": {"ч": 2739, "ж": 2903}, "пальто": {"ч": 2760, "ж": 2883},
+    "пуховик": {"ч": 2797, "ж": 2739}, "плащ": {"ч": 2739, "ж": 2858},
+    "вітровка": {"ч": 2739, "ж": 2893}, "жилетка": {"ч": 2803, "ж": 2739},
+    "жилет": {"ч": 2803, "ж": 2739},
+    # Низ
+    "штани": {"ч": 2742, "ж": 2845}, "брюки": {"ч": 2742, "ж": 2845},
+    "джинси": {"ч": 2741, "ж": 2844}, "легінси": {"ж": 2913}, "лосини": {"ж": 2913},
+    "шорти": {"ч": 2740, "ж": 2951}, "спідниця": {"ж": 2842},
+    # Сукні / костюми / комбінезони
+    "сукня": {"ж": 2891}, "плаття": {"ж": 2891},
+    "костюм": {"ч": 2743, "ж": 2847}, "піджак": {"ч": 2743},
+    "комбінезон": {"ч": 2744, "ж": 2846},
+    # Домашній одяг / сон
+    "піжама": {"ч": 2745, "ж": 2864}, "халат": {"ч": 2745, "ж": 2876},
+    "нічна_сорочка": {"ж": 2897},
+    # Білизна
+    "білизна": {"ч": 2010, "ж": 2011}, "труси": {"ч": 2010, "ж": 2300},
+    "підштанники": {"ч": 2010}, "купальник": {"ж": 2299}, "бюстгальтер": {"ж": 2011},
+    "носки": {"ж": 2314}, "шкарпетки": {"ж": 2314}, "колготи": {"ж": 2310},
+}
+
+# Одруки/латинські двійники → канонічний тип.
+_TYPE_ALIASES = {
+    "cумка": "сумка", "босоніжкиї": "босоніжки", "шльпанці": "шльопанці",
+    "шльлопанці": "шльопанці", "ботінки": "ботинки", "ботинок": "ботинки",
+    "напісапоги": "напівсапоги", "комбенізон": "комбінезон", "комбінізон": "комбінезон",
+    "сандалії": "сандалі", "блузка": "блуза", "тапчки": "тапки",
+    "уггі": "уги", "угі": "уги", "еспадрилії": "еспадрильї", "еспадрильї": "еспадрильї",
+    "нічна сорочка": "нічна_сорочка", "брюки": "брюки",
+}
+
+_SHOE_PREFIXES = (
+    "череви", "чобо", "боти", "боті", "напівбот", "напівсап", "напісап", "сапог",
+    "кросів", "кед", "туфл", "босон", "санда", "мокас", "балет", "шльоп", "шльп",
+    "сліп", "лофер", "уг", "тапк", "тапоч", "сабо", "в'єтнам", "валян", "дутик",
+    "еспадр", "челсі", "батфор", "ботильй", "бутс", "футзал", "сороконож", "чешк",
+    "галош", "топсайд", "трекінг", "сліпон")
+
+
+def _norm_type(typename: Optional[str]) -> str:
+    t = str(typename or "").strip().lower()
+    return _TYPE_ALIASES.get(t, t)
+
+
+def _is_shoe_type(t: str) -> bool:
+    return any(t.startswith(p) for p in _SHOE_PREFIXES)
+
 
 def olx_category_for(typename: Optional[str], gendername: Optional[str]) -> Optional[int]:
-    """Категорія OLX за типом+статтю BMS. None — якщо тип не взуттєвий (напр. сумка)."""
-    t = str(typename or "").strip().lower()
+    """Категорія OLX за типом+статтю BMS (статична мапа). None — якщо тип не
+    розпізнано (тоді викликач пробує навчання з наявних оголошень)."""
+    t = _norm_type(typename)
     g = str(gendername or "").strip().lower()
     if not t:
         return None
     is_kids = any(k in g for k in ("діт", "дит", "дів", "хлоп"))
     is_men = g.startswith("чол")
-    if is_kids:
-        return _OLX_CAT_KIDS
-    table = _OLX_CAT_MEN if is_men else _OLX_CAT_WOMEN   # унісекс/жіноче → жіноче дерево
-    if t in table:
-        return table[t]
-    # Взуттєвий, але тип не в мапі → «Інше взуття» відповідної статі.
-    shoe_like = any(t.startswith(p) for p in (
-        "череви", "чобо", "боті", "кросів", "кед", "туфл", "босон", "санда",
-        "мокас", "балет", "шльоп", "сліп", "лофер", "уги", "угі"))
-    if shoe_like:
-        return _OLX_CAT_MEN_OTHER if is_men else _OLX_CAT_WOMEN_OTHER
-    return None  # не взуття (сумка/валіза/аксесуар) — категорію треба задати окремо
+    # 1) Взуття
+    if _is_shoe_type(t):
+        if is_kids:
+            return _OLX_CAT_KIDS
+        table = _OLX_CAT_MEN if is_men else _OLX_CAT_WOMEN
+        return table.get(t, _OLX_CAT_MEN_OTHER if is_men else _OLX_CAT_WOMEN_OTHER)
+    # 2) Не-взуття (сумки/одяг/аксесуари)
+    v = _OLX_MISC.get(t)
+    if v is None:
+        return None
+    if isinstance(v, int):
+        return v
+    key = "ч" if is_men else "ж"          # унісекс/жіноче → жіноче
+    return v.get(key) or v.get("ж") or v.get("ч") or next(iter(v.values()), None)
+
+
+def _learn_category(db: Session, product: dict) -> Optional[int]:
+    """Найчастіша OLX-категорія серед НАЯВНИХ оголошень товарів того ж підтипу/типу
+    (як робить Prom). Дає точну категорію навіть для типів поза статичною мапою."""
+    tid, sid = product.get("typeid"), product.get("subtypeid")
+    if not (tid or sid):
+        return None
+    # Спершу шукаємо збіг за ПІДТИПОМ (точніше), потім за типом.
+    for by_subtype in (True, False):
+        if by_subtype and not sid:
+            continue
+        cond = "p.subtypeid = :sid" if by_subtype else "p.typeid = :tid"
+        row = db.execute(text(f"""
+            SELECT oa.category_id, COUNT(*) c
+            FROM olx_adverts oa JOIN products p ON p.id = oa.product_id
+            WHERE oa.category_id IS NOT NULL AND {cond}
+            GROUP BY oa.category_id ORDER BY c DESC LIMIT 1
+        """), {"tid": tid, "sid": sid}).first()
+        if row:
+            return int(row[0])
+    return None
+
+
+def resolve_category(db: Session, product: dict) -> Optional[int]:
+    """Категорія OLX: статична мапа → навчання з наявних оголошень → None."""
+    return olx_category_for(product.get("typename"), product.get("gendername")) \
+        or _learn_category(db, product)
 
 
 # ── Конфіг ────────────────────────────────────────────────────────────────────
@@ -602,23 +704,67 @@ def _match_value_code(defs: list, code: str, label: Optional[str]) -> Optional[s
     return None
 
 
+def _match_in_def(d: dict, label: Optional[str], is_size: bool = False) -> Optional[str]:
+    """Код значення В МЕЖАХ одного атрибута за label BMS (не за фіксованим code —
+    щоб працювало для будь-якої категорії: color / bags_color / material_ch_o…)."""
+    if not label:
+        return None
+    want = str(label).strip().lower()
+    for v in d.get("values") or []:
+        if str(v.get("label", "")).strip().lower() == want:
+            return v.get("code")
+    if is_size:
+        norm = want.replace(".", "_").replace(",", "_")
+        for v in d.get("values") or []:
+            if str(v.get("code", "")).lower() == norm:
+                return v.get("code")
+    return None
+
+
+# Сезон BMS → типова OLX-мітка (додається лише якщо категорія має такий label).
+_SEASON_MAP = {
+    "літо": "Літо", "зима": "Зима", "демі": "Демісезон", "демісезон": "Демісезон",
+    "весна": "Весна", "осінь": "Осінь", "всесезон": "Всесезонний",
+}
+
+
 def _build_attributes(defs: list, product: dict) -> list:
-    """Атрибути OLX з даних BMS. `state` обов'язковий; решта — за наявності збігу."""
-    attrs = []
+    """Універсальне автозаповнення атрибутів OLX із даних BMS для БУДЬ-ЯКОЇ
+    категорії: кожен атрибут класифікуємо за семантикою його коду й підбираємо
+    значення за збігом label. `state` (Нове/Вживане) — завжди."""
     cond = str(product.get("conditionname") or "").lower()
-    state = "new" if ("нов" in cond) else "used"
-    attrs.append({"code": "state", "value": state})
-    # Розмір — лише якщо один (ростовка = багато розмірів → не ставимо в атрибут).
-    sizes = [s for s in (product.get("sizes") or []) if s]
-    if len(sizes) == 1:
-        sc = _match_value_code(defs, "size", str(sizes[0]))
-        if sc:
-            attrs.append({"code": "size", "value": sc})
-    for code, label in (("color", product.get("colorname")),
-                        ("brand", product.get("brandname"))):
-        vc = _match_value_code(defs, code, label)
-        if vc:
-            attrs.append({"code": code, "value": vc})
+    is_new = "нов" in cond
+    sizes = [str(s) for s in (product.get("sizes") or []) if s]
+    color = product.get("colorname")
+    brand = product.get("brandname")
+    mats = [m for m in (product.get("materials") or {}).values() if m]
+    material = mats[0] if mats else None
+    season_raw = str(product.get("season") or "").strip().lower()
+    season_key = re.split(r"[\s,/]+", season_raw)[0] if season_raw else ""
+    season = _SEASON_MAP.get(season_key)
+
+    attrs: List[dict] = []
+    for d in defs:
+        code = (d.get("code") or "").lower()
+        val = None
+        if code == "state":
+            val = _match_in_def(d, "Нове" if is_new else "Вживане") or ("new" if is_new else "used")
+        elif "size" in code:
+            if len(sizes) == 1:            # ростовка (кілька розмірів) → пропускаємо
+                val = _match_in_def(d, sizes[0], is_size=True)
+        elif "color" in code or "colour" in code:
+            val = _match_in_def(d, color)
+        elif "brand" in code:
+            val = _match_in_def(d, brand)
+        elif "material" in code:
+            val = _match_in_def(d, material)
+        elif "season" in code:
+            val = _match_in_def(d, season)
+        if val:
+            attrs.append({"code": d.get("code"), "value": val})
+    # Гарантія: state присутній навіть якщо defs не вдалося прочитати.
+    if not any(a.get("code") == "state" for a in attrs):
+        attrs.insert(0, {"code": "state", "value": "new" if is_new else "used"})
     return attrs
 
 
@@ -760,7 +906,7 @@ def create_advert(db: Session, product_id: int, price: Optional[float] = None,
     if not product:
         return {"ok": False, "error": "Товар не знайдено"}
     number = str(product.get("productnumber") or "").lstrip("#")
-    category_id = olx_category_for(product.get("typename"), product.get("gendername"))
+    category_id = resolve_category(db, product)
     if not category_id:
         return {"ok": False, "need_category": True,
                 "error": f"Категорію OLX для типу «{product.get('typename')}» не визначено"}
@@ -878,7 +1024,7 @@ def olx_product_status(db: Session, product_id: int) -> dict:
     if not product:
         return {"ok": False, "error": "Товар не знайдено"}
     number = str(product.get("productnumber") or "").lstrip("#")
-    category_id = olx_category_for(product.get("typename"), product.get("gendername"))
+    category_id = resolve_category(db, product)
     adv = db.execute(text("""
         SELECT olx_id, status, url, price, needs_package, last_error, created_by_bms
         FROM olx_adverts
@@ -891,7 +1037,7 @@ def olx_product_status(db: Session, product_id: int) -> dict:
     if not st.get("authorized"):
         warnings.append("OLX не авторизовано — пройдіть одноразову авторизацію.")
     if not category_id:
-        warnings.append(f"Тип «{product.get('typename')}» не мапиться на категорію взуття OLX.")
+        warnings.append(f"Тип «{product.get('typename')}» не вдалося зіставити з категорією OLX — задайте вручну.")
     try:
         images = prom_service._product_image_urls(product.get("productnumber"),
                                                   product.get("official_photos_from"))
