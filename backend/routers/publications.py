@@ -1096,15 +1096,52 @@ def olx_create_batch(body: Dict[str, Any] = Body(...), db: Session = Depends(get
     return _olx().create_adverts_batch(db, [int(x) for x in ids if x])
 
 
-# ── monoБазар (постинг заблоковано на партнерському доступі) ──────────────────
-@router.get("/api/publications/monobazar/status")
-def monobazar_status():
-    """Статус monoБазар: чесно повідомляє, що постинг очікує партнерський доступ."""
+# ── monoБазар: READ-верифікація (публічний API) + write-блокер ────────────────
+def _monobazar():
     try:
         from services import monobazar
     except ImportError:
         from backend.services import monobazar
-    return monobazar.get_status()
+    return monobazar
+
+
+def _monobazar_reader():
+    try:
+        from services import monobazar_reader
+    except ImportError:
+        from backend.services import monobazar_reader
+    return monobazar_reader
+
+
+@router.get("/api/publications/monobazar/status")
+def monobazar_status(db: Session = Depends(get_db)):
+    """Статус monoБазар: READ-верифікація активна, створення оголошень заблоковано."""
+    return _monobazar().get_status(db)
+
+
+@router.post("/api/publications/monobazar/sync")
+def monobazar_sync(db: Session = Depends(get_db)):
+    """Синхронізувати активні оголошення продавця (публічний API, без токенів)."""
+    r = _monobazar_reader().sync_listings(db)
+    if not r.get("ok"):
+        raise HTTPException(status_code=400, detail=r.get("error", "monoБазар sync failed"))
+    return r
+
+
+@router.post("/api/publications/monobazar/config")
+def monobazar_config(body: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
+    username = str(body.get("seller_username") or "").strip()
+    if not username:
+        raise HTTPException(status_code=400, detail="Немає seller_username")
+    _monobazar_reader().set_seller_username(db, username)
+    return _monobazar().get_status(db)
+
+
+@router.get("/api/publications/monobazar/product-status/{product_id}")
+def monobazar_product_status(product_id: int, db: Session = Depends(get_db)):
+    """Стан товару щодо monoБазар для картки — лише перегляд (verified listing)."""
+    listing = _monobazar_reader().listing_status(db, product_id)
+    return {"ok": True, "tracked": bool(listing), **listing}
 
 
 # ── Prom.ua інтеграція (Фаза 2) ──────────────────────────────────────────────

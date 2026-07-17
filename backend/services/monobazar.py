@@ -1,21 +1,22 @@
-"""monoБазар (monobank marketplace) — каркас ціноутворення + статус.
+"""monoБазар (monobank marketplace) — ціноутворення + статус (READ + write-блокер).
 
-⚠️  СТВОРЕННЯ ОГОЛОШЕНЬ ЗАБЛОКОВАНЕ (станом на 2026-07).
+⚠️  СТВОРЕННЯ ОГОЛОШЕНЬ ЗАБЛОКОВАНЕ (станом на 2026-07) — АЛЕ ЧИТАННЯ ПРАЦЮЄ.
 ────────────────────────────────────────────────────────────────────────────
 monoБазар — маркетплейс вживаних речей усередині застосунку monobank
-(Маркет → «Базар»). Публічного API замовлень/створення для України у
-специфікації НЕМАЄ. Це партнерська інтеграція, і щоб її реалізувати, потрібно:
-  • ФОП-рахунок monobank (доступ для ФОП планувався ~через 3–4 міс. після
-    запуску 2025-12-08, тобто орієнтовно весна 2026 — треба підтвердити);
+(Маркет → «Базар»). Реверс-інжинірингом публічної вітрини продавця знайдено
+ПУБЛІЧНИЙ REST-шлюз без авторизації (`monobazar_reader.py`,
+resale-public-api-gateway.monobazar.com.ua) — читає активні оголошення,
+кількість, профіль. Це дає верифікацію/моніторинг ВЖЕ ЗАРАЗ, без ФОП і без
+партнерського доступу.
+
+Але СТВОРЕННЯ оголошень лишається заблокованим: у JS-бандлах вітрини немає
+жодного write-ендпоінта — «Нове оголошення» існує лише в мобільному
+застосунку (приватне API, не досліджувалось — інша категорія ризику, ніж
+публічний веб-код). Щоб постити офіційно, потрібно:
+  • ФОП-рахунок monobank (доступ для ФОП відкривається пізніше, дата не оголошена);
   • запрошення/онбординг від банку в партнерську програму;
   • договір із МУРКОД (оператор);
   • приватну API-документацію (видається партнерам).
-
-Тому цей модуль НЕ створює оголошень. Він готує дві речі, щоб щойно доступ
-з'явиться — лишалось дописати лише транспортний шар:
-  1) get_status() — чесно повідомляє UI, що інтеграція очікує партнерський доступ;
-  2) price_economics() — індивідуальне ціноутворення monoБазар (комісійна модель,
-     на відміну від OLX з платою за публікацію).
 
 Модель витрат monoБазар (з публічних джерел, 2026):
   • комісія продавця: 0.1% до 2026-01-08, далі МІНІМУМ ~1.9% від суми продажу;
@@ -30,10 +31,13 @@ import math
 import os
 from typing import Optional
 
+from sqlalchemy import text
+from sqlalchemy.orm import Session
+
 try:
-    from services import prom_service
+    from services import prom_service, monobazar_reader
 except ImportError:  # pragma: no cover
-    from backend.services import prom_service
+    from backend.services import prom_service, monobazar_reader
 
 # Комісія продавця monoБазар (частка). Дефолт — оголошений мінімум 1.9%.
 # Уточнюється партнерським договором для ФОП — тому env-конфігуровано.
@@ -42,14 +46,15 @@ MONOBAZAR_COMMISSION = float(os.getenv("MONOBAZAR_COMMISSION", "0.019"))
 MONOBAZAR_FLAT_FEE = float(os.getenv("MONOBAZAR_FLAT_FEE", "0"))
 
 
-def get_status() -> dict:
-    """Стан інтеграції для UI — чесно про блокер, без імітації готовності."""
-    return {
+def get_status(db: Optional[Session] = None) -> dict:
+    """Стан інтеграції для UI: читання ПРАЦЮЄ (verified live), запис — заблоковано."""
+    base = {
         "ok": True,
-        "available": False,
-        "reason": "Партнерський доступ ще не відкрито",
+        "available": False,          # створення оголошень
+        "reading_available": True,   # верифікація/моніторинг через публічний READ API
+        "reason": "Партнерський доступ до створення оголошень ще не відкрито",
         "blockers": [
-            "Публічного API створення оголошень для України немає",
+            "Публічного write-API створення оголошень немає (лише мобільний застосунок)",
             "Потрібен ФОП-рахунок monobank (доступ для ФОП відкривається пізніше)",
             "Потрібне запрошення/онбординг банку в партнерську програму",
             "Потрібен договір із МУРКОД і приватна API-документація",
@@ -57,7 +62,32 @@ def get_status() -> dict:
         "commission_pct": round(MONOBAZAR_COMMISSION * 100, 2),
         "pricing_ready": True,
         "posting_ready": False,
+        "seller_username": None,
+        "tracked": 0, "confident": 0, "ambiguous": 0, "unmatched": 0,
+        "store_synced_at": None,
     }
+    if db is None:
+        return base
+    username = monobazar_reader.get_seller_username(db)
+    row = db.execute(text("""
+        SELECT
+            COUNT(*) FILTER (WHERE match_confidence = 'confident') AS confident,
+            COUNT(*) FILTER (WHERE match_confidence = 'ambiguous') AS ambiguous,
+            COUNT(*) FILTER (WHERE match_confidence = 'none')      AS unmatched,
+            COUNT(*)                                                AS total
+        FROM monobazar_listings
+    """)).mappings().first() or {}
+    cfg = db.execute(text(
+        "SELECT store_synced_at FROM monobazar_config WHERE id=1")).first()
+    base.update({
+        "seller_username": username,
+        "tracked": int(row.get("total") or 0),
+        "confident": int(row.get("confident") or 0),
+        "ambiguous": int(row.get("ambiguous") or 0),
+        "unmatched": int(row.get("unmatched") or 0),
+        "store_synced_at": (cfg[0].isoformat() if (cfg and cfg[0]) else None),
+    })
+    return base
 
 
 def _round_up_10(value: float) -> int:

@@ -562,9 +562,21 @@ async def _prom_sync_cycle() -> None:
             except Exception as _e:
                 db.rollback()
                 svr = {"error": str(_e)}
+            # monoБазар: лише READ-верифікація публічним API вітрини продавця
+            # (без токенів). Постинг заблокований — тут тільки моніторинг.
+            try:
+                from services import monobazar_reader
+            except ImportError:
+                from backend.services import monobazar_reader
+            try:
+                mbr = (monobazar_reader.sync_listings(db)
+                      if monobazar_reader.get_seller_username(db) else {"skipped": "no username"})
+            except Exception as _e:
+                db.rollback()
+                mbr = {"error": str(_e)}
             logger.info(
                 f"Prom-sync: products={rp} orders={ro} drafts={dq} "
-                f"shafa={sr} shafa_verify={svr}")
+                f"shafa={sr} shafa_verify={svr} monobazar={mbr}")
         finally:
             db.close()
 

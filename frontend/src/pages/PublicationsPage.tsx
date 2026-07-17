@@ -410,6 +410,8 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
   // Prom-інтеграція: статус (термін токена), панель замовлень-дзеркала.
   const [promStatus, setPromStatus] = useState<any | null>(null);
   const [promOrders, setPromOrders] = useState<any[] | null>(null);
+  // monoБазар: лише READ-верифікація (публічний API) — постинг заблоковано.
+  const [monobazarStatus, setMonobazarStatus] = useState<any | null>(null);
 
   const fetchPromStatus = React.useCallback(async () => {
     try { const r = await fetch('/api/publications/prom/status'); if (r.ok) setPromStatus(await r.json()); }
@@ -419,7 +421,26 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
     try { const r = await fetch('/api/publications/olx/status'); if (r.ok) setOlxStatus(await r.json()); }
     catch { /* нехай тихо */ }
   }, []);
-  useEffect(() => { fetchPromStatus(); fetchOlxStatus(); }, [fetchPromStatus, fetchOlxStatus]);
+  const fetchMonobazarStatus = React.useCallback(async () => {
+    try { const r = await fetch('/api/publications/monobazar/status'); if (r.ok) setMonobazarStatus(await r.json()); }
+    catch { /* нехай тихо */ }
+  }, []);
+  useEffect(() => { fetchPromStatus(); fetchOlxStatus(); fetchMonobazarStatus(); }, [fetchPromStatus, fetchOlxStatus, fetchMonobazarStatus]);
+
+  // monoБазар: синхронізувати вітрину продавця (публічний API, без токенів).
+  const handleMonobazarSync = async () => {
+    if (syncingAll) return;
+    setSyncingAll(true); setSyncAllMsg(null);
+    try {
+      const r = await fetch('/api/publications/monobazar/sync', { method: 'POST' });
+      const d = await r.json();
+      if (!r.ok) { setSyncAllMsg(`❌ monoБазар: ${d.detail || r.status}`); return; }
+      setSyncAllMsg(`✅ monoБазар: ${d.total || 0} оголошень (${d.confident || 0} підтверджено, ${d.ambiguous || 0} неоднозначних, ${d.unmatched || 0} без збігу).`);
+      fetchMonobazarStatus();
+    } catch (e: any) {
+      setSyncAllMsg(`❌ monoБазар: ${e.message || 'Помилка'}`);
+    } finally { setSyncingAll(false); }
+  };
 
   // Prom: синхронізувати товари + замовлення (дзеркала).
   const handlePromSync = async () => {
@@ -1220,6 +1241,32 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
                 <button onClick={() => { setIntegrationsOpen(false); openPromOrders(); }}
                   className="px-3 py-1.5 text-xs bg-gray-100 hover:bg-gray-200 dark:bg-gray-700 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-200 rounded">
                   🧾 Замовлення{promStatus?.order_count ? ` (${promStatus.order_count})` : ''}
+                </button>
+              </div>
+              {/* monoБазар: лише READ-верифікація (публічний API вітрини) — постинг
+                  заблокований (немає партнерського доступу), тому кнопки «Опублікувати»
+                  тут немає — тільки перегляд реального стану на вітрині monobazar. */}
+              <div className="border border-gray-200 dark:border-gray-700 rounded-lg p-3 flex flex-col gap-2">
+                <div className="flex items-center gap-2 font-medium">
+                  <span className="inline-flex items-center justify-center h-5 w-5 rounded bg-black text-white text-[10px] font-black">m</span>
+                  monoБазар
+                </div>
+                <span className={`text-xs ${monobazarStatus?.seller_username ? 'text-green-600 dark:text-green-400' : 'text-gray-400'}`}>
+                  {monobazarStatus?.seller_username
+                    ? `● ${monobazarStatus.seller_username} · ${monobazarStatus.tracked ?? 0} оголошень`
+                    : '○ username не задано'}
+                </span>
+                {!!monobazarStatus?.tracked && (
+                  <span className="text-[11px] text-gray-500 dark:text-gray-400">
+                    {monobazarStatus.confident} підтверджено · {monobazarStatus.ambiguous} неоднозначних · {monobazarStatus.unmatched} без збігу
+                  </span>
+                )}
+                <span className="text-[11px] text-amber-600 dark:text-amber-400">
+                  ⚠️ Лише перегляд: створення оголошень поки заблоковано (немає партнерського API)
+                </span>
+                <button onClick={handleMonobazarSync} disabled={syncingAll}
+                  className="mt-1 px-3 py-1.5 text-sm text-white rounded disabled:opacity-60 bg-black hover:bg-gray-800">
+                  {syncingAll ? '⏳ monoБазар…' : '🔄 Синхронізувати'}
                 </button>
               </div>
             </div>
