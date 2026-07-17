@@ -542,14 +542,20 @@ def _is_shoe_type(t: str) -> bool:
     return any(t.startswith(p) for p in _SHOE_PREFIXES)
 
 
-def olx_category_for(typename: Optional[str], gendername: Optional[str]) -> Optional[int]:
+def olx_category_for(typename: Optional[str], gendername: Optional[str],
+                     is_kids: Optional[bool] = None) -> Optional[int]:
     """Категорія OLX за типом+статтю BMS (статична мапа). None — якщо тип не
-    розпізнано (тоді викликач пробує навчання з наявних оголошень)."""
+    розпізнано (тоді викликач пробує навчання з наявних оголошень).
+
+    `is_kids` передає викликач (resolve_category) з prom_service._is_kids — там
+    дитяче визначається за РОЗМІРОМ (≤34.5) та описом, а не лише за назвою
+    статі. Інакше дитячі «Унісекс» (напр. Crocs 29-30) їхали в жіноче взуття."""
     t = _norm_type(typename)
     g = str(gendername or "").strip().lower()
     if not t:
         return None
-    is_kids = any(k in g for k in ("діт", "дит", "дів", "хлоп"))
+    if is_kids is None:
+        is_kids = any(k in g for k in ("діт", "дит", "дів", "хлоп"))
     is_men = g.startswith("чол")
     # 1) Взуття
     if _is_shoe_type(t):
@@ -650,7 +656,12 @@ def _descend_to_leaf(access: str, cat_id: int, product: dict) -> int:
 
 def resolve_category(db: Session, product: dict) -> Optional[int]:
     """Категорія OLX (ЗАВЖДИ листова): статична мапа → навчання → спуск до листа."""
-    base = olx_category_for(product.get("typename"), product.get("gendername")) \
+    prom_service, _ = _prom()
+    try:
+        kids = prom_service._is_kids(product)   # за розміром (≤34.5) та описом
+    except Exception:
+        kids = None
+    base = olx_category_for(product.get("typename"), product.get("gendername"), is_kids=kids) \
         or _learn_category(db, product)
     if not base:
         return None
@@ -784,9 +795,14 @@ def _match_value_code(defs: list, code: str, label: Optional[str]) -> Optional[s
 
 def _match_in_def(d: dict, label: Optional[str], is_size: bool = False) -> Optional[str]:
     """Код значення В МЕЖАХ одного атрибута за label BMS (не за фіксованим code —
-    щоб працювало для будь-якої категорії: color / bags_color / material_ch_o…)."""
+    щоб працювало для будь-якої категорії: color / bags_color / material_ch_o…).
+
+    Якщо атрибут БЕЗ словника значень (напр. «Розмір» у «Дитяче взуття») — це
+    поле вільного тексту, тож віддаємо значення BMS як є."""
     if not label:
         return None
+    if not (d.get("values") or []):
+        return str(label).strip() or None
     want = str(label).strip().lower()
     for v in d.get("values") or []:
         if str(v.get("label", "")).strip().lower() == want:
@@ -805,6 +821,137 @@ _SEASON_MAP = {
     "весна": "Весна", "осінь": "Осінь", "всесезон": "Всесезонний",
 }
 
+# ── Відповідність характеристик BMS → OLX ────────────────────────────────────
+# BMS зберігає матеріали ПО ПОЗИЦІЯХ (upper/sole/lining/…). Для OLX головний —
+# матеріал ВЕРХУ; раніше брався довільний перший (напр. мембрана «gore-tex»).
+_MATERIAL_POS_PRIORITY = ("upper", "middle", "lining", "insole", "sole", "midsole", "membrane")
+_MATERIAL_MAP = {
+    "шкіра": "Натуральна шкіра", "натуральна шкіра": "Натуральна шкіра", "нат. шкіра": "Натуральна шкіра",
+    "екошкіра": "Шкірзам", "шкірзам": "Шкірзам", "штучна шкіра": "Шкірзам", "кожзам": "Шкірзам",
+    "замша": "Замша", "нубук": "Нубук",
+    "текстиль": "Текстиль", "сітчастий текстиль": "Текстиль", "плотний текстиль": "Текстиль",
+    "сітка": "Текстиль", "трикотаж": "Текстиль", "тканина": "Тканина",
+    "гума": "Гума", "резина": "Гума", "каучук": "Гума", "силікон": "Силікон",
+    "вовна": "Вовна", "овчина": "Овчина", "хутро": "Овчина", "плюш": "Плюш", "повсть": "Повсть",
+    "ажур": "Ажурні", "ажурні": "Ажурні",
+    # Матеріали, яким немає прямого відповідника в OLX → «Інший».
+    "eva": "Інший", "піна": "Інший", "синтетика": "Інший", "croslite": "Інший",
+    "поліуретан": "Інший", "пластик": "Інший", "vibram": "Гума",
+}
+
+# BMS має відтінки (темно-синій, молочний, яскраво-синій), OLX — базову палітру.
+_COLOR_PREFIXES = ("темно-", "світло-", "яскраво-", "ніжно-", "насичено-", "блідо-", "ясно-")
+_COLOR_MAP = {
+    "молочний": "Білий", "айворі": "Білий", "кремовий": "Білий", "кремовий/білий": "Білий",
+    "срібний": "Сірий", "срібло": "Сірий", "графітовий": "Сірий", "сталевий": "Сірий",
+    "рудий": "Коричневий", "карамельний": "Коричневий", "шоколадний": "Коричневий",
+    "капучиновий": "Бежевий", "тілесний": "Бежевий", "пудровий": "Бежевий", "пісочний": "Бежевий",
+    "оливковий": "Хакі", "болотний": "Хакі",
+    "персиковий": "Помаранчевий", "кораловий": "Червоний", "коралловий": "Червоний",
+    "малиновий": "Червоний", "вишневий": "Бордовий", "марсала": "Бордовий",
+    "фуксія": "Рожевий", "ліловий": "Фіолетовий", "бузковий": "Фіолетовий", "фіалковий": "Фіолетовий",
+    "золотистий": "Золотий", "мультиколор": "Різнокольоровий", "різнокольоровий": "Різнокольоровий",
+    "джинсовий": "Синій", "індиго": "Синій", "м'ятний": "Бірюзовий", "мятний": "Бірюзовий",
+    "лимонний": "Жовтий", "гірчичний": "Жовтий", "салатовий": "Салатовий",
+}
+
+
+# BMS зберігає підошву коротко («плоска»), OLX — повними назвами.
+_SOLE_MAP = {
+    "плоска": "Плоска підошва", "спортивна": "Плоска підошва", "шкіра": "Плоска підошва",
+    "гума": "Плоска підошва",
+    "платформа": "Платформа", "танкетка": "Танкетка",
+    "підбора": "Каблук", "підбор": "Каблук", "каблук": "Каблук", "шпилька": "Каблук",
+    "тракторна": "Тракторна підошва", "рифлена": "Тракторна підошва",
+    "рельєфна": "Тракторна підошва", "протектор": "Тракторна підошва",
+}
+
+
+def _sole_candidates(product: dict) -> List[str]:
+    """Тип підошви для OLX: з soletypename/heeltypename BMS через мапу повних назв."""
+    out: List[str] = []
+    for raw in (product.get("soletypename"), product.get("heeltypename")):
+        v = str(raw or "").strip().lower()
+        if not v:
+            continue
+        for cand in (v, _SOLE_MAP.get(v)):
+            if cand and cand not in out:
+                out.append(cand)
+    return out
+
+
+def _color_candidates(name: Optional[str]) -> List[str]:
+    """Кандидати OLX-кольору для BMS-кольору, у порядку пріоритету.
+    «темно-синій» → синій; «білий/молочний» → білий; «молочний» → Білий."""
+    raw = str(name or "").strip().lower()
+    if not raw:
+        return []
+    out: List[str] = [raw]
+
+    def _add(v: Optional[str]):
+        if v and v not in out:
+            out.append(v)
+
+    _add(_COLOR_MAP.get(raw))
+    # складений колір «білий/молочний» → перша частина
+    first = re.split(r"[/,]", raw)[0].strip()
+    if first != raw:
+        _add(first)
+        _add(_COLOR_MAP.get(first))
+    # відтінок «темно-синій» → «синій»
+    for part in (raw, first):
+        for pref in _COLOR_PREFIXES:
+            if part.startswith(pref):
+                base = part[len(pref):].strip()
+                _add(base)
+                _add(_COLOR_MAP.get(base))
+    out.append("Різнокольоровий" if "/" in raw else "Інший")   # чесний фолбек
+    return out
+
+
+def _material_candidates(product: dict) -> List[str]:
+    """Матеріал для OLX: спершу ВЕРХ (головний), далі інші позиції; з мапою назв."""
+    mats = {str(k).lower(): str(v).strip().lower()
+            for k, v in (product.get("materials") or {}).items() if v}
+    ordered = [mats[p] for p in _MATERIAL_POS_PRIORITY if p in mats]
+    ordered += [v for k, v in mats.items() if k not in _MATERIAL_POS_PRIORITY]
+    out: List[str] = []
+    for m in ordered:
+        for cand in (m, _MATERIAL_MAP.get(m)):
+            if cand and cand not in out:
+                out.append(cand)
+    return out
+
+
+def _attach_own_size(db: Session, product: dict, product_id: int) -> None:
+    """Додати ВЛАСНИЙ розмір рядка товару. `_bms_product_for_export` віддає лише
+    агрегований `sizes` (усі розміри номера-ростовки), а оголошення OLX — це
+    завжди ОДИН розмір, тобто один рядок BMS."""
+    try:
+        product["sizeeu"] = db.execute(text(
+            "SELECT NULLIF(BTRIM(sizeeu), '') FROM products WHERE id = :i"),
+            {"i": int(product_id)}).scalar()
+    except Exception:
+        product.setdefault("sizeeu", None)
+
+
+def _size_candidates(product: dict) -> List[str]:
+    """Розмір ЦЬОГО рядка товару. Ростовка в BMS — окремий рядок на кожен розмір,
+    а оголошення OLX має рівно один розмір → беремо власний sizeeu рядка.
+    Діапазон «29-30» → пробуємо обидва числа."""
+    own = str(product.get("sizeeu") or "").strip()
+    sizes = [str(s).strip() for s in (product.get("sizes") or []) if s]
+    if not own and len(sizes) == 1:
+        own = sizes[0]
+    if not own:
+        return []
+    out = [own]
+    for part in re.split(r"[-–/]", own):
+        part = part.strip()
+        if part and part not in out:
+            out.append(part)
+    return out
+
 
 def _build_attributes(defs: list, product: dict) -> list:
     """Універсальне автозаповнення атрибутів OLX із даних BMS для БУДЬ-ЯКОЇ
@@ -818,14 +965,16 @@ def _build_attributes(defs: list, product: dict) -> list:
     prom_service, _ = _prom()
     cond = str(product.get("conditionname") or "").strip().lower()
     is_new = cond in prom_service._COND_NEWLIKE
-    sizes = [str(s) for s in (product.get("sizes") or []) if s]
-    color = product.get("colorname")
-    brand = product.get("brandname")
-    mats = [m for m in (product.get("materials") or {}).values() if m]
-    material = mats[0] if mats else None
     season_raw = str(product.get("season") or "").strip().lower()
     season_key = re.split(r"[\s,/]+", season_raw)[0] if season_raw else ""
-    season = _SEASON_MAP.get(season_key)
+
+    def _first(d: dict, cands: List[str], is_size: bool = False) -> Optional[str]:
+        """Перший кандидат, що має відповідник у списку значень атрибута."""
+        for c in cands:
+            v = _match_in_def(d, c, is_size=is_size)
+            if v:
+                return v
+        return None
 
     attrs: List[dict] = []
     for d in defs:
@@ -834,16 +983,18 @@ def _build_attributes(defs: list, product: dict) -> list:
         if code == "state":
             val = _match_in_def(d, "Нове" if is_new else "Вживане") or ("new" if is_new else "used")
         elif "size" in code:
-            if len(sizes) == 1:            # ростовка (кілька розмірів) → пропускаємо
-                val = _match_in_def(d, sizes[0], is_size=True)
+            val = _first(d, _size_candidates(product), is_size=True)
         elif "color" in code or "colour" in code:
-            val = _match_in_def(d, color)
+            val = _first(d, _color_candidates(product.get("colorname")))
         elif "brand" in code:
-            val = _match_in_def(d, brand)
+            # Бренда може не бути в списку OLX (напр. HOKA) → чесно «Інший».
+            val = _match_in_def(d, product.get("brandname")) or _match_in_def(d, "Інший")
         elif "material" in code:
-            val = _match_in_def(d, material)
+            val = _first(d, _material_candidates(product))
+        elif "sole" in code or "heel" in code:
+            val = _first(d, _sole_candidates(product))
         elif "season" in code:
-            val = _match_in_def(d, season)
+            val = _match_in_def(d, _SEASON_MAP.get(season_key))
         if val:
             attrs.append({"code": d.get("code"), "value": val})
     # Гарантія: state присутній навіть якщо defs не вдалося прочитати.
@@ -894,24 +1045,27 @@ def _new_word(product: dict) -> str:
 
 
 def _olx_condition_line(product: dict) -> Optional[str]:
-    """«Стан» для OLX за правилом власника: Новий/Хороший → «Нові…» з ОБОВ'ЯЗКОВИМ
-    пакуванням («без коробки» / «в коробці»); решта — чесний реальний стан.
-    Логіка пакування — як у Prom, але з правильним родом/числом за типом."""
+    """«Стан» для OLX за правилом власника:
+      • «Новий»   → «Нові, без коробки»        (БЕЗ «(Сток)» — товар справді новий);
+      • «Хороший» → «Нові (Сток), без коробки» («(Сток)» ЛИШЕ тут);
+      • решта (Вживаний/Легковживаний/Пошкоджений) → чесний реальний стан.
+    Пакування вказується ЗАВЖДИ; рід/число — за типом товару."""
     prom_service, _ = _prom()
     cond = str(product.get("conditionname") or "").strip().lower()
     pack = str(product.get("packagingname") or "").strip().lower()
     if cond in prom_service._COND_NEWLIKE:
         w = _new_word(product)
+        stock = " (Сток)" if cond == "хороший" else ""
         if not pack or ("без" in pack and "коробк" in pack):
-            return f"{w} (Сток), без коробки"
+            return f"{w}{stock}, без коробки"
         if "коробк" in pack:
-            return f"{w}, в коробці"
-        return f"{w}, {pack}"
+            return f"{w}{stock}, в коробці"
+        return f"{w}{stock}, {pack}"
     return (product.get("conditionname") or "").strip() or None
 
 
 def _insole_cm(product: dict) -> Optional[str]:
-    """Довжина по устілці (см) — як у ручних постах: «(довжина по устілці — 22.5 см)»."""
+    """Замір «на стопу» (см) для цього розміру — з measurementscm рядка товару."""
     lo, hi = product.get("measurementscm_min"), product.get("measurementscm_max")
     def _f(v):
         try:
@@ -941,7 +1095,11 @@ def _build_olx_description(product: dict) -> str:
     model = (product.get("model") or "").strip()
     number = str(product.get("productnumber") or "").strip()
     sizes = [str(s) for s in (product.get("sizes") or []) if s]
-    mats = ", ".join(v for v in (product.get("materials") or {}).values() if v)
+    # Матеріали — у змістовному порядку (верх → підкладка → підошва), а не як у dict.
+    _m = {str(k).lower(): str(v).strip() for k, v in (product.get("materials") or {}).items() if v}
+    mats = ", ".join(dict.fromkeys(
+        [_m[p] for p in _MATERIAL_POS_PRIORITY if p in _m]
+        + [v for k, v in _m.items() if k not in _MATERIAL_POS_PRIORITY]))
 
     # ── Вступ ────────────────────────────────────────────────────────────────
     title_bits = " ".join(x for x in (typ, brand, model) if x)
@@ -959,11 +1117,12 @@ def _build_olx_description(product: dict) -> str:
         facts.append(f"Модель: {model}.")
     if color:
         facts.append(f"Колір: {color}.")
-    if sizes:
+    # Оголошення OLX = ОДИН розмір (ростовка в BMS — окремий рядок на розмір).
+    own_size = (_size_candidates(product) or [None])[0]
+    if own_size:
         ins = _insole_cm(product)
-        sz = ", ".join(sizes)
-        facts.append(f"Розмір{'и' if len(sizes) > 1 else ''}: {sz}"
-                     + (f" (довжина по устілці — {ins} см)." if ins else "."))
+        facts.append(f"Розмір: {own_size}"
+                     + (f" (на стопу — {ins} см)." if ins else "."))
     # Габарити — критично для сумок/рюкзаків/валіз.
     dims = str(product.get("dimensions") or "").strip()
     if dims:
@@ -1080,6 +1239,7 @@ def _prepare_advert(db: Session, product_id: int) -> Tuple[Optional[dict], Optio
     product = prom_service._bms_product_for_export(db, int(product_id))
     if not product:
         return None, {"ok": False, "error": "Товар не знайдено"}
+    _attach_own_size(db, product, int(product_id))
     number = str(product.get("productnumber") or "").lstrip("#")
     category_id = resolve_category(db, product)
     if not category_id:

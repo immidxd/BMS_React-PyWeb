@@ -1799,9 +1799,9 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                           : 'Опублікувати товар на OLX'
                     }
                   >
-                    <span className="inline-flex h-4 items-center justify-center rounded bg-[#002f34] px-1 text-[8px] leading-none text-[#a9e000] font-black">OLX</span>
+                    {/* Лише фірмовий знак OLX — без дубля текстом «OLX» поруч. */}
+                    <span className="inline-flex h-4 items-center justify-center rounded bg-[#002f34] px-1.5 text-[9px] leading-none text-[#a9e000] font-black tracking-tight">OLX</span>
                     {olxBusy && <SyncOutlined spin className="text-[10px]" />}
-                    <span>OLX</span>
                   </button>
                 </div>
                 <h2 className="text-2xl font-semibold text-gray-900 dark:text-gray-50 truncate leading-tight">

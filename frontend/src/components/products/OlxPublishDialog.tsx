@@ -63,6 +63,36 @@ interface Props {
 }
 
 const INPUT_CLS = 'w-full px-2.5 py-1.5 rounded-lg text-sm border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-emerald-500/40 focus:border-emerald-400 transition-colors disabled:opacity-60';
+// Від скількох варіантів селект стає полем із пошуком (бренди ~35, розміри ~29).
+const LONG_LIST = 12;
+
+/** Атрибут із довгим списком: вводимо назву з пошуком (datalist), а не гортаємо.
+ *  Назад у код мапимо за точним label; порожньо → атрибут не вказано. */
+const SearchableOption: React.FC<{
+  attr: OlxAttr; value: string; busy: boolean; onChange: (code: string) => void;
+}> = ({ attr, value, busy, onChange }) => {
+  const labelOf = (code: string) => attr.options.find(o => o.code === code)?.label || '';
+  const [text, setText] = useState<string>(labelOf(value));
+  React.useEffect(() => { setText(labelOf(value)); /* eslint-disable-next-line */ }, [value]);
+  const listId = `olx-opt-${attr.code}`;
+  return (
+    <>
+      <input
+        className={`${INPUT_CLS} mt-0.5`} list={listId} value={text} disabled={busy}
+        placeholder={`Почніть вводити… (${attr.options.length} варіантів)`}
+        onChange={e => {
+          const t = e.target.value;
+          setText(t);
+          const hit = attr.options.find(o => o.label.toLowerCase() === t.trim().toLowerCase());
+          onChange(hit ? hit.code : '');
+        }}
+      />
+      <datalist id={listId}>
+        {attr.options.map(o => <option key={o.code} value={o.label} />)}
+      </datalist>
+    </>
+  );
+};
 const LABEL_CLS = 'text-[11px] font-semibold uppercase tracking-wide text-gray-400 dark:text-gray-500';
 const money = (v: number | null | undefined) =>
   new Intl.NumberFormat('uk-UA', { maximumFractionDigits: 2 }).format(Number(v || 0));
@@ -171,15 +201,20 @@ const OlxPublishDialog: React.FC<Props> = ({ data, busy, onCancel, onConfirm }) 
                     <span className="text-[11px] text-gray-500 dark:text-gray-400">
                       {a.label}{a.required && <span className="text-rose-500"> *</span>}
                     </span>
-                    {a.options.length ? (
+                    {!a.options.length ? (
+                      // Атрибут без словника (напр. «Розмір» у дитячому взутті) — вільний текст.
+                      <input className={`${INPUT_CLS} mt-0.5`} value={attrs[a.code] || ''} disabled={busy}
+                        onChange={e => setAttrs(s => ({ ...s, [a.code]: e.target.value }))} />
+                    ) : a.options.length > LONG_LIST ? (
+                      // Довгий список (бренди/розміри) — вводимо з пошуком, а не гортаємо.
+                      <SearchableOption attr={a} value={attrs[a.code] || ''} busy={busy}
+                        onChange={code => setAttrs(s => ({ ...s, [a.code]: code }))} />
+                    ) : (
                       <select className={`${INPUT_CLS} mt-0.5`} value={attrs[a.code] || ''} disabled={busy}
                         onChange={e => setAttrs(s => ({ ...s, [a.code]: e.target.value }))}>
                         <option value="">— не вказувати —</option>
                         {a.options.map(o => <option key={o.code} value={o.code}>{o.label}</option>)}
                       </select>
-                    ) : (
-                      <input className={`${INPUT_CLS} mt-0.5`} value={attrs[a.code] || ''} disabled={busy}
-                        onChange={e => setAttrs(s => ({ ...s, [a.code]: e.target.value }))} />
                     )}
                   </label>
                 ))}

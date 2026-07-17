@@ -100,15 +100,72 @@ def test_state_newlike_matches_prom_grid():
 
 
 def test_condition_line_states_packaging_and_grammar():
-    """У описі ОБОВ'ЯЗКОВО є пакування, а рід/число — за типом товару."""
+    """Пакування вказується ЗАВЖДИ; «(Сток)» — ЛИШЕ для «Хороший» (не для «Новий»);
+    рід/число — за типом товару."""
     def line(typ, cond, pack=None):
         return O._olx_condition_line({"typename": typ, "conditionname": cond,
                                       "packagingname": pack})
-    assert line("Кросівки", "Новий") == "Нові (Сток), без коробки"
+    # «Новий» — справді новий товар, БЕЗ «(Сток)»
+    assert line("Кросівки", "Новий") == "Нові, без коробки"
     assert line("Кросівки", "Новий", "Коробка") == "Нові, в коробці"
+    # «(Сток)» лише для «Хороший»
+    assert line("Кросівки", "Хороший") == "Нові (Сток), без коробки"
     assert line("Рюкзак", "Хороший") == "Новий (Сток), без коробки"   # чол. рід
-    assert line("Сумка", "Новий") == "Нова (Сток), без коробки"       # жін. рід
+    assert line("Сумка", "Новий") == "Нова, без коробки"              # жін. рід
     assert line("Туфлі", "Вживаний") == "Вживаний"                    # чесно, як є
+
+
+def test_attributes_autofill_from_bms():
+    """Повна відповідність BMS→OLX: розмір рядка, ВЕРХНІЙ матеріал, відтінок→база."""
+    defs = [
+        {"code": "state", "values": [{"code": "used", "label": "Вживане"},
+                                     {"code": "new", "label": "Нове"}]},
+        {"code": "size", "values": [{"code": "38", "label": "38"}]},
+        {"code": "color", "values": [{"code": "blue", "label": "Синій"},
+                                     {"code": "other", "label": "Інший"}]},
+        {"code": "material", "values": [{"code": "2", "label": "Натуральна шкіра"},
+                                        {"code": "6", "label": "Текстиль"}]},
+        {"code": "brand", "values": [{"code": "nike", "label": "Nike"},
+                                     {"code": "other", "label": "Інший"}]},
+    ]
+    prod = {"conditionname": "Новий", "sizeeu": "38", "sizes": ["36", "37", "38"],
+            "colorname": "яскраво-синій", "brandname": "HOKA",
+            "materials": {"membrane": "gore-tex", "upper": "шкіра"}}
+    a = {x["code"]: x["value"] for x in O._build_attributes(defs, prod)}
+    assert a["size"] == "38"          # ВЛАСНИЙ розмір рядка, а не вся ростовка
+    assert a["color"] == "blue"       # «яскраво-синій» → базовий «Синій»
+    assert a["material"] == "2"       # ВЕРХ (шкіра), а не мембрана gore-tex
+    assert a["brand"] == "other"      # HOKA немає в OLX → чесно «Інший»
+
+
+def test_sole_short_form_maps_to_olx_label():
+    """BMS зберігає підошву коротко («плоска»), OLX хоче «Плоска підошва»."""
+    defs = [{"code": "sole", "values": [{"code": "1", "label": "Платформа"},
+                                        {"code": "2", "label": "Плоска підошва"},
+                                        {"code": "4", "label": "Каблук"},
+                                        {"code": "5", "label": "Тракторна підошва"}]}]
+    def sole(v):
+        a = {x["code"]: x["value"] for x in O._build_attributes(defs, {"soletypename": v})}
+        return a.get("sole")
+    assert sole("плоска") == "2"
+    assert sole("спортивна") == "2"
+    assert sole("підбора") == "4"      # → Каблук
+    assert sole("тракторна") == "5"
+    assert sole("рифлена") == "5"
+
+
+def test_kids_detected_by_size_not_only_gender():
+    """Дитяче взуття «Унісекс» (розмір ≤34.5) НЕ має їхати в жіноче взуття."""
+    assert O.olx_category_for("Шльопанці", "Унісекс", is_kids=True) == O._OLX_CAT_KIDS
+    # без ознаки дитячого — звичайне жіноче дерево
+    assert O.olx_category_for("Шльопанці", "Унісекс", is_kids=False) != O._OLX_CAT_KIDS
+
+
+def test_free_text_attribute_passes_raw_value():
+    """Атрибут без словника (Розмір у «Дитяче взуття») — вільний текст."""
+    defs = [{"code": "size", "values": []}]
+    a = {x["code"]: x["value"] for x in O._build_attributes(defs, {"sizeeu": "29-30"})}
+    assert a["size"] == "29-30"
 
 
 def test_description_has_article_dimensions_and_no_internal_notes():
