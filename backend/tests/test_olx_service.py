@@ -175,14 +175,17 @@ def test_description_has_article_dimensions_and_no_internal_notes():
             "materials": {1: "текстиль"}, "sizes": [],
             "description": "старі", "extranote": "внутрішня нотатка"}
     d = O._build_olx_description(prod)
-    assert "(Внутрішній артикул: #А1256)." in d      # ідентифікує товар
+    assert "(Внутрішній артикул: #А1256)" in d       # ідентифікує товар
     # Артикул — ОДРАЗУ під вступом, без порожнього рядка між ними.
-    assert "темно-синій.\n(Внутрішній артикул: #А1256)." in d
-    assert "Габарити: 29x49x18 см." in d             # критично для сумок/рюкзаків
-    assert "Стан: Новий (Сток), без коробки." in d
+    assert "темно-синій\n(Внутрішній артикул: #А1256)" in d
+    assert "Габарити: 29x49x18 см" in d              # критично для сумок/рюкзаків
+    assert "Стан: Новий (Сток), без коробки" in d
     assert "старі" not in d                          # внутрішня нотатка НЕ публікується
     assert "внутрішня нотатка" not in d
     assert "<" not in d                              # чистий текст
+    # Живий продавець не ставить крапку в кінці кожного рядка.
+    for line in d.split("\n"):
+        assert not line.strip().endswith("."), f"trailing period: {line!r}"
 
 
 def test_build_attributes_generic_prefixed_codes():

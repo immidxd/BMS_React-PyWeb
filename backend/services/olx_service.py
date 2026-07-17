@@ -1101,46 +1101,47 @@ def _build_olx_description(product: dict) -> str:
         [_m[p] for p in _MATERIAL_POS_PRIORITY if p in _m]
         + [v for k, v in _m.items() if k not in _MATERIAL_POS_PRIORITY]))
 
-    # ── Вступ ────────────────────────────────────────────────────────────────
+    # ── Вступ (без крапки в кінці — так пише живий продавець, не бот) ─────────
     title_bits = " ".join(x for x in (typ, brand, model) if x)
-    intro = title_bits + (f", {color.lower()}." if color else ".")
+    intro = title_bits + (f", {color.lower()}" if color else "")
     lines = [intro]
     if number:
         # Артикул — ОДРАЗУ під вступом, без порожнього рядка (як у ручних постах).
-        lines.append(f"(Внутрішній артикул: {number if number.startswith('#') else '#' + number}).")
+        lines.append(f"(Внутрішній артикул: {number if number.startswith('#') else '#' + number})")
 
-    # ── ХАРАКТЕРИСТИКИ (порожній рядок між пунктами — як у ручних постах) ────
-    facts: List[str] = ["100% оригінал."]
+    # ── ХАРАКТЕРИСТИКИ (порожній рядок між пунктами — як у ручних постах;
+    # БЕЗ крапки в кінці кожного рядка) ────────────────────────────────────
+    facts: List[str] = ["100% оригінал"]
     if brand:
-        facts.append(f"Бренд: {prom_service._brand_with_country(brand, 'uk')}.")
+        facts.append(f"Бренд: {prom_service._brand_with_country(brand, 'uk')}")
     if model:
-        facts.append(f"Модель: {model}.")
+        facts.append(f"Модель: {model}")
     if color:
-        facts.append(f"Колір: {color}.")
+        facts.append(f"Колір: {color}")
     # Оголошення OLX = ОДИН розмір (ростовка в BMS — окремий рядок на розмір).
     own_size = (_size_candidates(product) or [None])[0]
     if own_size:
         ins = _insole_cm(product)
         facts.append(f"Розмір: {own_size}"
-                     + (f" (на стопу — {ins} см)." if ins else "."))
+                     + (f" (на стопу — {ins} см)" if ins else ""))
     # Габарити — критично для сумок/рюкзаків/валіз.
     dims = str(product.get("dimensions") or "").strip()
     if dims:
-        facts.append(f"Габарити: {dims} см.")
+        facts.append(f"Габарити: {dims} см")
     # Стан + пакування («Новий (Сток), без коробки» / «Нові, в коробці»).
     cond_line = _olx_condition_line(product)
     if cond_line:
-        facts.append(f"Стан: {cond_line}.")
+        facts.append(f"Стан: {cond_line}")
     if mats:
-        facts.append(f"Матеріал: {mats}.")
+        facts.append(f"Матеріал: {mats}")
     if product.get("season"):
-        facts.append(f"Сезон: {product.get('season')}.")
+        facts.append(f"Сезон: {product.get('season')}")
     lines += ["", "ХАРАКТЕРИСТИКИ:", "", *_spaced(facts)]
 
-    # ── ДОСТАВКА ─────────────────────────────────────────────────────────────
+    # ── ДОСТАВКА (без крапок у кінці — стиль живого продавця) ─────────────────
     lines += ["", "ДОСТАВКА:", "",
-              "Швидка відправка Новою поштою або Укрпоштою наступного дня.", "",
-              "Пишіть — відповім на всі питання."]
+              "Швидка відправка Новою поштою або Укрпоштою наступного дня", "",
+              "Пишіть — відповім на всі питання"]
     return "\n".join(lines).strip()[:8000]
 
 
