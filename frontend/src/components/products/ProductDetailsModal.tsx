@@ -12,7 +12,13 @@ import {
 import { waitForPromImport } from '../../services/promImportMonitor';
 import PromPublishDialog from './PromPublishDialog';
 import ShafaBridgeDialog, { type ShafaProductStatus } from './ShafaBridgeDialog';
-import OlxPublishDialog, { type OlxProductStatus } from './OlxPublishDialog';
+import OlxPublishDialog, { type OlxPreview } from './OlxPublishDialog';
+
+// Легкий стан чіпа OLX (з /olx/product-status) — окремо від прев'ю публікації.
+type OlxChipStatus = {
+  on_olx?: boolean; needs_package?: boolean; limited?: boolean;
+  olx_status?: string | null; olx_url?: string | null;
+};
 import { confirmDialog, notify } from '../../ui/feedback';
 import LoadingSpinner from '../common/LoadingSpinner';
 
@@ -186,8 +192,8 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
   const [shafaStatus, setShafaStatus] = useState<ShafaProductStatus | null>(null);
   const [shafaDialogOpen, setShafaDialogOpen] = useState(false);
   const [shafaBusy, setShafaBusy] = useState(false);
-  const [olxStatus, setOlxStatus] = useState<OlxProductStatus | null>(null);
-  const [olxDialogOpen, setOlxDialogOpen] = useState(false);
+  const [olxStatus, setOlxStatus] = useState<OlxChipStatus | null>(null);
+  const [olxPreview, setOlxPreview] = useState<OlxPreview | null>(null);
   const [olxBusy, setOlxBusy] = useState(false);
   // Згорнуті підрозділи (Матеріали/Інше/Примітки) — за замовчуванням приховані,
   // розкриваються кліком. У режимі редагування завжди розгорнуті (щоб редагувати).
@@ -338,49 +344,40 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
       const d = await r.json();
       if (!r.ok) throw new Error(d.detail || `HTTP ${r.status}`);
       if (curPidRef.current === pid) { setOlxStatus(d); healRowIfStale('olx', !!d.on_olx); }
-      if (openDialog) setOlxDialogOpen(true);
-      return d as OlxProductStatus;
+      return d as OlxChipStatus;
     } catch (e: any) {
       if (openDialog) notify.error({ message: `OLX: ${e.message || 'Не вдалося завантажити стан'}` });
       return null;
     }
   }, []);
 
-  const openOlxDialog = async () => {
+  // Клік на чіп OLX → ПРЕВ'Ю (нічого не створює) → діалог редагування, як у Prom.
+  const olxPublishFlow = async () => {
     if (!productId || olxBusy) return;
     setOlxBusy(true);
-    await refreshOlxStatus(productId, true);
-    setOlxBusy(false);
-  };
-
-  const olxSaveConfig = async (patch: Record<string, any>) => {
-    setOlxBusy(true);
     try {
-      const r = await fetch('/api/publications/olx/config', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch),
+      const r = await fetch('/api/publications/olx/preview-advert', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ product_id: productId }),
       });
-      if (!r.ok) throw new Error((await r.json()).detail || `HTTP ${r.status}`);
-      if (productId) await refreshOlxStatus(productId);
-    } catch (e: any) { notify.error({ message: `OLX: ${e.message || 'Помилка'}` }); }
-    finally { setOlxBusy(false); }
+      const d = await r.json();
+      if (!r.ok) { notify.error({ message: `OLX: ${d.detail || r.status}`, duration: 8 }); return; }
+      setOlxPreview(d);          // відкриває діалог редагування
+    } catch (e: any) {
+      notify.error({ message: `OLX: ${e.message || 'Помилка'}` });
+    } finally { setOlxBusy(false); }
   };
 
-  const olxPublish = async () => {
-    if (!productId) return;
-    const live = !!olxStatus?.on_olx;
-    const ok = await confirmDialog({
-      title: live ? 'Оновити оголошення на OLX?' : 'Опублікувати товар на OLX?',
-      body: (olxStatus?.pricing
-        ? `Ціна ${olxStatus.pricing.effective_price} грн (покриває пакет + рекламу + комісію). `
-        : '') + 'OLX бере плату за публікацію з активного пакета. Без активного пакета оголошення не стане видимим.',
-      okText: live ? 'Оновити' : 'Опублікувати', kind: 'warning',
-    });
-    if (!ok) return;
+  // Підтвердження з діалогу: публікуємо з правками (назва/ціна/опис/характеристики).
+  const olxConfirmPublish = async (overrides: any) => {
+    if (!productId || !olxPreview) return;
+    const live = !!olxPreview.already_on_olx;
+    setOlxPreview(null);        // діалог закривається одразу
     setOlxBusy(true);
     try {
       const r = await fetch('/api/publications/olx/create-advert', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ product_id: productId, force: live }),
+        body: JSON.stringify({ product_id: productId, force: live, overrides }),
       });
       const d = await r.json();
       if (!r.ok) throw new Error(d.detail || `HTTP ${r.status}`);
@@ -1785,7 +1782,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                       бурштиновий = створено, але бракує пакета публікацій. */}
                   <button
                     type="button"
-                    onClick={openOlxDialog}
+                    onClick={olxPublishFlow}
                     disabled={olxBusy}
                     className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold border transition-colors disabled:opacity-60 ${
                       olxStatus?.on_olx || (product as any)?.published_olx
@@ -2610,13 +2607,12 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
           onCreateProm={createPromForExistingShafa}
         />
       )}
-      {olxDialogOpen && olxStatus && (
+      {olxPreview && (
         <OlxPublishDialog
-          data={olxStatus}
+          data={olxPreview}
           busy={olxBusy}
-          onClose={() => { if (!olxBusy) setOlxDialogOpen(false); }}
-          onPublish={olxPublish}
-          onSaveConfig={olxSaveConfig}
+          onCancel={() => { if (!olxBusy) setOlxPreview(null); }}
+          onConfirm={olxConfirmPublish}
         />
       )}
     </div>

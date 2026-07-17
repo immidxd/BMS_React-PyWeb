@@ -809,9 +809,15 @@ _SEASON_MAP = {
 def _build_attributes(defs: list, product: dict) -> list:
     """Універсальне автозаповнення атрибутів OLX із даних BMS для БУДЬ-ЯКОЇ
     категорії: кожен атрибут класифікуємо за семантикою його коду й підбираємо
-    значення за збігом label. `state` (Нове/Вживане) — завжди."""
-    cond = str(product.get("conditionname") or "").lower()
-    is_new = "нов" in cond
+    значення за збігом label. `state` (Нове/Вживане) — завжди.
+
+    ВАЖЛИВО: «нове» для OLX = та сама сітка, що й у Prom (`_COND_NEWLIKE`):
+    Новий/Нове/Хороший → Нове; Вживаний/Легковживаний/Пошкоджений → Вживане.
+    (Раніше хибно: будь-що без «нов» у назві ставало «Вживане» — і «Хороший»
+    їхав як вживане.)"""
+    prom_service, _ = _prom()
+    cond = str(product.get("conditionname") or "").strip().lower()
+    is_new = cond in prom_service._COND_NEWLIKE
     sizes = [str(s) for s in (product.get("sizes") or []) if s]
     color = product.get("colorname")
     brand = product.get("brandname")
@@ -864,42 +870,128 @@ def _pricing_for(db: Session, product: dict, cfg: dict, category_id: int,
     )
 
 
-def _build_olx_description(product: dict) -> str:
-    """Опис для OLX — ЧИСТИЙ ТЕКСТ (OLX не рендерить HTML), кілька рядків."""
+# Рід/число для слова «новий» у рядку «Стан». Взуття — множина («Нові»), решта
+# — за родом іменника, щоб не було «Рюкзак … Стан: Нові».
+_NEW_WORD_F = {"сумка", "валіза", "куртка", "сукня", "шапка", "кепка", "футболка",
+               "блуза", "спідниця", "піжама", "сорочка", "майка", "кофта", "жилетка",
+               "парасолька", "бейсболка", "панама", "краватка", "туніка", "білизна",
+               "нічна сорочка", "устілка", "ковдра", "постіль"}
+_NEW_WORD_M = {"рюкзак", "гаманець", "ремінь", "шарф", "костюм", "комбінезон",
+               "светр", "портфель", "набір", "пенал", "рушник", "плед", "капелюх",
+               "купальник", "халат"}
+_NEW_WORD_N = {"портмоне", "взуття", "пальто"}
+
+
+def _new_word(product: dict) -> str:
+    t = _norm_type(product.get("typename"))
+    if t in _NEW_WORD_F:
+        return "Нова"
+    if t in _NEW_WORD_M:
+        return "Новий"
+    if t in _NEW_WORD_N:
+        return "Нове"
+    return "Нові"          # взуття та інша множина
+
+
+def _olx_condition_line(product: dict) -> Optional[str]:
+    """«Стан» для OLX за правилом власника: Новий/Хороший → «Нові…» з ОБОВ'ЯЗКОВИМ
+    пакуванням («без коробки» / «в коробці»); решта — чесний реальний стан.
+    Логіка пакування — як у Prom, але з правильним родом/числом за типом."""
     prom_service, _ = _prom()
-    brand = product.get("brandname") or ""
-    typ = product.get("typename") or "Взуття"
-    color = product.get("colorname") or ""
-    gender = product.get("gendername") or ""
-    cond = product.get("conditionname") or ""
+    cond = str(product.get("conditionname") or "").strip().lower()
+    pack = str(product.get("packagingname") or "").strip().lower()
+    if cond in prom_service._COND_NEWLIKE:
+        w = _new_word(product)
+        if not pack or ("без" in pack and "коробк" in pack):
+            return f"{w} (Сток), без коробки"
+        if "коробк" in pack:
+            return f"{w}, в коробці"
+        return f"{w}, {pack}"
+    return (product.get("conditionname") or "").strip() or None
+
+
+def _insole_cm(product: dict) -> Optional[str]:
+    """Довжина по устілці (см) — як у ручних постах: «(довжина по устілці — 22.5 см)»."""
+    lo, hi = product.get("measurementscm_min"), product.get("measurementscm_max")
+    def _f(v):
+        try:
+            f = float(v)
+            return str(int(f)) if f == int(f) else f"{f:g}"
+        except (TypeError, ValueError):
+            return None
+    a, b = _f(lo), _f(hi)
+    if a and b and a != b:
+        return f"{a}–{b}"
+    return a or b
+
+
+def _build_olx_description(product: dict) -> str:
+    """Опис OLX — ЧИСТИЙ ТЕКСТ у стилі ручних постів власника:
+    вступ → (Внутрішній артикул) → ХАРАКТЕРИСТИКИ → ДОСТАВКА.
+
+    Свідомо НЕ публікуємо `description`/`extranote` — це ВНУТРІШНІ нотатки BMS
+    (напр. «старі»), не для покупця. Рядок «Стан» будує prom_service.
+    _condition_line → «Нові (Сток), без коробки» / «Нові, в коробці» / чесний
+    реальний стан вживаного (Новий і Хороший = нові, решта = вживані).
+    """
+    prom_service, _ = _prom()
+    brand = (product.get("brandname") or "").strip()
+    typ = (product.get("typename") or "Товар").strip()
+    color = (product.get("colorname") or "").strip()
+    model = (product.get("model") or "").strip()
+    number = str(product.get("productnumber") or "").strip()
     sizes = [str(s) for s in (product.get("sizes") or []) if s]
     mats = ", ".join(v for v in (product.get("materials") or {}).values() if v)
-    head = " ".join(x for x in (gender, typ.lower(), brand, color.lower()) if x).strip()
-    lines = [head.capitalize() if head else typ]
-    facts = []
+
+    # ── Вступ ────────────────────────────────────────────────────────────────
+    title_bits = " ".join(x for x in (typ, brand, model) if x)
+    intro = title_bits + (f", {color.lower()}." if color else ".")
+    lines = [intro]
+    if number:
+        lines += ["", f"(Внутрішній артикул: {number if number.startswith('#') else '#' + number})."]
+
+    # ── ХАРАКТЕРИСТИКИ (порожній рядок між пунктами — як у ручних постах) ────
+    facts: List[str] = ["100% оригінал."]
     if brand:
-        facts.append(f"Бренд: {brand}")
-    facts.append(f"Тип: {typ}")
+        facts.append(f"Бренд: {prom_service._brand_with_country(brand, 'uk')}.")
+    if model:
+        facts.append(f"Модель: {model}.")
     if color:
-        facts.append(f"Колір: {color}")
-    if cond:
-        facts.append(f"Стан: {cond}")
-    if mats:
-        facts.append(f"Матеріал: {mats}")
-    if product.get("season"):
-        facts.append(f"Сезон: {product.get('season')}")
-    if product.get("manufacturer"):
-        facts.append(f"Виробник: {product.get('manufacturer')}")
+        facts.append(f"Колір: {color}.")
     if sizes:
-        facts.append(f"Розмір{'и' if len(sizes) > 1 else ''}: {', '.join(sizes)}")
-    lines += ["", *[f"• {f}" for f in facts]]
-    extra = (product.get("description") or "").strip()
-    if extra and "<" not in extra:  # не тягнемо HTML-опис
-        lines += ["", extra]
-    lines += ["", "Швидка відправка Новою поштою / Укрпоштою.",
+        ins = _insole_cm(product)
+        sz = ", ".join(sizes)
+        facts.append(f"Розмір{'и' if len(sizes) > 1 else ''}: {sz}"
+                     + (f" (довжина по устілці — {ins} см)." if ins else "."))
+    # Габарити — критично для сумок/рюкзаків/валіз.
+    dims = str(product.get("dimensions") or "").strip()
+    if dims:
+        facts.append(f"Габарити: {dims} см.")
+    # Стан + пакування («Новий (Сток), без коробки» / «Нові, в коробці»).
+    cond_line = _olx_condition_line(product)
+    if cond_line:
+        facts.append(f"Стан: {cond_line}.")
+    if mats:
+        facts.append(f"Матеріал: {mats}.")
+    if product.get("season"):
+        facts.append(f"Сезон: {product.get('season')}.")
+    lines += ["", "ХАРАКТЕРИСТИКИ:", "", *_spaced(facts)]
+
+    # ── ДОСТАВКА ─────────────────────────────────────────────────────────────
+    lines += ["", "ДОСТАВКА:", "",
+              "Швидка відправка Новою поштою або Укрпоштою наступного дня.", "",
               "Пишіть — відповім на всі питання."]
-    text_out = "\n".join(lines).strip()
-    return text_out[:8000]
+    return "\n".join(lines).strip()[:8000]
+
+
+def _spaced(items: List[str]) -> List[str]:
+    """Пункти через порожній рядок (стиль ручних оголошень власника)."""
+    out: List[str] = []
+    for i, it in enumerate(items):
+        out.append(it)
+        if i < len(items) - 1:
+            out.append("")
+    return out
 
 
 def build_advert_payload(product: dict, category_id: int, price: int, cfg: dict,
@@ -976,53 +1068,128 @@ _DRAFT_STATUSES = {"new", "unactivated", "draft"}
 _PACKAGE_STATUSES = {"limited", "unpaid", "payment_waiting", "outdated", "disabled", "new"}
 
 
-def create_advert(db: Session, product_id: int, price: Optional[float] = None,
-                  force: bool = False) -> dict:
-    """Створити (опублікувати) оголошення OLX з картки товару BMS."""
+def _prepare_advert(db: Session, product_id: int) -> Tuple[Optional[dict], Optional[dict]]:
+    """Спільна підготовка для preview і create. Повертає (ctx, error)."""
     if not is_configured():
-        return {"ok": False, "error": "OLX не налаштовано (OLX_CLIENT_ID/SECRET)"}
+        return None, {"ok": False, "error": "OLX не налаштовано (OLX_CLIENT_ID/SECRET)"}
     access = get_access_token(db)
     if not access:
-        return {"ok": False, "error": "OLX не авторизовано — пройдіть OAuth"}
+        return None, {"ok": False, "error": "OLX не авторизовано — пройдіть OAuth"}
     prom_service, _ = _prom()
     product = prom_service._bms_product_for_export(db, int(product_id))
     if not product:
-        return {"ok": False, "error": "Товар не знайдено"}
+        return None, {"ok": False, "error": "Товар не знайдено"}
     number = str(product.get("productnumber") or "").lstrip("#")
     category_id = resolve_category(db, product)
     if not category_id:
-        return {"ok": False, "need_category": True,
-                "error": f"Категорію OLX для типу «{product.get('typename')}» не визначено"}
+        return None, {"ok": False, "need_category": True,
+                      "error": f"Категорію OLX для типу «{product.get('typename')}» не визначено"}
+    images = prom_service._product_image_urls(product.get("productnumber"),
+                                              product.get("official_photos_from"))
+    if not images:
+        return None, {"ok": False, "error": f"{number}: немає фото — OLX відхилить оголошення"}
+    cfg = _ensure_defaults(db, access, _load_config(db))
+    if not cfg.get("contact_phone"):
+        return None, {"ok": False, "error": "Не задано контактний телефон OLX (Налаштування)"}
+    if not cfg.get("default_city_id"):
+        return None, {"ok": False, "error": "Не задано місто OLX (Налаштування)"}
+    pricing = _pricing_for(db, product, cfg, category_id)
+    if not pricing.get("margin_safe") or not pricing.get("effective_price"):
+        return None, {"ok": False, "error": "Не вдалося порахувати ціну із захищеною маржею",
+                      "pricing": pricing}
+    return {"access": access, "product": product, "number": number,
+            "category_id": category_id, "images": images, "cfg": cfg,
+            "pricing": pricing, "defs": _attr_defs(access, category_id)}, None
 
-    # Уже є активне оголошення на цей номер?
-    existing = db.execute(text("""
+
+def _existing_live(db: Session, product_id: int, number: str) -> Optional[dict]:
+    row = db.execute(text("""
         SELECT olx_id, status, url FROM olx_adverts
         WHERE (product_id = :pid OR product_number_raw = :num)
           AND status = ANY(:live) LIMIT 1
-    """), {"pid": int(product_id), "num": number, "live": list(_LIVE_STATUSES)}).mappings().first()
+    """), {"pid": int(product_id), "num": number,
+           "live": list(_LIVE_STATUSES)}).mappings().first()
+    return dict(row) if row else None
+
+
+def preview_advert(db: Session, product_id: int) -> dict:
+    """Прев'ю ПЕРЕД публікацією (нічого не створює) — для діалогу редагування,
+    як у Prom: назва, опис, ціна, характеристики зі списками допустимих значень."""
+    ctx, err = _prepare_advert(db, product_id)
+    if err:
+        return err
+    payload = build_advert_payload(ctx["product"], ctx["category_id"],
+                                   ctx["pricing"]["effective_price"], ctx["cfg"],
+                                   ctx["defs"], ctx["images"])
+    chosen = {a["code"]: a["value"] for a in payload.get("attributes") or []}
+    attributes = []
+    for d in ctx["defs"]:
+        code = d.get("code")
+        attributes.append({
+            "code": code,
+            "label": d.get("label") or code,
+            "required": bool((d.get("validation") or {}).get("required")),
+            "value": chosen.get(code),
+            "options": [{"code": v.get("code"), "label": v.get("label")}
+                        for v in (d.get("values") or [])],
+        })
+    tree = _category_tree(ctx["access"])
+    byid = tree.get("byid", {})
+    path, cur = [], byid.get(ctx["category_id"])
+    for _ in range(6):
+        if not cur:
+            break
+        path.append(cur.get("name"))
+        cur = byid.get(cur.get("parent_id"))
+    existing = _existing_live(db, product_id, ctx["number"])
+    warnings: List[str] = []
+    pk = ctx["pricing"]
+    warnings.append(f"OLX бере плату за ПУБЛІКАЦІЮ (пакет ~{pk['packet_unit']:.0f} грн), "
+                    f"а не % з продажу. Без активного пакета оголошення буде «limited» "
+                    f"(не в публічному пошуку).")
+    if existing:
+        warnings.append("Товар уже має активне оголошення на OLX — публікація створить друге.")
+    return {
+        "ok": True, "product_id": int(product_id), "productnumber": ctx["number"],
+        "category_id": ctx["category_id"], "category_name": (path[0] if path else None),
+        "category_path": " / ".join(reversed(path)) if path else None,
+        "title": payload["title"], "description": payload["description"],
+        "price": int(payload["price"]["value"]), "pricing": pk,
+        "attributes": attributes, "image_count": len(ctx["images"]),
+        "packet_unit": pk.get("packet_unit"),
+        "already_on_olx": bool(existing), "olx_id": (existing or {}).get("olx_id"),
+        "olx_url": (existing or {}).get("url"),
+        "title_max": OLX_TITLE_MAX, "warnings": warnings,
+    }
+
+
+def create_advert(db: Session, product_id: int, price: Optional[float] = None,
+                  force: bool = False, overrides: Optional[dict] = None) -> dict:
+    """Створити (опублікувати) оголошення OLX. `overrides` — правки з діалогу
+    (title/description/price/attributes), як у Prom-флоу."""
+    ctx, err = _prepare_advert(db, product_id)
+    if err:
+        return err
+    access, product, number = ctx["access"], ctx["product"], ctx["number"]
+    category_id, images, cfg, pricing, defs = (ctx["category_id"], ctx["images"],
+                                               ctx["cfg"], ctx["pricing"], ctx["defs"])
+    existing = _existing_live(db, product_id, number)
     if existing and not force:
         return {"ok": False, "already_on_olx": True, "olx_id": existing["olx_id"],
                 "url": existing["url"], "error": "Товар уже опубліковано на OLX"}
 
-    images = prom_service._product_image_urls(product.get("productnumber"),
-                                              product.get("official_photos_from"))
-    if not images:
-        return {"ok": False, "error": f"{number}: немає фото — OLX відхилить оголошення"}
-
-    cfg = _ensure_defaults(db, access, _load_config(db))
-    if not cfg.get("contact_phone"):
-        return {"ok": False, "error": "Не задано контактний телефон OLX (Налаштування)"}
-    if not cfg.get("default_city_id"):
-        return {"ok": False, "error": "Не задано місто OLX (Налаштування)"}
-
-    pricing = _pricing_for(db, product, cfg, category_id)
-    if not pricing.get("margin_safe") or not pricing.get("effective_price"):
-        return {"ok": False, "error": "Не вдалося порахувати ціну із захищеною маржею",
-                "pricing": pricing}
-    final_price = int(price or pricing["effective_price"])
-
-    defs = _attr_defs(access, category_id)
+    ov = overrides or {}
+    final_price = int(ov.get("price") or price or pricing["effective_price"])
     payload = build_advert_payload(product, category_id, final_price, cfg, defs, images)
+    # Правки з діалогу мають пріоритет над автозгенерованим.
+    if str(ov.get("title") or "").strip():
+        payload["title"] = str(ov["title"]).strip()[:OLX_TITLE_MAX]
+    if str(ov.get("description") or "").strip():
+        payload["description"] = str(ov["description"]).strip()[:8000]
+    if ov.get("attributes"):
+        payload["attributes"] = [{"code": a.get("code"), "value": a.get("value")}
+                                 for a in ov["attributes"]
+                                 if a.get("code") and a.get("value")]
 
     sc, resp = _api_post(access, "/api/partner/adverts", payload)
     if sc >= 400:

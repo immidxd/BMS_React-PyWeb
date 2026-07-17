@@ -1055,13 +1055,28 @@ async def olx_config(body: Dict[str, Any] = Body(...), db: Session = Depends(get
     return _olx().save_config(db, **{k: v for k, v in body.items() if v is not None})
 
 
+@router.post("/api/publications/olx/preview-advert")
+def olx_preview_advert(body: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
+    """Прев'ю перед публікацією (нічого не створює) — для діалогу редагування."""
+    pid = body.get("product_id")
+    if not pid:
+        raise HTTPException(status_code=400, detail="Немає product_id")
+    r = _olx().preview_advert(db, int(pid))
+    if not r.get("ok"):
+        raise HTTPException(status_code=409 if r.get("need_category") else 400,
+                            detail=r.get("error", "OLX preview failed"))
+    return r
+
+
 @router.post("/api/publications/olx/create-advert")
 def olx_create_advert(body: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
     """Створити (опублікувати) оголошення OLX з картки товару."""
     pid = body.get("product_id")
     if not pid:
         raise HTTPException(status_code=400, detail="Немає product_id")
-    r = _olx().create_advert(db, int(pid), price=body.get("price"), force=bool(body.get("force")))
+    r = _olx().create_advert(db, int(pid), price=body.get("price"),
+                             force=bool(body.get("force")),
+                             overrides=body.get("overrides"))
     if not r.get("ok"):
         # «вже на OLX» — не помилка, а сигнал фронту показати підтвердження
         if r.get("already_on_olx"):

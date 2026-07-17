@@ -80,11 +80,50 @@ def test_build_attributes_state_required_and_single_size():
 
 
 def test_build_attributes_multisize_omits_size():
-    prod = {"conditionname": "Хороший", "sizes": ["38", "39", "40"],
+    prod = {"conditionname": "Вживаний", "sizes": ["38", "39", "40"],
             "colorname": "Білий", "brandname": "Nike"}
     codes = {a["code"] for a in O._build_attributes(_DEFS, prod)}
     assert "size" not in codes          # ростовка → без атрибута розміру
     assert ("state", "used") in {(a["code"], a["value"]) for a in O._build_attributes(_DEFS, prod)}
+
+
+def test_state_newlike_matches_prom_grid():
+    """Правило власника: Новий І Хороший = Нове; решта = Вживане."""
+    def state(cond):
+        prod = {"conditionname": cond, "sizes": [], "colorname": None, "brandname": None}
+        return {a["code"]: a["value"] for a in O._build_attributes(_DEFS, prod)}["state"]
+    assert state("Новий") == "new"
+    assert state("Хороший") == "new"      # раніше хибно їхало як 'used'
+    assert state("Вживаний") == "used"
+    assert state("Легковживаний") == "used"
+    assert state("Пошкоджений") == "used"
+
+
+def test_condition_line_states_packaging_and_grammar():
+    """У описі ОБОВ'ЯЗКОВО є пакування, а рід/число — за типом товару."""
+    def line(typ, cond, pack=None):
+        return O._olx_condition_line({"typename": typ, "conditionname": cond,
+                                      "packagingname": pack})
+    assert line("Кросівки", "Новий") == "Нові (Сток), без коробки"
+    assert line("Кросівки", "Новий", "Коробка") == "Нові, в коробці"
+    assert line("Рюкзак", "Хороший") == "Новий (Сток), без коробки"   # чол. рід
+    assert line("Сумка", "Новий") == "Нова (Сток), без коробки"       # жін. рід
+    assert line("Туфлі", "Вживаний") == "Вживаний"                    # чесно, як є
+
+
+def test_description_has_article_dimensions_and_no_internal_notes():
+    prod = {"brandname": "Herschel", "typename": "Рюкзак", "colorname": "темно-синій",
+            "model": "Little America", "productnumber": "#А1256",
+            "conditionname": "Хороший", "dimensions": "29x49x18",
+            "materials": {1: "текстиль"}, "sizes": [],
+            "description": "старі", "extranote": "внутрішня нотатка"}
+    d = O._build_olx_description(prod)
+    assert "(Внутрішній артикул: #А1256)." in d      # ідентифікує товар
+    assert "Габарити: 29x49x18 см." in d             # критично для сумок/рюкзаків
+    assert "Стан: Новий (Сток), без коробки." in d
+    assert "старі" not in d                          # внутрішня нотатка НЕ публікується
+    assert "внутрішня нотатка" not in d
+    assert "<" not in d                              # чистий текст
 
 
 def test_build_attributes_generic_prefixed_codes():
