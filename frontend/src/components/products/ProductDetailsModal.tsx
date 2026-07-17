@@ -351,6 +351,18 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     }
   }, []);
 
+  // Чіп «OLX»: авторитетний стан (active/limited) вантажимо при відкритті —
+  // детальний ендпоінт картки не рахує published_olx, тож без цього чіп був сірий.
+  useEffect(() => {
+    if (!productId || !open) return;
+    setOlxStatus({                                    // швидкий хінт із рядка списку
+      on_olx: !!(product as any)?.published_olx,
+      olx_status: (product as any)?.olx_status,
+      needs_package: (product as any)?.olx_status === 'limited',
+    });
+    void refreshOlxStatus(productId);                 // далі — авторитетний product-status
+  }, [productId, open, (product as any)?.published_olx, (product as any)?.olx_status, refreshOlxStatus]);
+
   // Клік на чіп OLX → ПРЕВ'Ю (нічого не створює) → діалог редагування, як у Prom.
   const olxPublishFlow = async () => {
     if (!productId || olxBusy) return;
@@ -1778,31 +1790,36 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                     <span>Shafa</span>
                   </button>
 
-                  {/* OLX: створення оголошення на сайт. Зелений = опубліковано,
-                      бурштиновий = створено, але бракує пакета публікацій. */}
-                  <button
-                    type="button"
-                    onClick={olxPublishFlow}
-                    disabled={olxBusy}
-                    className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold border transition-colors disabled:opacity-60 ${
-                      olxStatus?.on_olx || (product as any)?.published_olx
-                        ? 'bg-[#002f34] text-[#a9e000] border-[#002f34]'
-                        : olxStatus?.needs_package
-                          ? 'bg-amber-100 text-amber-800 border-amber-300 dark:bg-amber-900/30 dark:text-amber-300 dark:border-amber-700'
-                          : 'bg-gray-50 text-gray-500 border-gray-200 hover:bg-gray-100 dark:bg-gray-800 dark:text-gray-400 dark:border-gray-700 dark:hover:bg-gray-700'
-                    }`}
-                    title={
-                      olxStatus?.on_olx || (product as any)?.published_olx
-                        ? 'Опубліковано на OLX'
-                        : olxStatus?.needs_package
-                          ? 'Оголошення створене, але потрібен активний пакет публікацій OLX'
-                          : 'Опублікувати товар на OLX'
-                    }
-                  >
-                    {/* Лише фірмовий знак OLX — без дубля текстом «OLX» поруч. */}
-                    <span className="inline-flex h-4 items-center justify-center rounded bg-[#002f34] px-1.5 text-[9px] leading-none text-[#a9e000] font-black tracking-tight">OLX</span>
-                    {olxBusy && <SyncOutlined spin className="text-[10px]" />}
-                  </button>
+                  {/* OLX: лише фірмове лого (само по собі читається «OLX» — тому
+                      без дубля текстом). Стан передається рамкою/прозорістю, як у
+                      рядку: яскраве = публічне (active), приглушене = потрібен пакет. */}
+                  {(() => {
+                    const olxLive = !!(olxStatus?.on_olx || (product as any)?.published_olx);
+                    const olxLimited = !olxLive && !!(olxStatus?.needs_package || (product as any)?.olx_status === 'limited');
+                    return (
+                      <button
+                        type="button"
+                        onClick={olxPublishFlow}
+                        disabled={olxBusy}
+                        className={`inline-flex items-center gap-1 h-[22px] px-1.5 rounded-md border transition-colors disabled:opacity-60 ${
+                          olxLive
+                            ? 'bg-white border-emerald-300 dark:bg-gray-900 dark:border-emerald-700'
+                            : olxLimited
+                              ? 'bg-amber-50 border-amber-300 dark:bg-amber-900/20 dark:border-amber-700'
+                              : 'bg-gray-50 border-gray-200 hover:bg-gray-100 dark:bg-gray-800 dark:border-gray-700 dark:hover:bg-gray-700'
+                        }`}
+                        title={
+                          olxLive ? 'Опубліковано на OLX (публічне)'
+                            : olxLimited ? 'Створено на OLX, але обмежена видимість — потрібен активний пакет публікацій'
+                              : 'Опублікувати товар на OLX'
+                        }
+                      >
+                        <img src="/media-logos/olx-mark-emerald.png" alt="OLX"
+                          style={{ height: 13, width: 'auto', display: 'block', opacity: olxLive ? 1 : 0.45 }} />
+                        {olxBusy && <SyncOutlined spin className="text-[10px]" />}
+                      </button>
+                    );
+                  })()}
                 </div>
                 <h2 className="text-2xl font-semibold text-gray-900 dark:text-gray-50 truncate leading-tight">
                   {productTitle ? <CopyOnClick value={productTitle} /> : productTitle}

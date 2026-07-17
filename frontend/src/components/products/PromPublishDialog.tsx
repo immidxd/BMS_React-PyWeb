@@ -16,7 +16,7 @@ interface Props {
   data: any;                       // відповідь preview з /prom/export-product
   busy: boolean;
   onCancel: () => void;
-  onConfirm: (overrides: { name_ua?: string; name_ru?: string; price?: number; params: [string, string][] }) => void;
+  onConfirm: (overrides: { name_ua?: string; name_ru?: string; price?: number; params: [string, string][]; adapt_main_image_for_shafa: boolean }) => void;
 }
 
 const INPUT_CLS = 'w-full px-2.5 py-1.5 rounded-lg text-sm border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-violet-500/40 focus:border-violet-400 transition-colors disabled:opacity-60 disabled:bg-gray-50 dark:disabled:bg-gray-800/50';
@@ -31,6 +31,10 @@ const PromPublishDialog: React.FC<Props> = ({ data, busy, onCancel, onConfirm })
   const [nameUa, setNameUa] = useState<string>(data.name || '');
   const [nameRu, setNameRu] = useState<string>(data.name_ru || '');
   const [price, setPrice] = useState<string>(String(data.price_prom || ''));
+  const canAdaptMainImage = data.image_kind === 'official' && Number(data.image_count || 0) > 0;
+  const [adaptMainImage, setAdaptMainImage] = useState<boolean>(
+    canAdaptMainImage && data.adapt_main_image_default !== false,
+  );
   const initial: ParamRow[] = (data.params || []).map((x: any[]) => ({ n: String(x[0]), v: String(x[1]) }));
   const [params, setParams] = useState<ParamRow[]>(initial);
 
@@ -59,6 +63,7 @@ const PromPublishDialog: React.FC<Props> = ({ data, busy, onCancel, onConfirm })
       name_ru: rostovka ? undefined : nameRu.trim() || undefined,
       price: parseFloat(price) > 0 ? parseFloat(price) : undefined,
       params: edited,
+      adapt_main_image_for_shafa: canAdaptMainImage && adaptMainImage,
     });
   };
 
@@ -159,6 +164,27 @@ const PromPublishDialog: React.FC<Props> = ({ data, busy, onCancel, onConfirm })
             Фото: <b>{data.image_count}</b> {data.image_kind === 'official' ? '(офіційні)' : data.image_kind === 'real' ? '(реальні)' : ''}
             <span className="text-gray-400 dark:text-gray-500"> · опис і пошукові теги (укр+рос) генеруються автоматично</span>
           </div>
+
+          {/* Prom-only derivative for Shafa's portrait thumbnail crop. */}
+          <label className={`flex items-start gap-3 rounded-xl border px-3.5 py-3 transition-colors ${canAdaptMainImage ? 'cursor-pointer border-violet-200 bg-violet-50/60 dark:border-violet-800 dark:bg-violet-900/15' : 'cursor-not-allowed border-gray-200 bg-gray-50 dark:border-gray-700 dark:bg-gray-800/40 opacity-65'}`}>
+            <input
+              type="checkbox"
+              checked={adaptMainImage}
+              onChange={e => setAdaptMainImage(e.target.checked)}
+              disabled={busy || !canAdaptMainImage}
+              className="mt-0.5 h-4 w-4 rounded border-gray-300 accent-violet-600 shrink-0"
+            />
+            <span className="min-w-0">
+              <span className="block text-sm font-medium text-gray-800 dark:text-gray-100">
+                Адаптувати головне фото для Shafa
+              </span>
+              <span className="block mt-0.5 text-[11px] leading-relaxed text-gray-500 dark:text-gray-400">
+                {canAdaptMainImage
+                  ? 'BMS додасть безпечні поля лише до окремої копії для Prom. Оригінал у картці та фото для інших платформ не зміняться.'
+                  : 'Доступно для офіційного студійного фото. Реальні фото BMS автоматично не змінює.'}
+              </span>
+            </span>
+          </label>
 
           {/* Характеристики */}
           <div>
