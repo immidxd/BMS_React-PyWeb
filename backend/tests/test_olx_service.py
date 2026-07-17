@@ -119,6 +119,8 @@ def test_description_has_article_dimensions_and_no_internal_notes():
             "description": "старі", "extranote": "внутрішня нотатка"}
     d = O._build_olx_description(prod)
     assert "(Внутрішній артикул: #А1256)." in d      # ідентифікує товар
+    # Артикул — ОДРАЗУ під вступом, без порожнього рядка між ними.
+    assert "темно-синій.\n(Внутрішній артикул: #А1256)." in d
     assert "Габарити: 29x49x18 см." in d             # критично для сумок/рюкзаків
     assert "Стан: Новий (Сток), без коробки." in d
     assert "старі" not in d                          # внутрішня нотатка НЕ публікується

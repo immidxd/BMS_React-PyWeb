@@ -948,7 +948,8 @@ def _build_olx_description(product: dict) -> str:
     intro = title_bits + (f", {color.lower()}." if color else ".")
     lines = [intro]
     if number:
-        lines += ["", f"(Внутрішній артикул: {number if number.startswith('#') else '#' + number})."]
+        # Артикул — ОДРАЗУ під вступом, без порожнього рядка (як у ручних постах).
+        lines.append(f"(Внутрішній артикул: {number if number.startswith('#') else '#' + number}).")
 
     # ── ХАРАКТЕРИСТИКИ (порожній рядок між пунктами — як у ручних постах) ────
     facts: List[str] = ["100% оригінал."]
