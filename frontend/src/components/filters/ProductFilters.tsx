@@ -417,7 +417,10 @@ const ProductFiltersPanel: React.FC<ProductFiltersPanelProps> = ({ filters, sele
   const countActive = (field: string) => ((selectedFilters as any)[field] || []).length;
 
   const totalActive = [
-    'brandids','genderids','colorids','color_group_ids','conditionids','statusids',
+    // conditionids лишається в списку заради збережених/зовнішніх фільтрів: групи
+    // в UI вже нема, але якщо такий фільтр десь виставлено — він має рахуватись,
+    // інакше «Скинути» не показувався б і фільтр висів би невидимим.
+    'brandids','genderids','colorids','color_group_ids','conditionids','current_conditionids','statusids',
   ].reduce((acc, f) => acc + countActive(f), 0)
     + typeFilterBadge
     + (selectedFilters.min_price !== undefined || selectedFilters.max_price !== undefined ? 1 : 0)
@@ -895,21 +898,11 @@ const ProductFiltersPanel: React.FC<ProductFiltersPanelProps> = ({ filters, sele
         </div>
       </FilterSection>
 
-      {/* Стан */}
+      {/* Стан — це «поточний стан» товару (current_conditionids). Початковий стан
+          (conditionids, стан на момент завозу) окремою групою не показуємо: у
+          фільтрах він дублював цю ж саму групу й плутав. */}
       {filters.conditions?.length > 0 && (
-        <FilterSection title={SECTION_LABELS.conditions} badge={countActive('conditionids')}>
-          <MultiCheckList
-            items={filters.conditions}
-            selected={(selectedFilters as any).conditionids || []}
-            onToggle={toggle('conditionids')}
-            maxVisible={10}
-          />
-        </FilterSection>
-      )}
-
-      {/* Поточний стан */}
-      {filters.conditions?.length > 0 && (
-        <FilterSection title="Поточний стан" badge={(selectedFilters as any).current_conditionids?.length || 0}>
+        <FilterSection title={SECTION_LABELS.conditions} badge={(selectedFilters as any).current_conditionids?.length || 0}>
           <MultiCheckList
             items={filters.conditions}
             selected={(selectedFilters as any).current_conditionids || []}

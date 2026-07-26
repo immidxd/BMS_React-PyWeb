@@ -5067,12 +5067,26 @@ def _parse_workspace_sheet(
                 target_pnum = (_normalize_pnum(_first_clone) or _first_clone) if _first_clone else "???"
             from sqlalchemy.exc import IntegrityError as _IE
 
-            # Idempotency: якщо pnum уже є в БД — reuse, без створення дубля
+            # Idempotency: якщо номер уже є в БД — reuse, без створення дубля.
+            # ⚠️ Перевіряємо саме target_pnum (ЕФЕКТИВНИЙ номер запису), а не лише
+            # власний pnum рядка. Рядок без «Номера», але з клоном (напр. клон
+            # «А1241») отримує target_pnum='#А1241' — і якщо звіряти тільки pnum,
+            # перевірка взагалі не виконувалась і в БД з'являвся порожній двійник
+            # уже наявного товару (price=0, без розміру/статі). Саме так і
+            # народжувались фантоми А1241/А1124/А1198/Д13/Д16/Д17/Ф2346.
             product = None
-            if pnum:
+            lookup_pnum = pnum or (target_pnum if target_pnum != "???" else "")
+            if lookup_pnum:
                 product = session.query(Product).filter(
-                    Product.productnumber == pnum
+                    Product.productnumber == lookup_pnum
                 ).first()
+                if product is None:
+                    # Номер міг зберігатись без '#' (історичні записи) — пробуємо голий.
+                    bare = lookup_pnum.lstrip("#").strip()
+                    if bare and bare != lookup_pnum:
+                        product = session.query(Product).filter(
+                            Product.productnumber == bare
+                        ).first()
                 if product:
                     # is_lost ставимо ЛИШЕ якщо існуючий товар не має deliveryid
                     # (тобто це не реальний журнальний товар, а воркспейс-орфан).
@@ -5090,14 +5104,14 @@ def _parse_workspace_sheet(
                     )
                     logger.info(
                         "[workspace] REUSED existing product pnum=%s id=%s",
-                        pnum, product.id,
+                        lookup_pnum, product.id,
                     )
 
             # Фікс 1: якщо номер уже КЛОН існуючого товару (раніше змерджений) —
-            # не відтворювати загублений запис.
-            if product is None and pnum and _is_already_clone(session, pnum):
+            # не відтворювати загублений запис. Так само за ефективним номером.
+            if product is None and lookup_pnum and _is_already_clone(session, lookup_pnum):
                 skipped += 1
-                logger.info("[workspace] SKIP recreate merged-away pnum=%s", pnum)
+                logger.info("[workspace] SKIP recreate merged-away pnum=%s", lookup_pnum)
                 continue
 
             if product is None:

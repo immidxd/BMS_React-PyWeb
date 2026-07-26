@@ -161,7 +161,11 @@ const IMAGE_SOFT_TIMEOUT_MS = 3500;
 const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev, onNext, syncBeforeLoad }) => {
   const [loading, setLoading] = useState(false);
   const [product, setProduct] = useState<Product | null>(null);
-  const [allImages, setAllImages] = useState<GalleryImage[]>([]);
+  // Галерея зберігається РАЗОМ з id товару, якому належить. Це робить десинхрон
+  // («фото від сусідньої картки під даними цієї») структурно неможливим: показуємо
+  // фото лише коли gallery.pid збігається з відкритим товаром. Самих guard'ів у
+  // запитах мало — при швидкому гортанні відповідь може прийти будь-коли.
+  const [gallery, setGallery] = useState<{ pid: number | null; images: GalleryImage[] }>({ pid: null, images: [] });
   const [imagesLoading, setImagesLoading] = useState(false);
   const [showDefects, setShowDefects] = useState(false);
   const [activeKind, setActiveKind] = useState<'official' | 'real' | 'defect'>('official');
@@ -759,6 +763,14 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
   const loadSeqRef = useRef(0);
   const bodyRef = useRef<HTMLDivElement>(null);   // для скиду скролу при підміні картки
 
+  // Фото показуємо ЛИШЕ якщо вони належать товару, ЯКИЙ ЗАРАЗ НАМАЛЬОВАНО (product),
+  // а не тому, на який ми щойно перемкнулись (productId). Інакше фото випереджають
+  // дані: під час навігації стара картка ще видима, а нові фото вже приїхали.
+  const allImages = useMemo<GalleryImage[]>(
+    () => (gallery.pid !== null && gallery.pid === product?.id ? gallery.images : []),
+    [gallery, product?.id],
+  );
+
   const officialCount = useMemo(() => allImages.filter((i) => (i.kind ?? 'official') === 'official').length, [allImages]);
   const realCount = useMemo(() => allImages.filter((i) => i.kind === 'real').length, [allImages]);
   const hasBothKinds = officialCount > 0 && realCount > 0;
@@ -861,14 +873,17 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
   // якщо Drive відповідає довго — показуємо плейсхолдер, але запит триває й фото
   // зʼявляться коли доїдуть. Картку це ніколи не блокує.
   const loadImages = React.useCallback(async (silent = false) => {
-    if (!productId) return;
+    const pid = productId;
+    if (!pid) return;
     if (!silent) setImagesLoading(true);
     let settled = false;
     const timer = silent ? null : setTimeout(() => { if (!settled) setImagesLoading(false); }, IMAGE_SOFT_TIMEOUT_MS);
     try {
-      const res = await productService.getProductImages(productId);
+      const res = await productService.getProductImages(pid);
       if (!settled) settled = true;
-      setAllImages(res.images || []);
+      // Відповідь могла прийти вже після переходу на інший товар — тоді вона нікому
+      // не потрібна (а показувати її не можна: gallery.pid відсіче, але й писати шкода).
+      if (curPidRef.current === pid) setGallery({ pid, images: res.images || [] });
     } catch (e) {
       console.error('Failed to load images', e);
     } finally {
@@ -1101,7 +1116,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     if (!isNavigation) {
       // Первинне відкриття — спінер, чиста картка.
       setProduct(null);
-      setAllImages([]);
+      setGallery({ pid: null, images: [] });
       loadProduct(true);
       loadImages();
     } else {
@@ -1111,8 +1126,8 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
         try {
           const prod = await productService.getProduct(productId);
           if (seq !== loadSeqRef.current) return;   // застарілий запит (швидке гортання)
-          setAllImages([]);   // чистимо галерею саме при підміні → спінер під новим текстом, не чужі фото
-          setProduct(prod);   // підміна картки (key=p.id → плавний fade)
+          setProduct(prod);   // підміна картки (key=p.id → плавний fade); фото самі
+                              // «прив'яжуться» до нового id — див. allImages вище
         } catch (e) {
           console.error('Failed to load product (nav)', e);
         }

@@ -84,3 +84,6 @@ backend/scripts/gender_merge_backups/
 deploy/staging/
 deploy/Output/
 *.exe
+
+# Бекапи merge_phantom_duplicates.py — знімки рядків БД, не в git
+backend/scripts/phantom_backup_*.json
