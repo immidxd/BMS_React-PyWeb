@@ -125,8 +125,17 @@ const DEFAULTABLE_KEYS = [
   'material_upper', 'material_middle', 'material_sole', 'material_midsole', 'material_insole', 'material_membrane',
 ];
 
+// Латинські гомогліфи → кирилиця (див. productCategory.ts): 'Cумка' з латинською
+// 'C' виглядає як кирилична, але регекс /сумк/ її не ловить → сумку класифікувало
+// як взуття. Нормалізуємо перед матчингом. ⚠️ Синхронно з productCategory._deHomoglyph.
+const _HG: Record<string, string> = {
+  a: 'а', c: 'с', e: 'е', i: 'і', k: 'к', m: 'м', o: 'о', p: 'р',
+  t: 'т', x: 'х', y: 'у', b: 'ь', h: 'н',
+};
+const _dehg = (s: string) => s.replace(/[aceikmoptxybh]/g, (ch) => _HG[ch] || ch);
+
 function categoryOf(t?: string): Cat {
-  const s = (t || '').toLowerCase();
+  const s = _dehg((t || '').toLowerCase());
   if (/валіз|чемодан/.test(s)) return 'suitcase';
   if (/сумк|рюкзак|клатч|барсетк|борсетк|гаман|косметичк|шопер|портфел|саквояж/.test(s)) return 'bag';
   if (/куртк|штан|джинс|футболк|сорочк|світшот|худі|плат|сукн|спідниц|шорт|пальт|кофт|светр|комбінезон|костюм|жилет|толстовк|лонгслів|майк|бомбер|вітровк|пуховик|парк|жакет|кардиган|поло|туніка|блуз|рейтуз|лосин|легінс|бермуд|сарафан/.test(s)) return 'clothing';
@@ -137,7 +146,7 @@ function categoryOf(t?: string): Cat {
 
 // Під-категорія одягу → набір вимірів у базі (штани не мають «Груди» тощо)
 function clothingSubcat(t: string): 'bottom' | 'dress' | 'top' {
-  const s = (t || '').toLowerCase();
+  const s = _dehg((t || '').toLowerCase());
   if (/штан|джинс|шорт|спідниц|лосин|рейтуз|легінс|бермуд/.test(s)) return 'bottom';
   if (/плат|сукн|комбінезон|сарафан|костюм/.test(s)) return 'dress';
   return 'top';
@@ -167,9 +176,11 @@ function layout(typeName?: string): Layout {
     // (підошва/носок/шнурівка). База мінімальна; опц. — ширина/розмір-буква + soft-goods
     // (застібка=пряжка/підкладка/матеріал). subhubs=false ⇒ shoe-only поля не валідні
     // як extra ⇒ відсікаються і з дефолтів (filterValuesForCat/isValidExtra).
+    // «Габарити» лишаємо доступними (як chip): ремінь/шарф/пасок мають заміри
+    // (довжина×ширина). Ховаємо лише взуттєву EU/СМ-сітку та виміри одягу.
     return { cat, key: 'accessory', base: [], gender: true, subhubs: false,
-      hubHide: ['sizeeu', 'measurementscm', 'dimensions', ...CLOTHING_MEAS],
-      hubExtra: ['width', 'size_letter', ...SOFT_GOODS_EXTRA] };
+      hubHide: ['sizeeu', 'measurementscm', ...CLOTHING_MEAS],
+      hubExtra: ['dimensions', 'width', 'size_letter', ...SOFT_GOODS_EXTRA] };
   const sub = clothingSubcat(typeName || '');
   const baseMeas = sub === 'bottom' ? ['waist', 'hips', 'length']
     : sub === 'dress' ? ['chest', 'waist', 'hips', 'length']

@@ -20,7 +20,7 @@ router = APIRouter()
 # No supplier_aliases table; no shipments table (use deliveries)
 
 @router.get("/api/suppliers")
-async def get_suppliers(
+def get_suppliers(
     page: int = Query(1, ge=1),
     per_page: int = Query(100, ge=1, le=500),
     search: Optional[str] = Query(None),
@@ -95,7 +95,7 @@ async def get_suppliers(
 
 
 @router.get("/api/suppliers/{supplier_id}")
-async def get_supplier(supplier_id: int = Path(..., ge=1), db: Session = Depends(get_db)):
+def get_supplier(supplier_id: int = Path(..., ge=1), db: Session = Depends(get_db)):
     row = db.execute(text("""
         SELECT s.id, s.company_name AS name, s.description AS notes,
                s.contact_person, s.status, s.priority,
@@ -140,7 +140,7 @@ async def get_supplier(supplier_id: int = Path(..., ge=1), db: Session = Depends
 
 
 @router.put("/api/suppliers/{supplier_id}")
-async def update_supplier(
+def update_supplier(
     supplier_id: int = Path(..., ge=1),
     payload: Dict[str, Any] = Body(...),
     db: Session = Depends(get_db),
@@ -163,13 +163,13 @@ async def update_supplier(
     set_clause = ", ".join(f"{k} = :{k}" for k in fields)
     db.execute(text(f"UPDATE suppliers SET {set_clause} WHERE id = :id"), {**fields, "id": supplier_id})
     db.commit()
-    return await get_supplier(supplier_id, db)
+    return get_supplier(supplier_id, db)
 
 
 # ── Supplier Aliases (for merge history / split) ─────────────────────
 
 @router.get("/api/suppliers/{supplier_id}/aliases")
-async def get_supplier_aliases(supplier_id: int = Path(..., ge=1), db: Session = Depends(get_db)):
+def get_supplier_aliases(supplier_id: int = Path(..., ge=1), db: Session = Depends(get_db)):
     """Return all aliases (old names from merges) pointing to this supplier."""
     rows = db.execute(text("""
         SELECT sa.id, sa.alias_name,
@@ -185,7 +185,7 @@ async def get_supplier_aliases(supplier_id: int = Path(..., ge=1), db: Session =
 
 
 @router.post("/api/suppliers/{supplier_id}/aliases")
-async def add_supplier_alias(
+def add_supplier_alias(
     supplier_id: int = Path(..., ge=1),
     payload: Dict[str, Any] = Body(...),
     db: Session = Depends(get_db),
@@ -206,14 +206,14 @@ async def add_supplier_alias(
 
 
 @router.delete("/api/suppliers/aliases/{alias_id}")
-async def delete_supplier_alias(alias_id: int = Path(..., ge=1), db: Session = Depends(get_db)):
+def delete_supplier_alias(alias_id: int = Path(..., ge=1), db: Session = Depends(get_db)):
     db.execute(text("DELETE FROM supplier_aliases WHERE id = :id"), {"id": alias_id})
     db.commit()
     return {"ok": True}
 
 
 @router.post("/api/suppliers/split")
-async def split_supplier(payload: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
+def split_supplier(payload: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
     """
     Split an alias back into a separate supplier.
     - Creates a new supplier with the alias name
@@ -271,7 +271,7 @@ async def split_supplier(payload: Dict[str, Any] = Body(...), db: Session = Depe
 
 
 @router.delete("/api/suppliers/{supplier_id}")
-async def delete_supplier(supplier_id: int = Path(..., ge=1), db: Session = Depends(get_db)):
+def delete_supplier(supplier_id: int = Path(..., ge=1), db: Session = Depends(get_db)):
     cnt = db.execute(text("""
         SELECT COUNT(DISTINCT p.id) FROM deliveries d
         JOIN products p ON p.deliveryid = d.id WHERE d.supplier_id = :id
@@ -285,7 +285,7 @@ async def delete_supplier(supplier_id: int = Path(..., ge=1), db: Session = Depe
 
 
 @router.post("/api/suppliers/merge")
-async def merge_suppliers(payload: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
+def merge_suppliers(payload: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
     target_id = payload.get("target_id")
     source_ids = payload.get("source_ids", [])
     new_name = (payload.get("new_name") or "").strip()
@@ -334,7 +334,7 @@ async def merge_suppliers(payload: Dict[str, Any] = Body(...), db: Session = Dep
 # ── Supplier Groups (concerns/parent companies) ────────────────────
 
 @router.get("/api/supplier-groups")
-async def get_supplier_groups(db: Session = Depends(get_db)):
+def get_supplier_groups(db: Session = Depends(get_db)):
     rows = db.execute(text("""
         SELECT sg.id, sg.name, sg.country, sg.description,
                COUNT(s.id)::int AS supplier_count
@@ -347,7 +347,7 @@ async def get_supplier_groups(db: Session = Depends(get_db)):
 
 
 @router.post("/api/supplier-groups")
-async def create_supplier_group(payload: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
+def create_supplier_group(payload: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
     name = (payload.get("name") or "").strip()
     if not name:
         raise HTTPException(400, "name is required")
@@ -361,7 +361,7 @@ async def create_supplier_group(payload: Dict[str, Any] = Body(...), db: Session
 
 
 @router.put("/api/supplier-groups/{group_id}")
-async def update_supplier_group(group_id: int, payload: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
+def update_supplier_group(group_id: int, payload: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
     updates, params = [], {"id": group_id}
     if "name" in payload:
         updates.append("name = :name")
@@ -380,7 +380,7 @@ async def update_supplier_group(group_id: int, payload: Dict[str, Any] = Body(..
 
 
 @router.delete("/api/supplier-groups/{group_id}")
-async def delete_supplier_group(group_id: int, db: Session = Depends(get_db)):
+def delete_supplier_group(group_id: int, db: Session = Depends(get_db)):
     db.execute(text("UPDATE suppliers SET group_id = NULL WHERE group_id = :id"), {"id": group_id})
     db.execute(text("DELETE FROM supplier_groups WHERE id = :id"), {"id": group_id})
     db.commit()

@@ -10,7 +10,7 @@ from schemas.reference import PaymentStatusCreate, PaymentStatusUpdate, PaymentS
 router = APIRouter()
 
 @router.get("/api/payment-statuses", response_model=PaymentStatusList, tags=["payment_statuses"])
-async def get_payment_statuses(db: Session = Depends(get_db)):
+def get_payment_statuses(db: Session = Depends(get_db)):
     """
     Get all payment statuses
     """
@@ -18,7 +18,7 @@ async def get_payment_statuses(db: Session = Depends(get_db)):
     return {"items": payment_statuses}
 
 @router.get("/api/payment-statuses/{payment_status_id}", response_model=PaymentStatusSchema, tags=["payment_statuses"])
-async def get_payment_status(payment_status_id: int, db: Session = Depends(get_db)):
+def get_payment_status(payment_status_id: int, db: Session = Depends(get_db)):
     """
     Get payment status by ID
     """
@@ -28,7 +28,7 @@ async def get_payment_status(payment_status_id: int, db: Session = Depends(get_d
     return payment_status
 
 @router.post("/api/payment-statuses", response_model=PaymentStatusSchema, tags=["payment_statuses"])
-async def create_payment_status(payment_status: PaymentStatusCreate, db: Session = Depends(get_db)):
+def create_payment_status(payment_status: PaymentStatusCreate, db: Session = Depends(get_db)):
     """
     Create a new payment status
     """
@@ -45,7 +45,7 @@ async def create_payment_status(payment_status: PaymentStatusCreate, db: Session
     return db_payment_status
 
 @router.put("/api/payment-statuses/{payment_status_id}", response_model=PaymentStatusSchema, tags=["payment_statuses"])
-async def update_payment_status(payment_status_id: int, payment_status: PaymentStatusUpdate, db: Session = Depends(get_db)):
+def update_payment_status(payment_status_id: int, payment_status: PaymentStatusUpdate, db: Session = Depends(get_db)):
     """
     Update an existing payment status
     """
@@ -69,7 +69,7 @@ async def update_payment_status(payment_status_id: int, payment_status: PaymentS
     return db_payment_status
 
 @router.delete("/api/payment-statuses/{payment_status_id}", tags=["payment_statuses"])
-async def delete_payment_status(payment_status_id: int, db: Session = Depends(get_db)):
+def delete_payment_status(payment_status_id: int, db: Session = Depends(get_db)):
     """
     Delete a payment status
     """

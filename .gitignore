@@ -23,6 +23,7 @@ BMS_React-PyWeb.git/
 # Ignore build backups
 frontend/build_backup_*/
 frontend/build.bak.*/
+frontend/build.bak/
 
 # Ignore accidental nested frontend copies
 frontend/frontend/

@@ -2,7 +2,8 @@ import React, { useEffect, useState, useMemo, useRef } from 'react';
 import { productService } from '../../services/productService';
 import type { Product, ProductFilters } from '../../types/product';
 import { Tag, Image } from 'antd';
-import { CloseOutlined, PictureOutlined, LeftOutlined, RightOutlined, WarningOutlined, EditOutlined, CheckOutlined, PlusOutlined, SyncOutlined, EyeOutlined, EyeInvisibleOutlined, StarFilled, ShoppingOutlined, TableOutlined, InboxOutlined } from '@ant-design/icons';
+import { CloseOutlined, PictureOutlined, LeftOutlined, RightOutlined, WarningOutlined, EditOutlined, CheckOutlined, PlusOutlined, SyncOutlined, EyeOutlined, EyeInvisibleOutlined, StarFilled, ShoppingOutlined, TableOutlined, InboxOutlined, TagOutlined, DownloadOutlined, CopyOutlined, LoadingOutlined } from '@ant-design/icons';
+import { downloadImage, copyImageToClipboard, saveBlob } from '../../services/imageTransfer';
 import { CopyOnClick, formatBrandName, getProductDisplayStatus, getConditionColor, effectiveProductNumber } from '../common/displayHelpers';
 import { hiddenFieldsForType } from './productCategory';
 import { taskManager, emitProductPhotosChanged } from '../../services/taskManager';
@@ -13,14 +14,14 @@ import { waitForPromImport } from '../../services/promImportMonitor';
 import PromPublishDialog from './PromPublishDialog';
 import ShafaBridgeDialog, { type ShafaProductStatus } from './ShafaBridgeDialog';
 import OlxPublishDialog, { type OlxPreview } from './OlxPublishDialog';
+import { confirmDialog, notify } from '../../ui/feedback';
+import LoadingSpinner from '../common/LoadingSpinner';
 
 // Легкий стан чіпа OLX (з /olx/product-status) — окремо від прев'ю публікації.
 type OlxChipStatus = {
   on_olx?: boolean; needs_package?: boolean; limited?: boolean;
   olx_status?: string | null; olx_url?: string | null;
 };
-import { confirmDialog, notify } from '../../ui/feedback';
-import LoadingSpinner from '../common/LoadingSpinner';
 
 interface Props {
   productId: number | null;
@@ -44,6 +45,20 @@ interface GalleryImage {
   is_defect?: boolean;
   kind?: GalleryKind;
 }
+
+// Панелька «завантажити/копіювати» в тулбарі повноекранного прев'ю — той самий
+// темний напівпрозорий вигляд, що й рідні кнопки antd (zoom/rotate).
+const PREVIEW_ACTIONS_BAR: React.CSSProperties = {
+  display: 'flex', alignItems: 'center', gap: 4,
+  padding: '4px 8px', borderRadius: 100,
+  background: 'rgba(0, 0, 0, 0.45)', backdropFilter: 'blur(4px)',
+};
+const PREVIEW_ACTION_ICON: React.CSSProperties = {
+  display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+  width: 32, height: 32, borderRadius: '50%',
+  color: '#fff', fontSize: 16, cursor: 'pointer',
+  transition: 'background 0.2s',
+};
 
 type FieldType = 'text' | 'number' | 'textarea';
 
@@ -152,6 +167,9 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
   const [activeKind, setActiveKind] = useState<'official' | 'real' | 'defect'>('official');
   const [activeIdx, setActiveIdx] = useState(0);
   const [previewVisible, setPreviewVisible] = useState(false);
+  // Викачати/копіювати фото: filename із «щойно скопійовано» + пакетний zip у роботі
+  const [copiedPhoto, setCopiedPhoto] = useState<string | null>(null);
+  const [zipBusy, setZipBusy] = useState(false);
   // Inline-редагування «студійні фото з іншого товару» (ростовка-близнюк)
   const [editingPhotoSrc, setEditingPhotoSrc] = useState(false);
   const [photoSrcDraft, setPhotoSrcDraft] = useState('');
@@ -211,15 +229,64 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
   // це НЕ зачіпає збереження картки. Стан вантажиться/пишеться незалежно.
   const [catalogStatus, setCatalogStatus] = useState<{ is_published: boolean; is_featured: boolean } | null>(null);
   const [catalogSaving, setCatalogSaving] = useState(false);
+  // Знижка у публічний каталог (акційна ціна ЛИШЕ для вітрини — products.price не чіпаємо)
+  const [catalogDiscount, setCatalogDiscount] = useState<{ sale_price: number | null; is_on_sale: boolean }>({ sale_price: null, is_on_sale: false });
+  const [discountOpen, setDiscountOpen] = useState(false);
+  const [discountInput, setDiscountInput] = useState('');
+  const [discountSaving, setDiscountSaving] = useState(false);
+  const discountBoxRef = useRef<HTMLSpanElement>(null);
+
+  // Поле акційної ціни закривається кліком поза чіпом/полем або Esc (не заважає
+  // випадково відкритому полю висіти на екрані).
+  useEffect(() => {
+    if (!discountOpen) return;
+    const onDocClick = (e: MouseEvent) => {
+      if (discountBoxRef.current && !discountBoxRef.current.contains(e.target as Node)) {
+        setDiscountOpen(false);
+      }
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setDiscountOpen(false); };
+    document.addEventListener('mousedown', onDocClick);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDocClick);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [discountOpen]);
 
   useEffect(() => {
-    if (!open || !productId) { setCatalogStatus(null); return; }
+    if (!open || !productId) { setCatalogStatus(null); setCatalogDiscount({ sale_price: null, is_on_sale: false }); setDiscountOpen(false); return; }
     let cancelled = false;
     productService.getCatalogStatus(productId)
-      .then((s) => { if (!cancelled) setCatalogStatus({ is_published: s.is_published, is_featured: s.is_featured }); })
+      .then((s) => {
+        if (cancelled) return;
+        setCatalogStatus({ is_published: s.is_published, is_featured: s.is_featured });
+        setCatalogDiscount({ sale_price: s.sale_price, is_on_sale: s.is_on_sale });
+        setDiscountInput(s.sale_price != null ? String(s.sale_price) : '');
+      })
       .catch(() => { if (!cancelled) setCatalogStatus({ is_published: false, is_featured: false }); });
     return () => { cancelled = true; };
   }, [open, productId]);
+
+  // Зберегти/прибрати знижку (акційна ціна для вітрини). on=false → прибрати.
+  const saveCatalogDiscount = async (on: boolean) => {
+    if (!productId || discountSaving) return;
+    const sp = discountInput.trim() ? Number(discountInput) : null;
+    if (on && (sp == null || !(sp > 0) || (p?.price != null && sp >= Number(p.price)))) {
+      notify.error({ message: 'Акційна ціна має бути більшою за 0 і меншою за реальну' });
+      return;
+    }
+    setDiscountSaving(true);
+    try {
+      const r = await productService.setCatalogDiscount(productId, { sale_price: on ? sp : null, is_on_sale: on });
+      setCatalogDiscount({ sale_price: r.sale_price, is_on_sale: r.is_on_sale });
+      setDiscountInput(r.sale_price != null ? String(r.sale_price) : '');
+      setDiscountOpen(false);
+      notify.success({ message: r.is_on_sale ? 'Знижку ввімкнено у каталозі' : 'Знижку прибрано', duration: 2 });
+    } catch {
+      notify.error({ message: 'Не вдалося оновити знижку' });
+    } finally { setDiscountSaving(false); }
+  };
 
   const toggleCatalogPublished = async () => {
     if (!productId || catalogSaving) return;
@@ -684,6 +751,8 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
   // Єдиний стиль кнопок заголовка (Редагувати/Google/Таблиця/Поставка) — однаковий
   // вигляд і поведінка попри різні функції: без підкреслень, плавний перехід.
   const HDR_BTN = "px-3 py-2 rounded-lg text-sm font-medium border border-gray-200 dark:border-gray-700 text-gray-600 hover:text-gray-900 hover:bg-gray-50 dark:text-gray-300 dark:hover:text-gray-100 dark:hover:bg-gray-800 transition-colors duration-150 flex items-center gap-1.5 no-underline hover:no-underline";
+  // Мінімалістичні дії в кутику фото (зберегти/копіювати) — проявляються на hover.
+  const PHOTO_ACTION_BTN = "w-8 h-8 inline-flex items-center justify-center rounded-full bg-white/85 dark:bg-gray-900/85 backdrop-blur-sm shadow-md text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white hover:bg-white dark:hover:bg-gray-900 hover:scale-105 active:scale-95 transition-all duration-200";
   // Плавна навігація між картками: prevIdRef відрізняє первинне відкриття від ◀/▶;
   // loadSeqRef відкидає застарілі fetch'і при швидкому гортанні.
   const prevIdRef = useRef<number | null>(null);
@@ -935,6 +1004,44 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     } catch (e) { console.error('reorder photos failed', e); }
     finally { setPhotoBusy(false); }
   }, [productId, loadImages, activeKind]);
+
+  // ── Викачати / скопіювати фото ──────────────────────────────────────────────
+  // Працює і в звичайному вигляді, і у відкритому на весь екран прев'ю.
+  const handleDownloadPhoto = React.useCallback(async (img: GalleryImage) => {
+    try {
+      await downloadImage(img.url, img.filename);
+    } catch (e) {
+      console.error('download photo failed', e);
+      notify.error({ message: 'Не вдалось завантажити фото' });
+    }
+  }, []);
+
+  const handleCopyPhoto = React.useCallback(async (img: GalleryImage) => {
+    try {
+      const mode = await copyImageToClipboard(img.url);
+      setCopiedPhoto(img.filename);
+      setTimeout(() => setCopiedPhoto((cur) => (cur === img.filename ? null : cur)), 1600);
+      if (mode === 'url') notify.info({ message: 'Скопійовано посилання на фото (браузер не дає копіювати саме зображення)' });
+    } catch (e) {
+      console.error('copy photo failed', e);
+      notify.error({ message: 'Не вдалось скопіювати фото' });
+    }
+  }, []);
+
+  // Пакетно: усі фото товару одним .zip у теку завантажень.
+  const handleDownloadAllPhotos = React.useCallback(async () => {
+    if (!productId || zipBusy) return;
+    setZipBusy(true);
+    try {
+      const { blob, filename } = await productService.downloadProductPhotosZip(productId, 'all');
+      saveBlob(blob, filename);
+    } catch (e) {
+      console.error('download all photos failed', e);
+      notify.error({ message: 'Не вдалось завантажити архів з фото' });
+    } finally {
+      setZipBusy(false);
+    }
+  }, [productId, zipBusy]);
 
   // Живе перетягування: плитки міняються місцями ПОКИ тягнеш (optimistic),
   // FLIP анімує рух; коміт на сервер — на відпускання.
@@ -1270,7 +1377,20 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
       const tag = (e.target as HTMLElement)?.tagName;
       const inField = tag === 'INPUT' || tag === 'TEXTAREA' || (e.target as HTMLElement)?.isContentEditable;
       if (editMode || inField) return;  // у режимі редагування клавіатурна навігація вимкнена
-      if (!previewVisible && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      const plain = !e.metaKey && !e.ctrlKey && !e.altKey;
+      // `<`/`>` (Comma/Period): у звичайному вигляді — сусідня КАРТКА; коли фото
+      // розгорнуте на весь екран — сусіднє ФОТО (щоб не «випасти» з перегляду).
+      if (plain && (e.code === 'Comma' || e.code === 'Period')) {
+        if (previewVisible) {
+          if (images.length > 1) {
+            e.preventDefault();
+            e.stopPropagation();
+            setActiveIdx((i) => (e.code === 'Comma'
+              ? (i - 1 + images.length) % images.length
+              : (i + 1) % images.length));
+          }
+          return;
+        }
         if (e.code === 'Comma' && navPrev) { e.preventDefault(); navPrev(); return; }
         if (e.code === 'Period' && navNext) { e.preventDefault(); navNext(); return; }
       }
@@ -1614,6 +1734,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
       <style>{`
         @keyframes bmsFadeIn { from { opacity: 0; } to { opacity: 1; } }
         .bms-fade-in { animation: bmsFadeIn 180ms ease-out; }
+        .bms-preview-action:hover { background: rgba(255, 255, 255, 0.18); }
       `}</style>
       {/* Backdrop */}
       <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={editMode ? undefined : onClose} />
@@ -1741,6 +1862,54 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                           <StarFilled className="text-[11px]" />
                           <span>Рекомендований</span>
                         </button>
+                      )}
+                      {/* Знижка: акційна ціна ЛИШЕ для вітрини (products.price не чіпаємо) */}
+                      {catalogStatus.is_published && (
+                        <span ref={discountBoxRef} className="inline-flex items-center gap-1">
+                          <button
+                            type="button"
+                            onClick={() => setDiscountOpen((o) => !o)}
+                            disabled={discountSaving}
+                            className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold border transition-colors disabled:opacity-50 ${
+                              catalogDiscount.is_on_sale
+                                ? 'bg-rose-500 text-white border-rose-600 dark:bg-rose-600 dark:border-rose-500'
+                                : 'bg-gray-50 text-gray-500 border-gray-200 hover:bg-gray-100 dark:bg-gray-800 dark:text-gray-400 dark:border-gray-700 dark:hover:bg-gray-700'
+                            }`}
+                            title={catalogDiscount.is_on_sale ? `Знижка активна (акційна ${catalogDiscount.sale_price} ₴)` : 'Показати знижку у каталозі'}
+                          >
+                            <TagOutlined className="text-[11px]" />
+                            <span>{catalogDiscount.is_on_sale ? `Знижка ${catalogDiscount.sale_price} ₴` : 'Знижка'}</span>
+                          </button>
+                          {discountOpen && (
+                            <span className="inline-flex items-center gap-1">
+                              <input
+                                type="number"
+                                value={discountInput}
+                                onChange={(e) => setDiscountInput(e.target.value)}
+                                placeholder="Акційна ціна"
+                                className="w-24 px-1.5 py-0.5 rounded text-[11px] border border-gray-300 bg-white text-gray-900 dark:bg-gray-800 dark:text-gray-100 dark:border-gray-600"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => saveCatalogDiscount(true)}
+                                disabled={discountSaving}
+                                className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold border bg-emerald-500 text-white border-emerald-600 disabled:opacity-50"
+                              >
+                                Застосувати
+                              </button>
+                              {catalogDiscount.is_on_sale && (
+                                <button
+                                  type="button"
+                                  onClick={() => saveCatalogDiscount(false)}
+                                  disabled={discountSaving}
+                                  className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold border bg-gray-100 text-gray-600 border-gray-300 dark:bg-gray-700 dark:text-gray-300 dark:border-gray-600 disabled:opacity-50"
+                                >
+                                  Прибрати
+                                </button>
+                              )}
+                            </span>
+                          )}
+                        </span>
                       )}
                     </>
                   )}
@@ -1986,27 +2155,85 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                     <div className="relative w-full aspect-square bg-gray-50 dark:bg-gray-800/40 rounded-xl overflow-hidden border border-gray-100 dark:border-gray-800 flex items-center justify-center group">
                       {activeImage ? (
                         <>
-                          <Image
-                            key={activeImage.url}
-                            src={activeImage.url}
-                            alt={activeImage.filename}
-                            preview={{ visible: previewVisible, onVisibleChange: setPreviewVisible, src: activeImage.url }}
-                            className="!w-full !h-full bms-fade-in"
-                            style={{ objectFit: 'contain', width: '100%', height: '100%', cursor: 'zoom-in' }}
-                            wrapperStyle={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-                          />
+                          {/* PreviewGroup — щоб у розгорнутому фото працювало
+                              перемикання між кадрами (стрілки в оверлеї + `<`/`>`).
+                              `current` контрольований → те саме фото, що в картці. */}
+                          <Image.PreviewGroup
+                            items={images.map((i) => i.url)}
+                            preview={{
+                              visible: previewVisible,
+                              current: activeIdx,
+                              onVisibleChange: (v) => setPreviewVisible(v),
+                              onChange: (cur) => setActiveIdx(cur),
+                              // Ті самі дії, що й у кутику картки — доступні і на весь екран.
+                              toolbarRender: (originalNode, info) => {
+                                const img = images[info.current] ?? activeImage;
+                                return (
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                    {originalNode}
+                                    <div style={PREVIEW_ACTIONS_BAR}>
+                                      <span role="button" tabIndex={0} className="bms-preview-action" style={PREVIEW_ACTION_ICON}
+                                        title="Завантажити це фото"
+                                        onClick={() => handleDownloadPhoto(img)}>
+                                        <DownloadOutlined />
+                                      </span>
+                                      <span role="button" tabIndex={0} className="bms-preview-action" style={PREVIEW_ACTION_ICON}
+                                        title="Скопіювати фото в буфер обміну"
+                                        onClick={() => handleCopyPhoto(img)}>
+                                        {copiedPhoto === img.filename ? <CheckOutlined /> : <CopyOutlined />}
+                                      </span>
+                                    </div>
+                                  </div>
+                                );
+                              },
+                            }}
+                          >
+                            <Image
+                              key={activeImage.url}
+                              src={activeImage.url}
+                              alt={activeImage.filename}
+                              className="!w-full !h-full bms-fade-in"
+                              style={{ objectFit: 'contain', width: '100%', height: '100%', cursor: 'zoom-in' }}
+                              wrapperStyle={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                            />
+                          </Image.PreviewGroup>
                           {activeImage.is_defect && (
                             <div className="absolute top-3 left-3 inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-semibold bg-amber-500/90 text-white shadow-md pointer-events-none">
                               <WarningOutlined className="text-xs" />
                               <span>Дефект</span>
                             </div>
                           )}
+
+                          {/* Дії з фото (кутик): зберегти файл · скопіювати в буфер */}
+                          <div className="absolute top-2 right-2 flex items-center gap-1.5 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity duration-200">
+                            <button
+                              type="button"
+                              onClick={(e) => { e.stopPropagation(); handleDownloadPhoto(activeImage); }}
+                              className={PHOTO_ACTION_BTN}
+                              title="Завантажити це фото"
+                              aria-label="Завантажити це фото"
+                            >
+                              <DownloadOutlined style={{ fontSize: 14 }} />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={(e) => { e.stopPropagation(); handleCopyPhoto(activeImage); }}
+                              className={`${PHOTO_ACTION_BTN} ${copiedPhoto === activeImage.filename ? '!text-green-600 dark:!text-green-400' : ''}`}
+                              title="Скопіювати фото в буфер обміну"
+                              aria-label="Скопіювати фото в буфер обміну"
+                            >
+                              {copiedPhoto === activeImage.filename
+                                ? <CheckOutlined style={{ fontSize: 14 }} />
+                                : <CopyOutlined style={{ fontSize: 14 }} />}
+                            </button>
+                          </div>
                           {images.length > 1 && (
                             <>
                               <button
                                 onClick={(e) => { e.stopPropagation(); setActiveIdx((i) => (i - 1 + images.length) % images.length); }}
                                 className="absolute left-2 top-1/2 -translate-y-1/2 p-2 rounded-full bg-white/80 dark:bg-gray-900/80 hover:bg-white dark:hover:bg-gray-900 shadow-md text-gray-700 dark:text-gray-200 opacity-0 group-hover:opacity-100 transition-opacity"
                                 aria-label="Попереднє фото"
+                                title="Попереднє фото  ( ← , або < коли фото відкрите на весь екран )"
                               >
                                 <LeftOutlined />
                               </button>
@@ -2014,6 +2241,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                                 onClick={(e) => { e.stopPropagation(); setActiveIdx((i) => (i + 1) % images.length); }}
                                 className="absolute right-2 top-1/2 -translate-y-1/2 p-2 rounded-full bg-white/80 dark:bg-gray-900/80 hover:bg-white dark:hover:bg-gray-900 shadow-md text-gray-700 dark:text-gray-200 opacity-0 group-hover:opacity-100 transition-opacity"
                                 aria-label="Наступне фото"
+                                title="Наступне фото  ( → , або > коли фото відкрите на весь екран )"
                               >
                                 <RightOutlined />
                               </button>
@@ -2039,17 +2267,32 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                       )}
                     </div>
 
-                    {/* Gallery kind switcher */}
-                    {hasBothKinds && (
-                      <div className="inline-flex self-start items-center rounded-full bg-gray-100 dark:bg-gray-800/60 p-0.5 text-[11px] font-medium select-none">
-                        <button type="button"
-                          onClick={() => { if (activeKind !== 'official') { setActiveKind('official'); setActiveIdx(0); } }}
-                          className={`px-3 py-1 rounded-full transition-all duration-200 ${activeKind === 'official' ? 'bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-50 shadow-sm' : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'}`}
-                          title={`Офіційні фото (${officialCount})`}>Офіційні</button>
-                        <button type="button"
-                          onClick={() => { if (activeKind !== 'real') { setActiveKind('real'); setActiveIdx(0); } }}
-                          className={`px-3 py-1 rounded-full transition-all duration-200 ${activeKind === 'real' ? 'bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-50 shadow-sm' : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'}`}
-                          title={`Мої реальні фото (${realCount})`}>Реальні</button>
+                    {/* Gallery kind switcher + пакетне викачування всіх фото */}
+                    {(hasBothKinds || allImages.length > 0) && (
+                      <div className="flex items-center justify-between gap-2">
+                        {hasBothKinds ? (
+                          <div className="inline-flex items-center rounded-full bg-gray-100 dark:bg-gray-800/60 p-0.5 text-[11px] font-medium select-none">
+                            <button type="button"
+                              onClick={() => { if (activeKind !== 'official') { setActiveKind('official'); setActiveIdx(0); } }}
+                              className={`px-3 py-1 rounded-full transition-all duration-200 ${activeKind === 'official' ? 'bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-50 shadow-sm' : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'}`}
+                              title={`Офіційні фото (${officialCount})`}>Офіційні</button>
+                            <button type="button"
+                              onClick={() => { if (activeKind !== 'real') { setActiveKind('real'); setActiveIdx(0); } }}
+                              className={`px-3 py-1 rounded-full transition-all duration-200 ${activeKind === 'real' ? 'bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-50 shadow-sm' : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'}`}
+                              title={`Мої реальні фото (${realCount})`}>Реальні</button>
+                          </div>
+                        ) : <span />}
+
+                        {allImages.length > 0 && (
+                          <button type="button"
+                            onClick={handleDownloadAllPhotos}
+                            disabled={zipBusy}
+                            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-100 dark:hover:bg-gray-800/60 transition-all duration-200 disabled:opacity-60"
+                            title={`Завантажити всі фото товару (${allImages.length}) одним архівом`}>
+                            {zipBusy ? <LoadingOutlined style={{ fontSize: 12 }} /> : <DownloadOutlined style={{ fontSize: 12 }} />}
+                            <span>{zipBusy ? 'Пакування…' : `Всі фото (${allImages.length})`}</span>
+                          </button>
+                        )}
                       </div>
                     )}
 

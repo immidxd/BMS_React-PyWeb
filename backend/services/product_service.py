@@ -399,24 +399,30 @@ def _build_product_where(filters: Optional["schemas.ProductFilter"]) -> tuple:
             params['statusids'] = filters.statusids
 
         # Публікації: «де опубліковано» — реюз tgpub/olxpub join-ів (вони в base_sql,
-        # отже доступні і в count_sql, що обгортає base_sql). OR між обраними.
+        # отже доступні і в count_sql, що обгортає base_sql).
+        #   published_on      — ПОЗИТИВНІ (показати ті, що там опубліковані), OR між обраними;
+        #   published_on_not  — НЕГАТИВНІ  (виключити ті, що там опубліковані), AND між обраними.
+        # Позитив і негатив незалежні: можна «показати з Telegram, але БЕЗ OLX».
+        # Один майданчик = один булевий вираз ↓; негатив = NOT COALESCE(вираз, FALSE),
+        # щоб NULL (не опубліковано, напр. shafa_status IS NULL) лишався у вибірці.
+        _PUB_EXPR = {
+            'telegram': "tgpub.pnum IS NOT NULL",
+            'olx':      "olxpub.pnum IS NOT NULL",
+            'prom':     "prompub.pnum IS NOT NULL",
+            # Shafa-фільтр охоплює весь чесний pipeline: жовті очікувані стани
+            # та чорні підтверджені. published_shafa у відповіді все одно true
+            # лише за реального URL/ID.
+            'shafa':    "shafapub.shafa_status IN ('waiting_prom','bridge_ready','confirmed','manual_existing')",
+            'catalog':  "catpub.pnum IS NOT NULL",
+        }
         if getattr(filters, 'published_on', None):
-            _pub = []
-            if 'telegram' in filters.published_on:
-                _pub.append("tgpub.pnum IS NOT NULL")
-            if 'olx' in filters.published_on:
-                _pub.append("olxpub.pnum IS NOT NULL")
-            if 'prom' in filters.published_on:
-                _pub.append("prompub.pnum IS NOT NULL")
-            if 'shafa' in filters.published_on:
-                # Shafa-фільтр охоплює весь чесний pipeline: жовті очікувані
-                # стани та чорні підтверджені. published_shafa у відповіді все
-                # одно true лише за реального URL/ID.
-                _pub.append("shafapub.shafa_status IN ('waiting_prom','bridge_ready','confirmed','manual_existing')")
-            if 'catalog' in filters.published_on:
-                _pub.append("catpub.pnum IS NOT NULL")
+            _pub = [_PUB_EXPR[k] for k in filters.published_on if k in _PUB_EXPR]
             if _pub:
                 where_conditions.append("(" + " OR ".join(_pub) + ")")
+        if getattr(filters, 'published_on_not', None):
+            for k in filters.published_on_not:
+                if k in _PUB_EXPR:
+                    where_conditions.append(f"NOT COALESCE(({_PUB_EXPR[k]}), FALSE)")
 
         if filters.conditionids:
             where_conditions.append(

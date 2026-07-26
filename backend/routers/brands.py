@@ -68,7 +68,7 @@ class BrandConcernUpdate(BaseModel):
 # ── GET /api/brands ─────────────────────────────────────────────────
 
 @router.get("/api/brands", response_model=BrandListResponse, tags=["brands"])
-async def get_brands(
+def get_brands(
     page: int = Query(1, ge=1),
     per_page: int = Query(20, ge=1, le=100),
     search: Optional[str] = None,
@@ -199,7 +199,7 @@ async def get_brands(
 # ── PUT /api/brands/{id} ───────────────────────────────────────────
 
 @router.put("/api/brands/{brand_id}", tags=["brands"])
-async def update_brand(brand_id: int, body: BrandUpdate, db: Session = Depends(get_db)):
+def update_brand(brand_id: int, body: BrandUpdate, db: Session = Depends(get_db)):
     existing = db.execute(text("SELECT id FROM brands WHERE id = :id"), {"id": brand_id}).fetchone()
     if not existing:
         raise HTTPException(404, "Brand not found")
@@ -239,7 +239,7 @@ async def update_brand(brand_id: int, body: BrandUpdate, db: Session = Depends(g
 # ── DELETE /api/brands/{id} ─────────────────────────────────────────
 
 @router.delete("/api/brands/{brand_id}", tags=["brands"])
-async def delete_brand(brand_id: int, db: Session = Depends(get_db)):
+def delete_brand(brand_id: int, db: Session = Depends(get_db)):
     count = db.execute(
         text("SELECT COUNT(*) FROM products WHERE brandid = :id"), {"id": brand_id}
     ).scalar() or 0
@@ -266,7 +266,7 @@ async def delete_brand(brand_id: int, db: Session = Depends(get_db)):
 # ── POST /api/brands/merge ──────────────────────────────────────────
 
 @router.post("/api/brands/merge", tags=["brands"])
-async def merge_brands(body: BrandMergeRequest, db: Session = Depends(get_db)):
+def merge_brands(body: BrandMergeRequest, db: Session = Depends(get_db)):
     if body.target_id in body.source_ids:
         raise HTTPException(400, "target_id не повинен бути в source_ids")
     if not body.source_ids:
@@ -330,7 +330,7 @@ async def merge_brands(body: BrandMergeRequest, db: Session = Depends(get_db)):
 # ── POST /api/brands/{id}/block ─────────────────────────────────────
 
 @router.post("/api/brands/{brand_id}/block", tags=["brands"])
-async def block_brand(brand_id: int, db: Session = Depends(get_db)):
+def block_brand(brand_id: int, db: Session = Depends(get_db)):
     brand = db.execute(
         text("SELECT id, brandname, normalized_name FROM brands WHERE id = :id"),
         {"id": brand_id},
@@ -363,7 +363,7 @@ async def block_brand(brand_id: int, db: Session = Depends(get_db)):
 # ── GET /api/brand-concerns ─────────────────────────────────────────
 
 @router.get("/api/brand-concerns", tags=["brands"])
-async def get_brand_concerns(db: Session = Depends(get_db)):
+def get_brand_concerns(db: Session = Depends(get_db)):
     rows = db.execute(text("""
         SELECT bc.id, bc.name, bc.country, bc.description,
                COUNT(b.id)::int AS brand_count
@@ -385,7 +385,7 @@ async def get_brand_concerns(db: Session = Depends(get_db)):
 # ── POST /api/brand-concerns ────────────────────────────────────────
 
 @router.post("/api/brand-concerns", tags=["brands"])
-async def create_brand_concern(body: BrandConcernCreate, db: Session = Depends(get_db)):
+def create_brand_concern(body: BrandConcernCreate, db: Session = Depends(get_db)):
     result = db.execute(
         text("""
             INSERT INTO brand_concerns (name, country, description)
@@ -402,7 +402,7 @@ async def create_brand_concern(body: BrandConcernCreate, db: Session = Depends(g
 # ── PUT /api/brand-concerns/{id} ────────────────────────────────────
 
 @router.put("/api/brand-concerns/{concern_id}", tags=["brands"])
-async def update_brand_concern(concern_id: int, body: BrandConcernUpdate, db: Session = Depends(get_db)):
+def update_brand_concern(concern_id: int, body: BrandConcernUpdate, db: Session = Depends(get_db)):
     updates = []
     params: dict = {"id": concern_id}
 
@@ -427,7 +427,7 @@ async def update_brand_concern(concern_id: int, body: BrandConcernUpdate, db: Se
 # ── DELETE /api/brand-concerns/{id} ─────────────────────────────────
 
 @router.delete("/api/brand-concerns/{concern_id}", tags=["brands"])
-async def delete_brand_concern(concern_id: int, db: Session = Depends(get_db)):
+def delete_brand_concern(concern_id: int, db: Session = Depends(get_db)):
     db.execute(text("UPDATE brands SET concern_id = NULL WHERE concern_id = :id"), {"id": concern_id})
     db.execute(text("DELETE FROM brand_concerns WHERE id = :id"), {"id": concern_id})
     db.commit()

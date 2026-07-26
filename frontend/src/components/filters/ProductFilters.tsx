@@ -112,22 +112,27 @@ const PUBLICATION_PLATFORMS: PublicationPlatform[] = [
   // { key: 'instagram', label: 'Instagram', icon: '/media-logos/instagram.png' },
 ];
 
-// Чіп майданчика: іконка (повний колір коли активний, приглушена коли ні),
-// з текстовим фолбеком якщо файл іконки ще не доданий.
-function PlatformChip({ platform, active, onClick }: {
-  platform: PublicationPlatform; active: boolean; onClick: () => void;
+// Стан чіпа майданчика: 'off' — не задіяно; 'on' — позитивний (показати ті, що
+// там опубліковані); 'excluded' — негативний (виключити ті, що там опубліковані).
+type ChipState = 'off' | 'on' | 'excluded';
+
+// Чіп майданчика: іконка (повний колір коли задіяно, приглушена коли ні).
+// ЛКМ (onClick) — позитивний фільтр; ПКМ (onContextMenu) — негативний (червоний).
+function PlatformChip({ platform, state, onClick, onExclude }: {
+  platform: PublicationPlatform; state: ChipState; onClick: () => void; onExclude: () => void;
 }) {
   const [imgFailed, setImgFailed] = useState(false);
-  // «Каталог» рендериться SVG-гліфом (лого-файлу нема): emerald коли активний,
+  const activeVisual = state !== 'off';   // для 'on' і 'excluded' іконку показуємо в кольорі
+  // «Каталог» рендериться SVG-гліфом (лого-файлу нема): emerald коли задіяний,
   // приглушено-сірий коли ні — тим же прийомом, що й лого-майданчики (grayscale).
   const renderContent = () => {
     if (platform.svg) {
       return (
         <span
-          className={active
-            ? (platform.tone === 'black' ? 'text-black' : 'text-emerald-500')
+          className={activeVisual
+            ? (platform.tone === 'black' ? 'text-black dark:text-gray-100' : 'text-emerald-500')
             : 'text-gray-400 dark:text-gray-500'}
-          style={{ display: 'inline-flex', opacity: platform.tone === 'black' && !active ? 0.35 : 1 }}
+          style={{ display: 'inline-flex', opacity: platform.tone === 'black' && !activeVisual ? 0.35 : 1 }}
         >
           {platform.svg}
         </span>
@@ -140,31 +145,47 @@ function PlatformChip({ platform, active, onClick }: {
           alt={platform.label}
           onError={() => setImgFailed(true)}
           style={{ height: 18, width: 'auto' }}
-          className={active ? '' : 'opacity-40 grayscale'}
+          className={activeVisual ? '' : 'opacity-40 grayscale'}
         />
       );
     }
     return (
-      <span className={`text-xs font-medium ${active ? 'text-gray-900 dark:text-gray-100' : 'text-gray-500 dark:text-gray-400'}`}>
+      <span className={`text-xs font-medium ${activeVisual ? 'text-gray-900 dark:text-gray-100' : 'text-gray-500 dark:text-gray-400'}`}>
         {platform.label}
       </span>
     );
   };
+  const title = state === 'excluded'
+    ? `${platform.label}: виключено (ПКМ — прибрати)`
+    : state === 'on'
+      ? `${platform.label}: показувати (ЛКМ — прибрати, ПКМ — виключити)`
+      : `${platform.label} (ЛКМ — показувати, ПКМ — виключити)`;
   return (
     <button
       type="button"
-      title={platform.label}
+      title={title}
       aria-label={platform.label}
-      aria-pressed={active}
+      aria-pressed={state === 'on'}
       onClick={onClick}
+      onContextMenu={(e) => { e.preventDefault(); onExclude(); }}
       className={[
-        "flex-1 min-w-[52px] flex items-center justify-center py-2 rounded-md border transition-all",
-        active
-          ? "bg-gray-100 dark:bg-gray-600/40 border-gray-800 dark:border-gray-300 ring-1 ring-gray-300"
-          : "bg-white dark:bg-gray-700 border-gray-200 dark:border-gray-600 hover:border-gray-400",
+        "relative flex-1 min-w-[52px] flex items-center justify-center py-2 rounded-md border transition-all",
+        state === 'excluded'
+          ? "bg-red-50 dark:bg-red-900/25 border-red-500 dark:border-red-500 ring-1 ring-red-300 dark:ring-red-700"
+          : state === 'on'
+            ? "bg-gray-100 dark:bg-gray-600/40 border-gray-800 dark:border-gray-300 ring-1 ring-gray-300"
+            : "bg-white dark:bg-gray-700 border-gray-200 dark:border-gray-600 hover:border-gray-400",
       ].join(" ")}
     >
       {renderContent()}
+      {/* Виключений майданчик — червоний кутовий мінус (+ червона рамка/фон вище) */}
+      {state === 'excluded' && (
+        <span
+          aria-hidden
+          className="absolute -top-1.5 -right-1.5 inline-flex items-center justify-center w-4 h-4 rounded-full bg-red-500 text-white shadow"
+          style={{ fontSize: 11, fontWeight: 700, lineHeight: 1 }}
+        >−</span>
+      )}
     </button>
   );
 }
@@ -829,24 +850,44 @@ const ProductFiltersPanel: React.FC<ProductFiltersPanelProps> = ({ filters, sele
         )}
       </FilterSection>
 
-      {/* Публікації — де опубліковано товар (іконки майданчиків, multi-select OR) */}
+      {/* Публікації — де опубліковано товар (іконки майданчиків).
+          ЛКМ — позитивний фільтр (OR: «показати опубліковані тут»);
+          ПКМ — негативний (AND: «виключити опубліковані тут», підсвічується червоним). */}
       <FilterSection
         title="Публікації"
-        badge={((selectedFilters as any).published_on?.length) || 0}
+        badge={(((selectedFilters as any).published_on?.length) || 0)
+             + (((selectedFilters as any).published_on_not?.length) || 0)}
         defaultOpen
       >
         <div className="flex gap-1.5">
           {PUBLICATION_PLATFORMS.map(pl => {
-            const active = (((selectedFilters as any).published_on || []) as string[]).includes(pl.key);
+            const pos = (((selectedFilters as any).published_on || []) as string[]);
+            const neg = (((selectedFilters as any).published_on_not || []) as string[]);
+            const state: ChipState = pos.includes(pl.key) ? 'on' : neg.includes(pl.key) ? 'excluded' : 'off';
             return (
               <PlatformChip
                 key={pl.key}
                 platform={pl}
-                active={active}
+                state={state}
                 onClick={() => {
-                  const cur = (((selectedFilters as any).published_on || []) as string[]);
-                  const next = active ? cur.filter(k => k !== pl.key) : [...cur, pl.key];
-                  onFilterChange({ ...selectedFilters, published_on: next.length ? next : undefined } as any);
+                  // ЛКМ: перемкнути позитив. Вмикаючи — прибираємо з негативу (взаємовиключні).
+                  const nextPos = state === 'on' ? pos.filter(k => k !== pl.key) : [...pos, pl.key];
+                  const nextNeg = neg.filter(k => k !== pl.key);
+                  onFilterChange({
+                    ...selectedFilters,
+                    published_on: nextPos.length ? nextPos : undefined,
+                    published_on_not: nextNeg.length ? nextNeg : undefined,
+                  } as any);
+                }}
+                onExclude={() => {
+                  // ПКМ: перемкнути негатив. Вмикаючи — прибираємо з позитиву.
+                  const nextNeg = state === 'excluded' ? neg.filter(k => k !== pl.key) : [...neg, pl.key];
+                  const nextPos = pos.filter(k => k !== pl.key);
+                  onFilterChange({
+                    ...selectedFilters,
+                    published_on: nextPos.length ? nextPos : undefined,
+                    published_on_not: nextNeg.length ? nextNeg : undefined,
+                  } as any);
                 }}
               />
             );

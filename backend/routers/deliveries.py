@@ -22,7 +22,7 @@ class DeliveryCreate(BaseModel):
 
 
 @router.post("/api/deliveries", status_code=201)
-async def create_delivery(payload: DeliveryCreate = Body(...), db: Session = Depends(get_db)):
+def create_delivery(payload: DeliveryCreate = Body(...), db: Session = Depends(get_db)):
     """Створити завіз: клон вкладки «New» у журналі + рядок у deliveries.
 
     Послідовність (sheet-first, щоб мати gid для БД-рядка; відкат tab при збої БД):
@@ -151,7 +151,7 @@ class ProductQuickCreate(BaseModel):
 
 
 @router.post("/api/deliveries/{delivery_id}/products", status_code=201)
-async def add_product_to_delivery(
+def add_product_to_delivery(
     delivery_id: int = Path(..., ge=1),
     payload: ProductQuickCreate = Body(...),
     db: Session = Depends(get_db),
@@ -324,7 +324,7 @@ async def add_product_to_delivery(
 
 
 @router.delete("/api/deliveries/{delivery_id}/products/{product_id}")
-async def delete_product_from_delivery(
+def delete_product_from_delivery(
     delivery_id: int = Path(..., ge=1),
     product_id: int = Path(..., ge=1),
     db: Session = Depends(get_db),
@@ -430,7 +430,7 @@ def _product_full_sheet_map(detail: Dict[str, Any]) -> Dict[str, Any]:
 
 
 @router.post("/api/deliveries/{delivery_id}/products/{product_id}/adopt")
-async def adopt_orphan_into_delivery(
+def adopt_orphan_into_delivery(
     delivery_id: int = Path(..., ge=1),
     product_id: int = Path(..., ge=1),
     db: Session = Depends(get_db),
@@ -491,7 +491,7 @@ class NumberUpdate(BaseModel):
 
 
 @router.put("/api/deliveries/{delivery_id}/products/{product_id}/number")
-async def rename_product_number(
+def rename_product_number(
     delivery_id: int = Path(..., ge=1),
     product_id: int = Path(..., ge=1),
     payload: NumberUpdate = Body(...),
@@ -565,7 +565,7 @@ async def rename_product_number(
 
 
 @router.get("/api/deliveries/{delivery_id}/reconcile")
-async def reconcile_delivery(delivery_id: int = Path(..., ge=1), db: Session = Depends(get_db)):
+def reconcile_delivery(delivery_id: int = Path(..., ge=1), db: Session = Depends(get_db)):
     """Звірка завозу з журналом (read-only): товари в БД(deliveryid), яких НЕМА у
     вкладці аркуша і БЕЗ продажів → кандидати на видалення (зникли з журналу вручну).
 
@@ -608,7 +608,7 @@ async def reconcile_delivery(delivery_id: int = Path(..., ge=1), db: Session = D
 
 
 @router.post("/api/deliveries/{delivery_id}/sync")
-async def sync_delivery(delivery_id: int = Path(..., ge=1), db: Session = Depends(get_db)):
+def sync_delivery(delivery_id: int = Path(..., ge=1), db: Session = Depends(get_db)):
     """⚡ Точкова синхронізація вкладки завозу з аркушем → БД (upsert адди/правки +
     видалення орфанів). Для loading-on-open у Картці завозу: картка чекає завершення,
     щоб показати дані, що 100% збігаються з реальним аркушем."""
@@ -641,7 +641,7 @@ def _journal_err_detail(e: Exception, deliveryname: str) -> str:
 
 
 @router.post("/api/deliveries/{delivery_id}/sort-rows")
-async def sort_delivery_rows(delivery_id: int = Path(..., ge=1), db: Session = Depends(get_db)):
+def sort_delivery_rows(delivery_id: int = Path(..., ge=1), db: Session = Depends(get_db)):
     """⇅ Впорядкувати товарні рядки вкладки за номером (зростання) — і в журналі.
     Переписує лише cols1-52; блок «Завоз» недоторканий."""
     try:
@@ -659,7 +659,7 @@ async def sort_delivery_rows(delivery_id: int = Path(..., ge=1), db: Session = D
 
 
 @router.get("/api/deliveries/{delivery_id}/info")
-async def get_delivery_info(delivery_id: int = Path(..., ge=1), db: Session = Depends(get_db)):
+def get_delivery_info(delivery_id: int = Path(..., ge=1), db: Session = Depends(get_db)):
     """Редаговані поля блоку «Інформація про завоз» з аркуша (label→значення).
     Авто-логіка: «Дата початку» (час старту запису = created_at) проставляється, якщо
     порожня; «Дата завершення» — час «зараз», якщо к-сть товарів досягла «Очікувана
@@ -722,7 +722,7 @@ _INFO_DB_COLUMNS = {
 
 
 @router.put("/api/deliveries/{delivery_id}/info")
-async def update_delivery_info(delivery_id: int = Path(..., ge=1),
+def update_delivery_info(delivery_id: int = Path(..., ge=1),
                                payload: Dict[str, Any] = Body(...),
                                db: Session = Depends(get_db)):
     """Записати редаговані поля інфо-блоку в аркуш + дзеркалити відомі в БД.
@@ -775,7 +775,7 @@ async def update_delivery_info(delivery_id: int = Path(..., ge=1),
 
 
 @router.get("/api/deliveries/names")
-async def get_delivery_names(db: Session = Depends(get_db)):
+def get_delivery_names(db: Session = Depends(get_db)):
     """Легкий список УСІХ завозів (id+назва) для дропдаунів (напр. «Прийняти у завіз»).
     Без пагінації — лише два поля, найновіші зверху."""
     rows = db.execute(text(
@@ -786,7 +786,7 @@ async def get_delivery_names(db: Session = Depends(get_db)):
 
 
 @router.get("/api/deliveries")
-async def get_deliveries(
+def get_deliveries(
     page: int = Query(1, ge=1),
     per_page: int = Query(20, ge=1, le=100),
     supplier_id: Optional[int] = Query(None),
@@ -835,7 +835,7 @@ async def get_deliveries(
     }
 
 @router.get("/api/deliveries/{delivery_id}")
-async def get_delivery(delivery_id: int = Path(..., ge=1), db: Session = Depends(get_db)):
+def get_delivery(delivery_id: int = Path(..., ge=1), db: Session = Depends(get_db)):
     row = db.execute(
         text("SELECT id, deliveryname, description, created_at, deliverydate, supplier_id FROM deliveries WHERE id = :id"),
         {"id": delivery_id},
@@ -845,7 +845,7 @@ async def get_delivery(delivery_id: int = Path(..., ge=1), db: Session = Depends
     return dict(row)
 
 @router.put("/api/deliveries/{delivery_id}")
-async def update_delivery(
+def update_delivery(
     delivery_id: int = Path(..., ge=1),
     payload: Dict[str, Any] = None,
     db: Session = Depends(get_db)

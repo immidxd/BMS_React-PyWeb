@@ -14,7 +14,7 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
 logger = logging.getLogger(__name__)
 
@@ -260,6 +260,53 @@ def list_images(productnumber: str) -> List[ImageEntry]:
         ImageEntry(filename=e.filename, url=e.url, index=i, is_defect=e.is_defect, kind=e.kind)
         for i, e in enumerate(merged_sorted)
     ]
+
+
+def read_image_bytes(entry: ImageEntry) -> Optional[bytes]:
+    """Байти одного фото за його `url` (локальний файл або Drive-проксі).
+
+    Потрібно для пакетного експорту (zip): віддавати фото без походу браузера
+    по кожному URL окремо. `None`, якщо файл недоступний.
+    """
+    url = (entry.url or "").split("?")[0]
+
+    if url.startswith(URL_PREFIX + "/"):
+        rel = unquote(url[len(URL_PREFIX) + 1:])
+        root = os.path.abspath(get_images_dir())
+        abs_path = os.path.abspath(os.path.join(root, rel))
+        # Захист від виходу за корінь (relpath приходить із нашого ж лістингу,
+        # але шлях будується з рядка — перевіряємо явно).
+        if not (abs_path == root or abs_path.startswith(root + os.sep)):
+            logger.warning(f"Refusing to read outside images dir: {abs_path}")
+            return None
+        try:
+            with open(abs_path, "rb") as f:
+                return f.read()
+        except OSError as e:
+            logger.warning(f"Failed to read {abs_path}: {e}")
+            return None
+
+    # Drive: /product-images-drive/<file_id>
+    try:
+        from backend.services.product_images_drive import (
+            get_drive_file_bytes, URL_PREFIX_DRIVE,
+        )
+    except ImportError:
+        try:
+            from services.product_images_drive import (
+                get_drive_file_bytes, URL_PREFIX_DRIVE,
+            )
+        except ImportError:
+            return None
+    if url.startswith(URL_PREFIX_DRIVE + "/"):
+        file_id = unquote(url[len(URL_PREFIX_DRIVE) + 1:])
+        try:
+            result = get_drive_file_bytes(file_id)
+        except Exception as e:
+            logger.warning(f"Drive fetch failed for {file_id}: {e}")
+            return None
+        return result[0] if result else None
+    return None
 
 
 # ── Масовий індикатор «чи є фото» для списку товарів ───────────────────────────

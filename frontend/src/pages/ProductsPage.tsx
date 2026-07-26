@@ -137,6 +137,9 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
       if ((selectedFilters as any).published_on && (selectedFilters as any).published_on.length > 0) {
         params['published_on'] = (selectedFilters as any).published_on;
       }
+      if ((selectedFilters as any).published_on_not && (selectedFilters as any).published_on_not.length > 0) {
+        params['published_on_not'] = (selectedFilters as any).published_on_not;
+      }
       if (selectedFilters.sizeeu && selectedFilters.sizeeu.length > 0) params['sizeeu'] = selectedFilters.sizeeu;
       if (selectedFilters.min_sizeeu !== undefined) params['min_sizeeu'] = selectedFilters.min_sizeeu;
       if (selectedFilters.max_sizeeu !== undefined) params['max_sizeeu'] = selectedFilters.max_sizeeu;
@@ -186,6 +189,8 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
     appendIds('current_conditionids', (selectedFilters as any).current_conditionids);
     if ((selectedFilters as any).seasons?.length > 0) params['seasons'] = (selectedFilters as any).seasons;
     if ((selectedFilters as any).widths?.length > 0) params['widths'] = (selectedFilters as any).widths;
+    if ((selectedFilters as any).published_on?.length > 0) params['published_on'] = (selectedFilters as any).published_on;
+    if ((selectedFilters as any).published_on_not?.length > 0) params['published_on_not'] = (selectedFilters as any).published_on_not;
     if ((selectedFilters as any).size_letter?.length > 0) params['size_letter'] = (selectedFilters as any).size_letter;
     if (selectedFilters.min_measurementscm !== undefined) params['min_measurementscm'] = selectedFilters.min_measurementscm;
     if (selectedFilters.max_measurementscm !== undefined) params['max_measurementscm'] = selectedFilters.max_measurementscm;

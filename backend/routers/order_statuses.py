@@ -10,7 +10,7 @@ from schemas.reference import OrderStatusCreate, OrderStatusUpdate, OrderStatusL
 router = APIRouter()
 
 @router.get("/order-statuses", response_model=OrderStatusList, tags=["order_statuses"])
-async def get_order_statuses(db: Session = Depends(get_db)):
+def get_order_statuses(db: Session = Depends(get_db)):
     """
     Get all order statuses
     """
@@ -18,7 +18,7 @@ async def get_order_statuses(db: Session = Depends(get_db)):
     return {"items": order_statuses}
 
 @router.get("/order-statuses/{order_status_id}", response_model=OrderStatusSchema, tags=["order_statuses"])
-async def get_order_status(order_status_id: int, db: Session = Depends(get_db)):
+def get_order_status(order_status_id: int, db: Session = Depends(get_db)):
     """
     Get order status by ID
     """
@@ -28,7 +28,7 @@ async def get_order_status(order_status_id: int, db: Session = Depends(get_db)):
     return order_status
 
 @router.post("/order-statuses", response_model=OrderStatusSchema, tags=["order_statuses"])
-async def create_order_status(order_status: OrderStatusCreate, db: Session = Depends(get_db)):
+def create_order_status(order_status: OrderStatusCreate, db: Session = Depends(get_db)):
     """
     Create a new order status
     """
@@ -45,7 +45,7 @@ async def create_order_status(order_status: OrderStatusCreate, db: Session = Dep
     return db_order_status
 
 @router.put("/order-statuses/{order_status_id}", response_model=OrderStatusSchema, tags=["order_statuses"])
-async def update_order_status(order_status_id: int, order_status: OrderStatusUpdate, db: Session = Depends(get_db)):
+def update_order_status(order_status_id: int, order_status: OrderStatusUpdate, db: Session = Depends(get_db)):
     """
     Update an existing order status
     """
@@ -69,7 +69,7 @@ async def update_order_status(order_status_id: int, order_status: OrderStatusUpd
     return db_order_status
 
 @router.delete("/order-statuses/{order_status_id}", tags=["order_statuses"])
-async def delete_order_status(order_status_id: int, db: Session = Depends(get_db)):
+def delete_order_status(order_status_id: int, db: Session = Depends(get_db)):
     """
     Delete an order status
     """

@@ -54,19 +54,38 @@ const MainLayout: React.FC<MainLayoutProps> = ({
   // ⌘/Ctrl+R — скинути фільтри активної сторінки.
   // ВАЖЛИВО: слухаємо e.code === 'KeyR' (фізична клавіша), бо e.key на
   // кириличній розкладці повертає 'к' і умова `=== 'r'` ніколи не спрацьовувала.
-  // MainLayout тримає `onResetFilters` від поточної сторінки і викликає його.
+  //
+  // ⚠️ Слухач вішається ОДИН раз на весь застосунок, а не на кожен MainLayout.
+  // Кожна сторінка рендерить власний <MainLayout>, і при переході між вкладками
+  // cleanup попереднього не відпрацьовував — слухачі накопичувались (заміряно:
+  // 3 переходи → 5 живих обробників). Наслідок був не лише косметичний (N тостів
+  // «Фільтри скинуто» на одне натискання): кожен протеклий слухач тримав
+  // onResetFilters СТАРОЇ сторінки й скидав її фільтри наосліп.
+  //
+  // Прапорець і колбек живуть на window, а не в модулі, бо MainLayout потрапляє
+  // у кілька чанків збірки — модульна змінна існувала б у кількох копіях.
+  const resetRef = React.useRef(onResetFilters);
+  resetRef.current = onResetFilters;   // завжди актуальна активна сторінка
+
   useEffect(() => {
+    const w = window as any;
+    w.__bmsResetFilters = resetRef;
+    if (w.__bmsResetHotkeyBound) return;
+    w.__bmsResetHotkeyBound = true;
     const onKey = (e: KeyboardEvent) => {
       const mod = e.metaKey || e.ctrlKey;
       if (!mod || e.altKey) return;
       if (e.code !== 'KeyR') return;
       e.preventDefault();   // блокуємо стандартне перезавантаження
-      onResetFilters();
-      toast.info('Фільтри скинуто', { autoClose: 1200, hideProgressBar: true });
+      if (e.repeat) return; // утримана клавіша не має плодити повтори
+      w.__bmsResetFilters?.current?.();
+      // toastId — навіть якщо щось спрацює двічі, тост лишиться один
+      toast.info('Фільтри скинуто', {
+        toastId: 'filters-reset', autoClose: 1200, hideProgressBar: true,
+      });
     };
     window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [onResetFilters]);
+  }, []);
 
   const handleStartParsing = async (mode: string, params: any) => {
     try {

@@ -258,8 +258,12 @@ WRITEBACK_FIELD_HEADERS = {
     "liningid":       "Підкладка",
     "colorid":        "Колір",
     # Класифікація (model-level) → колонки журналу.
-    "typeid":         "Тип",
-    "subtypeid":      "Підтип",
+    # ⚠️ Журнал має колонки «Вид»/«Підвид» (НЕ «Тип»/«Підтип»). Парсер ЧИТАЄ саме
+    # їх (col(row,"Вид") нижче), тож і writeback мусить писати в них — інакше
+    # header-резолвер не знаходив колонку й тип/підтип, змінені в додатку, ніколи
+    # не потрапляли в аркуш («не синхронізується»), хоч решта полів писалась.
+    "typeid":         "Вид",
+    "subtypeid":      "Підвид",
     "styleid":        "Стиль",
     "brandid":        "Бренд",
     "genderid":       "Стать",
@@ -2867,7 +2871,14 @@ def _parse_products_sheet(
                 full_match.price = price_float
             full_match.oldprice = oldprice_float
             full_match.updated_at = datetime.utcnow()
-            if shipment_id and not full_match.deliveryid:
+            # Вкладка аркуша = завіз. Якщо рядок перенесли в іншу вкладку (розділили
+            # завіз навпіл, перейменували), товар МУСИТЬ переїхати за ним. Раніше тут
+            # стояло `not full_match.deliveryid`: прив'язка робилась ОДИН раз назавжди,
+            # тож після розділення вкладки товари лишались у старому завозі, а новий
+            # показував «0 товарів» — і жоден повторний парсинг цього не лікував.
+            # Прив'язуємо на ПЕРШІЙ появі в прогоні (аркуші йдуть від найновішого),
+            # тож товар, наявний у кількох вкладках, осідає в найсвіжішій.
+            if shipment_id and (cnt == 1 or not full_match.deliveryid):
                 full_match.deliveryid = shipment_id
             # Нові поля (measurements/lookups/materials) — NULL-only update,
             # materials = full-replace тільки для непорожніх позицій з аркуша.
@@ -2935,7 +2946,9 @@ def _parse_products_sheet(
                     orphan.geometric_shape = geom_shape_val or None
                 if price_float:
                     orphan.price = price_float
-                if shipment_id and not orphan.deliveryid:
+                # Реклейм сироти в ЦЕЙ аркуш → і завіз має бути цього аркуша.
+                # (Див. коментар у Case 1 про «вкладка = завіз».)
+                if shipment_id and (orphan.id not in seen_in_run or not orphan.deliveryid):
                     orphan.deliveryid = shipment_id
                 orphan.updated_at = datetime.utcnow()
                 _apply_new_fields_and_materials(
@@ -3162,6 +3175,17 @@ def _parse_products_sheet(
                             k2 = _normalize_brand_key(nb.brandname)
                             if k1 and k2 and k1 == k2:
                                 return True
+                    # Артикул виробника — ідентифікатор ФІЗИЧНОГО товару, сильніший
+                    # за назву бренду. Той самий артикул під тим самим номером лота =
+                    # той самий черевик, у якого просто ВІДРЕДАГУВАЛИ бренд у журналі
+                    # (напр. 'Emporio Armani' → 'Armani Exchange' — суббренди одного
+                    # дому, які легко переплутати при записі). Без цієї перевірки
+                    # кожне таке уточнення бренду плодило фантомний '-2'.
+                    # Та сама логіка, що вже діє для кольору в _is_color_variant.
+                    db_mark = (p.marking or "").strip().upper()
+                    sheet_mark = (marking or "").strip().upper()
+                    if db_mark and sheet_mark and db_mark == sheet_mark:
+                        return True
                     return False
 
                 brand_compat = [
@@ -3332,7 +3356,8 @@ def _parse_products_sheet(
                     elif status_id == sold_status_id:
                         target.statusid = status_id
                     target.updated_at = datetime.utcnow()
-                    if shipment_id and not target.deliveryid:
+                    # Див. коментар у Case 1: вкладка = завіз, товар їде за рядком.
+                    if shipment_id and (cnt == 1 or not target.deliveryid):
                         target.deliveryid = shipment_id
                     if pnum != target.productnumber:
                         pending_renames[target.id] = pnum

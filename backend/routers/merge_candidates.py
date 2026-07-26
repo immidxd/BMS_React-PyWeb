@@ -83,7 +83,7 @@ def _fill_empty_from(target, source) -> list:
 # SCAN: знайти можливі оригінали для загублених товарів (Фаза 3, зважений скоринг)
 # ─────────────────────────────────────────────────────────────────────────────
 @router.post("/api/merge-candidates/scan")
-async def scan_merge_candidates(
+def scan_merge_candidates(
     product_id: Optional[int] = Query(None, description="Сканувати лише один загублений товар"),
     min_score: int = Query(DEFAULT_MIN_SCORE, ge=0, le=100, description="Поріг впевненості 0–100"),
     top_n: int = Query(DEFAULT_TOP_N, ge=1, le=20, description="Скільки кандидатів на товар"),
@@ -106,7 +106,7 @@ async def scan_merge_candidates(
 # LIST: pending кандидати для конкретного продукту (або всіх)
 # ─────────────────────────────────────────────────────────────────────────────
 @router.get("/api/merge-candidates")
-async def list_merge_candidates(
+def list_merge_candidates(
     product_id: Optional[int] = Query(None, description="Filter pending candidates for this NEW product"),
     db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
@@ -160,7 +160,7 @@ async def list_merge_candidates(
 # COUNT: скільки pending-кандидатів є взагалі (для бейджа в шапці UI)
 # ─────────────────────────────────────────────────────────────────────────────
 @router.get("/api/merge-candidates/pending-count")
-async def merge_candidates_pending_count(db: Session = Depends(get_db)) -> Dict[str, int]:
+def merge_candidates_pending_count(db: Session = Depends(get_db)) -> Dict[str, int]:
     row = db.execute(
         text("SELECT COUNT(*) FROM merge_candidates WHERE status = 'pending'")
     ).fetchone()
@@ -171,7 +171,7 @@ async def merge_candidates_pending_count(db: Session = Depends(get_db)) -> Dict[
 # ACCEPT: виконати merge — append clones з NEW в SUGGESTED, видалити NEW
 # ─────────────────────────────────────────────────────────────────────────────
 @router.post("/api/merge-candidates/{candidate_id}/accept")
-async def accept_merge_candidate(
+def accept_merge_candidate(
     candidate_id: int,
     db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
@@ -319,7 +319,7 @@ async def accept_merge_candidate(
 # DECLINE: відмова — більше не пропонувати цю пару
 # ─────────────────────────────────────────────────────────────────────────────
 @router.post("/api/merge-candidates/{candidate_id}/decline")
-async def decline_merge_candidate(
+def decline_merge_candidate(
     candidate_id: int,
     db: Session = Depends(get_db),
 ) -> Dict[str, Any]:

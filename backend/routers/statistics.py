@@ -50,7 +50,7 @@ PAID_REVENUE = f"o.order_status_id IN {REVENUE_SQL} AND o.payment_status_id = {P
 
 # ── Sales statistics ─────────────────────────────────────────────────────────
 @router.get("/api/statistics/sales")
-async def get_sales_stats(
+def get_sales_stats(
     period: str = Query("month", regex="^(month|quarter|year)$"),
     year: Optional[int] = Query(None),
     supplier_id: Optional[int] = Query(None),
@@ -144,7 +144,7 @@ async def get_sales_stats(
 
 # ── Deliveries (shipments) statistics ─────────────────────────────────────────
 @router.get("/api/statistics/shipments")
-async def get_shipments_stats(
+def get_shipments_stats(
     period: str = Query("month", regex="^(month|quarter|year)$"),
     year: Optional[int] = Query(None),
     supplier_id: Optional[int] = Query(None),
@@ -239,7 +239,7 @@ async def get_shipments_stats(
 
 # ── Suppliers statistics ─────────────────────────────────────────────────────
 @router.get("/api/statistics/suppliers")
-async def get_suppliers_stats(
+def get_suppliers_stats(
     period: str = Query("total", regex="^(month|quarter|year|total)$"),
     year: Optional[int] = Query(None),
     limit: int = Query(15, ge=1, le=50),
@@ -331,7 +331,7 @@ async def get_suppliers_stats(
 
 # ── Summary KPIs ─────────────────────────────────────────────────────────────
 @router.get("/api/statistics/summary")
-async def get_summary_stats(db: Session = Depends(get_db)) -> Dict[str, Any]:
+def get_summary_stats(db: Session = Depends(get_db)) -> Dict[str, Any]:
     """Key performance indicators for dashboard cards.
 
     Authoritative definitions for the whole stats UI:
@@ -435,7 +435,7 @@ async def get_summary_stats(db: Session = Depends(get_db)) -> Dict[str, Any]:
 
 # ── Available years ──────────────────────────────────────────────────────────
 @router.get("/api/statistics/years")
-async def get_available_years(db: Session = Depends(get_db)) -> Dict[str, Any]:
+def get_available_years(db: Session = Depends(get_db)) -> Dict[str, Any]:
     order_years = db.execute(text(
         "SELECT DISTINCT EXTRACT(YEAR FROM order_date)::int AS yr FROM orders WHERE order_date IS NOT NULL ORDER BY yr"
     )).scalars().all()
@@ -448,7 +448,7 @@ async def get_available_years(db: Session = Depends(get_db)) -> Dict[str, Any]:
 
 # ── Delivery detail ──────────────────────────────────────────────────────────
 @router.get("/api/statistics/delivery/{delivery_id}")
-async def get_delivery_detail_stats(
+def get_delivery_detail_stats(
     delivery_id: int,
     db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
@@ -554,7 +554,7 @@ async def get_delivery_detail_stats(
 
 # ── Deliveries list with metrics ─────────────────────────────────────────────
 @router.get("/api/statistics/deliveries")
-async def get_deliveries_stats(
+def get_deliveries_stats(
     page: int = Query(1, ge=1),
     per_page: int = Query(20, ge=1, le=100),
     supplier_id: Optional[int] = Query(None),
@@ -634,7 +634,7 @@ async def get_deliveries_stats(
 
 # ── Supplier detail ──────────────────────────────────────────────────────────
 @router.get("/api/statistics/supplier/{supplier_id}")
-async def get_supplier_detail_stats(
+def get_supplier_detail_stats(
     supplier_id: int,
     db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
@@ -749,7 +749,7 @@ async def get_supplier_detail_stats(
 
 # ── Client statistics ────────────────────────────────────────────────────────
 @router.get("/api/statistics/clients")
-async def get_clients_stats(
+def get_clients_stats(
     limit: int = Query(15, ge=1, le=50),
     db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
@@ -855,7 +855,7 @@ async def get_clients_stats(
 
 # ── Products statistics ──────────────────────────────────────────────────────
 @router.get("/api/statistics/products")
-async def get_products_stats(
+def get_products_stats(
     limit: int = Query(15, ge=1, le=50),
     db: Session = Depends(get_db),
 ) -> Dict[str, Any]:

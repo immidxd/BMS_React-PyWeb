@@ -31,7 +31,7 @@ const PromPublishDialog: React.FC<Props> = ({ data, busy, onCancel, onConfirm })
   const [nameUa, setNameUa] = useState<string>(data.name || '');
   const [nameRu, setNameRu] = useState<string>(data.name_ru || '');
   const [price, setPrice] = useState<string>(String(data.price_prom || ''));
-  const canAdaptMainImage = data.image_kind === 'official' && Number(data.image_count || 0) > 0;
+  const canAdaptMainImage = ['official', 'real'].includes(data.image_kind) && Number(data.image_count || 0) > 0;
   const [adaptMainImage, setAdaptMainImage] = useState<boolean>(
     canAdaptMainImage && data.adapt_main_image_default !== false,
   );
@@ -181,7 +181,7 @@ const PromPublishDialog: React.FC<Props> = ({ data, busy, onCancel, onConfirm })
               <span className="block mt-0.5 text-[11px] leading-relaxed text-gray-500 dark:text-gray-400">
                 {canAdaptMainImage
                   ? 'BMS додасть безпечні поля лише до окремої копії для Prom. Оригінал у картці та фото для інших платформ не зміняться.'
-                  : 'Доступно для офіційного студійного фото. Реальні фото BMS автоматично не змінює.'}
+                  : 'Немає головного фото, яке можна підготувати для Shafa.'}
               </span>
             </span>
           </label>

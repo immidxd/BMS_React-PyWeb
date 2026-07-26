@@ -90,7 +90,31 @@ def _sync_worker(catalog_dir: Path, py: Path, script: Path, reason: str) -> None
             return
 
 
+def _reap_orphan_syncs(script: Path) -> None:
+    """Прибрати «осиротілі» sync_to_cloud.py з попереднього запуску BMS.
+
+    Якщо бекенд перезапустили під час синхрону, дочірній процес лишається жити
+    (PPID=1) і може вічно тримати ВІДКРИТУ транзакцію в локальній БД, поки висить
+    на мережевому запиті до хмари. Наступний ALTER/VACUUM стає в чергу за нею, а
+    за ним — усі читачі: програма зависає повністю. Один нормальний синхрон
+    триває ~5с, тож будь-який живий процес на момент старту нового — зомбі."""
+    try:
+        out = subprocess.run(["pgrep", "-f", str(script)],
+                             capture_output=True, text=True, timeout=5)
+        for pid in (p for p in out.stdout.split() if p.isdigit()):
+            if int(pid) == os.getpid():
+                continue
+            try:
+                os.kill(int(pid), 15)
+                logger.warning("Reaped orphaned catalog cloud-sync pid=%s", pid)
+            except (ProcessLookupError, PermissionError):
+                pass
+    except Exception as exc:  # pgrep відсутній (Windows) тощо — не критично
+        logger.debug("Orphan cloud-sync reap skipped: %s", exc)
+
+
 def _run_once(catalog_dir: Path, py: Path, script: Path, reason: str) -> None:
+    _reap_orphan_syncs(script)
     timeout = int(os.getenv("CATALOG_CLOUD_SYNC_TIMEOUT", "180"))
     log_path = Path(os.getenv("CATALOG_CLOUD_SYNC_LOG", "/tmp/bms_catalog_sync.out"))
     stamp = _dt.datetime.now().isoformat(timespec="seconds")

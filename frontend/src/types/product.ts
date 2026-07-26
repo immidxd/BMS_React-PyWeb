@@ -251,6 +251,7 @@ export interface ProductFilter {
     countries?: number[];
     only_unsold?: boolean;
     published_on?: string[];
+    published_on_not?: string[];   // негативний фільтр публікацій (виключити майданчик)
     visible_only?: boolean;
     shipment_id?: number;
 }

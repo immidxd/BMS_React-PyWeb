@@ -446,7 +446,7 @@ def get_orders(
     }
 
 @router.post("/api/orders/bulk-update")
-async def bulk_update_orders(
+def bulk_update_orders(
     update_data: Dict[str, Any] = Body(...),
     order_ids: List[int] = Query(None),
     db: Session = Depends(get_db)
@@ -484,7 +484,7 @@ async def bulk_update_orders(
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/api/orders/filters", response_model=FilterOptions)
-async def get_order_filters(db: Session = Depends(get_db)):
+def get_order_filters(db: Session = Depends(get_db)):
     """
     Get all filter options for orders
     """
@@ -492,7 +492,7 @@ async def get_order_filters(db: Session = Depends(get_db)):
     return order_dao.get_filter_options()
 
 @router.get("/api/orders/{order_id}", response_model=OrderWithDetails)
-async def get_order(order_id: int = Path(..., ge=1), db: Session = Depends(get_db)):
+def get_order(order_id: int = Path(..., ge=1), db: Session = Depends(get_db)):
     """
     Get a specific order by ID with all details
     """
@@ -609,7 +609,7 @@ async def get_order(order_id: int = Path(..., ge=1), db: Session = Depends(get_d
     }
 
 @router.post("/api/orders", response_model=OrderWithDetails)
-async def create_order(order: OrderCreate, db: Session = Depends(get_db)):
+def create_order(order: OrderCreate, db: Session = Depends(get_db)):
     """
     Create a new order with order items
     """
@@ -635,10 +635,10 @@ async def create_order(order: OrderCreate, db: Session = Depends(get_db)):
     order_dao.recalculate_order_total(new_order.id)
     
     # Get complete order with details
-    return await get_order(new_order.id, db)
+    return get_order(new_order.id, db)
 
 @router.put("/api/orders/{order_id}", response_model=OrderWithDetails)
-async def update_order(
+def update_order(
     order: OrderUpdate, 
     order_id: int = Path(..., ge=1), 
     db: Session = Depends(get_db)
@@ -704,10 +704,10 @@ async def update_order(
         threading.Thread(target=_order_writeback_bg, daemon=True).start()
 
     # Get complete order with details
-    return await get_order(order_id, db)
+    return get_order(order_id, db)
 
 @router.put("/api/orders/{order_id}/items/{item_id}/price", response_model=OrderWithDetails)
-async def update_order_item_price(
+def update_order_item_price(
     order_id: int = Path(..., ge=1),
     item_id: int = Path(..., ge=1),
     price: float = Body(..., embed=True, ge=0),
@@ -742,7 +742,7 @@ async def update_order_item_price(
         finally:
             s.close()
     threading.Thread(target=_wb, daemon=True).start()
-    return await get_order(order_id, db)
+    return get_order(order_id, db)
 
 
 def _order_pnums(db: Session, order_id: int) -> list:
@@ -778,7 +778,7 @@ def _order_items_writeback_bg(order_id: int, old_pnums: list):
 
 
 @router.post("/api/orders/{order_id}/items", response_model=OrderWithDetails)
-async def add_order_item(
+def add_order_item(
     order_id: int = Path(..., ge=1),
     product_id: Optional[int] = Body(None, embed=True),
     product_number: Optional[str] = Body(None, embed=True),
@@ -808,11 +808,11 @@ async def add_order_item(
     db.commit()
     OrderDAO(db).recalculate_order_total(order_id)
     threading.Thread(target=_order_items_writeback_bg, args=(order_id, old_pnums), daemon=True).start()
-    return await get_order(order_id, db)
+    return get_order(order_id, db)
 
 
 @router.delete("/api/orders/{order_id}/items/{item_id}", response_model=OrderWithDetails)
-async def remove_order_item(
+def remove_order_item(
     order_id: int = Path(..., ge=1),
     item_id: int = Path(..., ge=1),
     db: Session = Depends(get_db),
@@ -831,11 +831,11 @@ async def remove_order_item(
     db.commit()
     OrderDAO(db).recalculate_order_total(order_id)
     threading.Thread(target=_order_items_writeback_bg, args=(order_id, old_pnums), daemon=True).start()
-    return await get_order(order_id, db)
+    return get_order(order_id, db)
 
 
 @router.delete("/api/orders/{order_id}")
-async def delete_order(order_id: int = Path(..., ge=1), db: Session = Depends(get_db)):
+def delete_order(order_id: int = Path(..., ge=1), db: Session = Depends(get_db)):
     """
     Delete an order by ID
     """

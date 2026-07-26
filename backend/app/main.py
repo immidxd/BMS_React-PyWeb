@@ -379,9 +379,20 @@ async def _journal_change_poller():
         return
     poll_sec = int(_os.getenv("JOURNAL_POLL_SEC", "90"))
 
+    # Кулдаун між АВТО-парсингами. Кожен парс перечитує всі аркуші, а Google має
+    # ліміт «Read requests per minute per user». Поки власник активно заповнює
+    # журнал, кожна правка міняла lastUpdateTime → парс запускався щоцикл (заміряно
+    # 22:18→23:40: ~22 парси поспіль, кожні ~3 хв). Квота вигоряла, і РУЧНИЙ повний
+    # парсинг падав з 429. Кулдаун коалесить серію правок в один парс: зміни не
+    # губляться (lastUpdateTime лишається новим → парс піде після кулдауну).
+    cooldown_sec = int(_os.getenv("AUTO_PARSE_COOLDOWN_SEC", "900"))
+
     async def _loop():
+        import time as _time
         await asyncio.sleep(35)  # дати startup auto-parse відпрацювати першим
         last: dict = {}
+        pending = False
+        last_auto_at = 0.0
         while True:
             try:
                 try:
@@ -401,8 +412,20 @@ async def _journal_change_poller():
                         changed = True
                     last[sid] = lut
                 if changed:
-                    logger.info("Journal-poller: зміну виявлено → auto quick-parse")
-                    start_auto_full_quick()
+                    pending = True
+                if pending:
+                    waited = _time.monotonic() - last_auto_at
+                    if waited < cooldown_sec:
+                        logger.info(
+                            "Journal-poller: зміни є, чекаю кулдаун (%ds з %ds)",
+                            int(waited), cooldown_sec)
+                    else:
+                        logger.info("Journal-poller: зміну виявлено → auto quick-parse")
+                        if start_auto_full_quick() is not None:
+                            # Запустився (не скіпнутий через активний job) — знімаємо
+                            # прапорець і починаємо новий відлік кулдауну.
+                            pending = False
+                            last_auto_at = _time.monotonic()
             except Exception as e:
                 logger.warning(f"Journal-poller error: {e}")
             await asyncio.sleep(poll_sec)

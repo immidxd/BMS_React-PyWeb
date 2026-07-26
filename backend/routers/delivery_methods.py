@@ -10,7 +10,7 @@ from schemas.reference import DeliveryMethodCreate, DeliveryMethodUpdate, Delive
 router = APIRouter()
 
 @router.get("/api/delivery-methods", response_model=DeliveryMethodList, tags=["delivery_methods"])
-async def get_delivery_methods(db: Session = Depends(get_db)):
+def get_delivery_methods(db: Session = Depends(get_db)):
     """
     Get all delivery methods
     """
@@ -18,7 +18,7 @@ async def get_delivery_methods(db: Session = Depends(get_db)):
     return {"items": delivery_methods}
 
 @router.get("/api/delivery-methods/{delivery_method_id}", response_model=DeliveryMethodSchema, tags=["delivery_methods"])
-async def get_delivery_method(delivery_method_id: int, db: Session = Depends(get_db)):
+def get_delivery_method(delivery_method_id: int, db: Session = Depends(get_db)):
     """
     Get delivery method by ID
     """
@@ -28,7 +28,7 @@ async def get_delivery_method(delivery_method_id: int, db: Session = Depends(get
     return delivery_method
 
 @router.post("/api/delivery-methods", response_model=DeliveryMethodSchema, tags=["delivery_methods"])
-async def create_delivery_method(delivery_method: DeliveryMethodCreate, db: Session = Depends(get_db)):
+def create_delivery_method(delivery_method: DeliveryMethodCreate, db: Session = Depends(get_db)):
     """
     Create a new delivery method
     """
@@ -45,7 +45,7 @@ async def create_delivery_method(delivery_method: DeliveryMethodCreate, db: Sess
     return db_delivery_method
 
 @router.put("/api/delivery-methods/{delivery_method_id}", response_model=DeliveryMethodSchema, tags=["delivery_methods"])
-async def update_delivery_method(delivery_method_id: int, delivery_method: DeliveryMethodUpdate, db: Session = Depends(get_db)):
+def update_delivery_method(delivery_method_id: int, delivery_method: DeliveryMethodUpdate, db: Session = Depends(get_db)):
     """
     Update an existing delivery method
     """
@@ -69,7 +69,7 @@ async def update_delivery_method(delivery_method_id: int, delivery_method: Deliv
     return db_delivery_method
 
 @router.delete("/api/delivery-methods/{delivery_method_id}", tags=["delivery_methods"])
-async def delete_delivery_method(delivery_method_id: int, db: Session = Depends(get_db)):
+def delete_delivery_method(delivery_method_id: int, db: Session = Depends(get_db)):
     """
     Delete a delivery method
     """

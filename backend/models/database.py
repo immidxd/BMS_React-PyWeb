@@ -29,13 +29,29 @@ engine = create_engine(
     # за ~60с замість системних хвилин — pre_ping не висне на мертвому сокеті.
     connect_args=(
         {"keepalives": 1, "keepalives_idle": 30,
-         "keepalives_interval": 10, "keepalives_count": 3}
+         "keepalives_interval": 10, "keepalives_count": 3,
+         # ── Запобіжники проти «вічного зависання» ───────────────────────────
+         # lock_timeout: НІКОЛИ не стоїмо в черзі за чужим блокуванням довше
+         #   15с. Без нього один зовнішній клієнт із відкритою транзакцією
+         #   (завислий cloud-sync) + будь-який DDL ставили в чергу ВЕСЬ UI —
+         #   запити висіли хвилинами, аж до повної непрацездатності програми.
+         # idle_in_transaction_session_timeout: наші власні «забуті» транзакції
+         #   (фонові джоби, обірваний запит) самознімаються за 2 хв, а не
+         #   тримають блокування нескінченно.
+         # statement_timeout НЕ ставимо: важкий парсинг/бекфіли легально довгі.
+         "options": (
+             f"-c lock_timeout={os.getenv('DB_LOCK_TIMEOUT_MS', '15000')} "
+             f"-c idle_in_transaction_session_timeout="
+             f"{os.getenv('DB_IDLE_TX_TIMEOUT_MS', '120000')}"
+         )}
         if DATABASE_URL.startswith("postgresql") else {"check_same_thread": False}
     ),
     echo=False,  # Вимкнено для зменшення навантаження
-    pool_size=10,  # Основний пул з'єднань (було 5: фонові старт-джоби — парсинг,
-                   # Drive-прогрів, Telegram-синк — голодоморили UI-запити на старті)
-    max_overflow=20,  # Максимум додаткових з'єднань (було 10)
+    # Синхронні обробники FastAPI виконуються в threadpool (типово 40 потоків) +
+    # фонові джоби. Пул мусить це покривати, інакше запити чекають на pool_timeout
+    # і UI знову «висне». 20+30=50 з'єднань при max_connections=200 — з запасом.
+    pool_size=20,
+    max_overflow=30,
     pool_timeout=30,  # Таймаут очікування з'єднання
     pool_recycle=1800,  # Перестворювати з'єднання кожні 30 хв
     pool_pre_ping=True  # Перевіряти з'єднання перед використанням

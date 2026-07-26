@@ -107,7 +107,7 @@ WHERE tp.id = best.tp_id
 # ─────────────────────────────────────────────────────────────────────────────
 
 @router.get("/api/publications/overview")
-async def get_publications_overview(
+def get_publications_overview(
     page: int = Query(1, ge=1),
     per_page: int = Query(50, ge=1, le=200),
     filter_mode: Optional[str] = Query(None, description="all|published|problematic|unpublished|unlinked"),
@@ -313,7 +313,7 @@ async def get_publications_overview(
 
 
 @router.get("/api/publications/product/{product_id}")
-async def get_product_publications(
+def get_product_publications(
     product_id: int,
     db: Session = Depends(get_db),
 ):
@@ -359,7 +359,7 @@ async def get_product_publications(
 
 
 @router.get("/api/publications/product-detail/{product_id}")
-async def get_product_detail_for_publication(
+def get_product_detail_for_publication(
     product_id: int,
     db: Session = Depends(get_db),
 ):
@@ -480,7 +480,7 @@ async def get_product_detail_for_publication(
 
 
 @router.get("/api/publications/stats")
-async def get_publications_stats(db: Session = Depends(get_db)):
+def get_publications_stats(db: Session = Depends(get_db)):
     """Aggregated stats across all publications."""
     try:
         stats = db.execute(text("""
@@ -546,7 +546,7 @@ async def get_publications_stats(db: Session = Depends(get_db)):
 
 
 @router.get("/api/publications/threads")
-async def get_threads(db: Session = Depends(get_db)):
+def get_threads(db: Session = Depends(get_db)):
     """Get all detected forum threads with their mappings."""
     try:
         rows = db.execute(text("""
@@ -728,7 +728,7 @@ async def sync_all_telegram(db: Session = Depends(get_db)):
 
 
 @router.get("/api/publications/sold-action-plan/{product_id}")
-async def get_sold_action_plan(
+def get_sold_action_plan(
     product_id: int,
     db: Session = Depends(get_db),
 ):
@@ -757,7 +757,7 @@ async def get_sold_action_plan(
 
 
 @router.post("/api/publications/clear-manual-edit/{product_id}")
-async def clear_manual_edit(
+def clear_manual_edit(
     product_id: int,
     db: Session = Depends(get_db),
 ):
@@ -901,7 +901,7 @@ async def verify_archived(
 
 
 @router.post("/api/publications/relink")
-async def relink_publications(db: Session = Depends(get_db)):
+def relink_publications(db: Session = Depends(get_db)):
     """Re-link telegram_posts to products by matching product_number_raw → products.productnumber.
 
     Always picks the BEST candidate (priority: #Ф{n} > Ф{n} > #{n} > {n}) so that
@@ -967,13 +967,13 @@ def _olx():
 
 
 @router.get("/api/publications/olx/status")
-async def olx_status(db: Session = Depends(get_db)):
+def olx_status(db: Session = Depends(get_db)):
     """Статус OLX-інтеграції: налаштовано / авторизовано / лічильники."""
     return _olx().get_status(db)
 
 
 @router.get("/api/publications/olx/oauth/start")
-async def olx_oauth_start():
+def olx_oauth_start():
     """Повертає URL авторизації OLX — фронт відкриває його у браузері."""
     olx = _olx()
     if not olx.is_configured():
@@ -985,7 +985,7 @@ async def olx_oauth_start():
 
 
 @router.get("/api/publications/olx/oauth/callback")
-async def olx_oauth_callback(
+def olx_oauth_callback(
     code: Optional[str] = Query(None),
     error: Optional[str] = Query(None),
     db: Session = Depends(get_db),
@@ -1007,7 +1007,7 @@ async def olx_oauth_callback(
 
 
 @router.post("/api/publications/sync-olx")
-async def sync_olx(db: Session = Depends(get_db)):
+def sync_olx(db: Session = Depends(get_db)):
     """Синхронізувати оголошення OLX + relink до товарів."""
     olx = _olx()
     result = olx.sync_adverts(db)
@@ -1024,7 +1024,7 @@ async def sync_olx(db: Session = Depends(get_db)):
 
 
 @router.post("/api/publications/relink-olx")
-async def relink_olx(db: Session = Depends(get_db)):
+def relink_olx(db: Session = Depends(get_db)):
     """Перелінкувати OLX-оголошення до товарів за номером (без мережі)."""
     try:
         r = db.execute(text(_RELINK_OLX_SQL))
@@ -1038,7 +1038,7 @@ async def relink_olx(db: Session = Depends(get_db)):
 
 # ── OLX створення оголошень (write v2) ───────────────────────────────────────
 @router.get("/api/publications/olx/product-status/{product_id}")
-async def olx_product_status(product_id: int, db: Session = Depends(get_db)):
+def olx_product_status(product_id: int, db: Session = Depends(get_db)):
     r = _olx().olx_product_status(db, product_id)
     if not r.get("ok"):
         raise HTTPException(status_code=404, detail=r.get("error", "Товар не знайдено"))
@@ -1046,12 +1046,12 @@ async def olx_product_status(product_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/api/publications/olx/packets/{category_id}")
-async def olx_packets(category_id: int, db: Session = Depends(get_db)):
+def olx_packets(category_id: int, db: Session = Depends(get_db)):
     return _olx().get_packets(db, category_id)
 
 
 @router.post("/api/publications/olx/config")
-async def olx_config(body: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
+def olx_config(body: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
     return _olx().save_config(db, **{k: v for k, v in body.items() if v is not None})
 
 
@@ -1154,13 +1154,13 @@ def _prom():
 
 
 @router.get("/api/publications/prom/status")
-async def prom_status(db: Session = Depends(get_db)):
+def prom_status(db: Session = Depends(get_db)):
     """Статус Prom: налаштовано, термін токена (+ попередження), лічильники."""
     return _prom().get_status(db)
 
 
 @router.post("/api/publications/prom/save-token")
-async def prom_save_token(body: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
+def prom_save_token(body: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
     """Зберегти/оновити API-токен Prom (+ опційно дату закінчення)."""
     token = (body.get("token") or "").strip()
     if not token:
@@ -1170,7 +1170,7 @@ async def prom_save_token(body: Dict[str, Any] = Body(...), db: Session = Depend
 
 
 @router.post("/api/publications/sync-prom-products")
-async def sync_prom_products(db: Session = Depends(get_db)):
+def sync_prom_products(db: Session = Depends(get_db)):
     """Синхронізувати товари Prom (дзеркало + лінк за sku)."""
     r = _prom().sync_products(db)
     if not r.get("ok"):
@@ -1180,7 +1180,7 @@ async def sync_prom_products(db: Session = Depends(get_db)):
 
 
 @router.post("/api/publications/sync-prom-orders")
-async def sync_prom_orders(body: Dict[str, Any] = Body(default={}), db: Session = Depends(get_db)):
+def sync_prom_orders(body: Dict[str, Any] = Body(default={}), db: Session = Depends(get_db)):
     """Синхронізувати замовлення Prom (окреме дзеркало). date_from опційно."""
     r = _prom().sync_orders(db, date_from=body.get("date_from"))
     if not r.get("ok"):
@@ -1189,7 +1189,7 @@ async def sync_prom_orders(body: Dict[str, Any] = Body(default={}), db: Session 
 
 
 @router.post("/api/publications/prom/push-availability")
-async def prom_push_availability(body: Dict[str, Any] = Body(default={}), db: Session = Depends(get_db)):
+def prom_push_availability(body: Dict[str, Any] = Body(default={}), db: Session = Depends(get_db)):
     """Оновити наявність на Prom за станом BMS. dry_run=true — лише прев'ю змін."""
     r = _prom().push_availability(db, dry_run=bool(body.get("dry_run")))
     if not r.get("ok"):
@@ -1219,7 +1219,7 @@ def prom_export_product(body: Dict[str, Any] = Body(...), db: Session = Depends(
 
 
 @router.get("/api/publications/prom/import-limit")
-async def prom_import_limit(db: Session = Depends(get_db)):
+def prom_import_limit(db: Session = Depends(get_db)):
     """Стан денного ліміту імпортів Prom (запобіжник): скільки наших імпортів сьогодні,
     чи/коли спрацьовував ліміт + готовий limit_warning для попередження ДО публікації."""
     return _prom().import_limit_status(db)
@@ -1255,7 +1255,7 @@ def prom_export_products_batch(body: Dict[str, Any] = Body(...), db: Session = D
 
 
 @router.post("/api/publications/prom/delete-product")
-async def prom_delete_product(body: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
+def prom_delete_product(body: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
     """Прибрати товар з Prom (усі лістинги/розміри) — status=deleted + чистка дзеркала."""
     pid = body.get("product_id")
     if not pid:
@@ -1267,13 +1267,13 @@ async def prom_delete_product(body: Dict[str, Any] = Body(...), db: Session = De
 
 
 @router.get("/api/publications/prom/product-status/{product_id}")
-async def prom_product_status(product_id: int, db: Session = Depends(get_db)):
+def prom_product_status(product_id: int, db: Session = Depends(get_db)):
     """Статус товару на Prom для чіпа «Prom» (on_prom + status: draft/on_display/pending)."""
     return _prom().prom_product_status(db, int(product_id))
 
 
 @router.get("/api/publications/prom/orders")
-async def prom_orders_list(limit: int = Query(100, ge=1, le=500), db: Session = Depends(get_db)):
+def prom_orders_list(limit: int = Query(100, ge=1, le=500), db: Session = Depends(get_db)):
     """Список дзеркала замовлень Prom (для панелі огляду)."""
     rows = db.execute(text("""
         SELECT prom_id, status, source, date_created, client_name, phone,
@@ -1303,7 +1303,7 @@ def _reconcile_shafa_after_prom(db: Session) -> dict:
 
 
 @router.get("/api/publications/shafa/status")
-async def shafa_status(db: Session = Depends(get_db)):
+def shafa_status(db: Session = Depends(get_db)):
     return _shafa().get_status(db)
 
 
@@ -1317,7 +1317,7 @@ def shafa_reconcile(db: Session = Depends(get_db)):
 
 
 @router.post("/api/publications/shafa/config")
-async def shafa_config(body: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
+def shafa_config(body: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
     enabled = body.get("bridge_enabled") if "bridge_enabled" in body else None
     r = _shafa().save_bridge_config(db, enabled=enabled)
     if not r.get("ok"):
@@ -1326,7 +1326,7 @@ async def shafa_config(body: Dict[str, Any] = Body(...), db: Session = Depends(g
 
 
 @router.get("/api/publications/shafa/product-status/{product_id}")
-async def shafa_product_status(product_id: int, db: Session = Depends(get_db)):
+def shafa_product_status(product_id: int, db: Session = Depends(get_db)):
     r = _shafa().product_status(db, product_id)
     if not r.get("ok"):
         raise HTTPException(status_code=404, detail=r.get("error", "Товар не знайдено"))
@@ -1407,7 +1407,7 @@ def shafa_finalize_products_batch(body: Dict[str, Any] = Body(...), db: Session 
 
 
 @router.post("/api/publications/shafa/confirm-product")
-async def shafa_confirm_product(body: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
+def shafa_confirm_product(body: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
     pid = body.get("product_id")
     if not pid:
         raise HTTPException(status_code=400, detail="Немає product_id")
@@ -1418,7 +1418,7 @@ async def shafa_confirm_product(body: Dict[str, Any] = Body(...), db: Session = 
 
 
 @router.post("/api/publications/shafa/link-existing")
-async def shafa_link_existing(body: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
+def shafa_link_existing(body: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
     pid = body.get("product_id")
     if not pid:
         raise HTTPException(status_code=400, detail="Немає product_id")
@@ -1429,7 +1429,7 @@ async def shafa_link_existing(body: Dict[str, Any] = Body(...), db: Session = De
 
 
 @router.post("/api/publications/shafa/untrack-product")
-async def shafa_untrack_product(body: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
+def shafa_untrack_product(body: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
     pid = body.get("product_id")
     if not pid:
         raise HTTPException(status_code=400, detail="Немає product_id")

@@ -3,6 +3,7 @@ import {
     Product,
     ProductFilters
 } from '../types/product';
+import { filenameFromDisposition } from './imageTransfer';
 
 // Базовий URL для API товарів
 const API_URL = '/api/products';
@@ -104,7 +105,12 @@ export const productService = {
      * Отримати фото товару (з локальної папки/cloud — за productnumber).
      * Повертає список з url для відображення в галереї картки.
      */
-    async getProductImages(id: number): Promise<{ productnumber: string; count: number; images: { filename: string; url: string; index: number }[] }> {
+    async getProductImages(id: number): Promise<{
+        productnumber: string;
+        count: number;
+        // kind: 'official' — студійні (пріоритет для прев'ю), 'real' — мої фото, 'defect' — дефекти
+        images: { filename: string; url: string; index: number; kind?: 'official' | 'real' | 'defect'; is_defect?: boolean }[];
+    }> {
         try {
             const response = await axios.get(`${API_URL}/${id}/images`);
             return response.data;
@@ -124,6 +130,20 @@ export const productService = {
             headers: { 'Content-Type': 'multipart/form-data' },
         });
         return res.data;
+    },
+
+    /** Пакетне викачування: усі фото товару одним .zip.
+     *  Повертає blob + ім'я архіву з Content-Disposition. */
+    async downloadProductPhotosZip(
+        id: number,
+        kind: 'all' | 'official' | 'real' | 'defect' = 'all',
+    ): Promise<{ blob: Blob; filename: string }> {
+        const res = await axios.get(`${API_URL}/${id}/photos/download`, {
+            params: { kind },
+            responseType: 'blob',
+        });
+        const name = filenameFromDisposition(res.headers['content-disposition'] as string | undefined);
+        return { blob: res.data as Blob, filename: name || `product-${id}-photos.zip` };
     },
 
     /** Перемістити всі фото між галереями (official/real/defect). */
@@ -239,13 +259,22 @@ export const productService = {
      * ОКРЕМІ endpoint-и (catalog_listings) — не зачіпають збереження картки.
      * Ключ = productnumber → діє на всю картку/ростовку.
      */
-    async getCatalogStatus(id: number): Promise<{ productnumber: string; is_published: boolean; is_featured: boolean }> {
+    async getCatalogStatus(id: number): Promise<{ productnumber: string; is_published: boolean; is_featured: boolean; sale_price: number | null; is_on_sale: boolean }> {
         const response = await axios.get(`${API_URL}/${id}/catalog`);
         return response.data;
     },
 
     async setCatalogStatus(id: number, payload: { is_published: boolean; is_featured?: boolean; clear_lost?: boolean }): Promise<{ success: boolean; productnumber: string; is_published: boolean; is_featured: boolean }> {
         const response = await axios.patch(`${API_URL}/${id}/catalog`, payload);
+        return response.data;
+    },
+
+    /**
+     * Знижка на картку у публічному каталозі (акційна ціна ЛИШЕ для вітрини —
+     * products.price НЕ чіпається). Ключ = productnumber → діє на всю ростовку.
+     */
+    async setCatalogDiscount(id: number, payload: { sale_price: number | null; is_on_sale: boolean }): Promise<{ success: boolean; productnumber: string; sale_price: number | null; is_on_sale: boolean }> {
+        const response = await axios.patch(`${API_URL}/${id}/catalog/discount`, payload);
         return response.data;
     },
     

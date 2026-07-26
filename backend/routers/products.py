@@ -1,9 +1,11 @@
 from typing import List, Optional, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, Query, Body, Path, status, UploadFile, File
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 import logging
+import os
+import re
 import threading
 from datetime import datetime
 
@@ -28,7 +30,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 @router.get("/api/products", response_model=schemas.ProductListResponse)
-async def get_products(
+def get_products(
     page: int = Query(1, ge=1, description="Current page (starts from 1)"),
     per_page: int = Query(20, ge=1, le=200, description="Number of items per page"),
     skip: Optional[int] = Query(None, ge=0, description="Alternative to page/per_page"),
@@ -52,6 +54,7 @@ async def get_products(
     statusids: Optional[List[int]] = Query(None),
     conditionids: Optional[List[int]] = Query(None),
     published_on: Optional[List[str]] = Query(None, description="Де опубліковано: telegram|olx|prom|shafa|catalog"),
+    published_on_not: Optional[List[str]] = Query(None, description="Виключити опубліковані на: telegram|olx|prom|shafa|catalog (AND, незалежно від published_on)"),
     # Нові фільтри
     styleid: Optional[int] = Query(None),
     styleids: Optional[List[int]] = Query(None),
@@ -113,6 +116,7 @@ async def get_products(
             statusids=statusids,
             conditionids=conditionids,
             published_on=published_on,
+            published_on_not=published_on_not,
             styleid=styleid,
             styleids=styleids,
             current_conditionid=current_conditionid,
@@ -162,7 +166,7 @@ async def get_products(
         raise HTTPException(status_code=500, detail=f"Помилка при отриманні товарів: {str(e)}")
 
 @router.get("/api/products/filters", response_model=schemas.FilterOptions)
-async def get_product_filters(db: Session = Depends(get_db)):
+def get_product_filters(db: Session = Depends(get_db)):
     """
     Повертає опції фільтрів товарів з БД.
     """
@@ -175,7 +179,7 @@ async def get_product_filters(db: Session = Depends(get_db)):
 
 
 @router.get("/api/products/available-facets")
-async def get_available_facets(
+def get_available_facets(
     search: Optional[str] = Query(None),
     typeid: Optional[int] = Query(None),
     subtypeid: Optional[int] = Query(None),
@@ -192,6 +196,8 @@ async def get_available_facets(
     color_group_ids: Optional[List[int]] = Query(None),
     statusids: Optional[List[int]] = Query(None),
     conditionids: Optional[List[int]] = Query(None),
+    published_on: Optional[List[str]] = Query(None),
+    published_on_not: Optional[List[str]] = Query(None),
     styleid: Optional[int] = Query(None),
     styleids: Optional[List[int]] = Query(None),
     current_conditionid: Optional[int] = Query(None),
@@ -225,7 +231,8 @@ async def get_available_facets(
             colorid=colorid, statusid=statusid, conditionid=conditionid,
             typeids=typeids, subtypeids=subtypeids, brandids=brandids, genderids=genderids,
             colorids=colorids, color_group_ids=color_group_ids, statusids=statusids,
-            conditionids=conditionids, styleid=styleid, styleids=styleids,
+            conditionids=conditionids, published_on=published_on, published_on_not=published_on_not,
+            styleid=styleid, styleids=styleids,
             current_conditionid=current_conditionid, current_conditionids=current_conditionids,
             seasons=seasons, widths=widths, min_price=min_price, max_price=max_price,
             min_measurementscm=min_measurementscm, max_measurementscm=max_measurementscm,
@@ -242,7 +249,7 @@ async def get_available_facets(
         raise HTTPException(status_code=500, detail=f"Помилка при отриманні фасетів: {str(e)}")
 
 @router.get("/api/products/next-number")
-async def get_next_number(
+def get_next_number(
     prefix: str = Query("Ф", description="Літерний префікс серії (Ф/Р/Т/А/…); '' = цифрова серія"),
     db: Session = Depends(get_db),
 ):
@@ -259,14 +266,11 @@ async def get_next_number(
         raise HTTPException(status_code=500, detail=f"Помилка генерації номера: {str(e)}")
 
 
-@router.get("/api/products/{product_id}/images")
-async def get_product_images(
-    product_id: int = Path(..., ge=1, description="ID товару"),
-    db: Session = Depends(get_db)
-):
-    """Повертає список фото товару (за productnumber).
-    Сортовано: фото з меншим суфіксним номером — головне (першим).
-    Зараз: локальна папка. Майбутнє: cloud-провайдер з тією ж сигнатурою.
+def _product_gallery(product_id: int, db: Session):
+    """(productnumber, borrowed_from, images) — єдине джерело галереї товару.
+
+    Спільне для лістингу фото і для пакетного експорту, щоб zip містив рівно те,
+    що видно в картці (включно з позиченими студійними фото донора).
     """
     try:
         from services.product_images import list_images
@@ -298,6 +302,20 @@ async def get_product_images(
     else:
         images = own_images
 
+    return productnumber, borrowed_from, images
+
+
+@router.get("/api/products/{product_id}/images")
+def get_product_images(
+    product_id: int = Path(..., ge=1, description="ID товару"),
+    db: Session = Depends(get_db)
+):
+    """Повертає список фото товару (за productnumber).
+    Сортовано: фото з меншим суфіксним номером — головне (першим).
+    Зараз: локальна папка. Майбутнє: cloud-провайдер з тією ж сигнатурою.
+    """
+    productnumber, borrowed_from, images = _product_gallery(product_id, db)
+
     return {
         "productnumber": productnumber,
         "official_photos_from": borrowed_from or None,
@@ -316,6 +334,72 @@ async def get_product_images(
             for img in images
         ],
     }
+
+
+@router.get("/api/products/{product_id}/photos/download")
+def download_product_photos(
+    product_id: int = Path(..., ge=1, description="ID товару"),
+    kind: str = Query("all", regex="^(all|official|real|defect)$",
+                      description="що класти в архів: all (за замовчуванням) або один набір"),
+    db: Session = Depends(get_db),
+):
+    """Пакетне викачування: усі фото товару одним .zip (у теку завантажень браузера).
+
+    Архів містить рівно те, що видно в картці — включно з позиченими студійними
+    фото донора. Файли зберігають оригінальні імена (`<pnum>_01.webp` …).
+    """
+    import io
+    import zipfile
+    from urllib.parse import quote as _urlquote
+
+    try:
+        from services.product_images import read_image_bytes
+    except ImportError:
+        from backend.services.product_images import read_image_bytes
+
+    productnumber, _borrowed, images = _product_gallery(product_id, db)
+    if kind != "all":
+        images = [img for img in images if img.kind == kind]
+    if not images:
+        raise HTTPException(status_code=404, detail="У товару немає фото для завантаження")
+
+    buf = io.BytesIO()
+    used: set = set()
+    packed = 0
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=1) as zf:
+        for img in images:
+            data = read_image_bytes(img)
+            if data is None:
+                logger.warning(f"Skipping unreadable photo in zip: {img.filename}")
+                continue
+            name = img.filename
+            # Колізія імен (напр. власне фото і фото донора) — додаємо суфікс.
+            if name.lower() in used:
+                stem, ext = os.path.splitext(name)
+                name = f"{stem}_{img.index}{ext}"
+            used.add(name.lower())
+            zf.writestr(name, data)
+            packed += 1
+
+    if packed == 0:
+        raise HTTPException(status_code=404, detail="Фото недоступні (файли не читаються)")
+
+    buf.seek(0)
+    stem = (productnumber or f"product-{product_id}").lstrip("#").strip() or f"product-{product_id}"
+    zip_name = f"{stem}_фото.zip"
+    # ASCII-фолбек + RFC 5987 для кирилиці в імені файлу.
+    ascii_name = re.sub(r"[^A-Za-z0-9._-]", "_", zip_name) or "photos.zip"
+    return StreamingResponse(
+        buf,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": (
+                f"attachment; filename=\"{ascii_name}\"; "
+                f"filename*=UTF-8''{_urlquote(zip_name)}"
+            ),
+            "X-Photo-Count": str(packed),
+        },
+    )
 
 
 def _pnum_and_category(product_id: int, db: Session):
@@ -396,7 +480,7 @@ async def add_product_photos(
 
 
 @router.post("/api/products/{product_id}/photos/move-kind")
-async def move_product_photos_kind(
+def move_product_photos_kind(
     product_id: int = Path(..., ge=1),
     from_kind: str = Query(..., regex="^(official|real|defect)$"),
     to_kind: str = Query(..., regex="^(official|real|defect)$"),
@@ -418,7 +502,7 @@ async def move_product_photos_kind(
 
 
 @router.post("/api/products/{product_id}/photos/move-one")
-async def move_one_product_photo(
+def move_one_product_photo(
     product_id: int = Path(..., ge=1),
     filename: str = Query(..., description="ім'я файлу, який переносимо"),
     to_kind: str = Query(..., regex="^(official|real|defect)$"),
@@ -468,7 +552,7 @@ async def replace_product_photo(
 
 
 @router.put("/api/products/{product_id}/photos/reorder")
-async def reorder_product_photos(
+def reorder_product_photos(
     product_id: int = Path(..., ge=1),
     order: List[str] = Body(..., embed=True, description="імена у бажаному порядку"),
     kind: str = Query("official", regex="^(official|real|defect)$"),
@@ -488,7 +572,7 @@ async def reorder_product_photos(
 
 
 @router.delete("/api/products/{product_id}/photos/{filename}")
-async def delete_product_photo(
+def delete_product_photo(
     product_id: int = Path(..., ge=1),
     filename: str = Path(...),
     db: Session = Depends(get_db),
@@ -508,7 +592,7 @@ async def delete_product_photo(
 
 
 @router.get("/api/products/model-profile")
-async def get_model_profile(
+def get_model_profile(
     brand_name: str = Query(..., min_length=1),
     model: str = Query(..., min_length=2),
     exclude_id: Optional[int] = Query(None),
@@ -591,7 +675,7 @@ async def get_model_profile(
 
 
 @router.get("/api/products/{product_id}/journal-url")
-async def get_product_journal_url(
+def get_product_journal_url(
     product_id: int = Path(..., ge=1, description="ID товару"),
     db: Session = Depends(get_db)
 ):
@@ -621,7 +705,7 @@ async def get_product_journal_url(
 
 
 @router.get("/api/products/{product_id}")
-async def get_product(
+def get_product(
     product_id: int = Path(..., ge=1, description="ID товару"),
     db: Session = Depends(get_db)
 ):
@@ -650,7 +734,7 @@ async def get_product(
 # /visibility (is_lost) — це інший, публічний канал.
 # ─────────────────────────────────────────────────────────────────────────────
 @router.get("/api/products/{product_id}/catalog", response_model=Dict[str, Any])
-async def get_product_catalog_status(
+def get_product_catalog_status(
     product_id: int = Path(..., ge=1, description="ID товару"),
     db: Session = Depends(get_db),
 ):
@@ -660,19 +744,123 @@ async def get_product_catalog_status(
     ).scalar()
     if pnum is None:
         raise HTTPException(status_code=404, detail=f"Товар з ID {product_id} не знайдено")
-    row = db.execute(
-        text("SELECT is_published, is_featured FROM catalog_listings WHERE productnumber = :pn"),
-        {"pn": pnum},
-    ).mappings().first()
+    _ensure_catalog_discount_columns(db)
+    try:
+        row = db.execute(
+            text("SELECT is_published, is_featured, sale_price, is_on_sale "
+                 "FROM catalog_listings WHERE productnumber = :pn"),
+            {"pn": pnum},
+        ).mappings().first()
+    except Exception:
+        # Колонок знижки ще нема (DDL не пройшов) — показуємо базовий стан,
+        # а не 500: картка товару має відкриватись у будь-якому разі.
+        db.rollback()
+        row = db.execute(
+            text("SELECT is_published, is_featured, NULL AS sale_price, "
+                 "FALSE AS is_on_sale FROM catalog_listings WHERE productnumber = :pn"),
+            {"pn": pnum},
+        ).mappings().first()
     return {
         "productnumber": pnum,
         "is_published": bool(row["is_published"]) if row else False,
         "is_featured": bool(row["is_featured"]) if row else False,
+        "sale_price": float(row["sale_price"]) if row and row["sale_price"] is not None else None,
+        "is_on_sale": bool(row["is_on_sale"]) if row else False,
     }
 
 
+_CATALOG_DISCOUNT_COLUMNS_READY = False
+
+
+def _ensure_catalog_discount_columns(db: Session) -> None:
+    """Адитивні колонки знижки в catalog_listings (акційна ціна ЛИШЕ для вітрини —
+    products.price НЕ чіпаємо). Самостворюються, щоб BMS міг писати їх незалежно
+    від того, чи запускався локальний бекенд каталогу.
+
+    ⚠️ DDL, а не звичайний запит. ALTER TABLE бере ACCESS EXCLUSIVE lock, і поки він
+    чекає у черзі, за ним стають УСІ наступні читачі catalog_listings (черга блокувань
+    у Postgres — FIFO). Один зовнішній клієнт, що тримає відкриту транзакцію (напр.
+    завислий cloud-sync), перетворював це на повне зависання застосунку. Тому:
+      • виконуємо максимум ОДИН раз за процес (не на кожен відкритий товар),
+      • під lock_timeout — краще тихо не виконатись, ніж підвісити UI,
+      • перед DDL перевіряємо каталог: якщо колонки вже є (звичайний випадок) —
+        жодного ALTER і жодного блокування взагалі."""
+    global _CATALOG_DISCOUNT_COLUMNS_READY
+    if _CATALOG_DISCOUNT_COLUMNS_READY:
+        return
+    try:
+        present = {r[0] for r in db.execute(text(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = 'catalog_listings'"
+        ))}
+        missing = {"sale_price", "is_on_sale"} - present
+        if not missing:
+            _CATALOG_DISCOUNT_COLUMNS_READY = True
+            return
+        # Ніколи не чекаємо на блокування довше 3с — інакше підвисає весь UI.
+        db.execute(text("SET LOCAL lock_timeout = '3s'"))
+        if "sale_price" in missing:
+            db.execute(text("ALTER TABLE catalog_listings ADD COLUMN IF NOT EXISTS sale_price numeric"))
+        if "is_on_sale" in missing:
+            db.execute(text("ALTER TABLE catalog_listings ADD COLUMN IF NOT EXISTS "
+                            "is_on_sale boolean NOT NULL DEFAULT FALSE"))
+        db.commit()
+        _CATALOG_DISCOUNT_COLUMNS_READY = True
+    except Exception as e:
+        # Не змогли зараз (зайнято блокування) — не валимо запит: читання нижче
+        # толерантне до відсутніх колонок, а наступний старт спробує ще раз.
+        db.rollback()
+        logger.warning(f"catalog_listings discount columns not ensured: {e}")
+
+
+@router.patch("/api/products/{product_id}/catalog/discount", response_model=Dict[str, Any])
+def update_product_catalog_discount(
+    product_id: int = Path(..., ge=1, description="ID товару"),
+    sale_price: Optional[float] = Body(None, embed=True),   # акційна ціна (None → прибрати)
+    is_on_sale: bool = Body(..., embed=True),
+    db: Session = Depends(get_db),
+):
+    """Знижка на картку у публічному каталозі (акційна ціна ЛИШЕ для вітрини —
+    products.price НЕ змінюємо, тож Prom/OLX/облік лишаються з реальною ціною).
+    Upsert catalog_listings за productnumber — діє на всю картку (ростовку)."""
+    try:
+        pnum = db.execute(
+            text("SELECT productnumber FROM products WHERE id = :id"), {"id": product_id}
+        ).scalar()
+        if pnum is None:
+            raise HTTPException(status_code=404, detail=f"Товар з ID {product_id} не знайдено")
+        _ensure_catalog_discount_columns(db)
+        price = None if (sale_price is None or sale_price <= 0) else float(sale_price)
+        on = bool(is_on_sale and price is not None)   # без валідної ціни знижку не вмикаємо
+        db.execute(text("""
+            INSERT INTO catalog_listings (productnumber, is_published, is_featured, sale_price, is_on_sale, updated_at)
+            VALUES (:pn, FALSE, FALSE, :sp, :on, now())
+            ON CONFLICT (productnumber) DO UPDATE SET
+                sale_price = EXCLUDED.sale_price,
+                is_on_sale = EXCLUDED.is_on_sale,
+                updated_at = now()
+        """), {"pn": pnum, "sp": price, "on": on})
+        db.commit()
+        sync_queued = catalog_sync_service.trigger_catalog_cloud_sync(
+            f"catalog discount {pnum}: on_sale={on}, sale_price={price}"
+        )
+        return {
+            "success": True,
+            "productnumber": pnum,
+            "sale_price": price,
+            "is_on_sale": on,
+            "catalog_sync_queued": sync_queued,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error updating catalog discount {product_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Помилка при оновленні знижки: {str(e)}")
+
+
 @router.patch("/api/products/{product_id}/catalog", response_model=Dict[str, Any])
-async def update_product_catalog_status(
+def update_product_catalog_status(
     product_id: int = Path(..., ge=1, description="ID товару"),
     is_published: bool = Body(..., embed=True),
     is_featured: bool = Body(False, embed=True),
@@ -723,7 +911,7 @@ async def update_product_catalog_status(
         raise HTTPException(status_code=500, detail=f"Помилка при оновленні публікації: {str(e)}")
 
 @router.post("/api/products", response_model=schemas.Product, status_code=status.HTTP_201_CREATED)
-async def create_product(
+def create_product(
     product_data: schemas.ProductCreate,
     db: Session = Depends(get_db)
 ):
@@ -755,7 +943,7 @@ async def create_product(
         raise HTTPException(status_code=500, detail=f"Помилка при створенні товару: {str(e)}")
 
 @router.put("/api/products/{product_id}", response_model=schemas.Product)
-async def update_product(
+def update_product(
     product_id: int = Path(..., ge=1, description="ID товару"),
     product_data: schemas.ProductUpdate = Body(...),
     db: Session = Depends(get_db)
@@ -843,7 +1031,7 @@ async def update_product(
         raise HTTPException(status_code=500, detail=f"Помилка при оновленні товару: {str(e)}")
 
 @router.delete("/api/products/{product_id}", response_model=Dict[str, Any])
-async def delete_product(
+def delete_product(
     product_id: int = Path(..., ge=1, description="ID товару"),
     db: Session = Depends(get_db)
 ):
@@ -871,7 +1059,7 @@ async def delete_product(
         raise HTTPException(status_code=500, detail=f"Помилка при видаленні товару: {str(e)}")
 
 @router.patch("/api/products/{product_id}/visibility", response_model=Dict[str, Any])
-async def update_product_visibility(
+def update_product_visibility(
     product_id: int = Path(..., ge=1, description="ID товару"),
     is_visible: bool = Body(..., embed=True),
     db: Session = Depends(get_db)
@@ -904,7 +1092,7 @@ async def update_product_visibility(
         raise HTTPException(status_code=500, detail=f"Помилка при оновленні видимості товару: {str(e)}")
 
 @router.patch("/api/products/{product_id}/unlock", response_model=Dict[str, Any])
-async def unlock_product_fields(
+def unlock_product_fields(
     product_id: int = Path(..., ge=1, description="ID товару"),
     fields: Optional[List[str]] = Body(None, embed=True,
         description="Поля для розблокування; порожньо/null = розблокувати всі"),
@@ -947,7 +1135,7 @@ async def unlock_product_fields(
 
 
 @router.post("/api/products/bulk-update", response_model=Dict[str, Any])
-async def bulk_update_products(
+def bulk_update_products(
     product_ids: List[int] = Body(..., min_items=1),
     update_data: Dict[str, Any] = Body(...),
     db: Session = Depends(get_db)

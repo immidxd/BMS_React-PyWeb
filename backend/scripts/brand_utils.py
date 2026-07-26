@@ -13,10 +13,24 @@ from psycopg2.extensions import connection as _PGConn
 from psycopg2.extensions import cursor as _PGCursor
 
 
+# Кирилиця, візуально НЕВІДРІЗНЯЛЬНА від латиниці. При ручному записі назви
+# бренду в журнал легко лишити кириличну розкладку на першій літері: 'Кappa'
+# (кирилична К), 'Сrocs', 'Тamaris', 'ЕССО'. Око різниці не бачить, а для БД це
+# інший бренд — звідси дублі в brands і фантомні товари '-2' під тим самим лотом.
+# Згортаємо ЛИШЕ справжні двійники; решта кирилиці лишається як є, тож питомо
+# кириличні назви не страждають.
+_HOMOGLYPH_FOLD = str.maketrans({
+    "а": "a", "в": "b", "е": "e", "ё": "e", "і": "i", "ј": "j", "к": "k",
+    "м": "m", "н": "h", "о": "o", "р": "p", "с": "c", "т": "t", "у": "y",
+    "х": "x", "ѕ": "s", "ԁ": "d", "ԝ": "w",
+})
+
+
 def normalize_brand(raw_name: Optional[str]) -> Optional[str]:
     """Повертає нормалізовану назву бренду:
     - trim
     - до нижнього регістру
+    - звести кириличні візуальні двійники до латиниці ('Кappa' → 'kappa')
     - видалити діакритики (залишити базові символи)
     - замінити будь-які послідовності пробілів/розділових на один пробіл
     - прибрати крапки, коми, дефіси, підкреслення, лапки, слеші, крапки з комою
@@ -24,7 +38,7 @@ def normalize_brand(raw_name: Optional[str]) -> Optional[str]:
     if not raw_name:
         return None
 
-    name = str(raw_name).strip().lower()
+    name = str(raw_name).strip().lower().translate(_HOMOGLYPH_FOLD)
     if not name:
         return None
 

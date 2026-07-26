@@ -16,9 +16,23 @@
 export type ProductCategory = 'shoe' | 'bag' | 'suitcase' | 'clothing' | 'accessory';
 export type ClothingSubcat = 'bottom' | 'dress' | 'top';
 
+// Латинські гомогліфи → кирилиця. У журналі/додатку типи інколи вводять зі
+// змішаною розкладкою: 'Cумка' з ЛАТИНСЬКОЮ 'C' (U+0043) виглядає ідентично до
+// кириличної 'Сумка', але регекс /сумк/ (кирилиця) її не ловив → сумку
+// класифікувало як взуття (показувало EU/СМ замість Габаритів). Нормалізуємо
+// перед матчингом, тож класифікація не залежить від розкладки. Це також
+// причина типа-двійника 'Cумка' в довіднику — його чистимо в даних окремо.
+const _HOMOGLYPH: Record<string, string> = {
+  a: 'а', c: 'с', e: 'е', i: 'і', k: 'к', m: 'м', o: 'о', p: 'р',
+  t: 'т', x: 'х', y: 'у', b: 'ь', h: 'н',
+};
+function _deHomoglyph(s: string): string {
+  return s.replace(/[aceikmoptxybh]/g, (ch) => _HOMOGLYPH[ch] || ch);
+}
+
 // ⚠️ Тримати РЕГЕКСИ синхронними з QuickAddProductForm.categoryOf (дубльована логіка).
 export function categoryOf(typeName?: string | null): ProductCategory {
-  const s = (typeName || '').toLowerCase();
+  const s = _deHomoglyph((typeName || '').toLowerCase());
   if (/валіз|чемодан/.test(s)) return 'suitcase';
   if (/сумк|рюкзак|клатч|барсетк|борсетк|гаман|косметичк|шопер|портфел|саквояж/.test(s)) return 'bag';
   if (/куртк|штан|джинс|футболк|сорочк|світшот|худі|плат|сукн|спідниц|шорт|пальт|кофт|светр|комбінезон|костюм|жилет|толстовк|лонгслів|майк|бомбер|вітровк|пуховик|парк|жакет|кардиган|поло|туніка|блуз|рейтуз|лосин|легінс|бермуд|сарафан/.test(s)) return 'clothing';
@@ -28,7 +42,7 @@ export function categoryOf(typeName?: string | null): ProductCategory {
 }
 
 export function clothingSubcat(typeName?: string | null): ClothingSubcat {
-  const s = (typeName || '').toLowerCase();
+  const s = _deHomoglyph((typeName || '').toLowerCase());
   if (/штан|джинс|шорт|спідниц|лосин|рейтуз|легінс|бермуд/.test(s)) return 'bottom';
   if (/плат|сукн|комбінезон|сарафан|костюм/.test(s)) return 'dress';
   return 'top';
@@ -64,11 +78,10 @@ export function hiddenFieldsForType(typeName?: string | null): Set<string> {
     hidden.add('measurementscm');
     hidden.add('geometric_shape');
   } else if (cat === 'accessory') {
-    // аксесуари (ремінь/шапка/шарф…): без EU/СМ, габаритів і геом. форми
-    // (розмір — буквений S/M/L або ширина)
+    // аксесуари (ремінь/шапка/шарф…): без взуттєвої EU/СМ-сітки.
+    // «Габарити» ЛИШАЄМО: ремінь/шарф/пасок мають заміри (довжина×ширина).
     hidden.add('sizeeu');
     hidden.add('measurementscm');
-    hidden.add('dimensions');
     hidden.add('geometric_shape');
   } else {
     // одяг: НЕ показуємо EU/СМ/Габарити/Геом. форма

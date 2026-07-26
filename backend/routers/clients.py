@@ -74,7 +74,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 @router.get("/api/clients", response_model=ClientList, tags=["clients"])
-async def get_clients(
+def get_clients(
     page: int = Query(1, ge=1),
     per_page: int = Query(20, ge=1, le=100),
     search: Optional[str] = None,
@@ -274,7 +274,7 @@ async def get_clients(
     }
 
 @router.get("/api/clients/{client_id}", tags=["clients"])
-async def get_client(client_id: int, db: Session = Depends(get_db)):
+def get_client(client_id: int, db: Session = Depends(get_db)):
     """
     Get client by ID with full statistics for the client card.
     Includes order breakdown by status, purchased models count, and recent orders.
@@ -643,7 +643,7 @@ def _ensure_single_primary(db: Session, client_id: int, except_id: Optional[int]
 
 
 @router.get("/api/clients/{client_id}/addresses", tags=["clients"])
-async def list_client_addresses(client_id: int, db: Session = Depends(get_db)):
+def list_client_addresses(client_id: int, db: Session = Depends(get_db)):
     if not db.query(Client).filter(Client.id == client_id).first():
         raise HTTPException(404, "Client not found")
     addrs = db.query(ClientAddress).filter(
@@ -658,7 +658,7 @@ async def list_client_addresses(client_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/api/clients/{client_id}/addresses", tags=["clients"])
-async def create_client_address(client_id: int, payload: ClientAddressCreate, db: Session = Depends(get_db)):
+def create_client_address(client_id: int, payload: ClientAddressCreate, db: Session = Depends(get_db)):
     if not db.query(Client).filter(Client.id == client_id).first():
         raise HTTPException(404, "Client not found")
     data = payload.dict()
@@ -696,7 +696,7 @@ async def create_client_address(client_id: int, payload: ClientAddressCreate, db
 
 
 @router.put("/api/clients/{client_id}/addresses/{address_id}", tags=["clients"])
-async def update_client_address(client_id: int, address_id: int, payload: ClientAddressUpdate, db: Session = Depends(get_db)):
+def update_client_address(client_id: int, address_id: int, payload: ClientAddressUpdate, db: Session = Depends(get_db)):
     addr = db.query(ClientAddress).filter(
         ClientAddress.id == address_id,
         ClientAddress.client_id == client_id,
@@ -724,7 +724,7 @@ async def update_client_address(client_id: int, address_id: int, payload: Client
 
 
 @router.delete("/api/clients/{client_id}/addresses/{address_id}", tags=["clients"])
-async def delete_client_address(client_id: int, address_id: int, db: Session = Depends(get_db)):
+def delete_client_address(client_id: int, address_id: int, db: Session = Depends(get_db)):
     addr = db.query(ClientAddress).filter(
         ClientAddress.id == address_id,
         ClientAddress.client_id == client_id,
@@ -737,7 +737,7 @@ async def delete_client_address(client_id: int, address_id: int, db: Session = D
 
 
 @router.post("/api/clients/{client_id}/addresses/{address_id}/set-primary", tags=["clients"])
-async def set_primary_address(client_id: int, address_id: int, db: Session = Depends(get_db)):
+def set_primary_address(client_id: int, address_id: int, db: Session = Depends(get_db)):
     addr = db.query(ClientAddress).filter(
         ClientAddress.id == address_id,
         ClientAddress.client_id == client_id,
@@ -753,7 +753,7 @@ async def set_primary_address(client_id: int, address_id: int, db: Session = Dep
 
 
 @router.post("/api/clients/{client_id}/addresses/import-from-orders", tags=["clients"])
-async def import_addresses_from_orders(client_id: int, db: Session = Depends(get_db)):
+def import_addresses_from_orders(client_id: int, db: Session = Depends(get_db)):
     """Підтягує всі адреси клієнта з історії його замовлень.
     Дедуплікує по fingerprint. Існуючі адреси не чіпає (тільки збільшує usage_count).
     """
@@ -924,7 +924,7 @@ def _upsert_relation_pair(db: Session, a_id: int, b_id: int, order_id: Optional[
 
 
 @router.get("/api/clients/{client_id}/relations", tags=["clients"])
-async def list_client_relations(client_id: int, db: Session = Depends(get_db)):
+def list_client_relations(client_id: int, db: Session = Depends(get_db)):
     """Список звʼязків клієнта з агрегацією joint_orders + last_order."""
     rows = db.execute(text("""
         SELECT cr.id, cr.client_id, cr.related_id, cr.relation_type, cr.label,
@@ -966,7 +966,7 @@ async def list_client_relations(client_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/api/clients/{client_id}/relations", tags=["clients"])
-async def create_client_relation(client_id: int, payload: ClientRelationCreate, db: Session = Depends(get_db)):
+def create_client_relation(client_id: int, payload: ClientRelationCreate, db: Session = Depends(get_db)):
     if client_id == payload.related_id:
         raise HTTPException(status_code=400, detail="Не можна повʼязати клієнта з самим собою")
     if not db.query(Client).filter(Client.id == client_id).first():
@@ -997,7 +997,7 @@ async def create_client_relation(client_id: int, payload: ClientRelationCreate, 
 
 
 @router.put("/api/clients/{client_id}/relations/{relation_id}", tags=["clients"])
-async def update_client_relation(client_id: int, relation_id: int, payload: ClientRelationUpdate, db: Session = Depends(get_db)):
+def update_client_relation(client_id: int, relation_id: int, payload: ClientRelationUpdate, db: Session = Depends(get_db)):
     rel = db.query(ClientRelation).filter(
         ClientRelation.id == relation_id, ClientRelation.client_id == client_id
     ).first()
@@ -1013,7 +1013,7 @@ async def update_client_relation(client_id: int, relation_id: int, payload: Clie
 
 
 @router.delete("/api/clients/{client_id}/relations/{relation_id}", tags=["clients"])
-async def delete_client_relation(
+def delete_client_relation(
     client_id: int, relation_id: int,
     both: bool = Query(True, description="Видалити дзеркальний звʼязок теж"),
     db: Session = Depends(get_db),
@@ -1036,7 +1036,7 @@ async def delete_client_relation(
 
 
 @router.post("/api/clients/{client_id}/relations/import-from-orders", tags=["clients"])
-async def import_relations_from_orders(client_id: int, db: Session = Depends(get_db)):
+def import_relations_from_orders(client_id: int, db: Session = Depends(get_db)):
     """Сканує всі замовлення цього клієнта на 'разом з <Name>' і апсертить звʼязки.
     Idempotent: повторний виклик не дублює.
     """
@@ -1059,7 +1059,7 @@ async def import_relations_from_orders(client_id: int, db: Session = Depends(get
 
 
 @router.post("/api/clients/relations/backfill-all", tags=["clients"])
-async def backfill_all_relations(db: Session = Depends(get_db)):
+def backfill_all_relations(db: Session = Depends(get_db)):
     """Одноразовий backfill по всій історії замовлень. Idempotent."""
     rows = db.execute(text("""
         SELECT id, client_id, notes FROM orders
@@ -1076,7 +1076,7 @@ async def backfill_all_relations(db: Session = Depends(get_db)):
 
 
 @router.post("/api/clients", response_model=ClientSchema, tags=["clients"])
-async def create_client(client: ClientCreate, db: Session = Depends(get_db)):
+def create_client(client: ClientCreate, db: Session = Depends(get_db)):
     """
     Create a new client
     """
@@ -1119,7 +1119,7 @@ async def create_client(client: ClientCreate, db: Session = Depends(get_db)):
     return client_dict
 
 @router.put("/api/clients/{client_id}", response_model=ClientSchema, tags=["clients"])
-async def update_client(client_id: int, client: ClientUpdate, db: Session = Depends(get_db)):
+def update_client(client_id: int, client: ClientUpdate, db: Session = Depends(get_db)):
     """
     Update an existing client.
     Identity-lock (Step 4):
@@ -1243,7 +1243,7 @@ async def update_client(client_id: int, client: ClientUpdate, db: Session = Depe
     return client_dict
 
 @router.delete("/api/clients/{client_id}", tags=["clients"])
-async def delete_client(client_id: int, db: Session = Depends(get_db)):
+def delete_client(client_id: int, db: Session = Depends(get_db)):
     """
     Delete a client
     """
@@ -1258,7 +1258,7 @@ async def delete_client(client_id: int, db: Session = Depends(get_db)):
 
 # ── Aliases endpoints (Step 4) ────────────────────────────────────────────
 @router.get("/api/clients/{client_id}/aliases", tags=["clients"])
-async def list_client_aliases(client_id: int, db: Session = Depends(get_db)):
+def list_client_aliases(client_id: int, db: Session = Depends(get_db)):
     rows = db.execute(text("""
         SELECT id, client_id, first_name, last_name, nickname, full_raw,
                source, seen_count, first_seen_at, last_seen_at
@@ -1279,7 +1279,7 @@ async def list_client_aliases(client_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/api/clients/{client_id}/aliases", tags=["clients"])
-async def add_client_alias(client_id: int, payload: ClientAliasCreate, db: Session = Depends(get_db)):
+def add_client_alias(client_id: int, payload: ClientAliasCreate, db: Session = Depends(get_db)):
     """Ручне додавання alias (наприклад: «також відома як ...»)."""
     if not db.query(Client).filter(Client.id == client_id).first():
         raise HTTPException(status_code=404, detail="Client not found")
@@ -1305,7 +1305,7 @@ async def add_client_alias(client_id: int, payload: ClientAliasCreate, db: Sessi
 
 
 @router.delete("/api/clients/{client_id}/aliases/{alias_id}", tags=["clients"])
-async def delete_client_alias(client_id: int, alias_id: int, db: Session = Depends(get_db)):
+def delete_client_alias(client_id: int, alias_id: int, db: Session = Depends(get_db)):
     res = db.execute(text(
         "DELETE FROM client_aliases WHERE id = :aid AND client_id = :cid"
     ), {"aid": alias_id, "cid": client_id})
@@ -1317,7 +1317,7 @@ async def delete_client_alias(client_id: int, alias_id: int, db: Session = Depen
 
 # ── Flags endpoints (Step 4) ──────────────────────────────────────────────
 @router.get("/api/clients/{client_id}/flags", tags=["clients"])
-async def list_client_flags(client_id: int, include_dismissed: bool = False, db: Session = Depends(get_db)):
+def list_client_flags(client_id: int, include_dismissed: bool = False, db: Session = Depends(get_db)):
     where = "client_id = :cid" + ("" if include_dismissed else " AND dismissed = FALSE")
     rows = db.execute(text(f"""
         SELECT id, client_id, flag_type, severity, peer_client_ids,
@@ -1341,7 +1341,7 @@ async def list_client_flags(client_id: int, include_dismissed: bool = False, db:
 
 
 @router.post("/api/clients/{client_id}/flags/{flag_id}/dismiss", tags=["clients"])
-async def dismiss_client_flag(client_id: int, flag_id: int,
+def dismiss_client_flag(client_id: int, flag_id: int,
                               payload: ClientFlagDismiss = None,
                               db: Session = Depends(get_db)):
     """«Це різні люди» / «Я перевірив, все ок» — гасить flag."""
@@ -1359,7 +1359,7 @@ async def dismiss_client_flag(client_id: int, flag_id: int,
 
 # ── Merge clients (Step 4) ────────────────────────────────────────────────
 @router.post("/api/clients/{source_id}/merge", tags=["clients"])
-async def merge_clients(source_id: int, payload: ClientMergeRequest, db: Session = Depends(get_db)):
+def merge_clients(source_id: int, payload: ClientMergeRequest, db: Session = Depends(get_db)):
     """Об'єднати source_id у target_id.
     target залишається; source: orders/addresses/relations переносяться, потім
     source видаляється; alias-історія source копіюється до target. Створюється
@@ -1568,7 +1568,7 @@ async def merge_clients(source_id: int, payload: ClientMergeRequest, db: Session
 # ── Mass-merge: groups of likely duplicates (Step 5) ──────────────────────
 @router.get("/api/client-duplicates/groups", tags=["clients"])
 @router.get("/api/clients/duplicate-groups", tags=["clients"])  # legacy alias
-async def list_duplicate_groups(
+def list_duplicate_groups(
     by: str = Query("auto", description="auto|name|phone|facebook|instagram|telegram"),
     limit: int = Query(100, ge=1, le=500),
     db: Session = Depends(get_db),
@@ -1802,7 +1802,7 @@ async def list_duplicate_groups(
 
 
 @router.post("/api/client-duplicates/dismiss-pair/{client_a}/{client_b}", tags=["clients"])
-async def dismiss_duplicate_pair(client_a: int, client_b: int, db: Session = Depends(get_db)):
+def dismiss_duplicate_pair(client_a: int, client_b: int, db: Session = Depends(get_db)):
     """«Це різні люди» — пара не з'являтиметься у каруселі дублікатів."""
     if client_a == client_b:
         raise HTTPException(status_code=400, detail="Cannot dismiss self")
@@ -1818,7 +1818,7 @@ async def dismiss_duplicate_pair(client_a: int, client_b: int, db: Session = Dep
 
 @router.post("/api/client-duplicates/merge-bulk", tags=["clients"])
 @router.post("/api/clients/merge-bulk", tags=["clients"])  # legacy alias
-async def merge_clients_bulk(payload: dict, db: Session = Depends(get_db)):
+def merge_clients_bulk(payload: dict, db: Session = Depends(get_db)):
     """Bulk merge: payload = { groups: [{ master_id, source_ids: [int,...] }, ...] }.
 
     For each group, calls merge_clients(source → master) sequentially.
@@ -1844,7 +1844,7 @@ async def merge_clients_bulk(payload: dict, db: Session = Depends(get_db)):
             try:
                 # Re-use existing single-merge function via direct call
                 req = ClientMergeRequest(target_id=master_id)
-                await merge_clients(sid, req, db)
+                merge_clients(sid, req, db)
                 merged_here += 1
                 total_merged += 1
             except HTTPException as he:

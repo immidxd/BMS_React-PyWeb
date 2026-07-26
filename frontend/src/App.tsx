@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, Suspense } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
 import { AppThemeProvider, useTheme } from './contexts/ThemeContext';
 import { FilterPanelProvider, useFilterPanel } from './contexts/FilterPanelContext';
@@ -9,24 +9,27 @@ import { ParsingStatus } from './components/ParsingStatus';
 import TaskCenter from './components/common/TaskCenter';
 import DevBadge from './components/common/DevBadge';
 import UpdateBanner from './components/common/UpdateBanner';
-import LoadingSpinner from './components/common/LoadingSpinner';
+import PageBoundary from './components/common/PageBoundary';
+import { lazyWithRetry } from './services/chunkReload';
 import { refreshPromLimitWatch } from './services/promLimitMonitor';
 import { ToastContainer, toast } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
 import './App.css';
 import './index.css'; // Main Tailwind CSS import
 
-// Lazy load pages
-const ProductsPage = React.lazy(() => import('./pages/ProductsPage'));
-const OrdersPage = React.lazy(() => import('./pages/OrdersPage'));
-const ClientsPage = React.lazy(() => import('./pages/ClientsPage'));
-const SuppliersPage = React.lazy(() => import('./pages/SuppliersPage'));
-const ShipmentsPage = React.lazy(() => import('./pages/ShipmentsPage'));
-const StatisticsPage = React.lazy(() => import('./pages/StatisticsPage'));
-const BrandsPage = React.lazy(() => import('./pages/BrandsPage'));
-const PublicationsPage = React.lazy(() => import('./pages/PublicationsPage'));
-const WarehousePage = React.lazy(() => import('./pages/WarehousePage'));
-const MergeQueuePage = React.lazy(() => import('./pages/MergeQueuePage'));
+// Lazy load pages. `lazyWithRetry` (а не голий React.lazy): після перезбірки
+// фронтенду старі чанки зникають — вкладка сама повторює імпорт і, якщо треба,
+// один раз перезавантажується замість вічного спінера. Див. services/chunkReload.ts.
+const ProductsPage = lazyWithRetry(() => import('./pages/ProductsPage'));
+const OrdersPage = lazyWithRetry(() => import('./pages/OrdersPage'));
+const ClientsPage = lazyWithRetry(() => import('./pages/ClientsPage'));
+const SuppliersPage = lazyWithRetry(() => import('./pages/SuppliersPage'));
+const ShipmentsPage = lazyWithRetry(() => import('./pages/ShipmentsPage'));
+const StatisticsPage = lazyWithRetry(() => import('./pages/StatisticsPage'));
+const BrandsPage = lazyWithRetry(() => import('./pages/BrandsPage'));
+const PublicationsPage = lazyWithRetry(() => import('./pages/PublicationsPage'));
+const WarehousePage = lazyWithRetry(() => import('./pages/WarehousePage'));
+const MergeQueuePage = lazyWithRetry(() => import('./pages/MergeQueuePage'));
 
 // Logo — мінімалістичний BMS-знак (3 риски + текст), у дусі дизайн-системи
 const AppLogo: React.FC = () => {
@@ -328,11 +331,7 @@ const AppContent: React.FC = () => {
         onScroll={() => { if (mainRef.current) scrollByTab.current[activeTab] = mainRef.current.scrollTop; }}
         className="flex-grow min-h-0 overflow-auto p-4 container mx-auto w-full"
       >
-        <Suspense
-          fallback={
-            <LoadingSpinner variant="page" size="large" text="Завантаження сторінки…" />
-          }
-        >
+        <PageBoundary>
           {/* keep-alive: рендеримо КОЖНУ відвідану вкладку, ховаємо неактивні (не unmount) */}
           {TABS.filter(t => visitedTabs.has(t.key)).map(t => {
             const PageComponent = t.component;
@@ -343,7 +342,7 @@ const AppContent: React.FC = () => {
               </div>
             );
           })}
-        </Suspense>
+        </PageBoundary>
       </main>
 
       {/* Діалог парсингу */}

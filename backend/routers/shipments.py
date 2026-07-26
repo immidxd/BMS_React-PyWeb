@@ -17,7 +17,7 @@ router = APIRouter()
 # No shipments or shipment_groups tables — map /api/shipments to deliveries
 
 @router.get("/api/shipments")
-async def get_shipments(
+def get_shipments(
     page: int = Query(1, ge=1),
     per_page: int = Query(50, ge=1, le=200),
     search: Optional[str] = Query(None),
@@ -91,7 +91,7 @@ async def get_shipments(
 
 
 @router.get("/api/shipments/{shipment_id}")
-async def get_shipment(shipment_id: int = Path(..., ge=1), db: Session = Depends(get_db)):
+def get_shipment(shipment_id: int = Path(..., ge=1), db: Session = Depends(get_db)):
     row = db.execute(text("""
         SELECT d.id, d.deliveryname AS sheet_name, d.deliverydate AS shipment_date,
                d.supplier_id, s.company_name AS supplier_name,
@@ -124,7 +124,7 @@ async def get_shipment(shipment_id: int = Path(..., ge=1), db: Session = Depends
 
 
 @router.put("/api/shipments/{shipment_id}")
-async def update_shipment(
+def update_shipment(
     shipment_id: int = Path(..., ge=1),
     payload: Dict[str, Any] = Body(...),
     db: Session = Depends(get_db),
@@ -143,10 +143,10 @@ async def update_shipment(
     set_clause = ", ".join(f"{k} = :{k}" for k in fields)
     db.execute(text(f"UPDATE deliveries SET {set_clause} WHERE id = :id"), {**fields, "id": shipment_id})
     db.commit()
-    return await get_shipment(shipment_id, db)
+    return get_shipment(shipment_id, db)
 
 
 # Shipment groups — not supported (no shipment_groups table), return empty
 @router.get("/api/shipment-groups")
-async def get_shipment_groups(db: Session = Depends(get_db)):
+def get_shipment_groups(db: Session = Depends(get_db)):
     return []

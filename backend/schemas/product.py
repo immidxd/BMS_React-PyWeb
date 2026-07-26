@@ -472,6 +472,10 @@ class ProductFilter(BaseModel):
     conditionids: Optional[List[int]] = None
     # Публікації: фільтр «де опубліковано» (telegram | olx | ...). OR-семантика.
     published_on: Optional[List[str]] = None
+    # Негативні публікації: виключити товари, опубліковані на цих майданчиках.
+    # AND-семантика, незалежна від published_on (можна показувати з одного і
+    # виключати інший одночасно).
+    published_on_not: Optional[List[str]] = None
     # Нові фільтри: стиль, поточний стан, сезон, ширина
     styleid: Optional[int] = None
     styleids: Optional[List[int]] = None

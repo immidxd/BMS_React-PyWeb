@@ -1164,6 +1164,32 @@ def _product_image_urls(product_number: str, borrowed_from: Optional[str] = None
     return _select_images(product_number, borrowed_from)[0]
 
 
+def _prepare_prom_main_image(original_url: str):
+    """Lazy import: Pillow/R2 derivative code is loaded only during a Prom export."""
+    try:
+        from services.prom_image_variants import prepare_prom_main_image
+    except ImportError:
+        from backend.services.prom_image_variants import prepare_prom_main_image
+    return prepare_prom_main_image(original_url)
+
+
+def _prom_export_images(product_number: str, borrowed_from: Optional[str] = None,
+                        adapt_main_image: bool = True):
+    """Prom-only image list.  Other channels keep using _product_image_urls unchanged."""
+    urls, kind = _select_images(product_number, borrowed_from)
+    adapted = False
+    if adapt_main_image and kind in {"official", "real"} and urls:
+        try:
+            variant = _prepare_prom_main_image(urls[0])
+            if variant.applied:
+                urls = [variant.url, *urls[1:]]
+                adapted = True
+        except Exception as exc:
+            # Image adaptation must never make a Prom publication fail.
+            logger.warning("Prom main image adapter unavailable for %s: %s", product_number, exc)
+    return urls, kind, adapted
+
+
 # Група каталогу продавця (categoryId у фіді = ГРУПА, не маркетплейс-категорія;
 # маркетплейс-категорію Prom визначає сам). ВАЖЛИВО: фід-імпорт НЕ вміє класти товар
 # у вручну-створену групу — він тримає власну фід-групу «Обувь» (усі експорти йдуть у
@@ -1314,7 +1340,8 @@ def _feed_item(bms: dict, sku: str, available: bool, imgs: List[str], group_id: 
 
 
 def build_export_feed(db: Session, product_id: int, category_id: int, available: bool = True,
-                      rows: Optional[List[dict]] = None) -> str:
+                      rows: Optional[List[dict]] = None,
+                      adapt_main_image: bool = True) -> str:
     """Prom XML-фід (для import_file). available=False — приховано (draft-режим).
     categoryId = ГРУПА «Взуття». rows — попередньо відібрані рядки (напр. лише нові розміри
     ростовки); якщо None — усі рядки товару. Ростовка → кілька <item> в одному фіді."""
@@ -1322,7 +1349,9 @@ def build_export_feed(db: Session, product_id: int, category_id: int, available:
     rows = rows if rows is not None else _export_rows(db, product_id)
     if not rows:
         raise RuntimeError("Товар не знайдено")
-    imgs = _product_image_urls(rows[0]["productnumber"], rows[0].get("official_photos_from"))
+    imgs, _, _ = _prom_export_images(
+        rows[0]["productnumber"], rows[0].get("official_photos_from"), adapt_main_image,
+    )
     group_id = _PROM_GROUP_SHOES
     items = "".join(_feed_item(r, r["_sku"], available, imgs, group_id) for r in rows)
     # ОДНА категорія «Обувь» (Prom сам вкладе під корінь). Фід-імпорт НЕ матчить
@@ -1822,7 +1851,8 @@ def prom_product_status(db: Session, product_id: int) -> Dict:
 
 # ── Спільна подача ОДНОГО фіду (single або BATCH) ────────────────────────────
 def build_batch_feed(db: Session, product_ids: List[int], available: bool = True,
-                     price_overrides: Optional[Dict[int, float]] = None):
+                     price_overrides: Optional[Dict[int, float]] = None,
+                     adapt_main_image: bool = True):
     """ОДИН Prom-фід із БАГАТЬОХ товарів (кожен зі своїми фото/розмірами/залишками) →
     один import_file (проти денного ліміту Prom на к-сть імпортів). Повертає
     (feed, included_skus, skipped) де skipped=[(product_id, причина)]."""
@@ -1841,7 +1871,9 @@ def build_batch_feed(db: Session, product_ids: List[int], available: bool = True
         num = base.get("productnumber") or str(pid)
         if not (base.get("price") and float(base["price"]) > 0):
             skipped.append((pid, f"{num}: нема ціни")); continue
-        imgs = _product_image_urls(base["productnumber"], base.get("official_photos_from"))
+        imgs, _, _ = _prom_export_images(
+            base["productnumber"], base.get("official_photos_from"), adapt_main_image,
+        )
         if not imgs:
             skipped.append((pid, f"{num}: нема фото")); continue
         override_price = _num(price_overrides.get(int(pid)))
@@ -1868,7 +1900,10 @@ def _prom_spawn_drainer(skus: list, label: str) -> None:
     import threading as _th
     def _run():
         import time as _t
-        from models.database import SessionLocal as _SL
+        try:
+            from models.database import SessionLocal as _SL
+        except ImportError:
+            from backend.models.database import SessionLocal as _SL
         for _ in range(24):
             _t.sleep(10); _db = _SL()
             try:
@@ -1883,14 +1918,23 @@ def _prom_spawn_drainer(skus: list, label: str) -> None:
     _th.Thread(target=_run, name=f"prom-drain-{label}", daemon=True).start()
 
 
-def _prom_spawn_patient_worker(token: str, feed: str, skus: list, label: str) -> None:
+def _prom_spawn_patient_worker(token: str, feed, skus: list, label: str,
+                               updated_fields: Optional[List[str]] = None,
+                               file_name: str = "feed.xml",
+                               content_type: str = "application/xml") -> None:
     """Фон: слот зайнятий НАШИМ попереднім імпортом → терпляче чекає (серіалізація
     _IMPORT_LOCK) і публікує, коли звільниться. На реальному збої знімає з черги."""
     import threading as _th
     def _run():
         import json as _json, time as _t
-        from models.database import SessionLocal as _SL
-        payload = {"data": _json.dumps({"mark_missing_product_as": "none", "force_update": True})}
+        try:
+            from models.database import SessionLocal as _SL
+        except ImportError:
+            from backend.models.database import SessionLocal as _SL
+        settings = {"mark_missing_product_as": "none", "force_update": True}
+        if updated_fields:
+            settings["updated_fields"] = list(updated_fields)
+        payload = {"data": _json.dumps(settings)}
         def _drop():
             _db = _SL()
             try:
@@ -1906,7 +1950,11 @@ def _prom_spawn_patient_worker(token: str, feed: str, skus: list, label: str) ->
                     try:
                         r = requests.post(f"{PROM_API_BASE}/products/import_file",
                                           headers={"Authorization": f"Bearer {token}"},
-                                          files={"file": ("feed.xml", feed.encode("utf-8"), "application/xml")},
+                                          files={"file": (
+                                              file_name,
+                                              feed if isinstance(feed, bytes) else feed.encode("utf-8"),
+                                              content_type,
+                                          )},
                                           data=payload, timeout=90)
                     except Exception as re:
                         logger.warning(f"[prom-import] {label} network retry: {re}"); _t.sleep(8); continue
@@ -1946,13 +1994,19 @@ def _prom_spawn_patient_worker(token: str, feed: str, skus: list, label: str) ->
     _th.Thread(target=_run, name=f"prom-import-{label}", daemon=True).start()
 
 
-def _submit_feed(db: Session, token: str, feed: str, target_skus: list, label: str) -> Dict:
+def _submit_feed(db: Session, token: str, feed, target_skus: list, label: str,
+                 updated_fields: Optional[List[str]] = None,
+                 file_name: str = "feed.xml",
+                 content_type: str = "application/xml") -> Dict:
     """ОДНА спроба import_file у форграунді → миттєвий чіткий фідбек. Спільно для single
     і batch. Кличеться ПІСЛЯ queue-early (target_skus уже в prom_draft_queue).
     Повертає {ok, queued|stuck|error, import_id?, note|error}."""
     _ensure_import_log(db)
     import json as _json
-    payload = {"data": _json.dumps({"mark_missing_product_as": "none", "force_update": True})}
+    settings = {"mark_missing_product_as": "none", "force_update": True}
+    if updated_fields:
+        settings["updated_fields"] = list(updated_fields)
+    payload = {"data": _json.dumps(settings)}
 
     def _unqueue():
         try:
@@ -1962,13 +2016,19 @@ def _submit_feed(db: Session, token: str, feed: str, target_skus: list, label: s
 
     # Non-blocking lock: інший НАШ імпорт уже йде → в чергу за ним (терплячий воркер).
     if not _IMPORT_LOCK.acquire(blocking=False):
-        _prom_spawn_patient_worker(token, feed, target_skus, label)
+        _prom_spawn_patient_worker(
+            token, feed, target_skus, label, updated_fields, file_name, content_type,
+        )
         return {"ok": True, "queued": True, "note_tail": " у черзі за попередньою публікацією (1-3 хв)"}
     try:
         try:
             r = requests.post(f"{PROM_API_BASE}/products/import_file",
                               headers={"Authorization": f"Bearer {token}"},
-                              files={"file": ("feed.xml", feed.encode("utf-8"), "application/xml")},
+                              files={"file": (
+                                  file_name,
+                                  feed if isinstance(feed, bytes) else feed.encode("utf-8"),
+                                  content_type,
+                              )},
                               data=payload, timeout=90)
         except Exception as e:
             _unqueue()
@@ -1989,7 +2049,9 @@ def _submit_feed(db: Session, token: str, feed: str, target_skus: list, label: s
         msg = r.text
     busy = any(k in str(msg).lower() for k in ("ограничен", "одновремен", "одночасн", "предыдущего импорт"))
     if busy and _our_import_processing(db):
-        _prom_spawn_patient_worker(token, feed, target_skus, label)
+        _prom_spawn_patient_worker(
+            token, feed, target_skus, label, updated_fields, file_name, content_type,
+        )
         return {"ok": True, "queued": True, "note_tail": " — чекає завершення попередньої публікації (1-3 хв)"}
     if busy:
         _unqueue()
@@ -2079,6 +2141,7 @@ def export_product_to_prom(db: Session, product_id: int, as_draft: bool = False,
                 "name_ru": _build_name(base, "ru"),
                 "category_id": cat, "images": imgs, "image_count": len(imgs),
                 "image_kind": image_kind,                       # official | real | none
+                "adapt_main_image_default": image_kind in {"official", "real"},
                 "condition": base.get("conditionname"),
                 "condition_prom": _COND_RU.get(cond_l, "Новое"),
                 "condition_warn": cond_l in _COND_WARN,          # потребує підтвердження
@@ -2142,6 +2205,7 @@ def export_product_to_prom(db: Session, product_id: int, as_draft: bool = False,
     # товару (у ростовки назва генерується на кожен розмір); характеристики — на всі
     # (розмірні _AUTO_PARAMS відфільтрує _feed_item і підставить авто по-розмірно).
     ov = overrides or {}
+    adapt_main_image = ov.get("adapt_main_image_for_shafa", True) is not False
     single = len(rows) == 1
     for r in rows:
         if _num(ov.get("price")):
@@ -2157,7 +2221,10 @@ def export_product_to_prom(db: Session, product_id: int, as_draft: bool = False,
     # /products/list, тож draft = невідстежуваний. Живий товар одразу видно в API —
     # дедуп/синк/бейдж/видалення працюють надійно. Створення асинхронне (1-3 хв).
     try:
-        feed = build_export_feed(db, product_id, cat, available=True, rows=rows)
+        feed = build_export_feed(
+            db, product_id, cat, available=True, rows=rows,
+            adapt_main_image=adapt_main_image,
+        )
     except Exception as e:
         _unqueue_inflight()  # фід не зібрався → зняти «pending», щоб чіп повернувся
         logger.error(f"Prom feed build failed for {number}: {e}")

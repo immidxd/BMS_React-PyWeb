@@ -23,6 +23,7 @@ import { Product } from '../../types/product';
 import type { TableProps } from 'antd';
 import ProductDetailsModal from './ProductDetailsModal';
 import MergeCandidatesModal from './MergeCandidatesModal';
+import ProductHoverPreview from './ProductHoverPreview';
 import { LinkOutlined, LockFilled, PictureOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import { productService } from '../../services/productService';
@@ -239,6 +240,45 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
     const [rowMenuOpen, setRowMenuOpen] = useState(false);
     const [rowMenuPos, setRowMenuPos] = useState<{x:number;y:number}>({x:0,y:0});
     const [rowMenuRecord, setRowMenuRecord] = useState<Product | null>(null);
+
+    // ── Швидкий перегляд при наведенні на рядок ──────────────────────────────
+    // Показуємо плаваючу картку з фото+ключовим після короткої затримки (щоб
+    // прокрутка/швидкий прохід курсором не смикали). Ховаємо на leave/scroll/дії.
+    const [hover, setHover] = useState<{ record: Product; x: number; y: number } | null>(null);
+    const hoverTimerRef = useRef<number | null>(null);
+    const mousePosRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+    const cancelHover = () => {
+        if (hoverTimerRef.current) { window.clearTimeout(hoverTimerRef.current); hoverTimerRef.current = null; }
+        setHover(prev => (prev ? null : prev));
+    };
+    const scheduleHover = (record: Product, e: React.MouseEvent) => {
+        // Не заважаємо відкритим модалкам/меню.
+        if (detailsOpen || rowMenuOpen || menuOpen || mergeOpen) return;
+        mousePosRef.current = { x: e.clientX, y: e.clientY };
+        if (hoverTimerRef.current) window.clearTimeout(hoverTimerRef.current);
+        // Позицію фіксуємо в мить появи (з останньої відомої точки курсора) — без
+        // слідування за мишею, щоб не перерендерювати таблицю на кожен рух.
+        hoverTimerRef.current = window.setTimeout(
+            () => setHover({ record, x: mousePosRef.current.x, y: mousePosRef.current.y }),
+            420
+        );
+    };
+    // Лише оновлюємо ref (без setState) — поки картка не з'явилась, стежимо за
+    // курсором дешево; коли з'явилась — вона стоїть на місці.
+    const moveHover = (e: React.MouseEvent) => {
+        mousePosRef.current = { x: e.clientX, y: e.clientY };
+    };
+    // Ховаємо прев'ю при скролі таблиці/сторінки (позиція стає нерелевантною).
+    useEffect(() => {
+        if (!hover && !hoverTimerRef.current) return;
+        const onScroll = () => cancelHover();
+        window.addEventListener('scroll', onScroll, true);
+        return () => window.removeEventListener('scroll', onScroll, true);
+    }, [hover]);
+    // Ховаємо, коли відкрилась модалка/меню під час показу.
+    useEffect(() => {
+        if (detailsOpen || rowMenuOpen || menuOpen || mergeOpen) cancelHover();
+    }, [detailsOpen, rowMenuOpen, menuOpen, mergeOpen]);
     const columnOrder: { id: string; title: string; optional: boolean }[] = [
         // 0.1 (опціонально перед №1)
         { id: 'id', title: 'ID', optional: true },
@@ -753,7 +793,10 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
                 onClose={() => setMergeOpen(false)}
                 onMerged={() => { if (onPageChange) onPageChange(1); }}
             />
-            
+
+            {/* Швидкий перегляд картки при наведенні на рядок */}
+            {hover && <ProductHoverPreview record={hover.record} x={hover.x} y={hover.y} />}
+
             <div
                 className="relative min-h-[12rem] overflow-x-auto rounded-lg shadow-md border border-gray-200 bg-white dark:bg-gray-800 dark:border-gray-700"
                 aria-busy={loading}
@@ -796,8 +839,11 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
                         return {
                             title: hasIssue ? `⚠ ${conflictTitle}` : (record.is_reserved ? '🔒 Заброньовано (Підтверджено, без оплати)' : undefined),
                             className: `cursor-pointer ${rowState}`,
-                            onDoubleClick: () => { setDetailsId(record.id); setDetailsOpen(true); },
-                            onContextMenu: (e: React.MouseEvent) => handleRowContextMenu(e, record),
+                            onDoubleClick: () => { cancelHover(); setDetailsId(record.id); setDetailsOpen(true); },
+                            onContextMenu: (e: React.MouseEvent) => { cancelHover(); handleRowContextMenu(e, record); },
+                            onMouseEnter: (e: React.MouseEvent) => scheduleHover(record, e),
+                            onMouseMove: (e: React.MouseEvent) => moveHover(e),
+                            onMouseLeave: () => cancelHover(),
                         };
                     }}
                     onHeaderRow={() => ({ onContextMenu: handleHeaderContextMenu as any })}

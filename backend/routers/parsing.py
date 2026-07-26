@@ -370,7 +370,7 @@ async def broadcast_status(status: Dict):
         websocket_clients.remove(client)
 
 @router.get("/sources", response_model=List[ParsingSourceSchema], tags=["parsing"])
-async def get_parsing_sources(db: Session = Depends(get_db)):
+def get_parsing_sources(db: Session = Depends(get_db)):
     """
     Get all available parsing sources
     """
@@ -378,7 +378,7 @@ async def get_parsing_sources(db: Session = Depends(get_db)):
     return sources
 
 @router.post("/sources", response_model=ParsingSourceSchema, tags=["parsing"])
-async def create_parsing_source(source: ParsingSourceCreate, db: Session = Depends(get_db)):
+def create_parsing_source(source: ParsingSourceCreate, db: Session = Depends(get_db)):
     """
     Create a new parsing source
     """
@@ -389,7 +389,7 @@ async def create_parsing_source(source: ParsingSourceCreate, db: Session = Depen
     return db_source
 
 @router.put("/sources/{source_id}", response_model=ParsingSourceSchema, tags=["parsing"])
-async def update_parsing_source(source_id: int, source: ParsingSourceUpdate, db: Session = Depends(get_db)):
+def update_parsing_source(source_id: int, source: ParsingSourceUpdate, db: Session = Depends(get_db)):
     """
     Update an existing parsing source
     """
@@ -406,7 +406,7 @@ async def update_parsing_source(source_id: int, source: ParsingSourceUpdate, db:
     return db_source
 
 @router.delete("/sources/{source_id}", tags=["parsing"])
-async def delete_parsing_source(source_id: int, db: Session = Depends(get_db)):
+def delete_parsing_source(source_id: int, db: Session = Depends(get_db)):
     """
     Delete a parsing source
     """
@@ -419,7 +419,7 @@ async def delete_parsing_source(source_id: int, db: Session = Depends(get_db)):
     return {"message": "Parsing source deleted successfully"}
 
 @router.get("/styles", response_model=List[ParsingStyleSchema], tags=["parsing"])
-async def get_parsing_styles(db: Session = Depends(get_db)):
+def get_parsing_styles(db: Session = Depends(get_db)):
     """
     Get all available parsing styles
     """
@@ -427,7 +427,7 @@ async def get_parsing_styles(db: Session = Depends(get_db)):
     return styles
 
 @router.post("/styles", response_model=ParsingStyleSchema, tags=["parsing"])
-async def create_parsing_style(style: ParsingStyleCreate, db: Session = Depends(get_db)):
+def create_parsing_style(style: ParsingStyleCreate, db: Session = Depends(get_db)):
     """
     Create a new parsing style
     """
@@ -438,7 +438,7 @@ async def create_parsing_style(style: ParsingStyleCreate, db: Session = Depends(
     return db_style
 
 @router.put("/styles/{style_id}", response_model=ParsingStyleSchema, tags=["parsing"])
-async def update_parsing_style(style_id: int, style: ParsingStyleUpdate, db: Session = Depends(get_db)):
+def update_parsing_style(style_id: int, style: ParsingStyleUpdate, db: Session = Depends(get_db)):
     """
     Update an existing parsing style
     """
@@ -455,7 +455,7 @@ async def update_parsing_style(style_id: int, style: ParsingStyleUpdate, db: Ses
     return db_style
 
 @router.delete("/styles/{style_id}", tags=["parsing"])
-async def delete_parsing_style(style_id: int, db: Session = Depends(get_db)):
+def delete_parsing_style(style_id: int, db: Session = Depends(get_db)):
     """
     Delete a parsing style
     """
@@ -468,7 +468,7 @@ async def delete_parsing_style(style_id: int, db: Session = Depends(get_db)):
     return {"message": "Parsing style deleted successfully"}
 
 @router.post("/test", tags=["parsing"])
-async def test_parsing_job(mode: str = "quick_update", db: Session = Depends(get_db)):
+def test_parsing_job(mode: str = "quick_update", db: Session = Depends(get_db)):
     """ТЕСТ: Створює job і одразу повертає jobId без запуску парсингу."""
     job = ParsingJob(mode=mode, status="queued")
     db.add(job)
@@ -477,7 +477,7 @@ async def test_parsing_job(mode: str = "quick_update", db: Session = Depends(get
     return {"jobId": job.id, "message": "Test job created successfully"}
 
 @router.post("/run", tags=["parsing"])
-async def run_parsing_job(mode: str = "quick_update", params: Optional[Dict] = None, db: Session = Depends(get_db)):
+def run_parsing_job(mode: str = "quick_update", params: Optional[Dict] = None, db: Session = Depends(get_db)):
     """Запускає парсинг. Sheets-режими (sheets_*) делегуються окремим handlers."""
     route = SHEETS_MODE_ROUTES.get(mode)
     if route:
@@ -497,7 +497,7 @@ async def run_parsing_job(mode: str = "quick_update", params: Optional[Dict] = N
     raise HTTPException(status_code=400, detail=f"Unsupported parsing mode '{mode}'. Allowed: {allowed}")
 
 @router.get("/jobs/{job_id}", tags=["parsing"])
-async def get_job(job_id: int, db: Session = Depends(get_db)):
+def get_job(job_id: int, db: Session = Depends(get_db)):
     job = db.query(ParsingJob).filter(ParsingJob.id == job_id).first()
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -520,7 +520,7 @@ async def get_job(job_id: int, db: Session = Depends(get_db)):
     }
 
 @router.post("/jobs/{job_id}/cancel", tags=["parsing"])
-async def cancel_job(job_id: int, db: Session = Depends(get_db)):
+def cancel_job(job_id: int, db: Session = Depends(get_db)):
     job = db.query(ParsingJob).filter(ParsingJob.id == job_id).first()
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -640,17 +640,17 @@ async def websocket_endpoint(websocket: WebSocket):
         websocket_clients.remove(websocket)
 
 @router.get("/modes")
-async def get_available_modes():
+def get_available_modes():
     """Повертає доступні режими парсингу."""
     return get_parsing_modes()
 
 @router.get("/status")
-async def get_parsing_status():
+def get_parsing_status():
     """Повертає поточний статус парсингу."""
     return parsing_status
 
 @router.post("/stop/{log_id}", tags=["parsing"])
-async def stop_parsing_task(log_id: int, db: Session = Depends(get_db)):
+def stop_parsing_task(log_id: int, db: Session = Depends(get_db)):
     """
     Stop a running parsing task
     """
@@ -683,7 +683,7 @@ async def stop_parsing_task(log_id: int, db: Session = Depends(get_db)):
     }
 
 @router.get("/status/{log_id}", tags=["parsing"])
-async def get_parsing_task_status(log_id: int, db: Session = Depends(get_db)):
+def get_parsing_task_status(log_id: int, db: Session = Depends(get_db)):
     """
     Get status of a parsing task
     """
@@ -709,7 +709,7 @@ async def get_parsing_task_status(log_id: int, db: Session = Depends(get_db)):
     }
 
 @router.get("/logs", response_model=List[ParsingLogSchema], tags=["parsing"])
-async def get_all_parsing_logs(limit: int = 50, db: Session = Depends(get_db)):
+def get_all_parsing_logs(limit: int = 50, db: Session = Depends(get_db)):
     """
     Get parsing logs
     """
@@ -717,7 +717,7 @@ async def get_all_parsing_logs(limit: int = 50, db: Session = Depends(get_db)):
     return logs
 
 @router.get("/schedule", response_model=List[ParsingScheduleSchema], tags=["parsing"])
-async def get_parsing_schedules(db: Session = Depends(get_db)):
+def get_parsing_schedules(db: Session = Depends(get_db)):
     """
     Get all parsing schedules
     """
@@ -725,7 +725,7 @@ async def get_parsing_schedules(db: Session = Depends(get_db)):
     return schedules
 
 @router.post("/schedule", response_model=ParsingScheduleSchema, tags=["parsing"])
-async def create_parsing_schedule(schedule: ParsingScheduleCreate, db: Session = Depends(get_db)):
+def create_parsing_schedule(schedule: ParsingScheduleCreate, db: Session = Depends(get_db)):
     """
     Create a new parsing schedule
     """
@@ -750,7 +750,7 @@ async def create_parsing_schedule(schedule: ParsingScheduleCreate, db: Session =
     return db_schedule
 
 @router.put("/schedule/{schedule_id}", response_model=ParsingScheduleSchema, tags=["parsing"])
-async def update_parsing_schedule(schedule_id: int, schedule: ParsingScheduleUpdate, db: Session = Depends(get_db)):
+def update_parsing_schedule(schedule_id: int, schedule: ParsingScheduleUpdate, db: Session = Depends(get_db)):
     """
     Update an existing parsing schedule
     """
@@ -772,7 +772,7 @@ async def update_parsing_schedule(schedule_id: int, schedule: ParsingScheduleUpd
     return db_schedule
 
 @router.delete("/schedule/{schedule_id}", tags=["parsing"])
-async def delete_parsing_schedule(schedule_id: int, db: Session = Depends(get_db)):
+def delete_parsing_schedule(schedule_id: int, db: Session = Depends(get_db)):
     """
     Delete a parsing schedule
     """
@@ -972,7 +972,7 @@ def _run_sheets_job(job_id: int, target: str, mode: str):
 
 
 @router.post("/sheets/products", tags=["parsing"])
-async def sheets_parse_products(mode: str = "quick", db: Session = Depends(get_db)):
+def sheets_parse_products(mode: str = "quick", db: Session = Depends(get_db)):
     """
     Парсинг товарів з Google Sheets (Журнал) → products.
     mode: quick (останні 30 аркушів) | full (всі аркуші)
@@ -992,7 +992,7 @@ async def sheets_parse_products(mode: str = "quick", db: Session = Depends(get_d
 
 
 @router.post("/sheets/orders", tags=["parsing"])
-async def sheets_parse_orders(mode: str = "quick", db: Session = Depends(get_db)):
+def sheets_parse_orders(mode: str = "quick", db: Session = Depends(get_db)):
     """
     Парсинг замовлень з Google Sheets (Замовлення) → orders + order_items + clients.
     mode: quick (останні 30 аркушів) | full (всі аркуші)
@@ -1012,7 +1012,7 @@ async def sheets_parse_orders(mode: str = "quick", db: Session = Depends(get_db)
 
 
 @router.post("/sheets/full", tags=["parsing"])
-async def sheets_parse_full(mode: str = "quick", db: Session = Depends(get_db)):
+def sheets_parse_full(mode: str = "quick", db: Session = Depends(get_db)):
     """
     Повний парсинг: спочатку товари, потім замовлення, потім воркспейс.
     mode: quick | full
@@ -1032,7 +1032,7 @@ async def sheets_parse_full(mode: str = "quick", db: Session = Depends(get_db)):
 
 
 @router.post("/sheets/workspace", tags=["parsing"])
-async def sheets_parse_workspace(db: Session = Depends(get_db)):
+def sheets_parse_workspace(db: Session = Depends(get_db)):
     """
     Парсинг Воркспейс1 → merge/додавання в products.
     Товари зі співпадінням ≥4 з 5 характеристик → merge (номер до clonednumbers).
@@ -1051,7 +1051,7 @@ async def sheets_parse_workspace(db: Session = Depends(get_db)):
 
 
 @router.post("/sheets/reset-products", tags=["parsing"])
-async def reset_products_for_reparse(db: Session = Depends(get_db)):
+def reset_products_for_reparse(db: Session = Depends(get_db)):
     """
     Безпечне очищення таблиці products (і order_items що посилаються на неї)
     перед чистим перепарсингом з новою логікою ростовок/дублікатів.
