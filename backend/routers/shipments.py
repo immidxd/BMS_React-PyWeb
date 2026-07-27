@@ -72,8 +72,12 @@ def get_shipments(
         FROM deliveries d
         LEFT JOIN suppliers s ON s.id = d.supplier_id
         LEFT JOIN LATERAL (
-            SELECT COUNT(*) AS items_count,
-                   COALESCE(SUM(p.price), 0) AS total_cost
+            -- Ростовка зберігається ОДНИМ рядком на розмір із quantity>1 (унікальний
+            -- індекс (номер,розмір,колір) не дає завести однакові рядки). Тому
+            -- «речей у завозі» — це SUM(quantity), а не COUNT(*): 5 розмірів
+            -- Ф4083 = 10 фізичних пар. Сума — так само з урахуванням кількості.
+            SELECT COALESCE(SUM(GREATEST(COALESCE(p.quantity, 1), 1)), 0) AS items_count,
+                   COALESCE(SUM(p.price * GREATEST(COALESCE(p.quantity, 1), 1)), 0) AS total_cost
             FROM products p WHERE p.deliveryid = d.id
         ) ps ON true
         {where}

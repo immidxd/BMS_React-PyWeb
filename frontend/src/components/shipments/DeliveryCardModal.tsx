@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback, useRef } from 'react';
+import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 
 import { productService } from '../../services/productService';
 import type { Product, ProductFilters } from '../../types/product';
@@ -60,6 +60,12 @@ const productToPrefill = (p: any): Record<string, string> => {
   return out;
 };
 
+/** Скільки ФІЗИЧНИХ речей стоїть за записом товару.
+ *  Ростовка (кілька однакових пар одного розміру) зберігається ОДНИМ рядком із
+ *  quantity>1 — унікальний індекс (номер, розмір, колір) не дозволяє дублювати
+ *  записи. Тож усюди, де рахуємо «скільки товарів у завозі», беремо quantity. */
+const qtyOf = (p: Product): number => Math.max(1, Number(p.quantity) || 1);
+
 // Рахований статус продажу (як у таблиці Товарів) — не сирий журнальний statusid.
 const statusOf = (p: Product): { label: string; cls: string } => {
   const sold = p.sold_count || 0;
@@ -86,6 +92,8 @@ const fmtPrice = (n?: number | null) =>
 
 const DeliveryCardModal: React.FC<Props> = ({ shipment, open, onClose }) => {
   const [products, setProducts] = useState<Product[]>([]);
+  // Речей у завозі = сума quantity (ростовка з 5 розмірів може бути 10 пар).
+  const itemsCount = useMemo(() => products.reduce((s, p) => s + qtyOf(p), 0), [products]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [filters, setFilters] = useState<ProductFilters | null>(null);
@@ -281,7 +289,18 @@ const DeliveryCardModal: React.FC<Props> = ({ shipment, open, onClose }) => {
             <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-gray-500 dark:text-gray-400">
               <span>📅 {fmtDate(shipment.shipment_date)}</span>
               <span>🏷 {shipment.supplier_name || 'Без постачальника'}</span>
-              <span>📦 {products.length} товарів</span>
+              {/* Ростовка = ОДИН запис у БД на розмір із quantity>1 (унікальний
+                  індекс не дає завести 10 однакових рядків). Тому «скільки речей
+                  у завозі» — це сума quantity, а не кількість записів: 5 розмірів
+                  Ф4083 = 10 фізичних пар. Показуємо і те, і те. */}
+              <span title={itemsCount !== products.length
+                ? `${products.length} позицій (розмірів), ${itemsCount} речей разом`
+                : undefined}>
+                📦 {itemsCount} товарів
+                {itemsCount !== products.length && (
+                  <span className="text-gray-400"> · {products.length} позицій</span>
+                )}
+              </span>
               {bgSyncing && (
                 <span className="inline-flex items-center gap-1 text-gray-400" title="Фонова синхронізація з журналом">
                   <LoadingSpinner variant="inline" size="small" text={null} />
@@ -291,8 +310,8 @@ const DeliveryCardModal: React.FC<Props> = ({ shipment, open, onClose }) => {
               {/* Сума продажних цін товарів — live, рахується з реально завантажених,
                   а не зі stale shipment.total_cost зі списку завозів. */}
               {products.length > 0 && (
-                <span title="Сума продажних цін товарів цього завозу">
-                  💰 {fmtPrice(products.reduce((s, p) => s + (Number(p.price) || 0), 0))}
+                <span title="Сума продажних цін товарів цього завозу (з урахуванням кількості в ростовках)">
+                  💰 {fmtPrice(products.reduce((s, p) => s + (Number(p.price) || 0) * qtyOf(p), 0))}
                 </span>
               )}
             </div>
@@ -423,8 +442,22 @@ const DeliveryCardModal: React.FC<Props> = ({ shipment, open, onClose }) => {
                         <td className="px-2 py-2">{p.type_name || '—'}</td>
                         <td className="px-2 py-2">{p.brand_name || '—'}</td>
                         <td className="px-2 py-2 text-gray-600 dark:text-gray-300 max-w-[200px] truncate" title={p.model || ''}>{p.model || '—'}</td>
-                        <td className="px-2 py-2 text-center tabular-nums">{p.sizeeu || p.size_letter || '—'}</td>
-                        <td className="px-2 py-2 text-right tabular-nums">{p.price ? fmtPrice(p.price) : '—'}</td>
+                        <td className="px-2 py-2 text-center tabular-nums">
+                          {p.sizeeu || p.size_letter || '—'}
+                          {/* ×N — скільки пар цього розміру приїхало (ростовка) */}
+                          {qtyOf(p) > 1 && (
+                            <span className="text-purple-500 dark:text-purple-400 ml-0.5"
+                              title={`${qtyOf(p)} шт. цього розміру`}>×{qtyOf(p)}</span>
+                          )}
+                        </td>
+                        <td className="px-2 py-2 text-right tabular-nums">
+                          {p.price ? fmtPrice(p.price) : '—'}
+                          {qtyOf(p) > 1 && p.price && (
+                            <span className="block text-[11px] text-gray-400">
+                              = {fmtPrice(Number(p.price) * qtyOf(p))}
+                            </span>
+                          )}
+                        </td>
                         <td className={`px-2 py-2 text-center text-xs font-medium ${st.cls}`}>{st.label}</td>
                         <td className="px-2 py-2 text-center">
                           <button onClick={e => { e.stopPropagation(); removeProduct(p); }} title="Видалити товар"

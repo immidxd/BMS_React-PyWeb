@@ -679,8 +679,12 @@ def get_delivery_info(delivery_id: int = Path(..., ge=1), db: Session = Depends(
         raise HTTPException(status_code=502, detail=_journal_err_detail(e, d["deliveryname"]))
 
     by_label = {f["label"]: f for f in info.get("fields", [])}
-    items_count = db.execute(text("SELECT COUNT(*) FROM products WHERE deliveryid=:i"),
-                             {"i": delivery_id}).scalar() or 0
+    # «Очікувана к-сть речей» — про ФІЗИЧНІ речі, тож рахуємо SUM(quantity):
+    # ростовка з 5 розмірів по 2 пари = 10 речей, а рядків у БД лише 5.
+    items_count = db.execute(
+        text("SELECT COALESCE(SUM(GREATEST(COALESCE(quantity, 1), 1)), 0) "
+             "FROM products WHERE deliveryid=:i"),
+        {"i": delivery_id}).scalar() or 0
     auto: Dict[str, str] = {}
     # «Дата початку» — час початку запису (created_at завозу), якщо ще порожня.
     if not (by_label.get("Дата початку", {}).get("value") or "").strip():

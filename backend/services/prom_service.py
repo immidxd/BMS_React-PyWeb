@@ -1154,9 +1154,47 @@ def _select_images(product_number: str, borrowed_from: Optional[str] = None):
         if "/product-images/" in path:
             key = unquote(path.split("/product-images/", 1)[1])
             pub = r2_storage.public_url(key)
-            if pub:
+            if pub and _ensure_mirrored(key):
                 urls.append(pub)
     return urls, kind
+
+
+def _ensure_mirrored(key: str) -> bool:
+    """Гарантує, що фото є в R2 — саме звідти його тягне маркетплейс.
+
+    Фото, додані ЧЕРЕЗ застосунок, лягають у R2 одразу. Але покладені в папку
+    повз нього (масовий імпорт, копіювання з телефона) лишались лише локально —
+    і публікація падала з «OLX відхилив [400]: Image error: Файл не існує», бо
+    OLX бачив 404 на кожен URL. Тут доливаємо такі файли на льоту.
+
+    Повертає False лише коли фото немає ні в R2, ні локально (тоді краще
+    опублікувати без нього, ніж завалити всю публікацію).
+    """
+    try:
+        from services import r2_storage
+        from services.product_images import get_images_dir
+    except ImportError:
+        from backend.services import r2_storage
+        from backend.services.product_images import get_images_dir
+
+    try:
+        if r2_storage.object_exists(key):
+            return True
+    except Exception as exc:
+        logger.warning("R2 check failed for %s: %s — лишаємо URL як є", key, exc)
+        return True  # не змогли перевірити → не блокуємо публікацію
+
+    local_path = os.path.join(get_images_dir(), key)
+    if not os.path.isfile(local_path):
+        logger.error("Фото %s немає ні в R2, ні локально — пропускаю", key)
+        return False
+    try:
+        r2_storage.upload_file(local_path, key)
+        logger.info("Долив у R2 непродзеркалене фото: %s", key)
+        return True
+    except Exception as exc:
+        logger.error("Не вдалось долити %s у R2: %s", key, exc)
+        return False
 
 
 def _product_image_urls(product_number: str, borrowed_from: Optional[str] = None) -> List[str]:
