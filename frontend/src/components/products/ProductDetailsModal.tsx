@@ -3,7 +3,7 @@ import { productService } from '../../services/productService';
 import type { Product, ProductFilters } from '../../types/product';
 import { Tag, Image } from 'antd';
 import { CloseOutlined, PictureOutlined, LeftOutlined, RightOutlined, WarningOutlined, EditOutlined, CheckOutlined, PlusOutlined, SyncOutlined, EyeOutlined, EyeInvisibleOutlined, StarFilled, ShoppingOutlined, TableOutlined, InboxOutlined, TagOutlined, DownloadOutlined, CopyOutlined, LoadingOutlined } from '@ant-design/icons';
-import { downloadImage, copyImageToClipboard, saveBlob } from '../../services/imageTransfer';
+import { copyImageToClipboard, saveProductPhoto, saveProductPhotosZip } from '../../services/imageTransfer';
 import { CopyOnClick, formatBrandName, getProductDisplayStatus, getConditionColor, effectiveProductNumber } from '../common/displayHelpers';
 import { hiddenFieldsForType } from './productCategory';
 import { taskManager, emitProductPhotosChanged } from '../../services/taskManager';
@@ -39,6 +39,15 @@ interface Props {
 }
 
 type GalleryKind = 'official' | 'real' | 'defect';
+
+/** Тека зі шляху збереження — у сповіщенні корисніший каталог, ніж повний шлях. */
+function folderOf(fullPath: string): string {
+  const parts = fullPath.split(/[\\/]/);
+  parts.pop();
+  const dir = parts.join('/');
+  // Скорочуємо домашню теку до ~, щоб рядок не переповнював сповіщення.
+  return dir.replace(/^\/Users\/[^/]+/, '~').replace(/^C:\\Users\\[^\\]+/i, '~');
+}
 
 interface GalleryImage {
   filename: string;
@@ -1205,23 +1214,50 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
   // ── Викачати / скопіювати фото ──────────────────────────────────────────────
   // Працює і в звичайному вигляді, і у відкритому на весь екран прев'ю.
   const handleDownloadPhoto = React.useCallback(async (img: GalleryImage) => {
+    if (!productId) return;
     try {
-      await downloadImage(img.url, img.filename);
-    } catch (e) {
+      const saved = await saveProductPhoto(productId, img.filename, img.url);
+      notify.success({
+        message: '✓ Фото збережено',
+        description: saved.path
+          ? `${saved.filename} → ${folderOf(saved.path)}`
+          : `${saved.filename} — у теці завантажень`,
+        duration: 6,
+      });
+    } catch (e: any) {
       console.error('download photo failed', e);
-      notify.error({ message: 'Не вдалось завантажити фото' });
+      notify.error({
+        message: 'Не вдалось зберегти фото',
+        description: e?.message || String(e),
+        duration: 8,
+      });
     }
-  }, []);
+  }, [productId]);
 
   const handleCopyPhoto = React.useCallback(async (img: GalleryImage) => {
     try {
       const mode = await copyImageToClipboard(img.url);
       setCopiedPhoto(img.filename);
       setTimeout(() => setCopiedPhoto((cur) => (cur === img.filename ? null : cur)), 1600);
-      if (mode === 'url') notify.info({ message: 'Скопійовано посилання на фото (браузер не дає копіювати саме зображення)' });
-    } catch (e) {
+      if (mode === 'url') {
+        notify.info({
+          message: 'Скопійовано ПОСИЛАННЯ на фото',
+          description: 'Вебв\'ю не дає покласти в буфер саме зображення — вставиться URL.',
+          duration: 6,
+        });
+      } else {
+        // Коротке підтвердження на додачу до галочки на кнопці: копіювання —
+        // дія без видимого результату, і мовчазний успіх від тихого збою не
+        // відрізниш.
+        notify.success({ message: `✓ Фото ${img.filename} у буфері обміну`, duration: 3 });
+      }
+    } catch (e: any) {
       console.error('copy photo failed', e);
-      notify.error({ message: 'Не вдалось скопіювати фото' });
+      notify.error({
+        message: 'Не вдалось скопіювати фото',
+        description: e?.message || String(e),
+        duration: 7,
+      });
     }
   }, []);
 
@@ -1230,11 +1266,21 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     if (!productId || zipBusy) return;
     setZipBusy(true);
     try {
-      const { blob, filename } = await productService.downloadProductPhotosZip(productId, 'all');
-      saveBlob(blob, filename);
-    } catch (e) {
+      const saved = await saveProductPhotosZip(productId, 'all');
+      notify.success({
+        message: `✓ Збережено архів (${saved.count} фото)`,
+        description: saved.path
+          ? `${saved.filename} → ${folderOf(saved.path)}`
+          : `${saved.filename} — у теці завантажень`,
+        duration: 7,
+      });
+    } catch (e: any) {
       console.error('download all photos failed', e);
-      notify.error({ message: 'Не вдалось завантажити архів з фото' });
+      notify.error({
+        message: 'Не вдалось зберегти архів з фото',
+        description: e?.message || String(e),
+        duration: 8,
+      });
     } finally {
       setZipBusy(false);
     }

@@ -336,21 +336,11 @@ def get_product_images(
     }
 
 
-@router.get("/api/products/{product_id}/photos/download")
-def download_product_photos(
-    product_id: int = Path(..., ge=1, description="ID товару"),
-    kind: str = Query("all", regex="^(all|official|real|defect)$",
-                      description="що класти в архів: all (за замовчуванням) або один набір"),
-    db: Session = Depends(get_db),
-):
-    """Пакетне викачування: усі фото товару одним .zip (у теку завантажень браузера).
-
-    Архів містить рівно те, що видно в картці — включно з позиченими студійними
-    фото донора. Файли зберігають оригінальні імена (`<pnum>_01.webp` …).
-    """
+def _build_photos_zip(product_id: int, kind: str, db: Session):
+    """(байти zip, ім'я архіву, скільки фото запаковано) — спільне для двох шляхів:
+    віддачі архіву потоком у браузер і запису на диск у десктоп-режимі."""
     import io
     import zipfile
-    from urllib.parse import quote as _urlquote
 
     try:
         from services.product_images import read_image_bytes
@@ -384,13 +374,33 @@ def download_product_photos(
     if packed == 0:
         raise HTTPException(status_code=404, detail="Фото недоступні (файли не читаються)")
 
-    buf.seek(0)
     stem = (productnumber or f"product-{product_id}").lstrip("#").strip() or f"product-{product_id}"
-    zip_name = f"{stem}_фото.zip"
+    return buf.getvalue(), f"{stem}_фото.zip", packed
+
+
+@router.get("/api/products/{product_id}/photos/download")
+def download_product_photos(
+    product_id: int = Path(..., ge=1, description="ID товару"),
+    kind: str = Query("all", regex="^(all|official|real|defect)$",
+                      description="що класти в архів: all (за замовчуванням) або один набір"),
+    db: Session = Depends(get_db),
+):
+    """Пакетне викачування: усі фото товару одним .zip (у теку завантажень браузера).
+
+    Архів містить рівно те, що видно в картці — включно з позиченими студійними
+    фото донора. Файли зберігають оригінальні імена (`<pnum>_01.webp` …).
+
+    ⚠️ Це шлях ДЛЯ БРАУЗЕРА. У десктоп-застосунку (PyWebView) він марний: вебв'ю
+    не вміє зберігати відповідь як файл — див. `/photos/save-zip` нижче.
+    """
+    import io
+    from urllib.parse import quote as _urlquote
+
+    data, zip_name, packed = _build_photos_zip(product_id, kind, db)
     # ASCII-фолбек + RFC 5987 для кирилиці в імені файлу.
     ascii_name = re.sub(r"[^A-Za-z0-9._-]", "_", zip_name) or "photos.zip"
     return StreamingResponse(
-        buf,
+        io.BytesIO(data),
         media_type="application/zip",
         headers={
             "Content-Disposition": (
@@ -400,6 +410,65 @@ def download_product_photos(
             "X-Photo-Count": str(packed),
         },
     )
+
+
+# ── Збереження на диск (десктоп-режим) ────────────────────────────────────────
+# У вбудованому вебв'ю `<a download>` не працює: клік не зберігає файл, а
+# переходить на нього — фото розгортається на весь екран поверх застосунку й
+# блокує роботу, а zip просто зникає в нікуди. Оскільки бекенд у десктоп-режимі
+# на тій самій машині, що й вікно, він і записує файл у «Завантаження», а UI
+# показує, куди саме. Див. services/file_saver.py.
+
+def _saver():
+    try:
+        from services.file_saver import save_bytes
+    except ImportError:
+        from backend.services.file_saver import save_bytes
+    return save_bytes
+
+
+@router.post("/api/products/{product_id}/photos/save-one")
+def save_product_photo_to_disk(
+    product_id: int = Path(..., ge=1, description="ID товару"),
+    filename: str = Query(..., description="ім'я фото з галереї картки"),
+    db: Session = Depends(get_db),
+):
+    """Зберегти ОДНЕ фото товару в теку «Завантаження». Повертає шлях."""
+    try:
+        from services.product_images import read_image_bytes
+    except ImportError:
+        from backend.services.product_images import read_image_bytes
+
+    _pnum, _borrowed, images = _product_gallery(product_id, db)
+    # Шукаємо саме серед фото ЦІЄЇ картки — довільний шлях ззовні сюди не потрапить.
+    img = next((i for i in images if i.filename == filename), None)
+    if img is None:
+        raise HTTPException(status_code=404, detail=f"Фото {filename} не знайдено в картці товару")
+
+    data = read_image_bytes(img)
+    if data is None:
+        raise HTTPException(status_code=404, detail=f"Файл {filename} не читається")
+
+    try:
+        path, saved_name = _saver()(data, img.filename, fallback_name="photo.webp")
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=f"Не вдалося зберегти файл: {e}")
+    return {"saved": True, "path": path, "filename": saved_name, "bytes": len(data)}
+
+
+@router.post("/api/products/{product_id}/photos/save-zip")
+def save_product_photos_zip_to_disk(
+    product_id: int = Path(..., ge=1, description="ID товару"),
+    kind: str = Query("all", regex="^(all|official|real|defect)$"),
+    db: Session = Depends(get_db),
+):
+    """Зберегти ВСІ фото товару одним .zip у теку «Завантаження». Повертає шлях."""
+    data, zip_name, packed = _build_photos_zip(product_id, kind, db)
+    try:
+        path, saved_name = _saver()(data, zip_name, fallback_name="photos.zip")
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=f"Не вдалося зберегти архів: {e}")
+    return {"saved": True, "path": path, "filename": saved_name, "count": packed, "bytes": len(data)}
 
 
 def _pnum_and_category(product_id: int, db: Session):

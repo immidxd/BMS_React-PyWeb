@@ -205,6 +205,18 @@ def compute_flags(platform: str, channel: str,
 
 
 # ── публічне API ───────────────────────────────────────────────────────────────
+def is_desktop_shell() -> bool:
+    """Чи бекенд запущено лаунчером десктоп-застосунку (PyWebView).
+
+    Ставить `main.py` через BMS_DESKTOP=1 перед стартом бекенда. Важливо для
+    завантаження файлів: у вбудованому вебв'ю (WKWebView на macOS) атрибут
+    `<a download>` НЕ працює — клік просто відкриває blob-URL, і замість
+    збереження фото розгортається на весь екран поверх застосунку. Тому в
+    десктоп-режимі файли зберігає бекенд (він на тій самій машині), а не браузер.
+    """
+    return os.getenv("BMS_DESKTOP", "").lower() in ("1", "true", "yes")
+
+
 def get_runtime_config() -> Dict[str, Any]:
     """Зведена конфігурація для бекенду і для віддачі фронтенду."""
     file_overrides = _read_file_overrides()
@@ -215,6 +227,7 @@ def get_runtime_config() -> Dict[str, Any]:
         "platform": platform,
         "channel": channel,
         "version": app_version(),
+        "desktop": is_desktop_shell(),
         "flags": flags,
     }
 
