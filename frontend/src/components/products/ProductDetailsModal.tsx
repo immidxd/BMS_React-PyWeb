@@ -16,6 +16,8 @@ import ShafaBridgeDialog, { type ShafaProductStatus } from './ShafaBridgeDialog'
 import OlxPublishDialog, { type OlxPreview } from './OlxPublishDialog';
 import { confirmDialog, notify } from '../../ui/feedback';
 import LoadingSpinner from '../common/LoadingSpinner';
+import SmartImage from '../common/SmartImage';
+import { thumbUrl, prefetchImage } from '../../services/imageUrls';
 
 // Легкий стан чіпа OLX (з /olx/product-status) — окремо від прев'ю публікації.
 type OlxChipStatus = {
@@ -160,6 +162,9 @@ const IMAGE_SOFT_TIMEOUT_MS = 3500;
 
 const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev, onNext, syncBeforeLoad }) => {
   const [loading, setLoading] = useState(false);
+  // Перехід ◀/▶ у процесі: показана картка вже НЕ відповідає обраному товару.
+  // Поки true — картка приглушена, редагування заблоковане, зверху індикатор.
+  const [navPending, setNavPending] = useState(false);
   const [product, setProduct] = useState<Product | null>(null);
   // Галерея зберігається РАЗОМ з id товару, якому належить. Це робить десинхрон
   // («фото від сусідньої картки під даними цієї») структурно неможливим: показуємо
@@ -789,6 +794,20 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
   }, [allImages, showDefects, activeKind]);
   const defectCount = useMemo(() => allImages.filter((i) => i.is_defect).length, [allImages]);
 
+  // Префетч сусідніх кадрів: ←/→ має бути миттєвим, а не «чекай, поки доїде».
+  // Тягнемо в кеш браузера наступний і попередній кадр у повному розмірі; решту
+  // галереї — лише мініатюрами (одиниці КБ, стрічка прев'ю тоді вже готова).
+  // Ефект стоїть ТУТ, а не біля activeImage: нижче в компоненті вже є ранній
+  // `if (!open) return null`, і хук після нього порушив би порядок хуків.
+  useEffect(() => {
+    if (images.length === 0) return;
+    const around = [activeIdx + 1, activeIdx - 1]
+      .map((i) => (i + images.length) % images.length)
+      .filter((i) => i !== activeIdx);
+    around.forEach((i) => prefetchImage(images[i]?.url));
+    images.forEach((img) => prefetchImage(thumbUrl(img.url, 96)));
+  }, [images, activeIdx]);
+
   // Перемкнути показ дефектних фото. При УВІМКНЕННІ — одразу перегортаємо галерею
   // до першого дефектного кадру (а не лишаємось на поточному непошкодженому).
   const toggleDefects = React.useCallback(() => {
@@ -869,6 +888,23 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     }
   }, [productId, adoptId, loadProduct]);
 
+  // id товару, який ЗАРАЗ намальовано (не той, на який перемкнулись) — потрібен,
+  // щоб не спорожнити галерею, поки картка ще показує попередній товар.
+  const renderedPidRef = useRef<number | null>(null);
+  renderedPidRef.current = product?.id ?? null;
+  // Фото нового товару, що приїхали РАНІШЕ за його дані. Показувати їх не можна
+  // (це були б фото одного товару під даними іншого — та сама помилка, від якої
+  // захищає allImages), а викидати шкода: комітимо, щойно картку підмінено.
+  const pendingGalleryRef = useRef<{ pid: number; images: GalleryImage[] } | null>(null);
+
+  useEffect(() => {
+    const pend = pendingGalleryRef.current;
+    if (pend && product?.id === pend.pid) {
+      setGallery(pend);
+      pendingGalleryRef.current = null;
+    }
+  }, [product?.id]);
+
   // Фото вантажимо ОКРЕМО від товару. Спінер галереї тримаємо лише до soft-таймауту:
   // якщо Drive відповідає довго — показуємо плейсхолдер, але запит триває й фото
   // зʼявляться коли доїдуть. Картку це ніколи не блокує.
@@ -883,7 +919,15 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
       if (!settled) settled = true;
       // Відповідь могла прийти вже після переходу на інший товар — тоді вона нікому
       // не потрібна (а показувати її не можна: gallery.pid відсіче, але й писати шкода).
-      if (curPidRef.current === pid) setGallery({ pid, images: res.images || [] });
+      if (curPidRef.current !== pid) return;
+      const next = { pid, images: res.images || [] };
+      if (renderedPidRef.current === pid) {
+        setGallery(next);
+      } else {
+        // Фото випередили дані (їх тепер вантажимо паралельно) — притримуємо,
+        // щоб галерея не блимнула порожнечею під ще старою карткою.
+        pendingGalleryRef.current = next;
+      }
     } catch (e) {
       console.error('Failed to load images', e);
     } finally {
@@ -912,6 +956,10 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
   // Локальний порядок (для живого optimistic-перетягування). Синхронізуємо із
   // сервером, але НЕ під час активного drag (інакше «стрибало» б назад).
   const [mgrOrder, setMgrOrder] = useState<string[]>([]);
+  // Виділені фото (імена файлів) для пакетних дій — видалити/перенести кілька
+  // одразу, а не по одному хрестику.
+  const [selectedPhotos, setSelectedPhotos] = useState<Set<string>>(() => new Set());
+  const lastPhotoClickRef = React.useRef<string | null>(null);
   const draggingRef = React.useRef(false);
   const tileRefs = React.useRef<Map<string, HTMLDivElement>>(new Map());
   const prevRects = React.useRef<Map<string, DOMRect>>(new Map());
@@ -921,6 +969,25 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     const next = officialImages.map((i) => i.filename);
     setMgrOrder((cur) => (cur.join('') === next.join('') ? cur : next));
   }, [officialImages]);
+
+  // Виділення фото живе в межах ОДНОГО набору одного товару: зміна товару,
+  // набору (Офіційні/Реальні/Дефекти) або вихід з редагування його скидають.
+  // Інакше пакетна дія могла б застосуватись до вже невидимих файлів.
+  useEffect(() => {
+    setSelectedPhotos((cur) => (cur.size ? new Set<string>() : cur));
+    lastPhotoClickRef.current = null;
+  }, [product?.id, activeKind, editMode]);
+
+  // Файли могли зникнути поза виділенням (видалення/перенос/перезавантаження) —
+  // тримаємо виділення підмножиною реально наявних плиток.
+  useEffect(() => {
+    setSelectedPhotos((cur) => {
+      if (cur.size === 0) return cur;
+      const alive = new Set(mgrOrder);
+      const next = new Set(Array.from(cur).filter((fn) => alive.has(fn)));
+      return next.size === cur.size ? cur : next;
+    });
+  }, [mgrOrder]);
 
   // FLIP-анімація: плавне ковзання плиток у нові позиції при зміні mgrOrder.
   React.useLayoutEffect(() => {
@@ -976,6 +1043,121 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
       .catch(() => { /* помилку показав taskManager */ })
       .finally(() => { if (curPidRef.current === pid) setPhotoBusy(false); });
   }, [productId, activeKind, loadImages]);
+
+  // ── Групове виділення фото в менеджері ──────────────────────────────────────
+  // ⌘/Ctrl + клік — додати/зняти одне; Shift + клік — діапазон від попереднього
+  // кліку; клік без модифікатора при активному виділенні — зняти все.
+  // Порядок береться з mgrOrder (те, що бачить око), а не з серверного списку.
+  const selectPhoto = React.useCallback((filename: string, e: React.MouseEvent) => {
+    const order = mgrOrder;
+    const idx = order.indexOf(filename);
+    if (e.shiftKey && lastPhotoClickRef.current) {
+      const from = order.indexOf(lastPhotoClickRef.current);
+      if (from >= 0 && idx >= 0) {
+        const [a, b] = from <= idx ? [from, idx] : [idx, from];
+        // Діапазон ДОДАЄТЬСЯ до наявного виділення (як у Finder), а не замінює.
+        setSelectedPhotos((cur) => {
+          const next = new Set(cur);
+          for (let i = a; i <= b; i++) next.add(order[i]);
+          return next;
+        });
+        return;
+      }
+    }
+    if (e.metaKey || e.ctrlKey) {
+      setSelectedPhotos((cur) => {
+        const next = new Set(cur);
+        if (next.has(filename)) next.delete(filename); else next.add(filename);
+        return next;
+      });
+      lastPhotoClickRef.current = filename;
+      return;
+    }
+    // Звичайний клік: зняти виділення (щоб вийти з режиму, не шукаючи кнопку).
+    // Коли нічого не виділено — не робимо нічого, щоб не заважати перетягуванню.
+    setSelectedPhotos((cur) => (cur.size > 0 ? new Set() : cur));
+    lastPhotoClickRef.current = filename;
+  }, [mgrOrder]);
+
+  const clearPhotoSelection = React.useCallback(() => {
+    setSelectedPhotos(new Set());
+    lastPhotoClickRef.current = null;
+  }, []);
+
+  const selectAllPhotos = React.useCallback(() => {
+    setSelectedPhotos(new Set(mgrOrder));
+  }, [mgrOrder]);
+
+  // Пакетне видалення. Запити ПОСЛІДОВНІ: видалення не перенумеровує решту, але
+  // послідовність дає передбачуваний звіт і не б'є по бекенду пачкою.
+  const handleDeleteSelectedPhotos = React.useCallback(async () => {
+    const names = mgrOrder.filter((fn) => selectedPhotos.has(fn));
+    if (!productId || names.length === 0) return;
+    const ok = await confirmDialog({
+      title: `Видалити ${names.length} фото?`,
+      body: names.length > 6
+        ? `${names.slice(0, 6).join(', ')} … і ще ${names.length - 6}`
+        : names.join(', '),
+      okText: 'Видалити', kind: 'warning',
+    });
+    if (!ok) return;
+    setPhotoBusy(true);
+    const failed: string[] = [];
+    try {
+      for (const fn of names) {
+        try {
+          await productService.deleteProductPhoto(productId, fn);
+        } catch (e) {
+          console.error('delete photo failed', fn, e);
+          failed.push(fn);
+        }
+      }
+      clearPhotoSelection();
+      await loadImages(true);
+      setActiveIdx(0);
+      emitProductPhotosChanged(productId);
+      if (failed.length === 0) {
+        notify.success({ message: `Видалено ${names.length} фото`, duration: 3 });
+      } else {
+        notify.warning({
+          message: `Видалено ${names.length - failed.length} з ${names.length}`,
+          description: `Не вдалося: ${failed.join(', ')}`, duration: 8,
+        });
+      }
+    } finally { setPhotoBusy(false); }
+  }, [productId, mgrOrder, selectedPhotos, loadImages, clearPhotoSelection]);
+
+  // Пакетне перенесення між наборами. ОБОВ'ЯЗКОВО послідовно: кожен перенос бере
+  // наступний вільний індекс у цільовому наборі, і паралельні запити вибрали б
+  // один і той самий номер.
+  const handleMoveSelectedPhotos = React.useCallback(async (toKind: GalleryKind) => {
+    const names = mgrOrder.filter((fn) => selectedPhotos.has(fn));
+    if (!productId || names.length === 0) return;
+    setPhotoBusy(true);
+    const failed: string[] = [];
+    try {
+      for (const fn of names) {
+        try {
+          await productService.movePhotoOne(productId, fn, toKind);
+        } catch (e) {
+          console.error('move photo failed', fn, e);
+          failed.push(fn);
+        }
+      }
+      clearPhotoSelection();
+      await loadImages(true);
+      emitProductPhotosChanged(productId);
+      const label = toKind === 'official' ? 'Офіційні' : toKind === 'real' ? 'Реальні' : 'Дефекти';
+      if (failed.length === 0) {
+        notify.success({ message: `Перенесено ${names.length} фото → ${label}`, duration: 3 });
+      } else {
+        notify.warning({
+          message: `Перенесено ${names.length - failed.length} з ${names.length}`,
+          description: `Не вдалося: ${failed.join(', ')}`, duration: 8,
+        });
+      }
+    } finally { setPhotoBusy(false); }
+  }, [productId, mgrOrder, selectedPhotos, loadImages, clearPhotoSelection]);
 
   const handleDeletePhoto = React.useCallback(async (filename: string) => {
     if (!productId) return;
@@ -1085,7 +1267,13 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
   }, [dragIdx, overIdx, mgrOrder, officialImages, handleReorderPhotos]);
 
   // Кожне свіже відкриття (після закриття) трактуємо як ПЕРВИННЕ (зі спінером).
-  useEffect(() => { if (!open) prevIdRef.current = null; }, [open]);
+  useEffect(() => {
+    if (!open) {
+      prevIdRef.current = null;
+      setNavPending(false);   // інакше наступне відкриття успадкувало б «перехід»
+      pendingGalleryRef.current = null;
+    }
+  }, [open]);
 
   useEffect(() => {
     if (!open || !productId) return;
@@ -1122,6 +1310,14 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     } else {
       // Навігація — стара картка лишається видимою, нову готуємо у фоні (без спінера),
       // підмінюємо РІВНО коли дані готові → keyed-fade робить перехід плавним.
+      //
+      // ⚠️ Поки нові дані в дорозі, картка позначена як НЕАКТУАЛЬНА (navPending):
+      // приглушена, з індикатором і без можливості редагувати. Інакше видно старий
+      // товар, який виглядає як поточний — і правка йде не в той товар.
+      setNavPending(true);
+      // Фото тягнемо ПАРАЛЕЛЬНО з даними, а не після них: чекати на картку, щоб
+      // лише тоді почати вантажити фото, — це подвійна затримка на кожному кроці.
+      loadImages();
       (async () => {
         try {
           const prod = await productService.getProduct(productId);
@@ -1130,8 +1326,10 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                               // «прив'яжуться» до нового id — див. allImages вище
         } catch (e) {
           console.error('Failed to load product (nav)', e);
+          notify.error({ message: 'Не вдалося завантажити картку товару' });
+        } finally {
+          if (seq === loadSeqRef.current) setNavPending(false);
         }
-        if (seq === loadSeqRef.current) loadImages();
       })();
     }
   }, [open, productId, loadProduct, loadImages]);
@@ -1356,17 +1554,15 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     if (activeIdx >= images.length) setActiveIdx(Math.max(0, images.length - 1));
   }, [images.length, activeIdx]);
 
-  // Preload усі фото товару у фоні (browser http-cache) для миттєвого перемикання.
-  useEffect(() => {
-    if (allImages.length === 0) return;
-    const preloaded: HTMLImageElement[] = [];
-    for (const img of allImages) {
-      const i = new window.Image();
-      i.src = img.url;
-      preloaded.push(i);
-    }
-    return () => { preloaded.length = 0; };
-  }, [allImages]);
+  // ⚠️ Тут БУВ «preload усіх фото товару у фоні». Намір добрий, ціна — ні:
+  // качались ОРИГІНАЛИ всіх наборів одразу (офіційні + реальні + дефекти), тобто
+  // на картку з 13 фото — 1.65 МБ і 13 паралельних запитів, які змагались із
+  // завантаженням самої картки. Причому 6 з них — «реальні» фото, які в цю мить
+  // навіть не показуються.
+  //
+  // Замінено на адресний префетч вище: повний розмір лише для сусідніх кадрів
+  // (◀/▶ так само миттєві) + мініатюри для всієї стрічки (25 КБ на всю галерею).
+  // Решта кадрів приїжджає на вимогу, з видимим прогресивним плейсхолдером.
 
   // Card navigation вимкнено в режимі редагування (щоб не загубити незбережене).
   const navPrev = (!editMode && onPrev) ? onPrev : undefined;
@@ -1385,6 +1581,9 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
         // дійшла до вебв'ю/ОС і не «зменшувала» вікно (вихід із fullscreen тощо).
         e.preventDefault();
         e.stopPropagation();
+        // Esc «розбирає» стан шар за шаром, а не рубає одразу: спершу знімає
+        // виділення фото, потім виходить з редагування, і лише тоді закриває.
+        if (selectedPhotos.size > 0) { clearPhotoSelection(); return; }
         if (editMode) { cancelEditMode(); return; }
         onClose();
         return;
@@ -1416,7 +1615,8 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     };
     window.addEventListener('keydown', handleKey, true);
     return () => window.removeEventListener('keydown', handleKey, true);
-  }, [open, onClose, images.length, previewVisible, navPrev, navNext, editMode]);
+  }, [open, onClose, images.length, previewVisible, navPrev, navNext, editMode,
+      selectedPhotos.size, clearPhotoSelection]);
 
   const p = product;
 
@@ -1727,6 +1927,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
   };
 
   const activeImage = images[activeIdx];
+
   // Ключовий номер для ПОКАЗУ: реальний або перший клон-номер (поки нема реального).
   // pnumClean лишається РЕАЛЬНИМ номером (writeback/префікс фото key-ляться на нього).
   const pnumEff = p ? effectiveProductNumber(p.productnumber, (p as any).clonednumbers, (p as any).display_number) : { value: '', isClone: false };
@@ -2153,8 +2354,24 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
               </div>
             </div>
 
+            {/* Індикатор переходу між картками. Поки він видимий, унизу показано
+                ПОПЕРЕДНІЙ товар — і по ньому одразу видно, що дані ще не ті.
+                Раніше стара картка виглядала як актуальна, і правка могла піти
+                не в той товар. */}
+            {navPending && (
+              <div className="relative h-0.5 w-full overflow-hidden bg-gray-100 dark:bg-gray-800 shrink-0">
+                <div className="absolute inset-y-0 w-1/3 bg-primary-500 bms-navbar-slide" />
+              </div>
+            )}
+
             {/* Body */}
-            <div ref={bodyRef} className="overflow-y-auto flex-1">
+            <div
+              ref={bodyRef}
+              className={`overflow-y-auto flex-1 transition-opacity duration-150 ${
+                navPending ? 'opacity-40 pointer-events-none select-none' : ''
+              }`}
+              aria-busy={navPending}
+            >
               {saveError && (
                 <div className="mx-6 mt-4 px-3 py-2 rounded-lg text-sm bg-red-50 text-red-700 border border-red-200 dark:bg-red-900/20 dark:text-red-300 dark:border-red-800">
                   {saveError}
@@ -2210,6 +2427,26 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                               className="!w-full !h-full bms-fade-in"
                               style={{ objectFit: 'contain', width: '100%', height: '100%', cursor: 'zoom-in' }}
                               wrapperStyle={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                              // Прогресивне завантаження: розмита мініатюра (десятки КБ,
+                              // з кешу бекенда) стоїть на місці кадру, доки їде оригінал.
+                              // Без цього тут була порожня пляма — саме та «невідомість»,
+                              // у якій не ясно, чи фото взагалі завантажиться.
+                              placeholder={(
+                                <div className="relative w-full h-full">
+                                  <div className="absolute inset-0 bms-img-skeleton" />
+                                  <img
+                                    src={thumbUrl(activeImage.url, 640)}
+                                    alt=""
+                                    aria-hidden="true"
+                                    className="absolute inset-0 w-full h-full object-contain blur-[8px] scale-105"
+                                  />
+                                  <div className="absolute inset-0 flex items-end justify-center pb-4 pointer-events-none">
+                                    <span className="px-2 py-0.5 rounded-full text-[10px] bg-black/45 text-white">
+                                      Завантаження фото…
+                                    </span>
+                                  </div>
+                                </div>
+                              )}
                             />
                           </Image.PreviewGroup>
                           {activeImage.is_defect && (
@@ -2343,7 +2580,10 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                                 : (img.is_defect ? 'border-amber-400/60 hover:border-amber-500 opacity-80 hover:opacity-100' : 'border-gray-200 dark:border-gray-700 hover:border-gray-400 dark:hover:border-gray-500 opacity-70 hover:opacity-100')
                             }`}
                             title={img.is_defect ? `Дефект: ${img.filename}` : img.filename}>
-                            <img src={img.url} alt={img.filename} className="w-full h-full object-cover" loading="lazy" />
+                            {/* thumbOnly: плитка 64 px — оригінал тут не потрібен
+                                узагалі (був ≈100 КБ на кожну, тепер ≈2 КБ). */}
+                            <SmartImage src={img.url} thumb={96} thumbOnly
+                              alt={img.filename} className="w-full h-full" />
                             {img.is_defect && (
                               <span className="absolute top-0.5 right-0.5 inline-flex items-center justify-center w-4 h-4 rounded-full bg-amber-500 text-white text-[9px] shadow">
                                 <WarningOutlined style={{ fontSize: 9 }} />
@@ -2402,8 +2642,49 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                           </div>
                         ) : (
                           <>
+                            {/* Панель пакетних дій — з'являється, щойно щось виділено.
+                                Робить видимим і саме виділення, і що з ним можна зробити. */}
+                            {selectedPhotos.size > 0 && (
+                              <div className="flex items-center flex-wrap gap-2 mb-2 px-2.5 py-1.5 rounded-lg bg-primary-50 dark:bg-primary-900/20 border border-primary-200 dark:border-primary-800">
+                                <span className="text-[12px] font-medium text-gray-700 dark:text-gray-200">
+                                  Виділено: {selectedPhotos.size}
+                                </span>
+                                <span className="flex-1" />
+                                {([
+                                  { key: 'official' as const, label: 'Офіційні' },
+                                  { key: 'real' as const, label: 'Реальні' },
+                                  { key: 'defect' as const, label: 'Дефекти' },
+                                ]).filter((k) => k.key !== activeKind).map((k) => (
+                                  <button key={k.key} type="button" disabled={photoBusy}
+                                    onClick={() => handleMoveSelectedPhotos(k.key)}
+                                    className="px-2 py-1 rounded-md text-[11px] bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-600 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50 transition-colors whitespace-nowrap"
+                                    title={`Перенести виділені фото в набір «${k.label}»`}>
+                                    ⇄ {k.label}
+                                  </button>
+                                ))}
+                                <button type="button" disabled={photoBusy}
+                                  onClick={handleDeleteSelectedPhotos}
+                                  className="px-2 py-1 rounded-md text-[11px] bg-red-600 hover:bg-red-700 !text-white disabled:opacity-50 transition-colors whitespace-nowrap"
+                                  title="Видалити всі виділені фото">
+                                  ✕ Видалити ({selectedPhotos.size})
+                                </button>
+                                <button type="button" onClick={clearPhotoSelection}
+                                  className="px-2 py-1 rounded-md text-[11px] text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-100 hover:bg-white/70 dark:hover:bg-gray-800 transition-colors whitespace-nowrap">
+                                  Зняти
+                                </button>
+                              </div>
+                            )}
+
+                            <div className="flex items-center gap-2 mb-1.5">
+                              <button type="button" disabled={photoBusy || mgrOrder.length === 0}
+                                onClick={selectedPhotos.size === mgrOrder.length ? clearPhotoSelection : selectAllPhotos}
+                                className="text-[11px] text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 underline-offset-2 hover:underline disabled:opacity-50">
+                                {selectedPhotos.size === mgrOrder.length ? 'Зняти виділення' : `Виділити всі (${mgrOrder.length})`}
+                              </button>
+                            </div>
+
                             <div className="grid grid-cols-4 sm:grid-cols-5 gap-2">
-                              {mgrOrder.map((fn, i) => { const img = imgByName.get(fn); if (!img) return null; const dragging = dragIdx === i; const isOver = overIdx === i && dragIdx !== null && dragIdx !== i; return (
+                              {mgrOrder.map((fn, i) => { const img = imgByName.get(fn); if (!img) return null; const dragging = dragIdx === i; const isOver = overIdx === i && dragIdx !== null && dragIdx !== i; const isPicked = selectedPhotos.has(fn); return (
                                 <div key={fn}
                                   ref={(el) => { if (el) tileRefs.current.set(fn, el); else tileRefs.current.delete(fn); }}
                                   draggable={!photoBusy}
@@ -2412,13 +2693,38 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                                   onDragOver={(e) => { e.preventDefault(); onTileDragEnter(fn); }}
                                   onDragEnd={onTileDrop}
                                   onDrop={(e) => { e.preventDefault(); onTileDrop(); }}
-                                  className={`relative group/ph aspect-square rounded-lg overflow-hidden border bg-white dark:bg-gray-900 ${i === 0 ? 'border-primary-500' : 'border-gray-200 dark:border-gray-700'} ${dragging ? 'opacity-40' : 'shadow-sm hover:shadow-md'} ${isOver ? 'ring-2 ring-primary-500 scale-105 z-10' : ''} transition-[box-shadow,transform,opacity] duration-150 cursor-grab active:cursor-grabbing`}
+                                  onClick={(e) => selectPhoto(img.filename, e)}
+                                  className={`relative group/ph aspect-square rounded-lg overflow-hidden border bg-white dark:bg-gray-900 ${isPicked ? 'border-primary-500 ring-2 ring-primary-500' : (i === 0 ? 'border-primary-500' : 'border-gray-200 dark:border-gray-700')} ${dragging ? 'opacity-40' : 'shadow-sm hover:shadow-md'} ${isOver ? 'ring-2 ring-primary-500 scale-105 z-10' : ''} transition-[box-shadow,transform,opacity] duration-150 cursor-grab active:cursor-grabbing`}
                                   title={img.filename}>
-                                  <img src={img.url} alt={img.filename} draggable={false} className="w-full h-full object-cover pointer-events-none select-none" loading="lazy" />
+                                  <SmartImage src={img.url} thumb={96} thumbOnly draggable={false}
+                                    alt={img.filename}
+                                    className="w-full h-full pointer-events-none select-none" />
+                                  {/* Позначка виділення. Клікабельна сама по собі —
+                                      щоб виділяти можна було й без клавіатури. */}
+                                  <button type="button" disabled={photoBusy}
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      // Клік по галочці = завжди перемикання цієї плитки,
+                                      // навіть без ⌘ (Shift лишається діапазоном).
+                                      selectPhoto(img.filename, e.shiftKey ? e : ({ ...e, metaKey: true } as any));
+                                    }}
+                                    aria-pressed={isPicked}
+                                    title={isPicked ? 'Зняти виділення' : 'Виділити (⌘/Ctrl + клік · Shift — діапазон)'}
+                                    className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-[4px] border flex items-center justify-center text-[9px] leading-none transition-opacity ${
+                                      isPicked
+                                        ? 'bg-primary-500 border-primary-500 text-white opacity-100'
+                                        : 'bg-white/90 dark:bg-gray-900/90 border-gray-300 dark:border-gray-600 text-transparent opacity-0 group-hover/ph:opacity-100'
+                                    }`}>
+                                    ✓
+                                  </button>
                                   {i === 0 && (
                                     <span className="absolute bottom-0 inset-x-0 text-center text-[9px] bg-primary-500/90 text-white py-0.5 pointer-events-none">головне</span>
                                   )}
-                                  <div className="absolute top-0.5 right-0.5 flex gap-0.5 opacity-0 group-hover/ph:opacity-100 transition-opacity">
+                                  {/* Поодинокі дії ховаємо, поки триває групове виділення —
+                                      щоб випадковий клік по ✕ не видалив одне фото замість пачки. */}
+                                  <div className={`absolute top-0.5 right-0.5 flex gap-0.5 transition-opacity ${
+                                    selectedPhotos.size > 0 ? 'opacity-0 pointer-events-none' : 'opacity-0 group-hover/ph:opacity-100'
+                                  }`}>
                                     <button type="button" disabled={photoBusy}
                                       onClick={() => setMoveMenuFor((cur) => (cur === img.filename ? null : img.filename))}
                                       className="w-5 h-5 inline-flex items-center justify-center rounded bg-white/90 dark:bg-gray-900/90 text-gray-700 dark:text-gray-200 hover:bg-white shadow text-[11px] leading-none"
@@ -2459,6 +2765,8 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                             </div>
                             <span className="block mt-2 text-[10px] text-gray-400 dark:text-gray-500">
                               Перетягни, щоб змінити порядок (перше = головне) · ⇄ перенести (Офіційні/Реальні/Дефекти) · 🔄 замінити · ✕ видалити
+                              <br />
+                              Кілька фото: <b>⌘/Ctrl + клік</b> — по одному · <b>Shift + клік</b> — діапазон · <b>Esc</b> — зняти
                             </span>
                           </>
                         )}

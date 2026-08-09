@@ -22,8 +22,16 @@ from services.advanced_search_service import advanced_search_service
 router = APIRouter(prefix="/api/search", tags=["search"])
 logger = logging.getLogger(__name__)
 
+# ⚠️ Усе в цьому модулі — СИНХРОННЕ (`def`, не `async def`), і має таким лишитись.
+# Тіла функцій ходять у БД синхронною сесією SQLAlchemy (а advanced_search — узагалі
+# прямим psycopg2). Оголошені як `async def`, вони виконувались просто на event loop
+# uvicorn'а: поки шапка шукає на кожен ввід, ЖОДЕН інший запит не обслуговується —
+# картка товару, фото, список чекають у черзі. Симптом «зависла інформація про
+# попередній товар» — саме це. `def` → FastAPI сам виносить у threadpool.
+# Той самий інваріант, що й для решти роутерів.
+
 @router.get("/global", response_model=GlobalSearchResponse)
-async def global_search(
+def global_search(
     q: str = Query(..., min_length=1, description="Пошуковий запит"),
     scope: Optional[str] = Query(None, description="Обмежити пошук категорією: products, orders, clients, suppliers, deliveries"),
     limit: int = Query(5, ge=1, le=20, description="Кількість результатів для превью"),
@@ -33,6 +41,13 @@ async def global_search(
     """
     Глобальний пошук по всіх сутностях системи
     Повертає результати з усіх категорій + інсайти
+
+    🐞 БУВ БАГ: `_search_*` повертають Pydantic-модель `CategorySearchResult`, а
+    інсайти читали її як словник (`products_result["total"]`) → TypeError на
+    КОЖНОМУ запиті з include_insights, і весь ендпоінт віддавав 500 «Помилка
+    пошуку». Тобто глобальний пошук у шапці та інсайти в «Товарах» не працювали
+    взагалі — фронт мовчки ковтав помилку й показував порожньо. Читаємо через
+    атрибут (`.total`).
     """
     try:
         logger.info(f"Global search query: '{q}', scope: {scope}")
@@ -42,27 +57,27 @@ async def global_search(
         
         # Пошук товарів
         if not scope or scope == "products":
-            products_result = await _search_products(db, q, limit)
+            products_result = _search_products(db, q, limit)
             results["products"] = products_result
             
             if include_insights:
                 insights["products"] = {
-                    "total_found": products_result["total"],
-                    "brands_found": await _count_brands_in_search(db, q),
-                    "avg_price": await _get_avg_price_in_search(db, q)
+                    "total_found": products_result.total,
+                    "brands_found": _count_brands_in_search(db, q),
+                    "avg_price": _get_avg_price_in_search(db, q)
                 }
         
         # Пошук замовлень (якщо таблиця готова)
         if not scope or scope == "orders":
             try:
-                orders_result = await _search_orders(db, q, limit)
+                orders_result = _search_orders(db, q, limit)
                 results["orders"] = orders_result
                 
                 if include_insights:
                     insights["orders"] = {
-                        "total_found": orders_result["total"],
-                        "active_orders": await _count_active_orders_in_search(db, q),
-                        "total_value": await _get_total_orders_value_in_search(db, q)
+                        "total_found": orders_result.total,
+                        "active_orders": _count_active_orders_in_search(db, q),
+                        "total_value": _get_total_orders_value_in_search(db, q)
                     }
             except Exception as e:
                 logger.warning(f"Orders search failed: {e}")
@@ -71,13 +86,13 @@ async def global_search(
         # Пошук клієнтів (якщо таблиця готова)
         if not scope or scope == "clients":
             try:
-                clients_result = await _search_clients(db, q, limit)
+                clients_result = _search_clients(db, q, limit)
                 results["clients"] = clients_result
                 
                 if include_insights:
                     insights["clients"] = {
-                        "total_found": clients_result["total"],
-                        "active_clients": await _count_active_clients_in_search(db, q)
+                        "total_found": clients_result.total,
+                        "active_clients": _count_active_clients_in_search(db, q)
                     }
             except Exception as e:
                 logger.warning(f"Clients search failed: {e}")
@@ -102,11 +117,11 @@ async def global_search(
         raise HTTPException(status_code=500, detail="Помилка пошуку")
 
 
-async def _search_products(db: Session, query: str, limit: int) -> CategorySearchResult:
+def _search_products(db: Session, query: str, limit: int) -> CategorySearchResult:
     """Розширений пошук товарів з використанням AdvancedSearchService"""
     try:
         # Використовуємо новий розширений сервіс пошуку
-        results, total = await advanced_search_service.advanced_search(
+        results, total = advanced_search_service.advanced_search(
             db=db,
             query=query,
             limit=limit,
@@ -142,10 +157,10 @@ async def _search_products(db: Session, query: str, limit: int) -> CategorySearc
     except Exception as e:
         logger.error(f"Advanced products search error: {e}")
         # Fallback до простого пошуку
-        return await _search_products_simple(db, query, limit)
+        return _search_products_simple(db, query, limit)
 
 
-async def _search_products_simple(db: Session, query: str, limit: int) -> CategorySearchResult:
+def _search_products_simple(db: Session, query: str, limit: int) -> CategorySearchResult:
     """Простий fallback пошук товарів"""
     try:
         search_conditions = or_(
@@ -182,13 +197,13 @@ async def _search_products_simple(db: Session, query: str, limit: int) -> Catego
         return CategorySearchResult(items=[], total=0)
 
 
-async def _search_orders(db: Session, query: str, limit: int) -> CategorySearchResult:
+def _search_orders(db: Session, query: str, limit: int) -> CategorySearchResult:
     """Пошук замовлень (заглушка)"""
     # TODO: Реалізувати після налаштування таблиці замовлень
     return CategorySearchResult(items=[], total=0)
 
 
-async def _search_clients(db: Session, query: str, limit: int) -> CategorySearchResult:
+def _search_clients(db: Session, query: str, limit: int) -> CategorySearchResult:
     """Пошук клієнтів"""
     try:
         search_conditions = or_(
@@ -220,7 +235,7 @@ async def _search_clients(db: Session, query: str, limit: int) -> CategorySearch
 
 
 # Допоміжні функції для інсайтів
-async def _count_brands_in_search(db: Session, query: str) -> int:
+def _count_brands_in_search(db: Session, query: str) -> int:
     """Підрахунок кількості унікальних брендів у результатах пошуку"""
     try:
         search_conditions = or_(
@@ -238,7 +253,7 @@ async def _count_brands_in_search(db: Session, query: str) -> int:
         return 0
 
 
-async def _get_avg_price_in_search(db: Session, query: str) -> Optional[float]:
+def _get_avg_price_in_search(db: Session, query: str) -> Optional[float]:
     """Середня ціна товарів у результатах пошуку"""
     try:
         search_conditions = or_(
@@ -258,26 +273,26 @@ async def _get_avg_price_in_search(db: Session, query: str) -> Optional[float]:
         return None
 
 
-async def _count_active_orders_in_search(db: Session, query: str) -> int:
+def _count_active_orders_in_search(db: Session, query: str) -> int:
     """Підрахунок активних замовлень (заглушка)"""
     # TODO: Реалізувати після налаштування таблиці замовлень
     return 0
 
 
-async def _get_total_orders_value_in_search(db: Session, query: str) -> Optional[float]:
+def _get_total_orders_value_in_search(db: Session, query: str) -> Optional[float]:
     """Загальна вартість замовлень у пошуку (заглушка)"""
     # TODO: Реалізувати після налаштування таблиці замовлень
     return None
 
 
-async def _count_active_clients_in_search(db: Session, query: str) -> int:
+def _count_active_clients_in_search(db: Session, query: str) -> int:
     """Підрахунок активних клієнтів (заглушка)"""
     # TODO: Реалізувати з урахуванням логіки активності
     return 0
 
 
 @router.get("/advanced", response_model=CategorySearchResult)
-async def advanced_products_search(
+def advanced_products_search(
     q: str = Query(..., min_length=1, description="Пошуковий запит"),
     limit: int = Query(20, ge=1, le=100, description="Кількість результатів"),
     offset: int = Query(0, ge=0, description="Зміщення для пагінації"),
@@ -291,7 +306,7 @@ async def advanced_products_search(
     try:
         logger.info(f"Advanced search query: '{q}', limit: {limit}, offset: {offset}")
         
-        results, total = await advanced_search_service.advanced_search(
+        results, total = advanced_search_service.advanced_search(
             db=db,
             query=q,
             limit=limit,

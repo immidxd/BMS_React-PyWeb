@@ -21,6 +21,7 @@ import {
   markPromImportAccepted, refreshPromLimitWatch, watchPromLimitStatus,
 } from '../services/promLimitMonitor';
 import { confirmDialog, notify } from '../ui/feedback';
+import { useIsActivePage } from '../contexts/ActivePageContext';
 
 // Placeholder for actual filter components for Products
 
@@ -29,6 +30,9 @@ interface ProductsPageProps {
 }
 
 const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
+  // Чи ця вкладка зараз на екрані. При keep-alive сторінка лишається змонтованою
+  // й на інших вкладках — глобальні гарячі клавіші мусять це враховувати.
+  const isActivePage = useIsActivePage();
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [showAddProduct, setShowAddProduct] = useState(false);
   const [loading, setLoading] = useState<boolean>(true);
@@ -460,13 +464,17 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
 
   // Esc — зняти виділення (дія користувача). Скидання буфера ЛИШЕ явними діями:
   // Esc / кнопка «Зняти виділення» / вихід з режиму «Виділити».
+  // isActivePage: при keep-alive «Товари» лишаються змонтованими на будь-якій
+  // вкладці, і без цієї перевірки Esc у «Клієнтах» мовчки знімав би виділення
+  // товарів, зроблене раніше.
   useEffect(() => {
+    if (!isActivePage) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && selection.size > 0) selection.clear();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [selection.size, selection.clear]);
+  }, [isActivePage, selection.size, selection.clear]);
 
   const handleResetFilters = () => {
     setSelectedFilters({});
@@ -513,7 +521,10 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
     // ⌘/Ctrl+U — увімкнути/вимкнути «Тільки непродані».
     // Слухаємо e.code === 'KeyU' (фізична клавіша), бо e.key на кириличній
     // розкладці повертає 'г' і умова `=== 'u'` не спрацювала б.
+    // isActivePage: інакше ⌘U з будь-якої іншої вкладки перемикав би фільтр
+    // «Товарів» наосліп — з тостом про зміну, якої не видно.
     useEffect(() => {
+      if (!isActivePage) return;
       const onKey = (e: KeyboardEvent) => {
         const mod = e.metaKey || e.ctrlKey;
         if (!mod || e.altKey || e.shiftKey) return;
@@ -530,7 +541,7 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
       };
       window.addEventListener('keydown', onKey);
       return () => window.removeEventListener('keydown', onKey);
-    }, []);
+    }, [isActivePage]);
 
     useEffect(() => {
       // Load filter options once

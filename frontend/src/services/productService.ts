@@ -67,14 +67,21 @@ export const productService = {
                     const response = await axios.get<ProductListResponse>(`${API_URL}?${queryParams.toString()}`, { signal });
                     console.log("Products fetched successfully:", response.data);
                     return response.data;
-                } catch (error) {
+                } catch (error: any) {
+                    // Запит СКАСОВАНО навмисно (новий фільтр/пошук перебив старий) —
+                    // це не збій. Раніше цикл ретраїв бачив у скасуванні помилку і
+                    // слав ще 3 запити з backoff'ом: швидка зміна фільтрів множила
+                    // навантаження вчетверо й уповільнювала все інше.
+                    if (error?.name === 'CanceledError' || error?.code === 'ERR_CANCELED') {
+                        throw error;
+                    }
                     retries++;
                     console.error(`Attempt ${retries}/${maxRetries} failed:`, error);
-                    
+
                     if (retries >= maxRetries) {
                         throw error;
                     }
-                    
+
                     // Wait before retrying (exponential backoff)
                     await new Promise(resolve => setTimeout(resolve, 500 * Math.pow(2, retries)));
                 }

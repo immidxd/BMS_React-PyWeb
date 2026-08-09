@@ -851,3 +851,44 @@ select option {
 .bms-root .dark\:text-blue-400:is(*) {
   color: var(--bms-fg) !important;
 }
+
+/* ── Скелет фото (SmartImage) ──────────────────────────────────────────────
+   Видно рівно в паузі між «URL відомий» і «пікселі намальовані». Раніше там
+   було порожнє місце, і незрозуміло, фото вантажиться чи його немає. */
+.bms-img-skeleton {
+  background: linear-gradient(
+    100deg,
+    var(--bms-surface-alt) 30%,
+    var(--bms-border) 50%,
+    var(--bms-surface-alt) 70%
+  );
+  background-size: 220% 100%;
+  animation: bms-img-shimmer 1.25s ease-in-out infinite;
+}
+
+@keyframes bms-img-shimmer {
+  from { background-position: 180% 0; }
+  to   { background-position: -80% 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bms-img-skeleton {
+    animation: none;
+    background: var(--bms-surface-alt);
+  }
+}
+
+/* Індикатор переходу між картками товару (◀/▶): доки він біжить, унизу
+   показано ПОПЕРЕДНІЙ товар — картка приглушена й не приймає правок. */
+.bms-navbar-slide {
+  animation: bms-navbar-slide 900ms ease-in-out infinite;
+}
+
+@keyframes bms-navbar-slide {
+  from { left: -35%; }
+  to   { left: 100%; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bms-navbar-slide { animation-duration: 2s; }
+}

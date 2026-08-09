@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
 import { AppThemeProvider, useTheme } from './contexts/ThemeContext';
 import { FilterPanelProvider, useFilterPanel } from './contexts/FilterPanelContext';
+import { ActivePageProvider } from './contexts/ActivePageContext';
 import GlobalStyle from './styles/GlobalStyle'; // For potential global styles
 import SearchBar from './components/common/SearchBar';
 import { ParsingDialog } from './components/ParsingDialog';
@@ -337,9 +338,15 @@ const AppContent: React.FC = () => {
             const PageComponent = t.component;
             const isActive = t.key === activeTab;
             return (
-              <div key={t.key} className={isActive ? '' : 'bms-tab-hidden'}>
-                <PageComponent currentSearchTerm={searchByTab[t.key] || ''} />
-              </div>
+              // ActivePageProvider: при keep-alive змонтовано кілька сторінок
+              // одночасно, і глобальні гарячі клавіші мають діставатись ТІЙ, що
+              // на екрані. Без цього «скинути фільтри» йшло у сторінку, яка
+              // змонтувалась останньою (звідси «працює через раз»).
+              <ActivePageProvider key={t.key} isActive={isActive}>
+                <div className={isActive ? '' : 'bms-tab-hidden'}>
+                  <PageComponent currentSearchTerm={searchByTab[t.key] || ''} />
+                </div>
+              </ActivePageProvider>
             );
           })}
         </PageBoundary>

@@ -212,7 +212,7 @@ class AdvancedSearchService:
         
         return score
 
-    async def advanced_search(
+    def advanced_search(
         self, 
         db: Session, 
         query: str, 

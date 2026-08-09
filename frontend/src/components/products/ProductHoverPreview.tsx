@@ -2,6 +2,8 @@ import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Product } from '../../types/product';
 import { productService } from '../../services/productService';
+import SmartImage from '../common/SmartImage';
+import { thumbUrl, prefetchImage } from '../../services/imageUrls';
 import {
     effectiveProductNumber,
     getProductDisplayStatus,
@@ -87,6 +89,16 @@ export default function ProductHoverPreview({ record, x, y }: { record: Product;
         return () => { cancelled = true; };
     }, [record.id]);
 
+    // Прев'ю показує фото шириною 264 px — тягнути оригінал (100–800 КБ) немає
+    // сенсу. Мініатюра тих самих пікселів — одиниці КБ, тобто миттєво.
+    const previewSrc = imgUrl ? thumbUrl(imgUrl, 320) : null;
+
+    // Затримався курсором на рядку — найімовірніше зараз відкриєш картку.
+    // Тягнемо повний кадр у кеш браузера ЗАЗДАЛЕГІДЬ, щоб у картці фото вже було.
+    useEffect(() => {
+        if (imgUrl) prefetchImage(imgUrl);
+    }, [imgUrl]);
+
     // Позиціонування: праворуч від курсора; якщо не влазить — ліворуч; по вертикалі
     // тримаємо в межах вікна. Міряємо реальну висоту картки після рендера.
     useLayoutEffect(() => {
@@ -131,8 +143,11 @@ export default function ProductHoverPreview({ record, x, y }: { record: Product;
             <div className="w-full aspect-square bg-gray-50 dark:bg-gray-900 flex items-center justify-center">
                 {imgUrl === undefined ? (
                     <div className="w-6 h-6 border-2 border-gray-300 border-t-transparent rounded-full animate-spin" />
-                ) : imgUrl ? (
-                    <img src={imgUrl} alt={numLabel} className="w-full h-full object-cover" />
+                ) : previewSrc ? (
+                    // thumbOnly: у прев'ю оригінал не потрібен взагалі — 264 px
+                    // повністю покриває мініатюра w=320.
+                    <SmartImage src={imgUrl!} thumb={320} thumbOnly loading="eager"
+                        alt={numLabel} className="w-full h-full" />
                 ) : (
                     <div className="flex flex-col items-center gap-1 text-gray-300 dark:text-gray-600">
                         <svg className="w-9 h-9" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>

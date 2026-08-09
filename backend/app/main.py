@@ -236,28 +236,101 @@ if get_drive_file_bytes is not None:
     from fastapi import Response, HTTPException
 
     @app.get(URL_PREFIX_DRIVE + "/{file_id}")
-    async def stream_drive_image(file_id: str):
-        """Proxy: GET image bytes from Google Drive (cached on disk)."""
+    def stream_drive_image(file_id: str):
+        """Proxy: GET image bytes from Google Drive (cached on disk).
+
+        ⚠️ `def`, а НЕ `async def` — і це критично. `get_drive_file_bytes` повністю
+        синхронний: диск-кеш + завантаження через googleapiclient з таймаутом 60 с.
+        У корутині він виконувався просто на event loop uvicorn'а, тобто ОДНЕ
+        некешоване фото морозило ВЕСЬ бекенд на весь час качання — запит наступної
+        картки товару стояв у черзі за ним. Це давало «зависла інформація про
+        попередній товар». `def` → FastAPI виносить у threadpool, фото качаються
+        паралельно й нікому не заважають.
+        """
         result = get_drive_file_bytes(file_id)
         if result is None:
             raise HTTPException(status_code=404, detail="Image not found in Drive")
         data, mime = result
         return Response(
             content=data, media_type=mime,
-            headers={"Cache-Control": "public, max-age=86400"},
+            # file_id у Drive незмінний і вміст за ним не міняється → immutable.
+            # Рік замість доби: браузер більше не переперевіряє фото щодня.
+            headers={"Cache-Control": "public, max-age=31536000, immutable"},
         )
 
     @app.post("/api/product-images-drive/refresh")
-    async def refresh_drive_index():
+    def refresh_drive_index():
         """Manually rebuild Drive index (e.g. after uploading new photos)."""
         invalidate_drive_index()
         return {"ok": True, "stats": get_drive_index_stats()}
 
     @app.get("/api/product-images-drive/stats")
-    async def drive_index_stats():
+    def drive_index_stats():
         return get_drive_index_stats()
 
     logger.info(f"Drive image proxy mounted: {URL_PREFIX_DRIVE}/<file_id>")
+
+
+# ── Мініатюри фото ────────────────────────────────────────────────────────────
+# Стрічка прев'ю, плитки менеджера і швидкий перегляд показують фото 64–320 px,
+# а тягнули оригінал (локально ≈100 КБ, з Drive ≈800 КБ). Ці роути віддають
+# WebP-мініатюру з диск-кешу. Будь-який збій генерації → віддаємо оригінал:
+# мініатюри прискорюють, але ніколи не стають причиною «фото зникло».
+# Обидва роути — `def` (threadpool): decode+resize блокуючий.
+try:
+    from services.product_thumbs import (
+        thumb_for_local, thumb_for_drive, normalize_width, cache_stats as _thumb_stats,
+    )
+except ImportError:
+    try:
+        from backend.services.product_thumbs import (
+            thumb_for_local, thumb_for_drive, normalize_width, cache_stats as _thumb_stats,
+        )
+    except ImportError:
+        thumb_for_local = None
+
+if thumb_for_local is not None:
+    from fastapi import Response as _Response, HTTPException as _HTTPException, Query as _Query
+    from fastapi.responses import FileResponse as _FileResponse
+
+    # Рік + immutable: URL мініатюри несе `?v=` оригіналу (mtime+size), тож при
+    # заміні фото змінюється сам URL — кеш браузера не треба «просити» оновитись.
+    _THUMB_HEADERS = {"Cache-Control": "public, max-age=31536000, immutable"}
+
+    @app.get("/product-images-thumb/{relpath:path}")
+    def product_image_thumb(relpath: str, w: int = _Query(320, ge=16, le=2048)):
+        """Мініатюра локального фото. `relpath` — той самий шлях, що й у
+        /product-images/<relpath> (включно з категорійною підпапкою)."""
+        base = os.path.realpath(_images_dir)
+        target = os.path.realpath(os.path.join(base, relpath))
+        # Захист від виходу за корінь фото (`..` у шляху).
+        if not target.startswith(base + os.sep) or not os.path.isfile(target):
+            raise _HTTPException(status_code=404, detail="Фото не знайдено")
+        data = thumb_for_local(target, normalize_width(w))
+        if data is None:
+            return _FileResponse(target, headers=_THUMB_HEADERS)
+        return _Response(content=data, media_type="image/webp", headers=_THUMB_HEADERS)
+
+    @app.get("/product-images-drive-thumb/{file_id}")
+    def product_image_drive_thumb(file_id: str, w: int = _Query(320, ge=16, le=2048)):
+        """Мініатюра фото з Drive (оригінал бере з байтового кешу Drive-провайдера)."""
+        data = thumb_for_drive(file_id, normalize_width(w))
+        if data is not None:
+            return _Response(content=data, media_type="image/webp", headers=_THUMB_HEADERS)
+        # Фолбек — оригінал через той самий шлях, що й основний проксі.
+        if get_drive_file_bytes is None:
+            raise _HTTPException(status_code=404, detail="Фото не знайдено")
+        result = get_drive_file_bytes(file_id)
+        if result is None:
+            raise _HTTPException(status_code=404, detail="Фото не знайдено")
+        return _Response(content=result[0], media_type=result[1], headers=_THUMB_HEADERS)
+
+    @app.get("/api/product-thumbs/stats")
+    def product_thumbs_stats():
+        count, size = _thumb_stats()
+        return {"files": count, "bytes": size, "mb": round(size / 1e6, 1)}
+
+    logger.info("Product thumbnail routes mounted: /product-images-thumb, /product-images-drive-thumb")
 
     @app.on_event("startup")
     async def _prewarm_drive_index():

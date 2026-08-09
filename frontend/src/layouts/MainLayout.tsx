@@ -1,9 +1,7 @@
-import React, { useEffect, useState } from 'react';
-import RefreshButton from '../components/common/RefreshButton';
+import React, { useEffect } from 'react';
 import FilterPanel from '../components/common/FilterPanel';
 import { useFilterPanel } from '../contexts/FilterPanelContext';
-import { ParsingDialog } from '../components/ParsingDialog';
-import { ParsingStatus } from '../components/ParsingStatus';
+import { useIsActivePage } from '../contexts/ActivePageContext';
 import { toast } from 'react-toastify';
 
 interface MainLayoutProps {
@@ -22,34 +20,14 @@ const MainLayout: React.FC<MainLayoutProps> = ({
   onResetFilters,
 }) => {
   const { isFilterPanelOpen, openFilterPanel, closeFilterPanel } = useFilterPanel();
-  const [parsingDialogOpen, setParsingDialogOpen] = useState(false);
-  const [currentJobId, setCurrentJobId] = useState<number | null>(null);
-  const [isParsing, setIsParsing] = useState(false);
-  const [hideButtonUntil, setHideButtonUntil] = useState<number | null>(null);
-  const prevIsRunningRef = React.useRef<boolean>(false);
+  const isActivePage = useIsActivePage();
 
-  const handleRefreshClick = () => {
-    setParsingDialogOpen(true);
-  };
-
-  // legacy global banner visibility kept (optional)
-  useEffect(() => {
-    let isMounted = true;
-    const poll = async () => {
-      try {
-        const res = await fetch('/api/parsing/status');
-        const data = await res.json();
-        if (!isMounted) return;
-        const running = Boolean(data?.is_running);
-        if (!running && prevIsRunningRef.current) setHideButtonUntil(Date.now() + 3000);
-        prevIsRunningRef.current = running;
-        setIsParsing(running);
-      } catch {}
-    };
-    poll();
-    const id = setInterval(poll, 1500);
-    return () => { isMounted = false; clearInterval(id); };
-  }, []);
+  // ⚠️ Тут БУВ опит `/api/parsing/status` кожні 1.5 с. Він писав у стан
+  // isParsing/hideButtonUntil, які НЕ рендерились ніде (плаваючу кнопку
+  // оновлення прибрали з UI ще раніше) — тобто чистий холостий трафік. І при
+  // keep-alive таких інтервалів було стільки, скільки вкладок ти відвідав:
+  // 8 вкладок = 8 запитів кожні півтори секунди, що змагались за бекенд із
+  // завантаженням картки товару й фото. Прибрано разом із мертвим станом.
 
   // ⌘/Ctrl+R — скинути фільтри активної сторінки.
   // ВАЖЛИВО: слухаємо e.code === 'KeyR' (фізична клавіша), бо e.key на
@@ -64,12 +42,25 @@ const MainLayout: React.FC<MainLayoutProps> = ({
   //
   // Прапорець і колбек живуть на window, а не в модулі, бо MainLayout потрапляє
   // у кілька чанків збірки — модульна змінна існувала б у кількох копіях.
+  //
+  // 🐞 БУВ БАГ («скидання фільтрів працює через раз»): реєстрація
+  // `w.__bmsResetFilters = resetRef` стояла в useEffect з ПОРОЖНІМИ deps, тобто
+  // виконувалась один раз ПРИ МОНТУВАННІ кожної сторінки. А через keep-alive у
+  // App змонтовані ВСІ відвідані вкладки — тож у глобальному слоті лишався
+  // resetRef тієї сторінки, яку відкрили ОСТАННЬОЮ, і він там і застрягав.
+  // Натиснувши ⌘R на «Товарах» після візиту в «Клієнти», ти скидав фільтри
+  // Клієнтів — візуально «нічого не сталось». Тепер слот перезаписує лише
+  // АКТИВНА сторінка (isActive з ActivePageContext), і при кожній її активації.
   const resetRef = React.useRef(onResetFilters);
   resetRef.current = onResetFilters;   // завжди актуальна активна сторінка
 
   useEffect(() => {
+    if (!isActivePage) return;
+    (window as any).__bmsResetFilters = resetRef;
+  }, [isActivePage]);
+
+  useEffect(() => {
     const w = window as any;
-    w.__bmsResetFilters = resetRef;
     if (w.__bmsResetHotkeyBound) return;
     w.__bmsResetHotkeyBound = true;
     const onKey = (e: KeyboardEvent) => {
@@ -78,54 +69,18 @@ const MainLayout: React.FC<MainLayoutProps> = ({
       if (e.code !== 'KeyR') return;
       e.preventDefault();   // блокуємо стандартне перезавантаження
       if (e.repeat) return; // утримана клавіша не має плодити повтори
-      w.__bmsResetFilters?.current?.();
+      const handler = w.__bmsResetFilters?.current;
+      if (typeof handler !== 'function') return;   // сторінка без фільтрів — мовчки
+      handler();
       // toastId — навіть якщо щось спрацює двічі, тост лишиться один
       toast.info('Фільтри скинуто', {
         toastId: 'filters-reset', autoClose: 1200, hideProgressBar: true,
       });
     };
     window.addEventListener('keydown', onKey);
+    // Слухач навмисно живе до кінця сесії (він один на застосунок) — знімати
+    // його при розмонтуванні ОДНОГО з кількох MainLayout було б помилкою.
   }, []);
-
-  const handleStartParsing = async (mode: string, params: any) => {
-    try {
-      // ПРИМІТКА: показуємо віджет одразу у стані "з’єднання..." через тимчасовий jobId=-1,
-      // щоб уникнути ситуації, коли прогрес-вікно не з’являється до приходу реального jobId з API
-      if (!currentJobId) setCurrentJobId(-1 as any);
-      const res = await fetch(`/api/parsing/run?mode=${encodeURIComponent(mode)}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ params: params || {} })
-      });
-      const data = await res.json();
-      console.log('[MainLayout] test response:', data);
-      toast.success('Парсинг запущено');
-      
-      if (!res.ok || !data?.jobId) throw new Error('run failed');
-      setCurrentJobId(data.jobId);
-      // Закриваємо меню вибору відразу після старту
-      setParsingDialogOpen(false);
-    } catch (e) {
-      console.error('[MainLayout] run parsing error:', e);
-      // Fallback: створюємо job без запуску, щоб показати прогрес-віджет і діагностувати
-      try {
-        const res2 = await fetch(`/api/parsing/test?mode=${encodeURIComponent(mode)}`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(params || {})
-        });
-        const data2 = await res2.json();
-        if (res2.ok && data2?.jobId) {
-          console.log('[MainLayout] fallback test jobId:', data2.jobId);
-          setCurrentJobId(data2.jobId);
-          setParsingDialogOpen(false);
-          return;
-        }
-        throw new Error('fallback test failed');
-      } catch (e2) {
-        console.error('[MainLayout] fallback error:', e2);
-        toast.error(`Помилка: ${(e as Error).message}`);
-      }
-    }
-  };
 
 return (
   <div className="main-layout flex flex-col h-full min-h-0 relative">{/* заповнюємо доступну висоту <main>, а не цілий екран — інакше body теж скролився б (подвійний слайдер) */}
@@ -152,15 +107,12 @@ return (
         {filterPanelContent}
       </FilterPanel>
 
-      {/* Діалог парсингу */}
-      <ParsingDialog
-        open={parsingDialogOpen}
-        onClose={() => { setParsingDialogOpen(false); }}
-        onStartParsing={handleStartParsing}
-      />
-
-      {/* Статус парсингу */}
-      <ParsingStatus jobId={currentJobId} />
+      {/* ⚠️ Тут БУЛИ власні <ParsingDialog> і <ParsingStatus> — дублікати тих, що
+          вже рендерить App на весь застосунок. Діалог не мав чим відкритись
+          (кнопка, що його викликала, прибрана з UI ще раніше), а ParsingStatus
+          із jobId=null відкриває WebSocket на /api/parsing/ws — тобто при
+          keep-alive застосунок тримав стільки зайвих сокетів, скільки вкладок
+          ти відвідав. Прибрано: парсинг живе в App і показується так само. */}
     </div>
   );
 };

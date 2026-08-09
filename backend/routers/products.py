@@ -449,6 +449,7 @@ async def add_product_photos(
         from services.photo_manager import add_photos
     except ImportError:
         from backend.services.photo_manager import add_photos
+    from starlette.concurrency import run_in_threadpool
     pnum, category = _pnum_and_category(product_id, db)
     sources = []
     tmps = []
@@ -460,7 +461,12 @@ async def add_product_photos(
                 out.write(await uf.read())
             tmps.append(tmp)
             sources.append((tmp, uf.filename))
-        result = add_photos(pnum, category, sources, kind=kind)
+        # ⚠️ add_photos — важка синхронна робота (декод + конверт у WebP через Pillow
+        # + мережева заливка в R2). Виклик просто в корутині морозив event loop на
+        # весь час: завантаження 10 фото = секунди, коли бекенд не відповідає взагалі.
+        # Роут лишається async (треба `await uf.read()`), але блокуючу частину
+        # віддаємо в threadpool.
+        result = await run_in_threadpool(add_photos, pnum, category, sources, kind=kind)
     finally:
         for t in tmps:
             try: _os.unlink(t)
@@ -536,13 +542,15 @@ async def replace_product_photo(
         from services.photo_manager import replace_photo
     except ImportError:
         from backend.services.photo_manager import replace_photo
+    from starlette.concurrency import run_in_threadpool
     pnum, category = _pnum_and_category(product_id, db)
     suffix = _os.path.splitext(file.filename or "")[1] or ".img"
     fd, tmp = tempfile.mkstemp(suffix=suffix)
     try:
         with _os.fdopen(fd, "wb") as out:
             out.write(await file.read())
-        replace_photo(pnum, category, filename, tmp)
+        # Та сама причина, що й в add_photos: конверт + R2 не мають бути на event loop.
+        await run_in_threadpool(replace_photo, pnum, category, filename, tmp)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     finally:
