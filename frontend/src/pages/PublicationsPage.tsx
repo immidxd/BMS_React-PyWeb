@@ -181,12 +181,12 @@ const PublicationsFilterPanel: React.FC<{
           <FilterSection title="Підсумки" defaultOpen>
             <div className="grid grid-cols-2 gap-1.5">
               {[
-                { label: 'Постів', value: stats.total_posts },
-                { label: 'Товарів', value: stats.published_products },
-                { label: 'У форумі', value: stats.forum_posts },
-                { label: 'У каналі', value: stats.channel_posts },
+                { label: 'Усього постів', value: stats.total_posts, title: 'Усі активні пости, включно з копіями одного товару' },
+                { label: 'Унік. товарів', value: stats.published_products, title: 'Різні привʼязані товари серед активних публікацій' },
+                { label: 'Постів у форумі', value: stats.forum_posts, title: 'Копії одного товару в різних гілках рахуються окремо' },
+                { label: 'Постів у каналі', value: stats.channel_posts, title: 'Кількість активних постів у каналі' },
               ].map(s => (
-                <div key={s.label} className="px-2 py-1.5 rounded-lg bg-gray-50 dark:bg-gray-700/50 border border-gray-100 dark:border-gray-700">
+                <div key={s.label} title={s.title} className="px-2 py-1.5 rounded-lg bg-gray-50 dark:bg-gray-700/50 border border-gray-100 dark:border-gray-700">
                   <div className="text-[10px] uppercase tracking-wide text-gray-400 dark:text-gray-500">{s.label}</div>
                   <div className="text-sm font-semibold text-gray-800 dark:text-gray-100">{s.value}</div>
                 </div>
@@ -438,6 +438,10 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
   const [error, setError] = useState<string | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [filterMode, setFilterMode] = useState<FilterMode>('published');
+  // Базовий безпечний режим — не пропонувати публікацію товару без залишку.
+  // Значення й вигляд відповідають однойменним перемикачам у «Товарах».
+  const [onlyUnsold, setOnlyUnsold] = useState(true);
+  const [onlyRostovka, setOnlyRostovka] = useState(false);
   const [stats, setStats] = useState<PublicationStats | null>(null);
   const [syncOpen, setSyncOpen] = useState(false);
   const [detailProductId, setDetailProductId] = useState<number | null>(null);
@@ -592,6 +596,10 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
       });
       if (currentSearchTerm) params.set('search', currentSearchTerm);
       if (filterMode !== 'all') params.set('filter_mode', filterMode);
+      // Режим «Продані, але висять» — окремий cleanup-сценарій; у ньому
+      // «Тільки непродані» тимчасово не діє і відновлюється після виходу.
+      params.set('only_unsold', String(onlyUnsold && filterMode !== 'problematic'));
+      if (onlyRostovka) params.set('only_rostovka', 'true');
 
       const res = await fetch(`/api/publications/overview?${params}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -605,7 +613,7 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
       setLoading(false);
       setIsRefreshing(false);
     }
-  }, [page, perPage, currentSearchTerm, filterMode]);
+  }, [page, perPage, currentSearchTerm, filterMode, onlyUnsold, onlyRostovka]);
 
   useEffect(() => { fetchItems(); }, [fetchItems]);
   useEffect(() => { fetchStats(); }, [fetchStats]);
@@ -619,6 +627,8 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
   const handleResetFilters = () => {
     setPage(1);
     setFilterMode('published');
+    // Як у «Товарах»: базовий «Тільки непродані» не скидаємо.
+    setOnlyRostovka(false);
   };
 
   const handleRelink = async () => {
@@ -1332,7 +1342,28 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
       {/* Pagination */}
       <div className="fixed bottom-0 left-0 right-0 px-4 py-3 bg-white/95 dark:bg-gray-800/95 backdrop-blur border-t border-gray-200 dark:border-gray-700 z-30">
         <div className="w-full grid grid-cols-[1fr_auto_1fr] items-center gap-4 max-w-screen-2xl mx-auto px-2">
-          <span />
+          <div className="justify-self-start flex items-center gap-6">
+            <label className="inline-flex items-center text-sm text-gray-700 dark:text-gray-300">
+              <input
+                type="checkbox"
+                checked={onlyUnsold && filterMode !== 'problematic'}
+                disabled={filterMode === 'problematic'}
+                onChange={(e) => { setOnlyUnsold(e.target.checked); setPage(1); }}
+                title={filterMode === 'problematic' ? 'У цьому режимі треба бачити продані товари, які ще висять у Telegram' : undefined}
+                className="h-4 w-4 text-primary-600 border-gray-300 rounded focus:ring-primary-500 dark:focus:ring-primary-400 dark:bg-gray-700 dark:border-gray-600 disabled:opacity-50"
+              />
+              <span className="ml-2">Тільки непродані</span>
+            </label>
+            <label className="inline-flex items-center text-sm text-gray-700 dark:text-gray-300">
+              <input
+                type="checkbox"
+                checked={onlyRostovka}
+                onChange={(e) => { setOnlyRostovka(e.target.checked); setPage(1); }}
+                className="h-4 w-4 text-blue-500 border-gray-300 rounded focus:ring-blue-400 dark:focus:ring-blue-400 dark:bg-gray-700 dark:border-gray-600"
+              />
+              <span className="ml-2">Тільки ростовки</span>
+            </label>
+          </div>
           <div className="justify-self-center flex justify-center">
             <Pagination
               currentPage={page}

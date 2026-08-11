@@ -23,6 +23,10 @@ try:
         latest_order_reserved as _latest_order_reserved,
         product_fully_consumed as _product_fully_consumed,
         CONFIRMED_SOLD as _CONFIRMED_SOLD_STATUS_IDS,
+        PAID_STATUS_ID as _PAID_STATUS_ID,
+        STATUS_CONFIRMED as _STATUS_CONFIRMED,
+        STATUS_GIFT as _STATUS_GIFT,
+        STATUS_RETURNED as _STATUS_RETURNED,
         sql_in_list as _sql_in_list,
     )
 except ImportError:
@@ -32,6 +36,10 @@ except ImportError:
         latest_order_reserved as _latest_order_reserved,
         product_fully_consumed as _product_fully_consumed,
         CONFIRMED_SOLD as _CONFIRMED_SOLD_STATUS_IDS,
+        PAID_STATUS_ID as _PAID_STATUS_ID,
+        STATUS_CONFIRMED as _STATUS_CONFIRMED,
+        STATUS_GIFT as _STATUS_GIFT,
+        STATUS_RETURNED as _STATUS_RETURNED,
         sql_in_list as _sql_in_list,
     )
 
@@ -43,6 +51,37 @@ router = APIRouter()
 # Order-status semantics live in utils/order_status_logic.py — see imports above.
 # Back-compat alias for older call sites that meant "confirmed sold".
 _latest_order_sold = _latest_order_confirmed_sold
+
+
+def _sold_units_join(pid_ref: str) -> str:
+    """LATERAL-джойн фактично вибулих одиниць — формула з «Товарів».
+
+    Підтверджене замовлення споживає сток лише після оплати, подарунок — завжди,
+    а повернення того самого клієнта кредитує одиницю назад. Тримати цей фільтр
+    синхронним критично: «Тільки непродані» в обох вкладках має показувати один
+    і той самий фізичний залишок.
+    """
+    return f"""LEFT JOIN LATERAL (
+        SELECT GREATEST(
+            COALESCE(SUM(per_client.paid_sold), 0)
+            - COALESCE(SUM(LEAST(per_client.paid_sold, per_client.returns)), 0),
+            0
+        ) AS sold_count
+        FROM (
+            SELECT
+                COUNT(*) FILTER (
+                    WHERE o.order_status_id = {_STATUS_GIFT}
+                       OR (o.order_status_id = {_STATUS_CONFIRMED}
+                           AND o.payment_status_id = {_PAID_STATUS_ID})
+                ) AS paid_sold,
+                COUNT(*) FILTER (WHERE o.order_status_id = {_STATUS_RETURNED}) AS returns
+            FROM order_items oi
+            JOIN orders o ON o.id = oi.order_id
+            WHERE oi.product_id = {pid_ref}
+              AND o.order_status_id IN ({_STATUS_CONFIRMED}, {_STATUS_GIFT}, {_STATUS_RETURNED})
+            GROUP BY o.client_id
+        ) per_client
+    ) sold_filter ON true"""
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -112,6 +151,8 @@ def get_publications_overview(
     per_page: int = Query(50, ge=1, le=200),
     filter_mode: Optional[str] = Query(None, description="all|published|problematic|unpublished|unlinked"),
     search: Optional[str] = Query(None),
+    only_unsold: bool = Query(True, description="Only products with physical stock remaining"),
+    only_rostovka: bool = Query(False, description="Only size runs / multi-unit products"),
     db: Session = Depends(get_db),
 ):
     """Overview of all products + their publication status across channels.
@@ -188,10 +229,45 @@ def get_publications_overview(
         # Normal product-centric mode
         where_parts = []
         params = {"limit": per_page, "offset": offset}
+        # «Продані, але висять» навмисно показує продані товари для очищення
+        # Telegram. У цьому єдиному режимі базовий фільтр наявності не діє.
+        apply_only_unsold = only_unsold and filter_mode not in ("problematic", "sold_live")
+        sold_filter_join = _sold_units_join("p.id")
+        sold_filter_count_join = sold_filter_join if apply_only_unsold else ""
 
         if search:
             where_parts.append("(p.productnumber ILIKE :search OR p.model ILIKE :search)")
             params["search"] = f"%{search}%"
+
+        if apply_only_unsold:
+            # Ідентично вкладці «Товари»: залишок quantity мінус фактичні
+            # оплачені продажі/подарунки з урахуванням повернень. Старий знімок
+            # status='Продано' не приховує повернений товар, якщо є історія
+            # замовлень і фізичний залишок знову додатний.
+            where_parts.append(f"""(
+                GREATEST(COALESCE(p.quantity, 0) - COALESCE(sold_filter.sold_count, 0), 0) > 0
+                AND (
+                    s.statusname IS NULL
+                    OR s.statusname NOT IN ('Продано', 'Подаровано', 'Повернуто')
+                    OR (
+                        s.statusname IN ('Продано', 'Подаровано')
+                        AND COALESCE(sold_filter.sold_count, 0) < COALESCE(NULLIF(p.quantity, 0), 1)
+                        AND EXISTS (SELECT 1 FROM order_items oi_uns WHERE oi_uns.product_id = p.id)
+                    )
+                )
+            )""")
+
+        if only_rostovka:
+            # Та сама ознака ростовки, що у вкладці «Товари».
+            where_parts.append("""(
+                p.quantity > 1
+                OR LOWER(COALESCE(p.extranote, '')) LIKE '%ростовка%'
+                OR p.productnumber ~ '^.+\\([0-9]+\\)$'
+                OR EXISTS (
+                    SELECT 1 FROM products p_sib
+                    WHERE p_sib.productnumber = p.productnumber || '(1)'
+                )
+            )""")
 
         if filter_mode == "published":
             where_parts.append("EXISTS (SELECT 1 FROM telegram_posts tp WHERE tp.product_id = p.id AND tp.tg_status = 'published')")
@@ -235,7 +311,13 @@ def get_publications_overview(
         where_clause = " AND ".join(where_parts) if where_parts else "1=1"
 
         total_row = db.execute(
-            text(f"SELECT COUNT(*) FROM products p WHERE {where_clause}"),
+            text(f"""
+                SELECT COUNT(*)
+                FROM products p
+                LEFT JOIN statuses s ON s.id = p.statusid
+                {sold_filter_count_join}
+                WHERE {where_clause}
+            """),
             {k: v for k, v in params.items() if k not in ('limit', 'offset')}
         ).fetchone()
         total = total_row[0] if total_row else 0
@@ -245,8 +327,13 @@ def get_publications_overview(
                 SELECT
                     p.id, p.productnumber, p.model, p.price,
                     CASE
-                        WHEN s.statusname = 'Продано' THEN 'Продано'
-                        WHEN {_product_fully_consumed('p.id')} THEN 'Продано'
+                        WHEN COALESCE(sold_filter.sold_count, 0) >= COALESCE(NULLIF(p.quantity, 0), 1)
+                            THEN 'Продано'
+                        WHEN COALESCE(sold_filter.sold_count, 0) > 0
+                            THEN 'Частково продано'
+                        WHEN s.statusname IN ('Продано', 'Подаровано')
+                         AND EXISTS (SELECT 1 FROM order_items oi_status WHERE oi_status.product_id = p.id)
+                            THEN 'Непродано'
                         ELSE COALESCE(s.statusname, 'Невідомо')
                     END AS status,
                     COALESCE(pubs.pub_count, 0) AS pub_count,
@@ -259,6 +346,7 @@ def get_publications_overview(
                     p.sizeeu, p.marking, p.year
                 FROM products p
                 LEFT JOIN statuses s ON s.id = p.statusid
+                {sold_filter_join}
                 LEFT JOIN brands   b ON b.id = p.brandid
                 LEFT JOIN types    t ON t.id = p.typeid
                 LEFT JOIN subtypes st ON st.id = p.subtypeid
