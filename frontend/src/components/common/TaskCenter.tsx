@@ -27,6 +27,7 @@ const TaskCenter: React.FC = () => {
 
   const running = tasks.filter(t => t.status === 'running').length;
   const errors = tasks.filter(t => t.status === 'error').length;
+  const partial = tasks.filter(t => t.status === 'partial').length;
   const hasAny = tasks.length > 0;
 
   // Оновлювати «N с тому» поки панель відкрита.
@@ -44,7 +45,9 @@ const TaskCenter: React.FC = () => {
       ? <span className="w-3.5 h-3.5 border-2 border-gray-300 border-t-gray-600 rounded-full animate-spin shrink-0" />
       : t.status === 'success'
         ? <span className="text-green-600 shrink-0">✓</span>
-        : <span className="text-red-500 shrink-0">✕</span>;
+        : t.status === 'partial'
+          ? <span className="text-amber-500 shrink-0">!</span>
+          : <span className="text-red-500 shrink-0">✕</span>;
 
   return (
     <div className="fixed bottom-4 right-4 z-[200] flex flex-col items-end gap-2 select-none">
@@ -68,8 +71,8 @@ const TaskCenter: React.FC = () => {
                   <span className="mt-0.5">{dot(t)}</span>
                   <div className="min-w-0 flex-1">
                     <div className="text-gray-800 dark:text-gray-100 truncate">{t.label}</div>
-                    {t.status === 'error' && t.detail && (
-                      <div className="text-red-500 text-[11px] break-words">{t.detail}</div>
+                    {(t.status === 'error' || t.status === 'partial') && t.detail && (
+                      <div className={`${t.status === 'partial' ? 'text-amber-600 dark:text-amber-400' : 'text-red-500'} text-[11px] break-words`}>{t.detail}</div>
                     )}
                     <div className="text-gray-400 text-[10px]">
                       {t.status === 'running' ? 'виконується…' : ago(t.endedAt)}
@@ -86,15 +89,16 @@ const TaskCenter: React.FC = () => {
         title="Фонові процеси"
         className={`relative w-11 h-11 rounded-full shadow-lg border flex items-center justify-center transition-colors
           ${errors > 0 ? 'bg-red-50 dark:bg-red-900/30 border-red-200 dark:border-red-800'
+            : partial > 0 ? 'bg-amber-50 dark:bg-amber-900/30 border-amber-200 dark:border-amber-800'
             : running > 0 ? 'bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700'
               : 'bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700'}`}>
         {running > 0
           ? <span className="w-5 h-5 border-2 border-gray-300 border-t-gray-700 rounded-full animate-spin" />
           : <span className="text-lg">🔔</span>}
-        {(running > 0 || errors > 0) && (
+        {(running > 0 || errors > 0 || partial > 0) && (
           <span className={`absolute -top-1 -right-1 min-w-[18px] h-[18px] px-1 rounded-full text-[10px] font-semibold text-white flex items-center justify-center
-            ${errors > 0 ? 'bg-red-500' : 'bg-gray-700'}`}>
-            {running > 0 ? running : errors}
+            ${errors > 0 ? 'bg-red-500' : partial > 0 ? 'bg-amber-500' : 'bg-gray-700'}`}>
+            {running > 0 ? running : errors || partial}
           </span>
         )}
       </button>

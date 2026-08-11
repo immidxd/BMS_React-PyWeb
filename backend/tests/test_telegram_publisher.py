@@ -437,3 +437,86 @@ def test_create_post_passes_silent_to_original_threads_and_channel(monkeypatch):
     }))
     assert test_result["ok"] is True and test_result["test_mode"] is True
     assert scanner.client.sent[-1]["silent"] is True
+
+
+# ── Безпечна пакетна публікація з «Товарів» ─────────────────────────────────
+
+def test_batch_preview_merges_size_rows_by_productnumber(monkeypatch):
+    products = {
+        10: _p(id=10, productnumber="#Ф500"),
+        11: _p(id=11, productnumber="#Ф500"),
+        20: _p(id=20, productnumber="#Ф501"),
+    }
+    monkeypatch.setattr(tp, "_load_product", lambda _db, pid: products.get(pid))
+    monkeypatch.setattr(tp, "preview_post", lambda _db, pid: {
+        "ok": True, "product_id": pid, "productnumber": products[pid]["productnumber"],
+    })
+
+    result = tp.preview_posts_batch(object(), [10, 11, 20])
+
+    assert result["ok"] is True
+    assert result["selected_count"] == 3
+    assert result["unique_count"] == 2
+    assert result["merged_count"] == 1
+    assert result["items"][0]["product_id"] == 10
+    assert result["items"][0]["source_product_ids"] == [10, 11]
+
+
+def test_invalid_schedule_never_silently_becomes_publish_now():
+    now, error = tp._validate_when(None)
+    assert now is None and error is None
+
+    invalid, error = tp._validate_when("")
+    assert invalid is None and error
+
+    past, error = tp._validate_when("2020-01-01T08:00:00+03:00")
+    assert past is None and "2 хвилини" in error
+
+
+def test_batch_reuses_connection_stops_after_flood_and_is_idempotent(monkeypatch):
+    class FakeScanner:
+        def __init__(self):
+            self.disconnected = 0
+
+        async def disconnect(self):
+            self.disconnected += 1
+
+    scanner = FakeScanner()
+    connects = []
+    published = []
+
+    async def fake_connect():
+        connects.append(True)
+        return scanner, None
+
+    async def fake_create(_db, pid, _payload, **kwargs):
+        published.append((pid, kwargs.get("_scanner")))
+        if pid == 2:
+            return {"ok": False, "error": "FLOOD_WAIT_35"}
+        return {"ok": True, "failed": []}
+
+    products = {
+        1: _p(id=1, productnumber="#Ф1"),
+        2: _p(id=2, productnumber="#Ф2"),
+        3: _p(id=3, productnumber="#Ф3"),
+    }
+    monkeypatch.setattr(tp, "_connect", fake_connect)
+    monkeypatch.setattr(tp, "create_post", fake_create)
+    monkeypatch.setattr(tp, "_load_product", lambda _db, pid: products.get(pid))
+    monkeypatch.setattr(tp, "_preflight_batch_item", lambda *_args: None)
+    monkeypatch.setattr(tp, "BATCH_POST_GAP_SEC", 0)
+    tp._BATCH_CACHE.clear()
+    request = [
+        {"product_id": 1, "payload": {"to_channel": False}},
+        {"product_id": 2, "payload": {"to_channel": False}},
+        {"product_id": 3, "payload": {"to_channel": False}},
+    ]
+
+    first = asyncio.run(tp.create_posts_batch(object(), request, "test-flood-batch"))
+    second = asyncio.run(tp.create_posts_batch(object(), request, "test-flood-batch"))
+
+    assert [r["status"] for r in first["results"]] == ["success", "error", "skipped"]
+    assert first["status"] == "partial"
+    assert published == [(1, scanner), (2, scanner)]
+    assert len(connects) == 1 and scanner.disconnected == 1
+    assert second["replayed"] is True

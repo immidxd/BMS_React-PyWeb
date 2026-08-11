@@ -22,6 +22,12 @@ import {
 } from '../services/promLimitMonitor';
 import { confirmDialog, notify } from '../ui/feedback';
 import { useIsActivePage } from '../contexts/ActivePageContext';
+import TelegramPublishDialog, {
+  type TelegramPreview, type TelegramPublishPayload,
+} from '../components/products/TelegramPublishDialog';
+import TelegramBatchPublishDialog, {
+  type TelegramBatchRequest,
+} from '../components/products/TelegramBatchPublishDialog';
 
 // Placeholder for actual filter components for Products
 
@@ -62,6 +68,9 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
   const [availableEuSizes, setAvailableEuSizes] = useState<string[] | null>(null);
   const [availableColorGroups, setAvailableColorGroups] = useState<{ id: number; count: number }[] | null>(null);
   const facetsAbortRef = useRef<AbortController | null>(null);
+  const [telegramPreview, setTelegramPreview] = useState<TelegramPreview | null>(null);
+  const [telegramBatchIds, setTelegramBatchIds] = useState<number[] | null>(null);
+  const [telegramBusy, setTelegramBusy] = useState(false);
             
   // Effect to react to global search changes and fetch insights
   useEffect(() => {
@@ -462,6 +471,138 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
     ).catch(() => { void refreshPromLimitWatch(); }).finally(() => { fetchProducts(); });
   };
 
+  const openSelectedTelegram = async () => {
+    const ids = selection.ids.slice();
+    if (!ids.length) return;
+    if (ids.length > 1) {
+      setTelegramBatchIds(ids);
+      return;
+    }
+    setTelegramBusy(true);
+    try {
+      const res = await fetch('/api/publications/telegram/preview-post', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ product_id: ids[0] }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || 'Не вдалося підготувати Telegram-пост');
+      setTelegramPreview(data);
+    } catch (e: any) {
+      notify.error({ message: `Telegram: ${e.message || 'Не вдалося підготувати пост'}`, duration: 8 });
+    } finally {
+      setTelegramBusy(false);
+    }
+  };
+
+  const publishSingleTelegram = (payload: TelegramPublishPayload) => {
+    if (!telegramPreview) return;
+    const pid = telegramPreview.product_id;
+    const pnum = telegramPreview.productnumber;
+    setTelegramBusy(true);
+    taskManager.run(
+      `Telegram-публікація #${pnum}`,
+      async () => {
+        const res = await fetch('/api/publications/telegram/create-post', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ product_id: pid, ...payload }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data.ok) {
+          const err: any = new Error(data.detail || data.error || 'Публікація не вдалася');
+          err.response = { data: { detail: data.detail || data.error } };
+          throw err;
+        }
+        return data;
+      },
+      {
+        silentSuccess: true,
+        resultStatus: (result: any) => result.failed?.length
+          ? {
+              status: 'partial',
+              detail: result.failed.map((f: any) =>
+                `${f.thread_title || f.channel || 'напрямок'}: ${f.error || 'не вдалося'}`,
+              ).join(' · '),
+            }
+          : { status: 'success' },
+        onSuccess: (result: any) => {
+          if (result.failed?.length) {
+            notify.warning({
+              message: `#${pnum}: оригінал опубліковано, але ${result.failed.length} напрямків не вдалося`,
+              description: result.failed.map((f: any) => f.thread_title || f.channel || f.error).join(' · '),
+              duration: 10,
+            });
+          } else {
+            notify.success({ message: `#${pnum} опубліковано в Telegram`, duration: 6 });
+          }
+          setTelegramPreview(null);
+          selection.clear();
+          setSelectionMode(false);
+          window.dispatchEvent(new CustomEvent('bms:telegram-status-refresh'));
+        },
+      },
+    ).catch(() => undefined).finally(() => {
+      setTelegramBusy(false);
+      window.dispatchEvent(new CustomEvent('bms:telegram-status-refresh'));
+    });
+  };
+
+  const publishTelegramBatch = (request: TelegramBatchRequest) => {
+    const n = request.items.length;
+    setTelegramBusy(true);
+    taskManager.run(
+      `Пакетна Telegram-публікація: ${n} постів`,
+      async () => {
+        const res = await fetch('/api/publications/telegram/create-posts-batch', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(request),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data.ok) {
+          const err: any = new Error(data.detail || data.error || 'Пакетна публікація не вдалася');
+          err.response = { data: { detail: data.detail || data.error } };
+          throw err;
+        }
+        return data;
+      },
+      {
+        silentSuccess: true,
+        resultStatus: (result: any) => {
+          const c = result.counts || {};
+          const summary = [
+            c.success ? `${c.success} успішно` : '',
+            c.partial ? `${c.partial} частково` : '',
+            c.error ? `${c.error} з помилкою` : '',
+            c.skipped ? `${c.skipped} не надсилали` : '',
+          ].filter(Boolean).join(' · ');
+          const issues = (result.results || [])
+            .filter((item: any) => item.status !== 'success')
+            .map((item: any) => {
+              const failed = item.result?.failed?.map((f: any) => f.thread_title || f.channel || f.error).join(', ');
+              return `#${item.productnumber}: ${item.error || failed || item.status}`;
+            })
+            .join(' · ');
+          return {
+            status: result.status === 'success' ? 'success' : 'partial',
+            detail: [summary, issues].filter(Boolean).join(' — '),
+          };
+        },
+        onSuccess: (result: any) => {
+          const c = result.counts || {};
+          const detail = `${c.success || 0} успішно${c.partial ? ` · ${c.partial} частково` : ''}${c.error ? ` · ${c.error} з помилкою` : ''}${c.skipped ? ` · ${c.skipped} не надсилали` : ''}`;
+          if (result.status === 'success') notify.success({ message: 'Пакет Telegram опубліковано', description: detail, duration: 7 });
+          else notify.warning({ message: 'Пакет Telegram виконано частково', description: `${detail}. Подробиці збережено у Сповіщеннях.`, duration: 11 });
+          setTelegramBatchIds(null);
+          selection.clear();
+          setSelectionMode(false);
+          window.dispatchEvent(new CustomEvent('bms:telegram-status-refresh'));
+        },
+      },
+    ).catch(() => undefined).finally(() => {
+      setTelegramBusy(false);
+      window.dispatchEvent(new CustomEvent('bms:telegram-status-refresh'));
+    });
+  };
+
   // Esc — зняти виділення (дія користувача). Скидання буфера ЛИШЕ явними діями:
   // Esc / кнопка «Зняти виділення» / вихід з режиму «Виділити».
   // isActivePage: при keep-alive «Товари» лишаються змонтованими на будь-якій
@@ -509,7 +650,7 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
       // Легкий дебаунс — щоб серія подій дала один рефетч.
       let t: any;
       const debounced = () => { clearTimeout(t); t = setTimeout(() => fetchProductsRef.current(), 400); };
-      const pubEvents = ['bms:prom-status-refresh', 'bms:shafa-status-refresh', 'bms:olx-status-refresh'];
+      const pubEvents = ['bms:prom-status-refresh', 'bms:shafa-status-refresh', 'bms:olx-status-refresh', 'bms:telegram-status-refresh'];
       pubEvents.forEach((e) => window.addEventListener(e, debounced));
       return () => {
         window.removeEventListener('parsing-complete', handler);
@@ -682,6 +823,7 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
                     { key: 'prom', icon: <SendOutlined />, label: 'Відправити на PROM' },
                     { key: 'shafa', icon: <span className="inline-flex h-4 w-4 items-center justify-center rounded bg-black text-[9px] leading-none text-white font-black">S</span>, label: 'Відправити на Shafa' },
                     { key: 'olx', icon: <span className="inline-flex h-4 items-center justify-center rounded bg-[#002f34] px-1 text-[8px] leading-none text-[#a9e000] font-black">OLX</span>, label: 'Відправити на OLX' },
+                    { key: 'telegram', icon: <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-[#229ED9] text-[9px] leading-none text-white">➤</span>, label: 'Відправити в Telegram' },
                     { type: 'divider' as const },
                     { key: 'clear', label: 'Зняти виділення' },
                   ],
@@ -689,6 +831,7 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
                     if (key === 'prom') sendSelectedToProm();
                     else if (key === 'shafa') void sendSelectedToShafa();
                     else if (key === 'olx') void sendSelectedToOlx();
+                    else if (key === 'telegram') void openSelectedTelegram();
                     else if (key === 'clear') selection.clear();
                   },
                 }}
@@ -784,6 +927,22 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
         {/* Спейсер, щоб контент не накривався fixed-панеллю */}
         <div className="h-10" />
       </div>
+      {telegramPreview && (
+        <TelegramPublishDialog
+          data={telegramPreview}
+          busy={telegramBusy}
+          onCancel={() => { if (!telegramBusy) setTelegramPreview(null); }}
+          onConfirm={publishSingleTelegram}
+        />
+      )}
+      {telegramBatchIds && (
+        <TelegramBatchPublishDialog
+          productIds={telegramBatchIds}
+          busy={telegramBusy}
+          onCancel={() => { if (!telegramBusy) setTelegramBatchIds(null); }}
+          onPublish={publishTelegramBatch}
+        />
+      )}
     </MainLayout>
     );
 };

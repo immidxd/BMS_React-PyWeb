@@ -1052,6 +1052,18 @@ def telegram_preview_post(body: Dict[str, Any] = Body(...), db: Session = Depend
     return r
 
 
+@router.post("/api/publications/telegram/preview-posts-batch")
+def telegram_preview_posts_batch(body: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
+    """Зібрати до 10 УНІКАЛЬНИХ прев'ю. Рядки однієї ростовки об'єднуються."""
+    product_ids = body.get("product_ids")
+    if not isinstance(product_ids, list) or not product_ids:
+        raise HTTPException(status_code=400, detail="Не вибрано товари")
+    r = _tg_pub().preview_posts_batch(db, product_ids)
+    if not r.get("ok"):
+        raise HTTPException(status_code=400, detail=r.get("error", "Не вдалося зібрати пакет"))
+    return r
+
+
 @router.post("/api/publications/telegram/build-caption")
 def telegram_build_caption(body: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
     """Перезібрати підпис із відредагованих частин — щоб живе прев'ю в діалозі
@@ -1078,6 +1090,21 @@ async def telegram_create_post(body: Dict[str, Any] = Body(...), db: Session = D
         if r.get("already_published"):
             return r
         raise HTTPException(status_code=400, detail=r.get("error", "Публікація не вдалася"))
+    return r
+
+
+@router.post("/api/publications/telegram/create-posts-batch")
+async def telegram_create_posts_batch(body: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
+    """Послідовно опублікувати повністю відредагований пакет через одну сесію.
+
+    Відповідь завжди містить результат кожної картки; частковий успіх — штатний
+    результат, який фронт заносить у Центр сповіщень жовтим статусом.
+    """
+    items = body.get("items")
+    batch_id = body.get("batch_id")
+    r = await _tg_pub().create_posts_batch(db, items, batch_id)
+    if not r.get("ok"):
+        raise HTTPException(status_code=400, detail=r.get("error", "Пакетна публікація не вдалася"))
     return r
 
 

@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   CloseOutlined, SendOutlined, WarningOutlined, PlusOutlined,
   DeleteOutlined, LockOutlined, ClockCircleOutlined, ThunderboltOutlined,
-  ExperimentOutlined,
+  ExperimentOutlined, CheckOutlined,
 } from '@ant-design/icons';
 import SmartImage from '../common/SmartImage';
 
@@ -45,6 +45,7 @@ export interface TelegramPreview {
   image_names: string[];
   album_limit: number;
   album_hard_limit: number;
+  max_threads_per_post?: number;
   default_image_idx: number[];
   archive: { configured: boolean; title: string };
   threads: TelegramThread[];
@@ -79,11 +80,23 @@ interface Props {
   busy: boolean;
   onCancel: () => void;
   onConfirm: (payload: TelegramPublishPayload) => void;
+  /** У batch-режимі це редактор чернетки: X/клік по фону зберігає й повертає
+   *  до плиток, а не публікує пост. */
+  mode?: 'publish' | 'draft';
+  initialPayload?: TelegramPublishPayload;
 }
 
 const TG_BLUE = '#229ED9';
 const INPUT_CLS = 'w-full px-2.5 py-1.5 rounded-lg text-sm border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-sky-500/40 focus:border-sky-400 transition-colors disabled:opacity-60 disabled:bg-gray-50 dark:disabled:bg-gray-800/50';
 const LABEL_CLS = 'text-[11px] font-semibold uppercase tracking-wide text-gray-400 dark:text-gray-500';
+
+function localDateTimeValue(iso: string | null | undefined): string {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+}
 
 // Найчастіші емодзі з реальних постів каналу — щоб не шукати в системній
 // палітрі. Поле лишається вільним: там регулярно зʼявляється творчий вибір
@@ -144,25 +157,34 @@ function renderMarkdown(src: string, keyPrefix = 'm'): React.ReactNode[] {
   return out;
 }
 
-const TelegramPublishDialog: React.FC<Props> = ({ data, busy, onCancel, onConfirm }) => {
-  const [emoji, setEmoji] = useState(data.emoji || '👟');
-  const [tagline, setTagline] = useState(data.tagline || '');
-  const [searchQ, setSearchQ] = useState(data.search_q || '');
-  const [price, setPrice] = useState(data.price || '');
+const TelegramPublishDialog: React.FC<Props> = ({ data, busy, onCancel, onConfirm, mode = 'publish', initialPayload }) => {
+  const draftMode = mode === 'draft';
+  const [emoji, setEmoji] = useState(initialPayload?.emoji ?? data.emoji ?? '👟');
+  const [tagline, setTagline] = useState(initialPayload?.tagline ?? data.tagline ?? '');
+  const [searchQ, setSearchQ] = useState(initialPayload?.search_q ?? data.search_q ?? '');
+  const [price, setPrice] = useState(initialPayload?.price ?? data.price ?? '');
   const [features, setFeatures] = useState<string[]>(
-    data.features.length ? data.features : [''],
+    initialPayload ? initialPayload.features : (data.features.length ? data.features : ['']),
   );
-  const [sizeIds, setSizeIds] = useState<number[]>(data.sizes.map(s => s.product_id));
+  const [sizeIds, setSizeIds] = useState<number[]>(initialPayload?.size_ids ?? data.sizes.map(s => s.product_id));
   // Порядок у масиві = порядок фото в альбомі; перше — обкладинка поста.
-  const [imageIdx, setImageIdx] = useState<number[]>(data.default_image_idx || []);
-  const [threadIds, setThreadIds] = useState<number[]>(data.suggested_threads || []);
-  const [toChannel, setToChannel] = useState(true);
-  const [channelNow, setChannelNow] = useState(false);
-  const [testMode, setTestMode] = useState(false);
-  const [silent, setSilent] = useState(false);
+  const [imageIdx, setImageIdx] = useState<number[]>(initialPayload?.image_idx ?? data.default_image_idx ?? []);
+  const [threadIds, setThreadIds] = useState<number[]>(initialPayload?.thread_ids ?? data.suggested_threads ?? []);
+  const [toChannel, setToChannel] = useState(initialPayload?.to_channel ?? true);
+  const initialChannelAt = initialPayload?.channel_at;
+  const [channelTiming, setChannelTiming] = useState<'default' | 'now' | 'custom'>(() => {
+    if (!initialPayload) return 'default';
+    if (initialChannelAt === null) return 'now';
+    return initialChannelAt === data.default_channel_at ? 'default' : 'custom';
+  });
+  const [customChannelAt, setCustomChannelAt] = useState(
+    localDateTimeValue(initialChannelAt && initialChannelAt !== data.default_channel_at ? initialChannelAt : data.default_channel_at),
+  );
+  const [testMode, setTestMode] = useState(initialPayload?.test_mode ?? false);
+  const [silent, setSilent] = useState(initialPayload?.silent ?? false);
 
-  const [caption, setCaption] = useState(data.caption);
-  const [captionLen, setCaptionLen] = useState(data.caption_len);
+  const [caption, setCaption] = useState(initialPayload?.caption ?? data.caption);
+  const [captionLen, setCaptionLen] = useState((initialPayload?.caption ?? data.caption).length);
   const [problem, setProblem] = useState<string | null>(null);
   const [rebuilding, setRebuilding] = useState(false);
 
@@ -218,7 +240,13 @@ const TelegramPublishDialog: React.FC<Props> = ({ data, busy, onCancel, onConfir
   const toggle = (arr: number[], id: number) =>
     arr.includes(id) ? arr.filter(x => x !== id) : [...arr, id];
 
-  const channelAt = channelNow ? null : data.default_channel_at;
+  const customWhen = channelTiming === 'custom' && customChannelAt ? new Date(customChannelAt) : null;
+  const customWhenValid = !!customWhen && !Number.isNaN(customWhen.getTime());
+  const channelAt = channelTiming === 'now'
+    ? null
+    : channelTiming === 'custom'
+      ? (customWhenValid ? customWhen!.toISOString() : '')
+      : data.default_channel_at;
   const channelWhenLabel = useMemo(() => {
     const d = new Date(data.default_channel_at);
     const day = d.toDateString() === new Date().toDateString() ? 'сьогодні' : 'завтра';
@@ -227,7 +255,12 @@ const TelegramPublishDialog: React.FC<Props> = ({ data, busy, onCancel, onConfir
 
   const noPhotos = data.image_count === 0;
   const overLimit = captionLen > data.caption_limit;
-  const blocked = busy || noPhotos || overLimit || !!problem || imageIdx.length === 0;
+  const scheduleTooSoon = !!(toChannel && channelTiming === 'custom' && (
+    !customWhenValid || customWhen!.getTime() < Date.now() + 2 * 60_000
+  ));
+  const scheduleTooFar = !!(customWhenValid && customWhen!.getTime() > Date.now() + 365 * 24 * 60 * 60_000);
+  const blocked = busy || rebuilding || noPhotos || overLimit || !!problem || imageIdx.length === 0 || scheduleTooSoon || scheduleTooFar;
+  const maxThreads = data.max_threads_per_post ?? 6;
 
   // Клік по фото: додає в кінець альбому або прибирає. Знімати останнє не даємо
   // — альбом без жодного фото Telegram не приймає.
@@ -235,6 +268,11 @@ const TelegramPublishDialog: React.FC<Props> = ({ data, busy, onCancel, onConfir
     if (cur.includes(i)) return cur.length > 1 ? cur.filter(x => x !== i) : cur;
     if (cur.length >= data.album_hard_limit) return cur;
     return [...cur, i];
+  });
+
+  const toggleThread = (id: number) => setThreadIds(cur => {
+    if (cur.includes(id)) return cur.filter(x => x !== id);
+    return cur.length >= maxThreads ? cur : [...cur, id];
   });
 
   const submit = () => onConfirm({
@@ -251,9 +289,20 @@ const TelegramPublishDialog: React.FC<Props> = ({ data, busy, onCancel, onConfir
     force: data.already_published > 0,
   });
 
+  // У редакторі batch-чернетки «згорнути назад» означає зберегти поточний
+  // валідний стан. Під час перебудови або за невалідних даних редактор лишається
+  // відкритим — X ніколи не має мовчки загубити щойно внесені зміни.
+  const closeDialog = () => {
+    if (draftMode) {
+      if (!blocked) submit();
+      return;
+    }
+    onCancel();
+  };
+
   return (
     <div className="bms-dialog-host fixed inset-0 z-[100] flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-black/45 backdrop-blur-[2px]" onClick={busy ? undefined : onCancel} />
+      <div className="absolute inset-0 bg-black/45 backdrop-blur-[2px]" onClick={busy ? undefined : closeDialog} />
 
       <div className="relative w-full max-w-4xl max-h-[90vh] flex flex-col rounded-2xl bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 shadow-2xl overflow-hidden bms-fade-in">
         {/* Header */}
@@ -263,7 +312,7 @@ const TelegramPublishDialog: React.FC<Props> = ({ data, busy, onCancel, onConfir
           </span>
           <div className="min-w-0 flex-1">
             <div className="text-base font-semibold text-gray-900 dark:text-gray-50 leading-tight">
-              {data.already_published > 0 ? 'Опублікувати ще раз у Telegram' : 'Публікація в Telegram'}
+              {draftMode ? 'Редагування Telegram-поста' : data.already_published > 0 ? 'Опублікувати ще раз у Telegram' : 'Публікація в Telegram'}
             </div>
             <div className="text-xs text-gray-400 dark:text-gray-500 mt-0.5">
               #{data.productnumber} · спершу «{data.root_topic.thread_title}», далі копії в обрані гілки
@@ -281,7 +330,7 @@ const TelegramPublishDialog: React.FC<Props> = ({ data, busy, onCancel, onConfir
                 Ростовка: {data.sizes.length} розмірів
               </span>
             )}
-            <button onClick={busy ? undefined : onCancel}
+            <button onClick={busy ? undefined : closeDialog}
                     className="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition-colors"
                     aria-label="Закрити">
               <CloseOutlined className="text-sm" />
@@ -523,7 +572,7 @@ const TelegramPublishDialog: React.FC<Props> = ({ data, busy, onCancel, onConfir
                   Тематичні гілки · обрано {threadIds.length}
                 </span>
                 <button type="button" disabled={busy}
-                        onClick={() => setThreadIds(threadIds.length ? [] : data.suggested_threads)}
+                        onClick={() => setThreadIds(threadIds.length ? [] : data.suggested_threads.slice(0, maxThreads))}
                         className="text-[11px] font-medium text-sky-600 dark:text-sky-400 hover:text-sky-800 transition-colors">
                   {threadIds.length ? 'Зняти всі' : 'Повернути підбір'}
                 </button>
@@ -534,11 +583,13 @@ const TelegramPublishDialog: React.FC<Props> = ({ data, busy, onCancel, onConfir
                   const suggested = data.suggested_threads.includes(t.thread_id);
                   return (
                     <button key={t.thread_id} type="button" disabled={busy}
-                            onClick={() => setThreadIds(v => toggle(v, t.thread_id))}
-                            title={suggested ? 'Запропоновано за типом/статтю/сезоном товару' : undefined}
+                            onClick={() => toggleThread(t.thread_id)}
+                            title={!on && threadIds.length >= maxThreads
+                              ? `Максимум ${maxThreads} тематичних гілок на один пост`
+                              : suggested ? 'Запропоновано за типом/статтю/сезоном товару' : undefined}
                             className={`relative px-2 py-1.5 rounded-md text-[11px] font-medium border text-left truncate transition-colors ${
                               on ? 'bg-sky-50 dark:bg-sky-900/30 border-sky-400 text-sky-700 dark:text-sky-300'
-                                 : 'bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700 text-gray-500 dark:text-gray-400 hover:border-gray-400'}`}>
+                                 : `bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700 text-gray-500 dark:text-gray-400 hover:border-gray-400 ${threadIds.length >= maxThreads ? 'opacity-45' : ''}`}`}>
                       {t.thread_title}
                       {suggested && !on && (
                         <span className="absolute top-0.5 right-1 text-[9px] text-sky-400" title="Підібрано автоматично">•</span>
@@ -554,7 +605,7 @@ const TelegramPublishDialog: React.FC<Props> = ({ data, busy, onCancel, onConfir
               </div>
 
               {/* Канал */}
-              <label className={`mt-3 flex items-start gap-3 rounded-xl border px-3.5 py-3 transition-colors cursor-pointer ${
+              <div className={`mt-3 flex items-start gap-3 rounded-xl border px-3.5 py-3 transition-colors ${
                 testMode ? 'border-gray-200 dark:border-gray-700 opacity-40 pointer-events-none'
                   : toChannel ? 'border-sky-200 bg-sky-50/60 dark:border-sky-800 dark:bg-sky-900/15'
                           : 'border-gray-200 dark:border-gray-700'}`}>
@@ -571,13 +622,14 @@ const TelegramPublishDialog: React.FC<Props> = ({ data, busy, onCancel, onConfir
                   {toChannel && (
                     <span className="mt-2 flex gap-1.5">
                       {([
-                        { now: false, icon: <ClockCircleOutlined style={{ fontSize: 11 }} />, label: channelWhenLabel },
-                        { now: true, icon: <ThunderboltOutlined style={{ fontSize: 11 }} />, label: 'зараз' },
+                        { mode: 'default' as const, icon: <ClockCircleOutlined style={{ fontSize: 11 }} />, label: channelWhenLabel },
+                        { mode: 'now' as const, icon: <ThunderboltOutlined style={{ fontSize: 11 }} />, label: 'зараз' },
+                        { mode: 'custom' as const, icon: <ClockCircleOutlined style={{ fontSize: 11 }} />, label: 'свій час' },
                       ]).map(opt => (
-                        <button key={String(opt.now)} type="button" disabled={busy}
-                                onClick={e => { e.preventDefault(); setChannelNow(opt.now); }}
+                        <button key={opt.mode} type="button" disabled={busy}
+                                onClick={() => setChannelTiming(opt.mode)}
                                 className={`flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-medium border transition-colors ${
-                                  channelNow === opt.now
+                                  channelTiming === opt.mode
                                     ? 'bg-white dark:bg-gray-800 border-sky-400 text-sky-700 dark:text-sky-300'
                                     : 'bg-transparent border-transparent text-gray-400 hover:text-gray-600'}`}>
                           {opt.icon}{opt.label}
@@ -585,8 +637,22 @@ const TelegramPublishDialog: React.FC<Props> = ({ data, busy, onCancel, onConfir
                       ))}
                     </span>
                   )}
+                  {toChannel && channelTiming === 'custom' && (
+                    <span className="mt-2 block">
+                      <input type="datetime-local" value={customChannelAt} disabled={busy}
+                             min={localDateTimeValue(new Date(Date.now() + 2 * 60_000).toISOString())}
+                             max={localDateTimeValue(new Date(Date.now() + 365 * 24 * 60 * 60_000).toISOString())}
+                             onChange={e => setCustomChannelAt(e.target.value)}
+                             className={`${INPUT_CLS} !w-auto text-xs`} />
+                      {(scheduleTooSoon || scheduleTooFar) && (
+                        <span className="block mt-1 text-[10px] text-rose-500">
+                          {scheduleTooFar ? 'Telegram не приймає настільки далекий розклад.' : 'Обери час щонайменше через 2 хвилини.'}
+                        </span>
+                      )}
+                    </span>
+                  )}
                 </span>
-              </label>
+              </div>
 
               {/* Один прапорець керує всіма повідомленнями цієї операції:
                   тестом, оригіналом, копіями у гілки й форвардом у канал. */}
@@ -621,7 +687,7 @@ const TelegramPublishDialog: React.FC<Props> = ({ data, busy, onCancel, onConfir
               <>
                 Публікується живим: 1 оригінал
                 {threadIds.length > 0 && ` + ${threadIds.length} ${plural(threadIds.length, 'копія', 'копії', 'копій')}`}
-                {toChannel ? ` + канал (${channelNow ? 'зараз' : channelWhenLabel})` : ''}
+                {toChannel ? ` + канал (${channelTiming === 'now' ? 'зараз' : channelTiming === 'custom' ? (customWhenValid ? customWhen!.toLocaleString('uk-UA', { dateStyle: 'short', timeStyle: 'short' }) : 'час не вибрано') : channelWhenLabel})` : ''}
                 {silent ? ' · 🔕 без звуку' : ''}
               </>
             )}
@@ -629,14 +695,14 @@ const TelegramPublishDialog: React.FC<Props> = ({ data, busy, onCancel, onConfir
           <div className="flex items-center gap-2 shrink-0">
             <button onClick={onCancel} disabled={busy}
                     className="px-4 py-2 rounded-lg text-sm font-medium border border-gray-200 dark:border-gray-700 text-gray-600 hover:text-gray-900 hover:bg-gray-50 dark:text-gray-300 dark:hover:text-gray-100 dark:hover:bg-gray-800 transition-colors duration-150 disabled:opacity-60">
-              Скасувати
+              {draftMode ? 'Без останніх змін' : 'Скасувати'}
             </button>
             <button onClick={submit} disabled={blocked}
                     title={noPhotos ? 'Немає фото' : overLimit ? 'Текст довший за ліміт Telegram' : undefined}
                     className="px-4 py-2 rounded-lg text-sm font-semibold text-white transition-colors duration-150 flex items-center gap-1.5 disabled:opacity-60 hover:brightness-110"
-                    style={{ backgroundColor: testMode ? '#D97706' : TG_BLUE }}>
-              {testMode ? <ExperimentOutlined style={{ fontSize: 14 }} /> : <SendOutlined style={{ fontSize: 14 }} />}
-              {busy ? (testMode ? 'Надсилаю…' : 'Публікую…') : (testMode ? 'Надіслати тест' : 'Опублікувати')}
+                    style={{ backgroundColor: draftMode ? '#111827' : testMode ? '#D97706' : TG_BLUE }}>
+              {draftMode ? <CheckOutlined style={{ fontSize: 14 }} /> : testMode ? <ExperimentOutlined style={{ fontSize: 14 }} /> : <SendOutlined style={{ fontSize: 14 }} />}
+              {draftMode ? 'Зберегти й назад' : busy ? (testMode ? 'Надсилаю…' : 'Публікую…') : (testMode ? 'Надіслати тест' : 'Опублікувати')}
             </button>
           </div>
         </div>

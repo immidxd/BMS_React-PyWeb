@@ -29,7 +29,11 @@ import json
 import logging
 import os
 import re
+import asyncio
+import time
+from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy import text
@@ -60,6 +64,19 @@ CAPTION_LIMIT = 1024
 # у діалозі можна вибрати, які саме 5 із наявних піде в пост.
 ALBUM_LIMIT = 5
 ALBUM_HARD_LIMIT = 10          # межа самого Telegram — вище неї не пускаємо
+
+# Пакет навмисно невеликий: один товар може породити оригінал, до шести копій
+# у гілках і форвард у канал. MTProto не має сталої «квоти» — Telegram повертає
+# FLOOD_WAIT динамічно, тому BMS посилає послідовно й зупиняє хвіст черги при
+# першому rate-limit. Це суттєво безпечніше за паралельні Promise/корутини.
+BATCH_MAX_PRODUCTS = int(os.getenv("TELEGRAM_BATCH_MAX_PRODUCTS", "10"))
+MAX_THREADS_PER_POST = int(os.getenv("TELEGRAM_MAX_THREADS_PER_POST", "6"))
+BATCH_POST_GAP_SEC = float(os.getenv("TELEGRAM_BATCH_POST_GAP_SEC", "1.25"))
+BATCH_DESTINATION_GAP_SEC = float(os.getenv("TELEGRAM_BATCH_DESTINATION_GAP_SEC", "0.45"))
+BATCH_CACHE_TTL_SEC = 6 * 60 * 60
+_PUBLISH_LOCK = asyncio.Lock()
+_BATCH_CACHE: "OrderedDict[str, Tuple[float, dict]]" = OrderedDict()
+KYIV_TZ = ZoneInfo("Europe/Kyiv")
 
 # WORKSHOP — приватний архівний канал власника (той самий, куди відлітають
 # резервні копії при знятті з продажу). Використовується як полігон: тестова
@@ -893,10 +910,14 @@ def preview_post(db: Session, product_id: int) -> dict:
     if not threads:
         warnings.append("Список гілок форуму порожній — натисни «Оновити гілки».")
 
+    # Один Telegram-пост представляє весь номер/ростовку. Тому живі пости,
+    # прив'язані до будь-якого рядка того самого productnumber, мають блокувати
+    # повтор і показуватись у прев'ю кожного розміру.
     already = db.execute(text("""
-        SELECT COUNT(*) FROM telegram_posts
-        WHERE product_id = :pid AND tg_status = 'published'
-    """), {"pid": product_id}).scalar() or 0
+        SELECT COUNT(*) FROM telegram_posts tp
+        JOIN products sibling ON sibling.id = tp.product_id
+        WHERE sibling.productnumber = :pnum AND tp.tg_status = 'published'
+    """), {"pnum": pnum}).scalar() or 0
 
     caption = build_caption(
         emoji=emoji, brand=bms.get("brandname") or "", model=bms.get("model") or "",
@@ -930,6 +951,8 @@ def preview_post(db: Session, product_id: int) -> dict:
         "image_names": [getattr(p, "filename", "") for p in photos],
         "album_limit": ALBUM_LIMIT,
         "album_hard_limit": ALBUM_HARD_LIMIT,
+        "max_threads_per_post": MAX_THREADS_PER_POST,
+        "batch_max_products": BATCH_MAX_PRODUCTS,
         # Перші ALBUM_LIMIT у натуральному порядку — рівно те, що пішло б без
         # втручання; решту людина може підмінити кліком.
         "default_image_idx": list(range(min(len(photos), ALBUM_LIMIT))),
@@ -942,6 +965,71 @@ def preview_post(db: Session, product_id: int) -> dict:
         "already_published": int(already),
         "seed_source": seed.get("source"),
         "warnings": warnings,
+    }
+
+
+def preview_posts_batch(db: Session, product_ids: List[int]) -> dict:
+    """Прев'ю виділення з «Товарів», згруповане за номером товару.
+
+    Ростовка може містити кілька рядків/розмірів, але це один пост. Повертаємо
+    representative product_id плюс source_product_ids — фронт чесно показує,
+    скільки виділених рядків було об'єднано.
+    """
+    if len(product_ids) > 200:
+        return {"ok": False, "error": "За один раз можна обробити до 200 виділених рядків"}
+    clean_ids: List[int] = []
+    seen_ids = set()
+    for raw in product_ids:
+        try:
+            pid = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if pid > 0 and pid not in seen_ids:
+            seen_ids.add(pid)
+            clean_ids.append(pid)
+
+    grouped: "OrderedDict[str, dict]" = OrderedDict()
+    missing: List[int] = []
+    for pid in clean_ids:
+        bms = _load_product(db, pid)
+        if not bms:
+            missing.append(pid)
+            continue
+        pnum = str(bms.get("productnumber") or "").strip()
+        key = pnum.lstrip("#").casefold() or f"id:{pid}"
+        if key not in grouped:
+            grouped[key] = {"product_id": pid, "source_product_ids": [], "productnumber": pnum}
+        grouped[key]["source_product_ids"].append(pid)
+
+    if not grouped:
+        return {"ok": False, "error": "Серед виділених рядків не знайдено жодного товару"}
+
+    if len(grouped) > BATCH_MAX_PRODUCTS:
+        return {
+            "ok": False,
+            "error": (
+                f"За один безпечний пакет можна опублікувати до {BATCH_MAX_PRODUCTS} "
+                f"унікальних товарів. Зараз після об'єднання ростовок — {len(grouped)}."
+            ),
+        }
+
+    items = []
+    for group in grouped.values():
+        preview = preview_post(db, group["product_id"])
+        items.append({
+            **group,
+            "ok": bool(preview.get("ok")),
+            "preview": preview if preview.get("ok") else None,
+            "error": preview.get("error") if not preview.get("ok") else None,
+        })
+    return {
+        "ok": True,
+        "selected_count": len(clean_ids),
+        "unique_count": len(items),
+        "merged_count": max(0, len(clean_ids) - len(items)),
+        "missing_ids": missing,
+        "batch_max_products": BATCH_MAX_PRODUCTS,
+        "items": items,
     }
 
 
@@ -986,8 +1074,7 @@ def rebuild_caption(db: Session, product_id: int, parts: dict) -> dict:
 
 def _next_morning(hour: int = 8, minute: int = 0) -> datetime:
     """Найближчі 08:00 за київським часом — ритм, у якому канал наповнюється роками."""
-    tz = timezone(timedelta(hours=3))          # Europe/Kyiv влітку
-    now = datetime.now(tz)
+    now = datetime.now(KYIV_TZ)
     target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
     if target <= now + timedelta(minutes=5):
         target += timedelta(days=1)
@@ -997,15 +1084,22 @@ def _next_morning(hour: int = 8, minute: int = 0) -> datetime:
 def product_status(db: Session, product_id: int) -> dict:
     """Де товар уже є в Telegram — для чіпа в картці й кнопки в таблиці."""
     rows = db.execute(text("""
-        SELECT chat_id, chat_title, thread_id, thread_title, message_id, message_date
-        FROM telegram_posts
-        WHERE product_id = :pid AND tg_status = 'published'
-        ORDER BY message_date DESC NULLS LAST
+        SELECT tp.chat_id, tp.chat_title, tp.thread_id, tp.thread_title,
+               tp.message_id, tp.message_date
+        FROM telegram_posts tp
+        JOIN products linked ON linked.id = tp.product_id
+        JOIN products requested ON requested.id = :pid
+        WHERE linked.productnumber = requested.productnumber
+          AND tp.tg_status = 'published'
+        ORDER BY tp.message_date DESC NULLS LAST
     """), {"pid": product_id}).mappings().all()
     sched = db.execute(text("""
-        SELECT chat_title, scheduled_at FROM telegram_scheduled_posts
-        WHERE product_id = :pid AND state = 'scheduled'
-        ORDER BY scheduled_at
+        SELECT tsp.chat_title, tsp.scheduled_at FROM telegram_scheduled_posts tsp
+        JOIN products linked ON linked.id = tsp.product_id
+        JOIN products requested ON requested.id = :pid
+        WHERE linked.productnumber = requested.productnumber
+          AND tsp.state = 'scheduled'
+        ORDER BY tsp.scheduled_at
     """), {"pid": product_id}).mappings().all()
     return {
         "ok": True,
@@ -1199,7 +1293,8 @@ def _record_post(db: Session, *, product_id: int, pnum: str, chat_id: int,
     })
 
 
-async def create_post(db: Session, product_id: int, payload: dict) -> dict:
+async def create_post(db: Session, product_id: int, payload: dict, *,
+                      _scanner: Any = None, _lock_held: bool = False) -> dict:
     """Опублікувати товар у Telegram.
 
     payload: caption, thread_ids[], to_channel, channel_at (ISO або null = зараз),
@@ -1208,6 +1303,14 @@ async def create_post(db: Session, product_id: int, payload: dict) -> dict:
              моделі), silent (все без звуку), force (публікувати попри вже
              наявні пости).
     """
+    # Одна Telegram user-session не повинна одночасно виконувати дві ручні
+    # публікації (single або batch). Внутрішні виклики batch уже тримають lock.
+    if not _lock_held:
+        async with _PUBLISH_LOCK:
+            return await create_post(
+                db, product_id, payload, _scanner=_scanner, _lock_held=True,
+            )
+
     bms = _load_product(db, product_id)
     if not bms:
         return {"ok": False, "error": "Товар не знайдено"}
@@ -1233,9 +1336,10 @@ async def create_post(db: Session, product_id: int, payload: dict) -> dict:
     # не публікуємо в каталог і нічого не записуємо в telegram_posts.
     if not test_mode and not payload.get("force"):
         live = db.execute(text("""
-            SELECT COUNT(*) FROM telegram_posts
-            WHERE product_id = :pid AND tg_status = 'published'
-        """), {"pid": product_id}).scalar() or 0
+            SELECT COUNT(*) FROM telegram_posts tp
+            JOIN products sibling ON sibling.id = tp.product_id
+            WHERE sibling.productnumber = :pnum AND tp.tg_status = 'published'
+        """), {"pnum": pnum}).scalar() or 0
         if live:
             return {"ok": False, "already_published": True,
                     "error": f"Товар уже має {live} живих постів у Telegram"}
@@ -1251,8 +1355,30 @@ async def create_post(db: Session, product_id: int, payload: dict) -> dict:
     if not photos:
         return {"ok": False, "error": "У товару немає фото — Telegram не прийме пост без альбому"}
 
-    thread_ids = [int(t) for t in (payload.get("thread_ids") or []) if int(t) != ROOT_TOPIC_ID]
+    try:
+        thread_ids = list(dict.fromkeys(
+            int(t) for t in (payload.get("thread_ids") or []) if int(t) != ROOT_TOPIC_ID
+        ))
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "Некоректний ідентифікатор гілки Telegram"}
+    if len(thread_ids) > MAX_THREADS_PER_POST:
+        return {
+            "ok": False,
+            "error": f"Для одного поста можна обрати до {MAX_THREADS_PER_POST} тематичних гілок",
+        }
     thread_titles = {t["thread_id"]: t["thread_title"] for t in get_threads(db)}
+    unknown_threads = [tid for tid in thread_ids if tid not in thread_titles]
+    if unknown_threads:
+        return {
+            "ok": False,
+            "error": "Одна або кілька гілок уже не існують. Онови список гілок в Інтеграціях.",
+        }
+
+    channel_when: Optional[datetime] = None
+    if payload.get("to_channel"):
+        channel_when, when_error = _validate_when(payload.get("channel_at"))
+        if when_error:
+            return {"ok": False, "error": when_error}
     # Розміри, записані в telegram_posts, мусять збігтися з тими, що в тексті:
     # саме за ними знімалка потім вирішує, редагувати пост чи видаляти.
     avail = _available_sizes(db, pnum)
@@ -1262,9 +1388,12 @@ async def create_post(db: Session, product_id: int, payload: dict) -> dict:
         avail = [s for s in avail if s["product_id"] in keep_set]
     sizes = [s["size"] for s in avail if s.get("size")]
 
-    scanner, err = await _connect()
-    if err:
-        return {"ok": False, "error": err}
+    scanner = _scanner
+    owns_scanner = scanner is None
+    if owns_scanner:
+        scanner, err = await _connect()
+        if err:
+            return {"ok": False, "error": err}
 
     result: Dict[str, Any] = {
         "ok": True, "product_id": product_id, "productnumber": pnum.lstrip("#"),
@@ -1318,8 +1447,11 @@ async def create_post(db: Session, product_id: int, payload: dict) -> dict:
         # ── 2. Копії в тематичні гілки ──────────────────────────────────────
         # Фото вже в Telegram — передаємо готові обʼєкти, повторної заливки нема.
         media = [m.photo for m in root_msgs if getattr(m, "photo", None)]
+        rate_limited = False
         for tid in thread_ids:
             try:
+                if _scanner is not None:
+                    await asyncio.sleep(BATCH_DESTINATION_GAP_SEC)
                 msgs = await scanner.client.send_file(
                     forum, media or files, caption=caption_html, parse_mode="html",
                     album=True, reply_to=tid, silent=silent,
@@ -1340,11 +1472,21 @@ async def create_post(db: Session, product_id: int, payload: dict) -> dict:
                 result["failed"].append({"thread_id": tid,
                                          "thread_title": thread_titles.get(tid),
                                          "error": str(exc)})
+                if _is_rate_limit_error(exc):
+                    rate_limited = True
+                    break
 
         # ── 3. Канал BrandStore — форвардом (атрибуція веде в каталог) ───────
-        if payload.get("to_channel"):
+        if payload.get("to_channel") and rate_limited:
+            result["failed"].append({
+                "channel": CHANNEL_TITLE,
+                "error": "Не надсилали після FloodWait/SlowMode у попередній гілці",
+            })
+        elif payload.get("to_channel"):
+            if _scanner is not None:
+                await asyncio.sleep(BATCH_DESTINATION_GAP_SEC)
             channel = await scanner.client.get_entity(PeerChannel(CHANNEL_CHAT_ID))
-            when = _parse_when(payload.get("channel_at"))
+            when = channel_when
             album_ids = [m.id for m in root_msgs]
             try:
                 await scanner.client.forward_messages(
@@ -1390,7 +1532,183 @@ async def create_post(db: Session, product_id: int, payload: dict) -> dict:
         logger.error("create_post failed for %s: %s", product_id, exc)
         return {"ok": False, "error": str(exc), "partial": result}
     finally:
-        await scanner.disconnect()
+        if owns_scanner:
+            await scanner.disconnect()
+
+
+def _is_rate_limit_error(value: Any) -> bool:
+    raw = json.dumps(value, ensure_ascii=False, default=str)
+    up = raw.upper()
+    return any(token in up for token in (
+        "FLOOD_WAIT", "FLOODWAIT", "SLOWMODE_WAIT", "TOO MANY REQUESTS",
+    ))
+
+
+def _clean_batch_cache() -> None:
+    cutoff = time.monotonic() - BATCH_CACHE_TTL_SEC
+    for key, (created, _value) in list(_BATCH_CACHE.items()):
+        if created < cutoff:
+            _BATCH_CACHE.pop(key, None)
+    while len(_BATCH_CACHE) > 50:
+        _BATCH_CACHE.popitem(last=False)
+
+
+def _preflight_batch_item(db: Session, product_id: int, payload: dict) -> Optional[str]:
+    bms = _load_product(db, product_id)
+    if not bms:
+        return "Товар не знайдено"
+    problem = validate_caption(str(payload.get("caption") or "").strip())
+    if problem:
+        return problem
+    photos, _kind = _photo_entries(bms)
+    idx = payload.get("image_idx")
+    if isinstance(idx, list) and idx:
+        valid_count = len({int(x) for x in idx if str(x).lstrip("-").isdigit() and 0 <= int(x) < len(photos)})
+    else:
+        valid_count = min(len(photos), ALBUM_LIMIT)
+    if valid_count < 1:
+        return "У товару немає вибраних фото"
+    try:
+        tids = list(dict.fromkeys(int(x) for x in (payload.get("thread_ids") or []) if int(x) != ROOT_TOPIC_ID))
+    except (TypeError, ValueError):
+        return "Некоректний ідентифікатор гілки Telegram"
+    if len(tids) > MAX_THREADS_PER_POST:
+        return f"Обрано понад {MAX_THREADS_PER_POST} тематичних гілок"
+    known = {int(t["thread_id"]) for t in get_threads(db)}
+    if any(t not in known for t in tids):
+        return "Одна або кілька гілок уже не існують — онови їх в Інтеграціях"
+    if payload.get("to_channel"):
+        _when, error = _validate_when(payload.get("channel_at"))
+        if error:
+            return error
+    return None
+
+
+async def create_posts_batch(db: Session, items: List[dict], batch_id: str) -> dict:
+    """Безпечна послідовна черга кількох відредагованих Telegram-постів.
+
+    Увесь пакет спочатку валідовується, а потім використовує одне з'єднання.
+    `batch_id` робить подвійний клік/повтор HTTP-відповіді ідемпотентним у межах
+    процесу. Після FLOOD_WAIT хвіст позначається skipped і не надсилається.
+    """
+    batch_id = str(batch_id or "").strip()
+    if not batch_id or len(batch_id) > 100:
+        return {"ok": False, "error": "Некоректний batch_id"}
+    _clean_batch_cache()
+    cached = _BATCH_CACHE.get(batch_id)
+    if cached:
+        return {**cached[1], "replayed": True}
+    if not isinstance(items, list) or not items:
+        return {"ok": False, "error": "Пакет порожній"}
+    if len(items) > BATCH_MAX_PRODUCTS:
+        return {
+            "ok": False,
+            "error": f"За один пакет можна опублікувати до {BATCH_MAX_PRODUCTS} унікальних товарів",
+        }
+
+    normalized: List[Tuple[int, dict, str]] = []
+    seen_numbers = set()
+    scheduled: List[Tuple[int, datetime]] = []
+    for pos, item in enumerate(items):
+        try:
+            pid = int(item.get("product_id"))
+        except (TypeError, ValueError):
+            return {"ok": False, "error": f"Позиція {pos + 1}: немає product_id"}
+        payload = item.get("payload") if isinstance(item.get("payload"), dict) else {}
+        bms = _load_product(db, pid)
+        if not bms:
+            return {"ok": False, "error": f"Позиція {pos + 1}: товар не знайдено"}
+        pnum = str(bms.get("productnumber") or "").strip()
+        key = pnum.lstrip("#").casefold() or f"id:{pid}"
+        if key in seen_numbers:
+            return {"ok": False, "error": f"Товар {pnum or pid} повторюється у пакеті"}
+        seen_numbers.add(key)
+        error = _preflight_batch_item(db, pid, payload)
+        if error:
+            return {"ok": False, "error": f"#{pnum.lstrip('#') or pid}: {error}"}
+        if payload.get("to_channel") and payload.get("channel_at") is not None:
+            when, _ = _validate_when(payload.get("channel_at"))
+            if when:
+                scheduled.append((pos, when))
+        normalized.append((pid, payload, pnum))
+
+    # Однаковий/майже однаковий час для кількох форвардів створює некерований
+    # сплеск. Інтерфейс розставляє +2 хв, а бекенд не допускає випадкове
+    # затирання цього кроку загальними налаштуваннями.
+    for i, (left_pos, left) in enumerate(scheduled):
+        for right_pos, right in scheduled[i + 1:]:
+            if abs((right - left).total_seconds()) < 60:
+                return {
+                    "ok": False,
+                    "error": (
+                        f"Час каналу в постах {left_pos + 1} і {right_pos + 1} надто близький. "
+                        "Залиши щонайменше 1 хвилину між ними."
+                    ),
+                }
+
+    async with _PUBLISH_LOCK:
+        # Повторний запит міг чекати lock, поки перший уже завершив цей batch.
+        _clean_batch_cache()
+        cached = _BATCH_CACHE.get(batch_id)
+        if cached:
+            return {**cached[1], "replayed": True}
+
+        scanner, err = await _connect()
+        if err:
+            return {"ok": False, "error": err}
+        results: List[dict] = []
+        stopped_reason: Optional[str] = None
+        try:
+            for index, (pid, payload, pnum) in enumerate(normalized):
+                if stopped_reason:
+                    results.append({
+                        "product_id": pid, "productnumber": pnum.lstrip("#"),
+                        "status": "skipped", "error": stopped_reason,
+                    })
+                    continue
+                result = await create_post(
+                    db, pid, payload, _scanner=scanner, _lock_held=True,
+                )
+                has_partial_root = bool((result.get("partial") or {}).get("root_message_id"))
+                if result.get("ok") and result.get("failed"):
+                    status = "partial"
+                elif result.get("ok"):
+                    status = "success"
+                elif has_partial_root:
+                    status = "partial"
+                else:
+                    status = "error"
+                results.append({
+                    "product_id": pid, "productnumber": pnum.lstrip("#"),
+                    "status": status, "error": result.get("error"), "result": result,
+                })
+                if _is_rate_limit_error(result):
+                    stopped_reason = (
+                        "Telegram увімкнув тимчасовий ліміт (FloodWait/SlowMode). "
+                        "Решту пакета не надсилали — її можна повторити пізніше."
+                    )
+                elif index + 1 < len(normalized):
+                    await asyncio.sleep(BATCH_POST_GAP_SEC)
+        finally:
+            await scanner.disconnect()
+
+        counts = {
+            name: sum(1 for item in results if item["status"] == name)
+            for name in ("success", "partial", "error", "skipped")
+        }
+        if counts["error"] == counts["skipped"] == counts["partial"] == 0:
+            status = "success"
+        elif counts["success"] or counts["partial"]:
+            status = "partial"
+        else:
+            status = "error"
+        response = {
+            "ok": True, "batch_id": batch_id, "status": status,
+            "counts": counts, "results": results,
+        }
+        _BATCH_CACHE[batch_id] = (time.monotonic(), response)
+        _clean_batch_cache()
+        return response
 
 
 # Telegram приймає в альбом фото JPEG/PNG. Сторона з довжиною понад ~2560 px
@@ -1455,15 +1773,30 @@ def _to_jpeg(data: bytes, io_mod) -> Any:
         return io_mod.BytesIO(data)
 
 
-def _parse_when(raw: Any) -> Optional[datetime]:
-    """ISO-рядок → aware datetime. None / порожньо = публікувати зараз."""
-    if not raw:
-        return None
+def _validate_when(raw: Any) -> Tuple[Optional[datetime], Optional[str]]:
+    """ISO-рядок → (aware datetime, error). Лише `None` означає «зараз».
+
+    Невалідний/минулий рядок більше ніколи не деградує мовчки до негайної
+    публікації — це найнебезпечніший можливий fallback для каналу.
+    """
+    if raw is None:
+        return None, None
+    if not str(raw).strip():
+        return None, "Не вибрано час публікації в канал"
     try:
         dt = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
-    except ValueError:
-        return None
+    except (TypeError, ValueError):
+        return None, "Некоректна дата публікації в канал"
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone(timedelta(hours=3)))
-    # Telegram не приймає розклад у минулому — трактуємо як «зараз».
-    return dt if dt > datetime.now(timezone.utc) + timedelta(seconds=30) else None
+        dt = dt.replace(tzinfo=KYIV_TZ)
+    now = datetime.now(timezone.utc)
+    if dt <= now + timedelta(seconds=90):
+        return None, "Час публікації в канал має бути щонайменше через 2 хвилини"
+    if dt > now + timedelta(days=365):
+        return None, "Telegram не приймає розклад більш ніж на рік наперед"
+    return dt, None
+
+
+def _parse_when(raw: Any) -> Optional[datetime]:
+    """Back-compat helper для старих викликів; новий код читає й помилку."""
+    return _validate_when(raw)[0]

@@ -13,7 +13,7 @@ import { notify } from '../ui/feedback';
  *  форми/рефреш) компонент робить через guard (mountedRef) або через подію bms:*.
  */
 
-export type TaskStatus = 'running' | 'success' | 'error';
+export type TaskStatus = 'running' | 'success' | 'partial' | 'error';
 export interface Task {
   id: string;
   label: string;
@@ -40,6 +40,7 @@ class TaskManager {
   getTasks(): Task[] { return this.tasks; }
   runningCount(): number { return this.tasks.filter(t => t.status === 'running').length; }
   errorCount(): number { return this.tasks.filter(t => t.status === 'error').length; }
+  attentionCount(): number { return this.tasks.filter(t => t.status === 'error' || t.status === 'partial').length; }
 
   subscribe(fn: Listener): () => void {
     this.listeners.add(fn);
@@ -56,7 +57,15 @@ class TaskManager {
   async run<T>(
     label: string,
     fn: () => Promise<T>,
-    opts?: { successMsg?: string; errorMsg?: string; silentSuccess?: boolean; onSuccess?: (res: T) => void },
+    opts?: {
+      successMsg?: string;
+      errorMsg?: string;
+      silentSuccess?: boolean;
+      onSuccess?: (res: T) => void;
+      /** Дозволяє пакетній операції завершитися без exception, але лишити в
+       *  Центрі сповіщень чесний статус «частково» та деталізацію помилок. */
+      resultStatus?: (res: T) => { status: 'success' | 'partial'; detail?: string };
+    },
   ): Promise<T> {
     const id = `t${++this.seq}_${Date.now()}`;
     const task: Task = { id, label, status: 'running', startedAt: Date.now() };
@@ -64,10 +73,18 @@ class TaskManager {
     this.emit();
     try {
       const res = await fn();
-      task.status = 'success';
+      const outcome = opts?.resultStatus?.(res);
+      task.status = outcome?.status ?? 'success';
+      task.detail = outcome?.detail;
       task.endedAt = Date.now();
       this.emit();
-      if (!opts?.silentSuccess) {
+      if (!opts?.silentSuccess && task.status === 'partial') {
+        notify.warning({
+          message: 'Частково виконано',
+          description: task.detail || opts?.successMsg || label,
+          duration: 9,
+        });
+      } else if (!opts?.silentSuccess) {
         notify.success({
           message: '✓ Готово',
           description: opts?.successMsg || label,
