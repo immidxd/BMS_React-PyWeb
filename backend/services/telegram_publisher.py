@@ -1205,7 +1205,8 @@ async def create_post(db: Session, product_id: int, payload: dict) -> dict:
     payload: caption, thread_ids[], to_channel, channel_at (ISO або null = зараз),
              image_idx[] (які фото і в якому порядку), test_mode (репетиція
              у WORKSHOP), emoji/tagline/features/search_q (щоб запамʼятати текст
-             моделі), force (публікувати попри вже наявні пости).
+             моделі), silent (все без звуку), force (публікувати попри вже
+             наявні пости).
     """
     bms = _load_product(db, product_id)
     if not bms:
@@ -1223,6 +1224,7 @@ async def create_post(db: Session, product_id: int, payload: dict) -> dict:
 
     # ── Репетиція: усе йде в приватний WORKSHOP і нікуди більше ──────────────
     test_mode = bool(payload.get("test_mode"))
+    silent = bool(payload.get("silent"))
     if test_mode and not ARCHIVE_CHAT:
         return {"ok": False,
                 "error": "TELEGRAM_ARCHIVE_CHAT не заданий у .env — немає куди слати тестовий пост"}
@@ -1268,7 +1270,7 @@ async def create_post(db: Session, product_id: int, payload: dict) -> dict:
         "ok": True, "product_id": product_id, "productnumber": pnum.lstrip("#"),
         "root_message_id": None, "threads_posted": [], "channel": None,
         "image_count": len(photos), "image_kind": image_kind, "failed": [],
-        "test_mode": test_mode,
+        "test_mode": test_mode, "silent": silent,
     }
 
     try:
@@ -1287,6 +1289,7 @@ async def create_post(db: Session, product_id: int, payload: dict) -> dict:
             archive = await scanner._resolve_entity(ARCHIVE_CHAT)
             msgs = await scanner.client.send_file(
                 archive, files, caption=caption_html, parse_mode="html", album=True,
+                silent=silent,
             )
             msgs = msgs if isinstance(msgs, list) else [msgs]
             result.update({
@@ -1301,6 +1304,7 @@ async def create_post(db: Session, product_id: int, payload: dict) -> dict:
         # ── 1. Оригінал у «ВСІ ПРОПОЗИЦІЇ» ──────────────────────────────────
         root_msgs = await scanner.client.send_file(
             forum, files, caption=caption_html, parse_mode="html", album=True,
+            silent=silent,
         )
         root_msgs = root_msgs if isinstance(root_msgs, list) else [root_msgs]
         head = root_msgs[0]
@@ -1318,7 +1322,7 @@ async def create_post(db: Session, product_id: int, payload: dict) -> dict:
             try:
                 msgs = await scanner.client.send_file(
                     forum, media or files, caption=caption_html, parse_mode="html",
-                    album=True, reply_to=tid,
+                    album=True, reply_to=tid, silent=silent,
                 )
                 msgs = msgs if isinstance(msgs, list) else [msgs]
                 first = msgs[0]
@@ -1345,6 +1349,7 @@ async def create_post(db: Session, product_id: int, payload: dict) -> dict:
             try:
                 await scanner.client.forward_messages(
                     entity=channel, messages=album_ids, from_peer=forum, schedule=when,
+                    silent=silent,
                 )
                 if when:
                     # Заплановане повідомлення живе в окремому просторі id і

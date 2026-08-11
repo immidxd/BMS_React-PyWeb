@@ -1,8 +1,8 @@
-"""Керування ОФІЦІЙНИМИ фото товару (для менеджера в картці).
+"""Керування фото товару (для менеджера в картці).
 
-Операції над студійними фото `<pnum>_NN.webp` у локальному міорі + синхронізація
-з Cloudflare R2 (той самий ключ `<категорія>/<pnum>_NN.webp`). Реальні фото
-(`_00NN`, з Drive) і дефекти (`_defN`) НЕ чіпаємо — це окремі набори.
+Операції над студійними (`<pnum>_NN.webp`), реальними (`_00NN`) і фото дефектів
+(`_defN`) у локальному мірорі + синхронізація з Cloudflare R2 (той самий ключ
+`<категорія>/<filename>`).
 
 Принцип: локальний мірор = майстер; кожна зміна одразу віддзеркалюється в R2.
 Іменування завжди нормалізоване: `<pnum>_01.webp`, `_02`, … (перше = головне).
@@ -16,17 +16,24 @@ import os
 import re
 import uuid
 import logging
+import threading
 from pathlib import Path
 from typing import List, Optional
+
+from PIL import Image, ImageOps
 
 logger = logging.getLogger(__name__)
 
 try:
     from backend.services import r2_storage
-    from backend.scripts.ingest_photos import convert_to_webp_master
+    from backend.scripts.ingest_photos import (
+        WEBP_METHOD, WEBP_QUALITY, convert_to_webp_master,
+    )
 except ImportError:  # запуск з backend/
     from services import r2_storage  # type: ignore
-    from scripts.ingest_photos import convert_to_webp_master  # type: ignore
+    from scripts.ingest_photos import (  # type: ignore
+        WEBP_METHOD, WEBP_QUALITY, convert_to_webp_master,
+    )
 
 MIRROR_ROOT = Path(os.environ.get(
     "PRODUCT_IMAGES_DIR", os.path.expanduser("~/Downloads/Бізнес/Товар")))
@@ -60,6 +67,17 @@ _DEFECT_RE = lambda pnum: re.compile(  # noqa: E731
 # Підтримувані набори фото в мірорі (керовані менеджером картки).
 PHOTO_KINDS = ("official", "real", "defect")
 
+# Звичайний ingest створює нові, незмінні ключі й може кешувати їх надовго.
+# replace/transform навмисно перезаписують той самий ключ, тож для НОВОЇ версії
+# виставляємо revalidate. Глобальну політику R2 і чужі об'єкти не змінюємо.
+_REPLACEMENT_CACHE_CONTROL = "public, max-age=0, must-revalidate"
+
+# Дві швидкі дії над тим самим фото не мають перегнати одна одну між диском і
+# R2. Лок на канонічний шлях серіалізує лише цей файл, інші фото обробляються
+# паралельно.
+_path_locks_guard = threading.Lock()
+_path_locks: dict[str, threading.Lock] = {}
+
 
 def _kind_re(pnum: str, kind: str):
     """Регулярка індексу для набору фото."""
@@ -82,6 +100,23 @@ def _kind_filename(pnum: str, kind: str, idx: int) -> str:
 
 def _norm(pnum: str) -> str:
     return (pnum or "").strip().lstrip("#").strip()
+
+
+def photo_belongs_to(pnum: str, filename: str) -> bool:
+    """Чи є `filename` керованим фото саме цього номера товару."""
+    if not filename or filename != Path(filename).name:
+        return False
+    pn = _norm(pnum)
+    stem = Path(filename).stem
+    return Path(filename).suffix.lower() == ".webp" and any(
+        _kind_re(pn, kind).match(stem) for kind in PHOTO_KINDS
+    )
+
+
+def _lock_for(path: Path) -> threading.Lock:
+    key = str(path.resolve())
+    with _path_locks_guard:
+        return _path_locks.setdefault(key, threading.Lock())
 
 
 def resolve_category(pnum: str, type_name: Optional[str] = None) -> str:
@@ -135,6 +170,33 @@ def _sync_one(category: str, path: Path):
     """Залити один файл у R2 (якщо R2 увімкнено)."""
     if r2_storage.is_enabled():
         r2_storage.upload_file(str(path), _r2_key(category, path.name))
+
+
+def _commit_replacement(category: str, dest: Path, staged: Path) -> None:
+    """Коміт готової заміни в R2 + локальний мірор без проміжного битого файла.
+
+    R2 оновлюється першим: при мережевій помилці локальний майстер лишається
+    старим. Далі `os.replace` атомарно підміняє файл. Якщо локальна підміна
+    винятково не вдалася, найкращою спробою повертаємо старі байти в той самий
+    R2-ключ, щоб джерела не розійшлися.
+    """
+    r2_on = r2_storage.is_enabled()
+    key = _r2_key(category, dest.name)
+    if r2_on:
+        r2_storage.upload_file(
+            str(staged), key, cache_control=_REPLACEMENT_CACHE_CONTROL,
+        )
+    try:
+        os.replace(staged, dest)
+    except Exception:
+        if r2_on and dest.is_file():
+            try:
+                r2_storage.upload_file(
+                    str(dest), key, cache_control=_REPLACEMENT_CACHE_CONTROL,
+                )
+            except Exception as rollback_error:  # noqa: BLE001
+                logger.critical("R2 rollback failed for %s: %s", key, rollback_error)
+        raise
 
 
 def _delete_r2(category: str, filename: str):
@@ -206,15 +268,89 @@ def delete_photo(pnum: str, category: str, filename: str) -> bool:
 
 def replace_photo(pnum: str, category: str, filename: str, tmp_path: str) -> str:
     """Замінити ВМІСТ одного фото (та сама назва/позиція, новий файл).
-    Працює і для official, і для real. Cache-busting робить `?v=` у URL."""
+    Працює для official/real/defect. Новий файл готується окремо, синкається в
+    R2 і лише тоді атомарно стає локальним майстром."""
     pn = _norm(pnum)
-    stem = Path(filename).stem
-    if not (_OFFICIAL_RE(pn).match(stem) or _REAL_RE(pn).match(stem)):
-        raise ValueError("Можна замінювати лише фото цього товару (official або real)")
+    if not photo_belongs_to(pn, filename):
+        raise ValueError("Можна замінювати лише фото цього товару")
     dest = MIRROR_ROOT / category / filename
-    convert_to_webp_master(Path(tmp_path), dest)  # перезаписує під тим самим іменем
-    _sync_one(category, dest)                      # та сама R2-ключ, новий вміст
+    if not dest.is_file():
+        raise FileNotFoundError(f"Файл {filename} не знайдено в локальному мірорі")
+    staged = dest.with_name(f".__bms_replace_{uuid.uuid4().hex}.webp")
+    with _lock_for(dest):
+        try:
+            convert_to_webp_master(Path(tmp_path), staged)
+            _commit_replacement(category, dest, staged)
+        finally:
+            try:
+                staged.unlink(missing_ok=True)
+            except OSError:
+                pass
     return filename
+
+
+PHOTO_TRANSFORMS = frozenset({
+    "rotate_left", "rotate_180", "rotate_right", "flip_horizontal",
+})
+
+
+def transform_photo(pnum: str, category: str, filename: str, operation: str) -> dict:
+    """Повернути/віддзеркалити канонічне фото та синхронно замінити його в R2.
+
+    Ім'я, індекс і R2-ключ не змінюються — тому всі споживачі (картка,
+    Telegram, Prom/інші експортери) наступного разу читають одну й ту саму
+    відредаговану версію. Розмір кадру не зменшується повторно.
+    """
+    pn = _norm(pnum)
+    if operation not in PHOTO_TRANSFORMS:
+        raise ValueError(f"Невідома операція з фото: {operation}")
+    if not photo_belongs_to(pn, filename):
+        raise ValueError("Можна редагувати лише фото цього товару")
+
+    dest = MIRROR_ROOT / category / filename
+    if not dest.is_file():
+        raise FileNotFoundError(
+            f"Файл {filename} є лише у старому хмарному джерелі; "
+            "спочатку додай його до керованих фото BMS"
+        )
+
+    transpose = {
+        "rotate_left": Image.Transpose.ROTATE_90,
+        "rotate_180": Image.Transpose.ROTATE_180,
+        "rotate_right": Image.Transpose.ROTATE_270,
+        "flip_horizontal": Image.Transpose.FLIP_LEFT_RIGHT,
+    }[operation]
+    staged = dest.with_name(f".__bms_transform_{uuid.uuid4().hex}.webp")
+
+    with _lock_for(dest):
+        try:
+            with Image.open(dest) as opened:
+                image = ImageOps.exif_transpose(opened).transpose(transpose)
+                has_alpha = image.mode in ("RGBA", "LA") or (
+                    image.mode == "P" and "transparency" in image.info
+                )
+                image = image.convert("RGBA" if has_alpha else "RGB")
+                width, height = image.size
+                image.save(
+                    staged,
+                    format="WEBP",
+                    quality=WEBP_QUALITY,
+                    method=WEBP_METHOD,
+                )
+            _commit_replacement(category, dest, staged)
+        finally:
+            try:
+                staged.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    return {
+        "filename": filename,
+        "operation": operation,
+        "width": width,
+        "height": height,
+        "bytes": dest.stat().st_size,
+    }
 
 
 def reorder_photos(pnum: str, category: str, ordered_filenames: List[str], kind: str = "official") -> List[str]:

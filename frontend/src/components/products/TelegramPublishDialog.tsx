@@ -70,6 +70,7 @@ export interface TelegramPublishPayload {
   to_channel: boolean;
   channel_at: string | null;
   test_mode: boolean;
+  silent: boolean;
   force?: boolean;
 }
 
@@ -158,6 +159,7 @@ const TelegramPublishDialog: React.FC<Props> = ({ data, busy, onCancel, onConfir
   const [toChannel, setToChannel] = useState(true);
   const [channelNow, setChannelNow] = useState(false);
   const [testMode, setTestMode] = useState(false);
+  const [silent, setSilent] = useState(false);
 
   const [caption, setCaption] = useState(data.caption);
   const [captionLen, setCaptionLen] = useState(data.caption_len);
@@ -245,6 +247,7 @@ const TelegramPublishDialog: React.FC<Props> = ({ data, busy, onCancel, onConfir
     to_channel: testMode ? false : toChannel,
     channel_at: channelAt,
     test_mode: testMode,
+    silent,
     force: data.already_published > 0,
   });
 
@@ -584,6 +587,27 @@ const TelegramPublishDialog: React.FC<Props> = ({ data, busy, onCancel, onConfir
                   )}
                 </span>
               </label>
+
+              {/* Один прапорець керує всіма повідомленнями цієї операції:
+                  тестом, оригіналом, копіями у гілки й форвардом у канал. */}
+              <label className={`mt-2 flex items-start gap-3 rounded-xl border px-3.5 py-2.5 cursor-pointer transition-colors ${
+                silent
+                  ? 'border-violet-300 bg-violet-50/70 dark:border-violet-700 dark:bg-violet-900/20'
+                  : 'border-gray-200 dark:border-gray-700'
+              }`}>
+                <input type="checkbox" checked={silent} disabled={busy}
+                       onChange={e => setSilent(e.target.checked)}
+                       className="mt-0.5 h-4 w-4 rounded border-gray-300 accent-violet-600 shrink-0" />
+                <span className="min-w-0">
+                  <span className="block text-sm font-medium text-gray-800 dark:text-gray-100">
+                    🔕 Все без звуку
+                  </span>
+                  <span className="block mt-0.5 text-[11px] leading-relaxed text-gray-500 dark:text-gray-400">
+                    Оригінал, усі копії та канал підуть без звукового сповіщення.
+                    Галочку можна зняти — тоді Telegram повідомить підписників як звичайно.
+                  </span>
+                </span>
+              </label>
             </div>
           </div>
         </div>
@@ -592,12 +616,13 @@ const TelegramPublishDialog: React.FC<Props> = ({ data, busy, onCancel, onConfir
         <div className="flex items-center justify-between gap-2 px-5 py-3.5 border-t border-gray-100 dark:border-gray-800 bg-gray-50/60 dark:bg-gray-800/30">
           <span className={`text-[11px] min-w-0 truncate ${testMode ? 'text-amber-600 dark:text-amber-400 font-medium' : 'text-gray-400 dark:text-gray-500'}`}>
             {testMode ? (
-              <>Репетиція: 1 альбом лише в «{data.archive.title}». У каталог і канал — нічого.</>
+              <>Репетиція: 1 альбом лише в «{data.archive.title}». У каталог і канал — нічого.{silent ? ' · 🔕 без звуку' : ''}</>
             ) : (
               <>
                 Публікується живим: 1 оригінал
                 {threadIds.length > 0 && ` + ${threadIds.length} ${plural(threadIds.length, 'копія', 'копії', 'копій')}`}
                 {toChannel ? ` + канал (${channelNow ? 'зараз' : channelWhenLabel})` : ''}
+                {silent ? ' · 🔕 без звуку' : ''}
               </>
             )}
           </span>

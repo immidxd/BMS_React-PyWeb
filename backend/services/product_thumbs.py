@@ -113,7 +113,9 @@ def thumb_for_local(abs_path: str, width: int) -> Optional[bytes]:
         st = os.stat(abs_path)
     except OSError:
         return None
-    key = f"local:{abs_path}:{int(st.st_mtime)}:{st.st_size}"
+    # Наносекунди не дають двом швидким поворотам із тим самим розміром файла
+    # випадково отримати одну стару мініатюру з кешу.
+    key = f"local:{abs_path}:{st.st_mtime_ns}:{st.st_size}"
     path = _cache_path(key, width)
     cached = _read_cached(path)
     if cached is not None:

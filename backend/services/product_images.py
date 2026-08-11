@@ -48,7 +48,9 @@ def _file_version(abs_path: str) -> str:
     """`?v=<hash>` із mtime+size для cache-busting при заміні фото. '' якщо нема."""
     try:
         st = os.stat(abs_path)
-        return f"?v={int(st.st_mtime):x}{st.st_size:x}"
+        # Наносекунди важливі для швидких послідовних поворотів: дві версії
+        # одного WebP можуть мати однаковий розмір і потрапити в ту саму секунду.
+        return f"?v={st.st_mtime_ns:x}{st.st_size:x}"
     except OSError:
         return ""
 

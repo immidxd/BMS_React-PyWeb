@@ -491,6 +491,33 @@ def _pnum_and_category(product_id: int, db: Session):
     return pnum, resolve_category(pnum, type_name)
 
 
+def _photo_owner_and_category(product_id: int, filename: str, db: Session):
+    """Власник канонічного файла, видимого в картці.
+
+    Для звичайного фото це відкритий товар. Для позичених студійних фото —
+    номер донора: редагуємо один оригінал донора, тож оновлення одразу бачать
+    усі картки ростовки, що ним користуються.
+    """
+    try:
+        from services.photo_manager import photo_belongs_to, resolve_category
+    except ImportError:
+        from backend.services.photo_manager import photo_belongs_to, resolve_category
+
+    product = db.query(models.Product).filter(models.Product.id == product_id).first()
+    if not product:
+        raise HTTPException(status_code=404, detail=f"Товар з ID {product_id} не знайдено")
+    own = (product.productnumber or "").strip()
+    if not own:
+        raise HTTPException(status_code=400, detail="У товару немає номера")
+    if photo_belongs_to(own, filename):
+        return _pnum_and_category(product_id, db)
+
+    donor = (getattr(product, "official_photos_from", None) or "").strip()
+    if donor and photo_belongs_to(donor, filename):
+        return donor, resolve_category(donor)
+    return _pnum_and_category(product_id, db)
+
+
 def _invalidate_photo_cache():
     """Скинути кеш «чи є фото», щоб маркери в списку оновились одразу."""
     try:
@@ -620,12 +647,60 @@ async def replace_product_photo(
             out.write(await file.read())
         # Та сама причина, що й в add_photos: конверт + R2 не мають бути на event loop.
         await run_in_threadpool(replace_photo, pnum, category, filename, tmp)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     finally:
         try: _os.unlink(tmp)
         except OSError: pass
     return {"replaced": filename}
+
+
+@router.post("/api/products/{product_id}/photos/transform")
+async def transform_product_photo(
+    product_id: int = Path(..., ge=1),
+    filename: str = Query(..., description="ім'я канонічного фото"),
+    operation: str = Body(
+        ...,
+        embed=True,
+        regex="^(rotate_left|rotate_180|rotate_right|flip_horizontal)$",
+    ),
+    db: Session = Depends(get_db),
+):
+    """Повернути або дзеркально відобразити фото, зберігши ім'я/позицію.
+
+    Важку роботу Pillow + мережеве оновлення одного ключа Cloudflare R2
+    виконуємо поза event loop. При збої R2 локальний майстер не змінюється.
+    """
+    try:
+        from services.photo_manager import transform_photo
+    except ImportError:
+        from backend.services.photo_manager import transform_photo
+    from starlette.concurrency import run_in_threadpool
+
+    pnum, category = _photo_owner_and_category(product_id, filename, db)
+    try:
+        result = await run_in_threadpool(
+            transform_photo, pnum, category, filename, operation,
+        )
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except OSError as e:
+        logger.exception("Photo transform failed locally for product %s", product_id)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Не вдалося обробити фото; оригінал не змінено: {e}",
+        )
+    except Exception as e:
+        logger.exception("Photo transform/R2 sync failed for product %s", product_id)
+        raise HTTPException(
+            status_code=502,
+            detail=f"Не вдалося синхронізувати фото з Cloudflare; оригінал не змінено: {e}",
+        )
+    return {"transformed": filename, "category": category, **result}
 
 
 @router.put("/api/products/{product_id}/photos/reorder")

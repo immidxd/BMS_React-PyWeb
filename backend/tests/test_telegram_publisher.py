@@ -8,8 +8,10 @@
 Усе тут — чисті функції, без БД і без мережі.
 """
 
+import asyncio
 import os
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -349,3 +351,89 @@ def test_bag_goes_to_bags_thread_only():
         _p(typename="Сумка", gendername="Жіноча", season="Всесезон", sizeeu=None),
         THREADS, [])
     assert picked == [2924]
+
+
+# ── Наскрізний прапорець «усе без звуку» ────────────────────────────────────
+
+def test_create_post_passes_silent_to_original_threads_and_channel(monkeypatch):
+    """Одна галочка має дійти до КОЖНОГО Telegram API-виклику альбому."""
+    class FakeResult:
+        def scalar(self):
+            return 0
+
+    class FakeDb:
+        def execute(self, *_args, **_kwargs):
+            return FakeResult()
+
+        def commit(self):
+            pass
+
+        def rollback(self):
+            pass
+
+    class FakeClient:
+        def __init__(self):
+            self.sent = []
+            self.forwarded = []
+            self.next_id = 100
+
+        async def get_entity(self, entity):
+            return entity
+
+        async def send_file(self, entity, files, **kwargs):
+            self.sent.append(kwargs)
+            self.next_id += 1
+            return [SimpleNamespace(id=self.next_id, photo=object(), grouped_id=77)]
+
+        async def forward_messages(self, **kwargs):
+            self.forwarded.append(kwargs)
+            return []
+
+    class FakeScanner:
+        def __init__(self):
+            self.client = FakeClient()
+
+        async def disconnect(self):
+            pass
+
+        async def _resolve_entity(self, entity):
+            return entity
+
+    scanner = FakeScanner()
+
+    async def fake_connect():
+        return scanner, None
+
+    monkeypatch.setattr(tp, "_connect", fake_connect)
+    monkeypatch.setattr(tp, "_load_product", lambda _db, _pid: _p())
+    monkeypatch.setattr(tp, "_photo_entries", lambda _bms: ([object()], "official"))
+    monkeypatch.setattr(tp, "_read_photo_bytes", lambda _photos: [object()])
+    monkeypatch.setattr(tp, "_available_sizes", lambda _db, _pnum: [])
+    monkeypatch.setattr(tp, "get_threads", lambda _db: [
+        {"thread_id": 219, "thread_title": "ЛІТО | ЖІНОЧІ"},
+    ])
+    monkeypatch.setattr(tp, "_record_post", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(tp, "save_template", lambda *_args, **_kwargs: None)
+
+    result = asyncio.run(tp.create_post(FakeDb(), 1, {
+        "caption": _sample_caption(),
+        "thread_ids": [219],
+        "to_channel": True,
+        "channel_at": None,
+        "silent": True,
+    }))
+
+    assert result["ok"] is True and result["silent"] is True
+    assert len(scanner.client.sent) == 2  # оригінал + одна тематична копія
+    assert all(call["silent"] is True for call in scanner.client.sent)
+    assert len(scanner.client.forwarded) == 1
+    assert scanner.client.forwarded[0]["silent"] is True
+
+    monkeypatch.setattr(tp, "ARCHIVE_CHAT", "workshop")
+    test_result = asyncio.run(tp.create_post(FakeDb(), 1, {
+        "caption": _sample_caption(),
+        "test_mode": True,
+        "silent": True,
+    }))
+    assert test_result["ok"] is True and test_result["test_mode"] is True
+    assert scanner.client.sent[-1]["silent"] is True

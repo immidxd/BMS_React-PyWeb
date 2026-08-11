@@ -180,6 +180,18 @@ export const productService = {
         return res.data;
     },
 
+    /** Повернути/віддзеркалити канонічне фото (та сама назва й R2-ключ). */
+    async transformProductPhoto(
+        id: number,
+        filename: string,
+        operation: 'rotate_left' | 'rotate_180' | 'rotate_right' | 'flip_horizontal',
+    ): Promise<{ transformed: string; operation: string; width: number; height: number }> {
+        const res = await axios.post(`${API_URL}/${id}/photos/transform`, { operation }, {
+            params: { filename },
+        });
+        return res.data;
+    },
+
     /** Перенумерувати фото (перше = головне) — official→`_01.._0N`, real→`_001.._00N`. */
     async reorderProductPhotos(id: number, order: string[], kind: 'official' | 'real' | 'defect' = 'official'): Promise<{ order: string[] }> {
         const res = await axios.put(`${API_URL}/${id}/photos/reorder`, { order }, { params: { kind } });
@@ -346,4 +358,4 @@ export const productService = {
     }
 };
 
-export default productService; 
+export default productService;

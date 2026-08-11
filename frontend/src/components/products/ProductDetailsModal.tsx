@@ -2,7 +2,7 @@ import React, { useEffect, useState, useMemo, useRef } from 'react';
 import { productService } from '../../services/productService';
 import type { Product, ProductFilters } from '../../types/product';
 import { Tag, Image } from 'antd';
-import { CloseOutlined, PictureOutlined, LeftOutlined, RightOutlined, WarningOutlined, EditOutlined, CheckOutlined, PlusOutlined, SyncOutlined, EyeOutlined, EyeInvisibleOutlined, StarFilled, ShoppingOutlined, TableOutlined, InboxOutlined, TagOutlined, DownloadOutlined, CopyOutlined, LoadingOutlined } from '@ant-design/icons';
+import { CloseOutlined, PictureOutlined, LeftOutlined, RightOutlined, WarningOutlined, EditOutlined, CheckOutlined, PlusOutlined, SyncOutlined, EyeOutlined, EyeInvisibleOutlined, StarFilled, ShoppingOutlined, TableOutlined, InboxOutlined, TagOutlined, DownloadOutlined, CopyOutlined, LoadingOutlined, RotateLeftOutlined, RotateRightOutlined, SwapOutlined } from '@ant-design/icons';
 import { copyImageToClipboard, saveProductPhoto, saveProductPhotosZip } from '../../services/imageTransfer';
 import { CopyOnClick, formatBrandName, getProductDisplayStatus, getConditionColor, effectiveProductNumber } from '../common/displayHelpers';
 import { hiddenFieldsForType } from './productCategory';
@@ -39,6 +39,7 @@ interface Props {
 }
 
 type GalleryKind = 'official' | 'real' | 'defect';
+type PhotoTransform = 'rotate_left' | 'rotate_180' | 'rotate_right' | 'flip_horizontal';
 
 /** Тека зі шляху збереження — у сповіщенні корисніший каталог, ніж повний шлях. */
 function folderOf(fullPath: string): string {
@@ -947,10 +948,10 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
   }, [productId]);
 
   // ── Менеджер фото (editMode) ────────────────────────────────────────────
-  // Працюємо лише з ОФІЦІЙНИМИ фото (локальний мірор + R2). Реальні (Drive) і
-  // дефекти — окремі набори, тут не чіпаємо.
-  // Менеджер фото показує фото АКТИВНОЇ галереї (official | real). Це дозволяє
-  // вантажити/перейменовувати/видаляти і реальні фото з тієї ж панелі.
+  // Керуємо official/real/defect із локального мірора + R2. Фото, що лишились
+  // тільки у старому Drive-джерелі, показуються, але спершу мають бути додані
+  // до керованого набору BMS — інакше хмарні джерела неможливо синхронізувати.
+  // Менеджер показує фото активної галереї та працює однаково для всіх наборів.
   const officialImages = useMemo(
     () => allImages.filter((i) => (i.kind ?? 'official') === activeKind),
     [allImages, activeKind]
@@ -1188,6 +1189,39 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     } catch (e) { console.error('replace photo failed', e); }
     finally { setPhotoBusy(false); }
   }, [productId, loadImages]);
+
+  // Базове редагування змінює не CSS-прев'ю, а єдиний канонічний WebP. Бекенд
+  // комітить той самий файл у локальний мірор + Cloudflare R2, після чого новий
+  // `?v=` гарантовано скидає кеш оригіналу й мініатюр у всіх місцях BMS.
+  const handleTransformPhoto = React.useCallback(async (img: GalleryImage, operation: PhotoTransform) => {
+    if (!productId || photoBusy) return;
+    const labels: Record<PhotoTransform, string> = {
+      rotate_left: 'повернуто вліво',
+      rotate_180: 'повернуто на 180°',
+      rotate_right: 'повернуто вправо',
+      flip_horizontal: 'віддзеркалено',
+    };
+    setPhotoBusy(true);
+    try {
+      await productService.transformProductPhoto(productId, img.filename, operation);
+      await loadImages(true);
+      emitProductPhotosChanged(productId);
+      notify.success({
+        message: `Фото ${labels[operation]}`,
+        description: 'Збережено в BMS і синхронізовано з Cloudflare.',
+        duration: 3,
+      });
+    } catch (e: any) {
+      console.error('transform photo failed', e);
+      notify.error({
+        message: 'Фото не змінено',
+        description: e?.response?.data?.detail || e?.message || String(e),
+        duration: 8,
+      });
+    } finally {
+      setPhotoBusy(false);
+    }
+  }, [productId, photoBusy, loadImages]);
 
   // Перенести одне фото в інший набір (official/real/defect) — виправлення помилкового
   // завантаження (напр. дефект потрапив у «Реальні»). Після — перепідтягуємо фото.
@@ -2525,6 +2559,43 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                                 : <CopyOutlined style={{ fontSize: 14 }} />}
                             </button>
                           </div>
+
+                          {/* Швидкі ЗБЕРЕЖУВАНІ дії. На відміну від рідного
+                              повороту в fullscreen-прев'ю, ці кнопки змінюють
+                              канонічний файл у BMS + той самий об'єкт у R2. */}
+                          {editMode && (
+                            <div
+                              className="absolute bottom-3 left-3 flex items-center gap-0.5 p-1 rounded-full bg-gray-950/70 text-white shadow-lg backdrop-blur-md"
+                              title="Зміни зберігаються в BMS і Cloudflare"
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              <button type="button" disabled={photoBusy}
+                                onClick={(e) => { e.stopPropagation(); handleTransformPhoto(activeImage, 'rotate_left'); }}
+                                className="w-8 h-8 inline-flex items-center justify-center rounded-full hover:bg-white/20 active:scale-95 transition disabled:opacity-45"
+                                title="Повернути вліво та зберегти" aria-label="Повернути фото вліво">
+                                <RotateLeftOutlined style={{ fontSize: 15 }} />
+                              </button>
+                              <button type="button" disabled={photoBusy}
+                                onClick={(e) => { e.stopPropagation(); handleTransformPhoto(activeImage, 'rotate_180'); }}
+                                className="w-8 h-8 inline-flex items-center justify-center rounded-full text-[11px] font-semibold hover:bg-white/20 active:scale-95 transition disabled:opacity-45"
+                                title="Повернути на 180° та зберегти" aria-label="Повернути фото на 180 градусів">
+                                {photoBusy ? <LoadingOutlined /> : '180°'}
+                              </button>
+                              <button type="button" disabled={photoBusy}
+                                onClick={(e) => { e.stopPropagation(); handleTransformPhoto(activeImage, 'rotate_right'); }}
+                                className="w-8 h-8 inline-flex items-center justify-center rounded-full hover:bg-white/20 active:scale-95 transition disabled:opacity-45"
+                                title="Повернути вправо та зберегти" aria-label="Повернути фото вправо">
+                                <RotateRightOutlined style={{ fontSize: 15 }} />
+                              </button>
+                              <span className="h-5 w-px bg-white/20 mx-0.5" aria-hidden="true" />
+                              <button type="button" disabled={photoBusy}
+                                onClick={(e) => { e.stopPropagation(); handleTransformPhoto(activeImage, 'flip_horizontal'); }}
+                                className="w-8 h-8 inline-flex items-center justify-center rounded-full hover:bg-white/20 active:scale-95 transition disabled:opacity-45"
+                                title="Віддзеркалити горизонтально та зберегти" aria-label="Віддзеркалити фото">
+                                <SwapOutlined style={{ fontSize: 15 }} />
+                              </button>
+                            </div>
+                          )}
                           {images.length > 1 && (
                             <>
                               <button
