@@ -45,9 +45,8 @@ DISPATCHER_KEY = os.getenv("VIBER_DISPATCHER_KEY", "").strip()
 CHANNEL_TITLE = os.getenv(
     "VIBER_CHANNEL_TITLE", "Brandstoreua | Взуття з Європи і Америки",
 ).strip()
-MANAGER_LINE = os.getenv(
-    "VIBER_MANAGER_LINE", "💬 Для замовлення напиши нам, вказавши номер товару",
-).strip()
+ORDER_PHONE = os.getenv("VIBER_ORDER_PHONE", "+380972337387").strip()
+DELIVERY_LINE = os.getenv("VIBER_DELIVERY_LINE", "1–2 дні").strip()
 CATALOG_URL = os.getenv("VIBER_CATALOG_URL", "").strip()
 
 _BACKGROUNDS = {
@@ -221,16 +220,28 @@ def _layout_cells(count: int, layout: str, gap: int) -> List[Tuple[int, int, int
             (margin + hero_w + gap, margin + 2 * (third + gap), side_w,
              inner - 2 * (third + gap)),
         ]
-    # П’ять фото: велике головне зверху, чотири оглядові знизу.
-    hero_h = int((inner - gap) * 0.60)
-    small_h = inner - gap - hero_h
-    small_w = (inner - 3 * gap) // 4
-    cells = [(margin, margin, inner, hero_h)]
-    for col in range(4):
-        x = margin + col * (small_w + gap)
-        width = small_w if col < 3 else COLLAGE_SIZE - margin - x
-        cells.append((x, margin + hero_h + gap, width, small_h))
-    return cells
+    # П’ять фото: editorial-композиція, схожа на живі товарні Viber-картки.
+    # Головний ракурс займає більшу частину лівого верхнього блоку, праворуч
+    # лежить один широкий і два компактні оглядові кадри, а останній кадр
+    # завершує композицію широкою нижньою смугою. Так жодне з чотирьох
+    # додаткових фото не стискається до вузької однакової плитки.
+    top_h = int((inner - gap) * 0.62)
+    bottom_h = inner - gap - top_h
+    hero_w = int((inner - gap) * 0.62)
+    side_w = inner - gap - hero_w
+    side_top_h = int((top_h - gap) * 0.46)
+    side_bottom_h = top_h - gap - side_top_h
+    half_side_w = (side_w - gap) // 2
+    side_x = margin + hero_w + gap
+    side_bottom_y = margin + side_top_h + gap
+    return [
+        (margin, margin, hero_w, top_h),
+        (side_x, margin, side_w, side_top_h),
+        (side_x, side_bottom_y, half_side_w, side_bottom_h),
+        (side_x + half_side_w + gap, side_bottom_y,
+         side_w - half_side_w - gap, side_bottom_h),
+        (margin, margin + top_h + gap, inner, bottom_h),
+    ]
 
 
 def _render_tile(raw: bytes, size: Tuple[int, int], frame: dict,
@@ -335,34 +346,53 @@ def build_caption(bms: dict, sizes: Sequence[dict], *, features: Optional[Iterab
     title = " ".join(value for value in (brand, model) if value).strip()
     if tagline:
         title = f"{title} • {tagline}" if title else tagline
-    lines = [f"{emoji} {title}".strip()]
+    leading = [f"{emoji} {title}".strip()]
     size_line = _fmt_sizes(bms, sizes)
     if size_line:
-        lines.extend(["", size_line])
+        leading.append(size_line)
     feature_values = [str(v).strip() for v in (features or tg.default_features(bms)) if str(v).strip()]
-    if feature_values:
-        lines.append("")
-        lines.extend(f"▪️ {value}" for value in feature_values[:4])
     condition = tg._condition_line(bms)
-    if condition:
-        lines.extend(["", f"{tg._condition_icon(bms)} {condition}"])
+    condition_line = f"{tg._condition_icon(bms)} {condition}" if condition else ""
+
+    protected: List[str] = []
     price = tg._fmt_price(bms.get("price"))
     if price:
-        lines.extend(["", f"🛒 Ціна: {price} грн"])
+        protected.append(f"🛒 Ціна: {price} грн")
+    if DELIVERY_LINE:
+        protected.append(f"🚚 Доставка: {DELIVERY_LINE}")
     pnum = str(bms.get("productnumber") or "").lstrip("#")
-    lines.extend(["", f"{MANAGER_LINE} #{pnum}"])
+    order_line = f"📲 Пиши #{pnum} для замовлення"
+    if ORDER_PHONE:
+        order_line += f" 👉 {ORDER_PHONE}"
+    protected.append(order_line)
     if CATALOG_URL:
-        lines.append(CATALOG_URL)
+        protected.append(CATALOG_URL)
 
-    # Дефолт ніколи мовчки не перевищує API-ліміт: спершу прибираємо останні
-    # переваги, а не обрізаємо ціну/номер товару.
-    while len("\n".join(lines)) > CAPTION_LIMIT and any(line.startswith("▪️ ") for line in lines):
-        last_feature = max(i for i, line in enumerate(lines) if line.startswith("▪️ "))
-        lines.pop(last_feature)
-    caption = "\n".join(lines).strip()
-    if len(caption) > CAPTION_LIMIT:
-        caption = caption[:CAPTION_LIMIT - 1].rstrip() + "…"
-    return caption
+    # Дефолт ніколи мовчки не перевищує API-ліміт. Спершу прибираємо останні
+    # переваги; CTA з номером і телефоном, ціна та доставка завжди захищені.
+    feature_lines = [f"▪️ {value}" for value in feature_values[:4]]
+
+    def compose() -> str:
+        sections = [*leading]
+        if feature_lines:
+            sections.append("\n".join(feature_lines))
+        if condition_line:
+            sections.append(condition_line)
+        return "\n\n".join([*sections, *protected]).strip()
+
+    caption = compose()
+    while len(caption) > CAPTION_LIMIT and feature_lines:
+        feature_lines.pop()
+        caption = compose()
+    if len(caption) <= CAPTION_LIMIT:
+        return caption
+
+    suffix = "\n\n".join(protected).strip()
+    available = max(0, CAPTION_LIMIT - len(suffix) - 2)
+    prefix = "\n\n".join([*leading, *([condition_line] if condition_line else [])]).strip()
+    if len(prefix) > available:
+        prefix = (prefix[:max(0, available - 1)].rstrip() + "…") if available else ""
+    return "\n\n".join(value for value in (prefix, suffix) if value).strip()
 
 
 def validate_caption(caption: str) -> Optional[str]:

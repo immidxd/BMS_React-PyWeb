@@ -67,6 +67,7 @@ export interface ViberPublishPayload {
   idempotency_key: string;
   force?: boolean;
   condition_confirmed?: boolean;
+  dry_run?: boolean;
 }
 
 interface Props {
@@ -121,6 +122,12 @@ function initialSpec(data: ViberPreview, payload?: ViberPublishPayload): ViberCo
   }, selected);
 }
 
+type FrameControlKey = 'zoom' | 'x' | 'y';
+
+function clampFrameValue(key: FrameControlKey, value: number): number {
+  return Math.max(key === 'zoom' ? 1 : -1, Math.min(key === 'zoom' ? 3 : 1, value));
+}
+
 export const ViberConditionPublishConfirmation: React.FC<{
   items: { productnumber: string; conditionName: string; title?: string }[];
   busy?: boolean;
@@ -156,6 +163,51 @@ export const ViberConditionPublishConfirmation: React.FC<{
   );
 };
 
+export const ViberLivePublishConfirmation: React.FC<{
+  count: number;
+  channelTitle: string;
+  publishAt?: string | null;
+  scheduledCount?: number;
+  busy?: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}> = ({ count, channelTitle, publishAt, scheduledCount = publishAt ? 1 : 0, busy = false, onCancel, onConfirm }) => {
+  const scheduled = publishAt ? new Date(publishAt) : null;
+  const validSchedule = scheduled && !Number.isNaN(scheduled.getTime()) ? scheduled : null;
+  return (
+    <div className="fixed inset-0 z-[155] flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/55 backdrop-blur-[2px]" onClick={busy ? undefined : onCancel} />
+      <div className="relative w-full max-w-md overflow-hidden rounded-2xl border border-violet-200 bg-white shadow-2xl dark:border-violet-800 dark:bg-gray-900">
+        <div className="flex gap-3 px-5 pt-5">
+          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-violet-100 font-black text-violet-700 dark:bg-violet-900/40 dark:text-violet-300">V</span>
+          <div>
+            <div className="font-semibold text-gray-900 dark:text-gray-50">Підтвердити реальну Viber-публікацію</div>
+            <p className="mt-1 text-xs leading-relaxed text-gray-500 dark:text-gray-400">
+              {validSchedule
+                ? `${count} ${count === 1 ? 'пост буде' : 'пости будуть'} поставлено в розклад на ${validSchedule.toLocaleString('uk-UA')}.`
+                : scheduledCount > 0
+                  ? `${scheduledCount} із ${count} постів підуть за індивідуальним розкладом${scheduledCount < count ? `, ще ${count - scheduledCount} — одразу` : ''}.`
+                  : `${count} ${count === 1 ? 'пост піде' : 'пости підуть'} у канал одразу після підтвердження.`}
+            </p>
+          </div>
+        </div>
+        <div className="mx-5 mt-4 rounded-xl border border-violet-200 bg-violet-50/70 px-3 py-2.5 text-sm font-medium text-gray-800 dark:border-violet-800 dark:bg-violet-900/20 dark:text-gray-100">
+          Канал: «{channelTitle}»
+        </div>
+        <div className="mx-5 mt-3 text-[11px] leading-relaxed text-gray-400">
+          Це не тест. Після відправлення Channels Post API не дає BMS безпечної команди видалити пост.
+        </div>
+        <div className="mt-5 flex justify-end gap-2 border-t border-gray-100 px-5 py-3.5 dark:border-gray-800">
+          <button type="button" onClick={onCancel} disabled={busy} className="rounded-lg border border-gray-200 px-4 py-2 text-sm text-gray-600 disabled:opacity-50 dark:border-gray-700 dark:text-gray-300">Повернутися</button>
+          <button type="button" onClick={onConfirm} disabled={busy} className="rounded-lg bg-[#7360F2] px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">
+            {validSchedule || scheduledCount > 0 ? 'Так, підтвердити розклад' : 'Так, опублікувати зараз'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 const ViberPublishDialog: React.FC<Props> = ({
   data, busy, onCancel, onConfirm, mode = 'publish', initialPayload,
 }) => {
@@ -163,6 +215,11 @@ const ViberPublishDialog: React.FC<Props> = ({
   const [caption, setCaption] = useState(initialPayload?.caption ?? data.caption);
   const [collage, setCollage] = useState<ViberCollageSpec>(() => initialSpec(data, initialPayload));
   const [activeImage, setActiveImage] = useState<number>(() => initialSpec(data, initialPayload).image_idx[0] ?? 0);
+  const [editTargets, setEditTargets] = useState<number[]>(() => {
+    const first = initialSpec(data, initialPayload).image_idx[0];
+    return first === undefined ? [] : [first];
+  });
+  const [groupAdjust, setGroupAdjust] = useState<Record<FrameControlKey, number>>({ zoom: 0, x: 0, y: 0 });
   const [timing, setTiming] = useState<'now' | 'custom'>(() => initialPayload?.publish_at ? 'custom' : 'now');
   const [customAt, setCustomAt] = useState(asLocal(initialPayload?.publish_at ?? data.default_publish_at));
   const [force, setForce] = useState(initialPayload?.force ?? false);
@@ -173,8 +230,14 @@ const ViberPublishDialog: React.FC<Props> = ({
   const [renderError, setRenderError] = useState<string | null>(null);
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [conditionConfirmOpen, setConditionConfirmOpen] = useState(false);
+  const [liveConfirmOpen, setLiveConfirmOpen] = useState(false);
+  const [conditionApproved, setConditionApproved] = useState(false);
+  const [checking, setChecking] = useState(false);
+  const [checkResult, setCheckResult] = useState<string | null>(null);
+  const [checkError, setCheckError] = useState<string | null>(null);
   const renderUrlRef = useRef<string | null>(null);
   const renderSequence = useRef(0);
+  const groupBaseRef = useRef<Map<number, ViberCollageFrame>>(new Map());
 
   useEffect(() => () => {
     if (renderUrlRef.current) URL.revokeObjectURL(renderUrlRef.current);
@@ -219,7 +282,9 @@ const ViberPublishDialog: React.FC<Props> = ({
     return () => { window.clearTimeout(timer); controller.abort(); };
   }, [collage, data.product_id]);
 
-  const activeFrame = collage.frames.find(frame => frame.image_idx === activeImage) ?? collage.frames[0];
+  const primaryEditImage = editTargets.includes(activeImage) ? activeImage : editTargets[0];
+  const activeFrame = collage.frames.find(frame => frame.image_idx === primaryEditImage) ?? collage.frames[0];
+  const editingMany = editTargets.length > 1;
   const captionProblem = !caption.trim()
     ? 'Підпис порожній'
     : caption.length > data.caption_limit ? `Перевищено ліміт на ${caption.length - data.caption_limit} символів` : null;
@@ -242,6 +307,11 @@ const ViberPublishDialog: React.FC<Props> = ({
     if (!unique.length) return;
     setCollage(current => normalizeFrames(current, unique));
     if (!unique.includes(activeImage)) setActiveImage(unique[0]);
+    setEditTargets(current => {
+      const kept = current.filter(index => unique.includes(index));
+      return kept.length ? kept : [unique[0]];
+    });
+    setGroupAdjust({ zoom: 0, x: 0, y: 0 });
   };
 
   const toggleImage = (index: number) => {
@@ -250,6 +320,7 @@ const ViberPublishDialog: React.FC<Props> = ({
     } else if (collage.image_idx.length < 5) {
       updateSelected([...collage.image_idx, index]);
       setActiveImage(index);
+      setEditTargets([index]);
     }
   };
 
@@ -269,6 +340,63 @@ const ViberPublishDialog: React.FC<Props> = ({
     }));
   };
 
+  const selectSingleFrame = (index: number) => {
+    setActiveImage(index);
+    setEditTargets([index]);
+    groupBaseRef.current = new Map();
+    setGroupAdjust({ zoom: 0, x: 0, y: 0 });
+  };
+
+  const toggleEditTarget = (index: number) => {
+    setEditTargets(current => {
+      const next = current.includes(index)
+        ? (current.length > 1 ? current.filter(value => value !== index) : current)
+        : [...current, index];
+      const ordered = collage.image_idx.filter(value => next.includes(value));
+      groupBaseRef.current = new Map(
+        collage.frames.filter(frame => ordered.includes(frame.image_idx)).map(frame => [frame.image_idx, { ...frame }]),
+      );
+      setActiveImage(ordered.includes(index) ? index : ordered[0]);
+      return ordered;
+    });
+    setGroupAdjust({ zoom: 0, x: 0, y: 0 });
+  };
+
+  const selectAllFrames = () => {
+    setEditTargets([...collage.image_idx]);
+    groupBaseRef.current = new Map(
+      collage.frames.map(frame => [frame.image_idx, { ...frame }]),
+    );
+    setGroupAdjust({ zoom: 0, x: 0, y: 0 });
+  };
+
+  const updateFramesTogether = (key: FrameControlKey, nextValue: number) => {
+    setGroupAdjust(current => ({ ...current, [key]: nextValue }));
+    const targets = new Set(editTargets);
+    setCollage(current => ({
+      ...current,
+      frames: current.frames.map(frame => {
+        if (!targets.has(frame.image_idx)) return frame;
+        const base = groupBaseRef.current.get(frame.image_idx) ?? frame;
+        return { ...frame, [key]: clampFrameValue(key, base[key] + nextValue) };
+      }),
+    }));
+  };
+
+  const resetEditedFrames = () => {
+    const targets = new Set(editTargets);
+    setCollage(current => ({
+      ...current,
+      frames: current.frames.map(frame => targets.has(frame.image_idx)
+        ? { ...frame, zoom: 1, x: 0, y: 0 }
+        : frame),
+    }));
+    groupBaseRef.current = new Map(
+      editTargets.map(index => [index, { image_idx: index, zoom: 1, x: 0, y: 0 }]),
+    );
+    setGroupAdjust({ zoom: 0, x: 0, y: 0 });
+  };
+
   const payload = (conditionConfirmed = false): ViberPublishPayload => ({
     caption: caption.trim(),
     collage,
@@ -284,7 +412,33 @@ const ViberPublishDialog: React.FC<Props> = ({
       setConditionConfirmOpen(true);
       return;
     }
+    if (!draftMode) {
+      setConditionApproved(false);
+      setLiveConfirmOpen(true);
+      return;
+    }
     onConfirm(payload());
+  };
+
+  const runSafeCheck = async () => {
+    if (checking || rendering || !collage.image_idx.length || captionProblem || scheduleProblem) return;
+    setChecking(true);
+    setCheckResult(null);
+    setCheckError(null);
+    try {
+      const response = await fetch('/api/publications/viber/create-post', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ product_id: data.product_id, ...payload(), dry_run: true }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok || !result.ok) throw new Error(result.detail || result.error || 'Перевірка не вдалася');
+      setCheckResult(`Перевірено: колаж ${Math.ceil(Number(result.image_bytes || 0) / 1024)} КБ, підпис і розклад коректні. У Viber нічого не надіслано.`);
+    } catch (error: any) {
+      setCheckError(error?.message || 'Перевірка не вдалася');
+    } finally {
+      setChecking(false);
+    }
   };
 
   const previewTitle = [data.brand, data.model, data.type].filter(Boolean).join(' ');
@@ -318,7 +472,7 @@ const ViberPublishDialog: React.FC<Props> = ({
                             onDragStart={() => setDragIndex(order)}
                             onDragOver={event => { if (selected) event.preventDefault(); }}
                             onDrop={() => { if (selected && dragIndex !== null) moveSelected(dragIndex, order); setDragIndex(null); }}
-                            onClick={() => { if (selected) setActiveImage(index); else toggleImage(index); }}
+                            onClick={() => { if (selected) selectSingleFrame(index); else toggleImage(index); }}
                             className={`relative h-20 w-20 shrink-0 overflow-hidden rounded-xl border-2 bg-gray-100 transition ${selected ? 'border-violet-500' : 'border-transparent opacity-60 hover:opacity-100'} ${activeImage === index && selected ? 'ring-2 ring-violet-500/25' : ''}`}
                             title={selected ? 'Клік — налаштувати кадр; перетягни для зміни порядку' : 'Додати до колажу'}>
                       <SmartImage src={url} thumb={320} thumbOnly className="h-full w-full object-cover" />
@@ -355,21 +509,40 @@ const ViberPublishDialog: React.FC<Props> = ({
               </div>
             </div>
 
-            {activeFrame && (
+            {activeFrame && editTargets.length > 0 && (
               <div className="rounded-xl border border-gray-200 bg-gray-50/60 p-3 dark:border-gray-700 dark:bg-gray-800/40">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-semibold text-gray-700 dark:text-gray-200">Кадр фото {collage.image_idx.indexOf(activeFrame.image_idx) + 1}</span>
-                  <button type="button" onClick={() => updateFrame({ zoom: 1, x: 0, y: 0 })} className="text-[11px] text-violet-600 hover:underline"><ReloadOutlined className="mr-1" />Скинути</button>
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-xs font-semibold text-gray-700 dark:text-gray-200">Редагувати</span>
+                  <div className="flex flex-wrap gap-1">
+                    {collage.image_idx.map((index, order) => (
+                      <button key={index} type="button" onClick={() => toggleEditTarget(index)}
+                              className={`h-7 min-w-7 rounded-md border px-2 text-[11px] font-semibold transition ${editTargets.includes(index) ? 'border-violet-500 bg-violet-50 text-violet-700 dark:bg-violet-900/25 dark:text-violet-300' : 'border-gray-200 bg-white text-gray-400 dark:border-gray-700 dark:bg-gray-900'}`}>
+                        {order + 1}
+                      </button>
+                    ))}
+                    <button type="button" onClick={selectAllFrames}
+                            className={`h-7 rounded-md border px-2 text-[11px] font-semibold transition ${editTargets.length === collage.image_idx.length ? 'border-violet-500 bg-violet-50 text-violet-700 dark:bg-violet-900/25 dark:text-violet-300' : 'border-gray-200 bg-white text-gray-500 dark:border-gray-700 dark:bg-gray-900'}`}>
+                      Усі {collage.image_idx.length}
+                    </button>
+                  </div>
+                  <button type="button" onClick={resetEditedFrames} className="ml-auto text-[11px] text-violet-600 hover:underline"><ReloadOutlined className="mr-1" />Скинути {editingMany ? 'вибрані' : ''}</button>
                 </div>
+                <p className="mt-2 text-[11px] leading-relaxed text-gray-400">
+                  {editingMany
+                    ? `Вибрано ${editTargets.length} фото. Спільні повзунки додають однакову корекцію, не стираючи індивідуальні налаштування.`
+                    : `Налаштовується фото ${collage.image_idx.indexOf(activeFrame.image_idx) + 1}. Натисни номери або «Усі», щоб рухати кілька кадрів разом.`}
+                </p>
                 <div className="mt-3 grid gap-3 sm:grid-cols-3">
                   {([
-                    ['Масштаб', 'zoom', 1, 3, 0.05],
-                    ['Ліворуч / праворуч', 'x', -1, 1, 0.05],
-                    ['Вгору / вниз', 'y', -1, 1, 0.05],
+                    [editingMany ? 'Масштаб усіх' : 'Масштаб', 'zoom', editingMany ? -1 : 1, editingMany ? 2 : 3, 0.05],
+                    [editingMany ? 'Разом ліворуч / праворуч' : 'Ліворуч / праворуч', 'x', -1, 1, 0.05],
+                    [editingMany ? 'Разом вгору / вниз' : 'Вгору / вниз', 'y', -1, 1, 0.05],
                   ] as const).map(([label, key, min, max, step]) => (
                     <label key={key} className="text-[11px] text-gray-500">{label}
-                      <input type="range" min={min} max={max} step={step} value={activeFrame[key]}
-                             onChange={event => updateFrame({ [key]: Number(event.target.value) })}
+                      <input type="range" min={min} max={max} step={step} value={editingMany ? groupAdjust[key] : activeFrame[key]}
+                             onChange={event => editingMany
+                               ? updateFramesTogether(key, Number(event.target.value))
+                               : updateFrame({ [key]: Number(event.target.value) })}
                              className="mt-1 block w-full accent-violet-600" />
                     </label>
                   ))}
@@ -438,22 +611,39 @@ const ViberPublishDialog: React.FC<Props> = ({
                 {data.warnings.map((warning, index) => <div key={`${warning}-${index}`} className="flex gap-2 rounded-lg bg-amber-50 px-3 py-2 text-[11px] leading-relaxed text-amber-700 dark:bg-amber-900/20 dark:text-amber-300"><WarningOutlined className="mt-0.5" />{warning}</div>)}
               </div>
             )}
+            {checkResult && (
+              <div className="flex gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2.5 text-xs leading-relaxed text-emerald-700 dark:border-emerald-800 dark:bg-emerald-900/20 dark:text-emerald-300">
+                <CheckOutlined className="mt-0.5" />{checkResult}
+              </div>
+            )}
+            {checkError && (
+              <div className="flex gap-2 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2.5 text-xs leading-relaxed text-rose-700 dark:border-rose-800 dark:bg-rose-900/20 dark:text-rose-300">
+                <WarningOutlined className="mt-0.5" />{checkError}
+              </div>
+            )}
             {!draftMode && !data.connection.live_publish_available && (
               <div className="rounded-xl border border-gray-200 bg-white p-3 text-xs leading-relaxed text-gray-500 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-400">
-                Редактор і колаж уже працюють. Жива кнопка стане доступною після захищеного підключення Viber у Cloudflare; секрет у BMS не зберігатиметься.
+                Редактор і безпечна перевірка вже працюють. Жива кнопка стане доступною після захищеного підключення Viber у Cloudflare; секрет у BMS не зберігатиметься.
               </div>
             )}
           </aside>
         </div>
 
         <footer className="flex items-center justify-between gap-3 border-t border-gray-100 bg-white px-5 py-3.5 dark:border-gray-800 dark:bg-gray-900">
-          <span className="text-xs text-gray-400">{draftMode ? 'Зміни збережуться в картці пакета' : timing === 'custom' ? 'Пост виконає хмарний розклад' : 'Пост буде поставлено у захищену чергу'}</span>
+          <span className="text-xs text-gray-400">{draftMode ? 'Зміни збережуться в картці пакета' : timing === 'custom' ? 'Після підтвердження пост виконає хмарний розклад' : 'Після підтвердження це буде реальний пост у каналі'}</span>
           <div className="flex gap-2">
+            {!draftMode && (
+              <button type="button" onClick={runSafeCheck}
+                      disabled={checking || rendering || !collage.image_idx.length || !!captionProblem || !!scheduleProblem}
+                      className="rounded-lg border border-violet-200 px-3 py-2 text-sm font-medium text-violet-700 disabled:opacity-45 dark:border-violet-800 dark:text-violet-300">
+                {checking ? <><LoadingOutlined className="mr-1.5" />Перевіряю…</> : 'Перевірити без надсилання'}
+              </button>
+            )}
             <button type="button" onClick={onCancel} disabled={busy} className="rounded-lg border border-gray-200 px-4 py-2 text-sm text-gray-600 disabled:opacity-50 dark:border-gray-700 dark:text-gray-300">Скасувати</button>
             <button type="button" onClick={submit} disabled={cannotPublish}
                     className="flex items-center gap-1.5 rounded-lg px-4 py-2 text-sm font-semibold text-white disabled:opacity-45" style={{ background: VIBER_PURPLE }}>
               {busy ? <LoadingOutlined /> : draftMode ? <CheckOutlined /> : <SendOutlined />}
-              {busy ? 'Виконую…' : draftMode ? 'Зберегти картку' : timing === 'custom' ? 'Запланувати' : 'Опублікувати'}
+              {busy ? 'Виконую…' : draftMode ? 'Зберегти картку' : timing === 'custom' ? 'Запланувати в канал' : 'Опублікувати в канал'}
             </button>
           </div>
         </footer>
@@ -463,7 +653,24 @@ const ViberPublishDialog: React.FC<Props> = ({
           items={[{ productnumber: data.productnumber, conditionName: data.condition_name || data.condition || 'Вживаний', title: previewTitle }]}
           busy={busy}
           onCancel={() => setConditionConfirmOpen(false)}
-          onConfirm={() => { setConditionConfirmOpen(false); onConfirm(payload(true)); }}
+          onConfirm={() => {
+            setConditionConfirmOpen(false);
+            setConditionApproved(true);
+            setLiveConfirmOpen(true);
+          }}
+        />
+      )}
+      {liveConfirmOpen && (
+        <ViberLivePublishConfirmation
+          count={1}
+          channelTitle={data.channel.title}
+          publishAt={payload(conditionApproved).publish_at}
+          busy={busy}
+          onCancel={() => setLiveConfirmOpen(false)}
+          onConfirm={() => {
+            setLiveConfirmOpen(false);
+            onConfirm(payload(conditionApproved));
+          }}
         />
       )}
     </div>

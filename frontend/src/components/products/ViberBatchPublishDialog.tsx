@@ -6,6 +6,7 @@ import {
 import SmartImage from '../common/SmartImage';
 import ViberPublishDialog, {
   ViberConditionPublishConfirmation,
+  ViberLivePublishConfirmation,
   type ViberCollageSpec, type ViberPreview, type ViberPublishPayload,
 } from './ViberPublishDialog';
 
@@ -90,6 +91,8 @@ const ViberBatchPublishDialog: React.FC<Props> = ({ productIds, busy, onCancel, 
   const [editingId, setEditingId] = useState<number | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(true);
   const [conditionConfirmOpen, setConditionConfirmOpen] = useState(false);
+  const [liveConfirmOpen, setLiveConfirmOpen] = useState(false);
+  const [conditionApproved, setConditionApproved] = useState(false);
   const [layoutPreset, setLayoutPreset] = useState<LayoutPreset>('keep');
   const [backgroundPreset, setBackgroundPreset] = useState<BackgroundPreset>('keep');
   const [timePreset, setTimePreset] = useState<TimePreset>('stagger');
@@ -184,7 +187,10 @@ const ViberBatchPublishDialog: React.FC<Props> = ({ productIds, busy, onCancel, 
   const submit = () => {
     if (!included.length || unconfigured || timeProblem) return;
     if (risky.length) setConditionConfirmOpen(true);
-    else publish();
+    else {
+      setConditionApproved(false);
+      setLiveConfirmOpen(true);
+    }
   };
 
   if (editing) {
@@ -327,7 +333,25 @@ const ViberBatchPublishDialog: React.FC<Props> = ({ productIds, busy, onCancel, 
           items={risky.map(entry => ({ productnumber: entry.preview.productnumber, conditionName: entry.preview.condition_name || entry.preview.condition || 'Вживаний', title: [entry.preview.brand, entry.preview.model, entry.preview.type].filter(Boolean).join(' ') }))}
           busy={busy}
           onCancel={() => setConditionConfirmOpen(false)}
-          onConfirm={() => { setConditionConfirmOpen(false); publish(true); }}
+          onConfirm={() => {
+            setConditionConfirmOpen(false);
+            setConditionApproved(true);
+            setLiveConfirmOpen(true);
+          }}
+        />
+      )}
+      {liveConfirmOpen && included.length > 0 && (
+        <ViberLivePublishConfirmation
+          count={included.length}
+          channelTitle={included[0].preview.channel.title}
+          publishAt={included.length === 1 ? included[0].draft.publish_at : null}
+          scheduledCount={included.filter(entry => !!entry.draft.publish_at).length}
+          busy={busy}
+          onCancel={() => setLiveConfirmOpen(false)}
+          onConfirm={() => {
+            setLiveConfirmOpen(false);
+            publish(conditionApproved);
+          }}
         />
       )}
     </div>

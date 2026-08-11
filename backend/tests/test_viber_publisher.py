@@ -55,6 +55,25 @@ def test_collage_spec_is_bounded_deduplicated_and_keeps_manual_order():
     assert spec["frames"][0] == {"image_idx": 3, "zoom": 3.0, "x": -1.0, "y": 1.0}
 
 
+def test_five_photo_smart_layout_has_one_hero_three_right_details_and_wide_footer():
+    cells = vp._layout_cells(5, "auto", 14)
+
+    assert len(cells) == 5
+    hero, right_top, right_left, right_right, footer = cells
+    assert hero[2] > right_top[2]
+    assert hero[3] > right_top[3]
+    assert right_left[1] == right_right[1]
+    assert right_left[2] == right_right[2]
+    assert footer[2] > hero[2]
+    assert footer[1] > hero[1] + hero[3]
+
+    # Усі плитки лишаються всередині стабільного полотна 1080×1080.
+    for x, y, width, height in cells:
+        assert x >= 0 and y >= 0
+        assert x + width <= vp.COLLAGE_SIZE
+        assert y + height <= vp.COLLAGE_SIZE
+
+
 def test_schedule_never_silently_turns_invalid_time_into_publish_now():
     too_soon = (datetime.now(timezone.utc) + timedelta(seconds=30)).isoformat()
     parsed, error = vp._validate_schedule(too_soon)
@@ -92,6 +111,8 @@ def test_default_caption_never_exceeds_picture_description_limit(monkeypatch):
     assert len(caption) <= vp.CAPTION_LIMIT
     assert "#Ф42" in caption
     assert "1900 грн" in caption
+    assert "🚚 Доставка: 1–2 дні" in caption
+    assert "📲 Пиши #Ф42 для замовлення 👉 +380972337387" in caption
 
 
 def test_live_create_stops_before_render_or_upload_when_dispatcher_is_not_configured(monkeypatch):
@@ -119,3 +140,44 @@ def test_live_create_stops_before_render_or_upload_when_dispatcher_is_not_config
     assert result["ok"] is False
     assert "не підключений" in result["error"]
     assert called == {"prepare": 0, "upload": 0}
+
+
+def test_dry_run_renders_but_never_uploads_records_or_dispatches(monkeypatch):
+    called = {"upload": 0, "record": 0, "dispatch": 0}
+    monkeypatch.setattr(vp, "_cached_result", lambda _db, _key: None)
+    monkeypatch.setattr(vp, "_prepare", lambda *_args, **_kwargs: {
+        "pnum": "Ф42",
+        "main": b"main-jpeg",
+        "thumb": b"thumb-jpeg",
+        "spec": {"layout": "auto"},
+    })
+
+    def upload(*_args, **_kwargs):
+        called["upload"] += 1
+
+    async def dispatch(*_args, **_kwargs):
+        called["dispatch"] += 1
+
+    def record(*_args, **_kwargs):
+        called["record"] += 1
+
+    monkeypatch.setattr(vp, "_upload_derivatives", upload)
+    monkeypatch.setattr(vp, "_dispatch", dispatch)
+    monkeypatch.setattr(vp, "_record", record)
+
+    result = asyncio.run(vp.create_post(object(), 42, {
+        "caption": "test",
+        "dry_run": True,
+        "idempotency_key": "safe-dry-run",
+    }))
+
+    assert result == {
+        "ok": True,
+        "dry_run": True,
+        "product_id": 42,
+        "productnumber": "Ф42",
+        "image_bytes": len(b"main-jpeg"),
+        "thumbnail_bytes": len(b"thumb-jpeg"),
+        "collage": {"layout": "auto"},
+    }
+    assert called == {"upload": 0, "record": 0, "dispatch": 0}
