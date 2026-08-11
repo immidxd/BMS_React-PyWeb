@@ -578,7 +578,9 @@ def get_publications_stats(db: Session = Depends(get_db)):
                 COUNT(*) AS total_posts,
                 COUNT(*) FILTER (WHERE chat_type = 'channel') AS channel_posts,
                 COUNT(*) FILTER (WHERE chat_type = 'forum') AS forum_posts,
-                COUNT(*) FILTER (WHERE chat_type = 'archive') AS archive_posts
+                COUNT(*) FILTER (WHERE chat_type = 'archive') AS archive_posts,
+                COUNT(DISTINCT product_id) FILTER (WHERE chat_type = 'forum') AS forum_products,
+                COUNT(DISTINCT product_id) FILTER (WHERE chat_type = 'channel') AS channel_products
             FROM telegram_posts
             WHERE tg_status = 'published'
         """)).fetchone()
@@ -616,6 +618,8 @@ def get_publications_stats(db: Session = Depends(get_db)):
             "channel_posts": stats[3] if stats else 0,
             "forum_posts": stats[4] if stats else 0,
             "archive_posts": stats[5] if stats else 0,
+            "forum_products": stats[6] if stats else 0,
+            "channel_products": stats[7] if stats else 0,
             "sold_but_live_count": sold_live[0] if sold_live else 0,
             "unlinked_count": unlinked[0] if unlinked else 0,
             "channels": [

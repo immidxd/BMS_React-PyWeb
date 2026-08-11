@@ -78,6 +78,8 @@ interface PublicationStats {
   channel_posts: number;
   forum_posts: number;
   archive_posts: number;
+  channel_products: number;
+  forum_products: number;
   sold_but_live_count: number;
   unlinked_count: number;
   channels: Array<{
@@ -183,8 +185,8 @@ const PublicationsFilterPanel: React.FC<{
               {[
                 { label: 'Усього постів', value: stats.total_posts, title: 'Усі активні пости, включно з копіями одного товару' },
                 { label: 'Унік. товарів', value: stats.published_products, title: 'Різні привʼязані товари серед активних публікацій' },
-                { label: 'Постів у форумі', value: stats.forum_posts, title: 'Копії одного товару в різних гілках рахуються окремо' },
-                { label: 'Постів у каналі', value: stats.channel_posts, title: 'Кількість активних постів у каналі' },
+                { label: 'У форумі', value: stats.forum_products, title: `${stats.forum_products} унікальних товарів · ${stats.forum_posts} постів із копіями по гілках` },
+                { label: 'У каналі', value: stats.channel_products, title: `${stats.channel_products} унікальних товарів · ${stats.channel_posts} постів` },
               ].map(s => (
                 <div key={s.label} title={s.title} className="px-2 py-1.5 rounded-lg bg-gray-50 dark:bg-gray-700/50 border border-gray-100 dark:border-gray-700">
                   <div className="text-[10px] uppercase tracking-wide text-gray-400 dark:text-gray-500">{s.label}</div>
