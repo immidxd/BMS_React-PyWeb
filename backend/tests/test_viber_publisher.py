@@ -55,17 +55,19 @@ def test_collage_spec_is_bounded_deduplicated_and_keeps_manual_order():
     assert spec["frames"][0] == {"image_idx": 3, "zoom": 3.0, "x": -1.0, "y": 1.0}
 
 
-def test_five_photo_smart_layout_has_one_hero_three_right_details_and_wide_footer():
-    cells = vp._layout_cells(5, "auto", 14)
+def test_five_photo_smart_layout_matches_historical_viber_two_plus_three_grid():
+    cells = vp._layout_cells(5, "auto", 4)
 
     assert len(cells) == 5
-    hero, right_top, right_left, right_right, footer = cells
-    assert hero[2] > right_top[2]
-    assert hero[3] > right_top[3]
-    assert right_left[1] == right_right[1]
-    assert right_left[2] == right_right[2]
-    assert footer[2] > hero[2]
-    assert footer[1] > hero[1] + hero[3]
+    left_top, left_bottom, right_top, right_middle, right_bottom = cells
+    assert left_top[0] == left_bottom[0] == 0
+    assert left_top[2] == left_bottom[2]
+    assert left_top[2] > right_top[2]
+    assert left_bottom[1] == left_top[3] + 4
+    assert right_top[0] == right_middle[0] == right_bottom[0]
+    assert right_top[2] == right_middle[2] == right_bottom[2]
+    assert right_middle[1] == right_top[3] + 4
+    assert right_bottom[1] == right_middle[1] + right_middle[3] + 4
 
     # Усі плитки лишаються всередині стабільного полотна 1080×1080.
     for x, y, width, height in cells:

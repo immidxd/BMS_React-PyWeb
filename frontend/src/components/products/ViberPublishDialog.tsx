@@ -20,6 +20,10 @@ export interface ViberCollageSpec {
   layout: 'auto' | 'hero' | 'grid';
   background: 'white' | 'soft' | 'warm' | 'dark';
   gap: number;
+  column_split: number;
+  left_split: number;
+  right_top: number;
+  right_middle: number;
   frames: ViberCollageFrame[];
 }
 
@@ -85,6 +89,13 @@ const LABEL = 'text-[11px] font-semibold uppercase tracking-wide text-gray-400 d
 const BACKGROUNDS: Record<ViberCollageSpec['background'], string> = {
   white: '#ffffff', soft: '#f4f6f8', warm: '#f8f5f0', dark: '#181b20',
 };
+const VIBER_GRID_DEFAULTS = {
+  gap: 4,
+  column_split: 0.63,
+  left_split: 0.505,
+  right_top: 0.347,
+  right_middle: 0.307,
+};
 
 function uuid(): string {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
@@ -118,11 +129,16 @@ function initialSpec(data: ViberPreview, payload?: ViberPublishPayload): ViberCo
     height: 1080,
     layout: source.layout || 'auto',
     background: source.background || 'white',
-    gap: source.gap ?? 14,
+    gap: source.gap ?? VIBER_GRID_DEFAULTS.gap,
+    column_split: source.column_split ?? VIBER_GRID_DEFAULTS.column_split,
+    left_split: source.left_split ?? VIBER_GRID_DEFAULTS.left_split,
+    right_top: source.right_top ?? VIBER_GRID_DEFAULTS.right_top,
+    right_middle: source.right_middle ?? VIBER_GRID_DEFAULTS.right_middle,
   }, selected);
 }
 
 type FrameControlKey = 'zoom' | 'x' | 'y';
+type ViberGridKey = 'column_split' | 'left_split' | 'right_top' | 'right_middle';
 
 function clampFrameValue(key: FrameControlKey, value: number): number {
   return Math.max(key === 'zoom' ? 1 : -1, Math.min(key === 'zoom' ? 3 : 1, value));
@@ -397,6 +413,24 @@ const ViberPublishDialog: React.FC<Props> = ({
     setGroupAdjust({ zoom: 0, x: 0, y: 0 });
   };
 
+  const updateViberGrid = (key: ViberGridKey, value: number) => {
+    setCollage(current => {
+      const next = { ...current, [key]: value };
+      if (key === 'right_top' || key === 'right_middle') {
+        const sum = next.right_top + next.right_middle;
+        if (sum > 0.82) {
+          const otherKey = key === 'right_top' ? 'right_middle' : 'right_top';
+          next[otherKey] = Math.max(0.18, 0.82 - value);
+        }
+      }
+      return next;
+    });
+  };
+
+  const resetViberGrid = () => {
+    setCollage(current => ({ ...current, ...VIBER_GRID_DEFAULTS }));
+  };
+
   const payload = (conditionConfirmed = false): ViberPublishPayload => ({
     caption: caption.trim(),
     collage,
@@ -508,6 +542,39 @@ const ViberPublishDialog: React.FC<Props> = ({
                 </div>
               </div>
             </div>
+
+            {collage.image_idx.length === 5 && collage.layout !== 'grid' && (
+              <div className="rounded-xl border border-violet-200 bg-violet-50/45 p-3 dark:border-violet-800 dark:bg-violet-900/10">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <div className="text-xs font-semibold text-gray-700 dark:text-gray-200">Сітка як у попередніх Viber-постах</div>
+                    <div className="mt-0.5 text-[11px] text-gray-400">Два великі фото ліворуч · три менші праворуч</div>
+                  </div>
+                  <button type="button" onClick={resetViberGrid} className="shrink-0 text-[11px] text-violet-600 hover:underline"><ReloadOutlined className="mr-1" />Стандарт Viber</button>
+                </div>
+                <div className="mt-3 grid gap-x-4 gap-y-3 sm:grid-cols-2">
+                  {([
+                    ['Ширина лівої колонки', 'column_split', 0.50, 0.78, `${Math.round(collage.column_split * 100)}%`],
+                    ['Поділ двох великих фото', 'left_split', 0.28, 0.72, `${Math.round(collage.left_split * 100)}%`],
+                    ['Верхнє фото праворуч', 'right_top', 0.18, 0.55, `${Math.round(collage.right_top * 100)}%`],
+                    ['Середнє фото праворуч', 'right_middle', 0.18, 0.55, `${Math.round(collage.right_middle * 100)}%`],
+                  ] as const).map(([label, key, min, max, valueLabel]) => (
+                    <label key={key} className="text-[11px] text-gray-500">
+                      <span className="flex justify-between gap-2"><span>{label}</span><b className="font-semibold text-gray-600 dark:text-gray-300">{valueLabel}</b></span>
+                      <input type="range" min={min} max={max} step={0.01} value={collage[key]}
+                             onChange={event => updateViberGrid(key, Number(event.target.value))}
+                             className="mt-1 block w-full accent-violet-600" />
+                    </label>
+                  ))}
+                  <label className="text-[11px] text-gray-500 sm:col-span-2">
+                    <span className="flex justify-between gap-2"><span>Проміжок між фото</span><b className="font-semibold text-gray-600 dark:text-gray-300">{collage.gap} px</b></span>
+                    <input type="range" min={0} max={24} step={1} value={collage.gap}
+                           onChange={event => setCollage(current => ({ ...current, gap: Number(event.target.value) }))}
+                           className="mt-1 block w-full accent-violet-600" />
+                  </label>
+                </div>
+              </div>
+            )}
 
             {activeFrame && editTargets.length > 0 && (
               <div className="rounded-xl border border-gray-200 bg-gray-50/60 p-3 dark:border-gray-700 dark:bg-gray-800/40">

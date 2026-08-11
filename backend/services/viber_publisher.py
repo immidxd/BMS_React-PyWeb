@@ -56,6 +56,10 @@ _BACKGROUNDS = {
     "dark": (24, 27, 32),
 }
 _LAYOUTS = {"auto", "grid", "hero"}
+VIBER_COLUMN_SPLIT = 0.63
+VIBER_LEFT_SPLIT = 0.505
+VIBER_RIGHT_TOP = 0.347
+VIBER_RIGHT_MIDDLE = 0.307
 
 
 def _tg():
@@ -139,7 +143,15 @@ def normalize_collage_spec(payload: dict, image_count: int) -> dict:
     background = str(payload.get("background") or "white").lower()
     if background not in _BACKGROUNDS:
         background = "white"
-    gap = int(_clamp(payload.get("gap"), 0, 32, 14))
+    gap = int(_clamp(payload.get("gap"), 0, 32, 4))
+    column_split = _clamp(payload.get("column_split"), 0.50, 0.78, VIBER_COLUMN_SPLIT)
+    left_split = _clamp(payload.get("left_split"), 0.28, 0.72, VIBER_LEFT_SPLIT)
+    right_top = _clamp(payload.get("right_top"), 0.18, 0.55, VIBER_RIGHT_TOP)
+    right_middle = _clamp(payload.get("right_middle"), 0.18, 0.55, VIBER_RIGHT_MIDDLE)
+    if right_top + right_middle > 0.82:
+        factor = 0.82 / (right_top + right_middle)
+        right_top *= factor
+        right_middle *= factor
 
     raw_frames = payload.get("frames") if isinstance(payload.get("frames"), list) else []
     by_index: Dict[int, dict] = {}
@@ -168,6 +180,10 @@ def normalize_collage_spec(payload: dict, image_count: int) -> dict:
         "layout": layout,
         "background": background,
         "gap": gap,
+        "column_split": column_split,
+        "left_split": left_split,
+        "right_top": right_top,
+        "right_middle": right_middle,
         "frames": frames,
     }
 
@@ -192,7 +208,8 @@ def _grid_cells(count: int, margin: int, gap: int) -> List[Tuple[int, int, int, 
     return cells
 
 
-def _layout_cells(count: int, layout: str, gap: int) -> List[Tuple[int, int, int, int]]:
+def _layout_cells(count: int, layout: str, gap: int,
+                  tuning: Optional[dict] = None) -> List[Tuple[int, int, int, int]]:
     margin = 18
     inner = COLLAGE_SIZE - 2 * margin
     effective = layout
@@ -220,16 +237,34 @@ def _layout_cells(count: int, layout: str, gap: int) -> List[Tuple[int, int, int
             (margin + hero_w + gap, margin + 2 * (third + gap), side_w,
              inner - 2 * (third + gap)),
         ]
-    # П’ять фото: асиметрична fashion/product-композиція за референсом.
-    # Це навмисно НЕ мозаїка, яка заповнює кожен сантиметр: повітря є частиною
-    # дизайну. 1 — великий головний ліворуч, 2 — широкий зверху праворуч,
-    # 3–4 — два вертикальні деталі під ним, 5 — великий другий ракурс унизу.
+    # П’ять фото: фактичний історичний шаблон каналу Brandstoreua у Viber —
+    # два великі кадри ліворуч і три компактні праворуч, щільно та без
+    # випадкових порожніх зон. Межі колонок/рядів залишаються регульованими.
+    values = tuning or {}
+    column_split = _clamp(values.get("column_split"), 0.50, 0.78, VIBER_COLUMN_SPLIT)
+    left_split = _clamp(values.get("left_split"), 0.28, 0.72, VIBER_LEFT_SPLIT)
+    right_top = _clamp(values.get("right_top"), 0.18, 0.55, VIBER_RIGHT_TOP)
+    right_middle = _clamp(values.get("right_middle"), 0.18, 0.55, VIBER_RIGHT_MIDDLE)
+    if right_top + right_middle > 0.82:
+        factor = 0.82 / (right_top + right_middle)
+        right_top *= factor
+        right_middle *= factor
+    usable_w = COLLAGE_SIZE - gap
+    left_w = round(usable_w * column_split)
+    right_x = left_w + gap
+    right_w = COLLAGE_SIZE - right_x
+    usable_left_h = COLLAGE_SIZE - gap
+    left_top_h = round(usable_left_h * left_split)
+    usable_right_h = COLLAGE_SIZE - 2 * gap
+    right_top_h = round(usable_right_h * right_top)
+    right_middle_h = round(usable_right_h * right_middle)
+    right_bottom_y = right_top_h + right_middle_h + 2 * gap
     return [
-        (40, 78, 600, 440),
-        (690, 38, 350, 250),
-        (688, 320, 160, 270),
-        (880, 320, 160, 270),
-        (68, 638, 650, 382),
+        (0, 0, left_w, left_top_h),
+        (0, left_top_h + gap, left_w, COLLAGE_SIZE - left_top_h - gap),
+        (right_x, 0, right_w, right_top_h),
+        (right_x, right_top_h + gap, right_w, right_middle_h),
+        (right_x, right_bottom_y, right_w, COLLAGE_SIZE - right_bottom_y),
     ]
 
 
@@ -329,7 +364,9 @@ def render_collage(photo_bytes: Sequence[bytes], spec: dict) -> Tuple[bytes, byt
         raise ValueError(f"У колаж можна додати до {MAX_COLLAGE_PHOTOS} фото")
     normalized = normalize_collage_spec(spec, max(spec.get("image_idx", [0])) + 1)
     frames = normalized["frames"][:len(photo_bytes)]
-    cells = _layout_cells(len(photo_bytes), normalized["layout"], normalized["gap"])
+    cells = _layout_cells(
+        len(photo_bytes), normalized["layout"], normalized["gap"], normalized,
+    )
     background = _BACKGROUNDS[normalized["background"]]
     canvas = Image.new("RGB", (COLLAGE_SIZE, COLLAGE_SIZE), background)
     for raw, frame, (x, y, width, height) in zip(photo_bytes, frames, cells):
