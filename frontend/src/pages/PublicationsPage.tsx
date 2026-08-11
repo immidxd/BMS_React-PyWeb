@@ -1,8 +1,13 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
+import {
+  SendOutlined, WarningOutlined, MinusCircleOutlined, DisconnectOutlined,
+  AppstoreOutlined, EditOutlined, DeleteOutlined, EyeOutlined,
+} from '@ant-design/icons';
 import MainLayout from '../layouts/MainLayout';
 import Pagination from '../components/common/Pagination';
 import ProductDetailsModal from '../components/products/ProductDetailsModal';
-import { confirmDialog } from '../ui/feedback';
+import TelegramPublishDialog, { type TelegramPreview, type TelegramPublishPayload } from '../components/products/TelegramPublishDialog';
+import { confirmDialog, alertDialog, notify } from '../ui/feedback';
 import LoadingSpinner from '../components/common/LoadingSpinner';
 
 /* ── Types ─────────────────────────────────────────────────────────── */
@@ -91,75 +96,122 @@ type FilterMode = 'all' | 'published' | 'problematic' | 'unpublished' | 'unlinke
 
 /* ── Filter Panel ──────────────────────────────────────────────────── */
 
+/* Секція фільтрів — та сама розкладачка, що в «Товарах» (ProductFilters),
+   щоб панель зліва читалась однаково на всіх вкладках. */
+const FilterSection: React.FC<{
+  title: string; badge?: number; defaultOpen?: boolean; children: React.ReactNode;
+}> = ({ title, badge, defaultOpen = false, children }) => {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div className="border-b border-gray-100 dark:border-gray-700">
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        className="w-full flex items-center justify-between py-2.5 text-sm font-semibold text-gray-700 dark:text-gray-200 hover:text-blue-600 dark:hover:text-blue-400 transition-colors"
+      >
+        <span>{title}</span>
+        <span className="flex items-center gap-1.5">
+          {badge && badge > 0 ? (
+            <span className="inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full bg-blue-500 text-white text-[10px] font-bold">{badge}</span>
+          ) : null}
+          <svg className={`w-4 h-4 transition-transform ${open ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+          </svg>
+        </span>
+      </button>
+      {open && <div className="pb-3">{children}</div>}
+    </div>
+  );
+};
+
+/* Режими перегляду. Раніше це були радіокнопки з емодзі-стікерами (📢 ⚠️ ○ 🔴)
+   — єдине місце в програмі, де фільтр виглядав так. Тепер це рядки-стани з
+   вектор-іконками й лічильником, у тон решті вкладок. */
+type ModeOption = { key: FilterMode; label: string; icon: React.ReactNode; tone: string; count?: number };
+
 const PublicationsFilterPanel: React.FC<{
   filterMode: FilterMode;
   onFilterChange: (m: FilterMode) => void;
   stats: PublicationStats | null;
-}> = ({ filterMode, onFilterChange, stats }) => (
-  <div>
-    <h3 className="text-md font-semibold mb-2 text-gray-700 dark:text-gray-200">Фільтр</h3>
-    <div className="space-y-1.5 mb-4">
-      {([
-        { key: 'published', label: '📢 Опубліковані' },
-        { key: 'problematic', label: '⚠️ Продані, але висять' },
-        { key: 'unpublished', label: '○ Не опубліковані' },
-        { key: 'unlinked', label: `🔴 Незв'язані пости${stats?.unlinked_count ? ` (${stats.unlinked_count})` : ''}` },
-        { key: 'all', label: 'Всі товари' },
-      ] as { key: FilterMode; label: string }[]).map(opt => (
-        <label key={opt.key} className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-300 cursor-pointer">
-          <input
-            type="radio"
-            checked={filterMode === opt.key}
-            onChange={() => onFilterChange(opt.key)}
-            className="rounded border-gray-300"
-          />
-          {opt.label}
-        </label>
-      ))}
-    </div>
+}> = ({ filterMode, onFilterChange, stats }) => {
+  const modes: ModeOption[] = [
+    { key: 'published',   label: 'Опубліковані',        icon: <SendOutlined />,       tone: 'text-sky-500',     count: stats?.published_products },
+    { key: 'problematic', label: 'Продані, але висять', icon: <WarningOutlined />,    tone: 'text-rose-500',    count: stats?.sold_but_live_count },
+    { key: 'unpublished', label: 'Не опубліковані',     icon: <MinusCircleOutlined />, tone: 'text-gray-400' },
+    { key: 'unlinked',    label: 'Незвʼязані пости',    icon: <DisconnectOutlined />, tone: 'text-amber-500',   count: stats?.unlinked_count },
+    { key: 'all',         label: 'Всі товари',          icon: <AppstoreOutlined />,   tone: 'text-gray-400' },
+  ];
 
-    {stats && (
-      <>
-        <h3 className="text-md font-semibold mb-2 text-gray-700 dark:text-gray-200">Статистика</h3>
-        <div className="text-xs text-gray-600 dark:text-gray-300 space-y-1 mb-4">
-          <div className="flex justify-between">
-            <span>Каналів:</span><span className="font-medium">{stats.total_chats}</span>
-          </div>
-          <div className="flex justify-between">
-            <span>Опубліковано товарів:</span><span className="font-medium">{stats.published_products}</span>
-          </div>
-          <div className="flex justify-between">
-            <span>Всього постів:</span><span className="font-medium">{stats.total_posts}</span>
-          </div>
-          {stats.sold_but_live_count > 0 && (
-            <div className="flex justify-between text-red-600 dark:text-red-400 font-semibold">
-              <span>⚠️ Сирітських:</span><span>{stats.sold_but_live_count}</span>
-            </div>
-          )}
-          {stats.unlinked_count > 0 && (
-            <div className="flex justify-between text-orange-600 dark:text-orange-400 font-semibold">
-              <span>🔴 Незв'язані:</span><span>{stats.unlinked_count}</span>
-            </div>
-          )}
+  return (
+    <div>
+      <FilterSection title="Стан публікації" defaultOpen>
+        <div className="space-y-1">
+          {modes.map(opt => {
+            const active = filterMode === opt.key;
+            return (
+              <button
+                key={opt.key}
+                type="button"
+                onClick={() => onFilterChange(opt.key)}
+                className={`w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg border text-left transition-colors ${
+                  active
+                    ? 'bg-gray-100 dark:bg-gray-600/40 border-gray-800 dark:border-gray-300 ring-1 ring-gray-300'
+                    : 'bg-white dark:bg-gray-700 border-gray-200 dark:border-gray-600 hover:border-gray-400'
+                }`}
+              >
+                <span className={`shrink-0 ${active ? opt.tone : 'text-gray-400 dark:text-gray-500'}`}>{opt.icon}</span>
+                <span className={`flex-1 min-w-0 truncate text-xs ${
+                  active ? 'font-semibold text-gray-900 dark:text-gray-100' : 'text-gray-600 dark:text-gray-300'
+                }`}>{opt.label}</span>
+                {opt.count != null && opt.count > 0 && (
+                  <span className={`shrink-0 text-[10px] font-bold px-1.5 py-0.5 rounded-full ${
+                    opt.key === 'problematic' ? 'bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300'
+                    : opt.key === 'unlinked' ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300'
+                    : 'bg-gray-200 text-gray-600 dark:bg-gray-600 dark:text-gray-200'
+                  }`}>{opt.count}</span>
+                )}
+              </button>
+            );
+          })}
         </div>
+      </FilterSection>
 
-        {stats.channels.length > 0 && (
-          <>
-            <h3 className="text-md font-semibold mb-2 text-gray-700 dark:text-gray-200">Канали</h3>
-            <div className="space-y-1">
-              {stats.channels.map((c, i) => (
-                <div key={i} className="text-xs text-gray-600 dark:text-gray-300 flex justify-between">
-                  <span className="truncate flex-1 mr-1" title={c.chat_title}>{c.chat_title}</span>
-                  <span className="font-medium whitespace-nowrap">{c.post_count}</span>
+      {stats && (
+        <>
+          <FilterSection title="Підсумки" defaultOpen>
+            <div className="grid grid-cols-2 gap-1.5">
+              {[
+                { label: 'Постів', value: stats.total_posts },
+                { label: 'Товарів', value: stats.published_products },
+                { label: 'У форумі', value: stats.forum_posts },
+                { label: 'У каналі', value: stats.channel_posts },
+              ].map(s => (
+                <div key={s.label} className="px-2 py-1.5 rounded-lg bg-gray-50 dark:bg-gray-700/50 border border-gray-100 dark:border-gray-700">
+                  <div className="text-[10px] uppercase tracking-wide text-gray-400 dark:text-gray-500">{s.label}</div>
+                  <div className="text-sm font-semibold text-gray-800 dark:text-gray-100">{s.value}</div>
                 </div>
               ))}
             </div>
-          </>
-        )}
-      </>
-    )}
-  </div>
-);
+          </FilterSection>
+
+          {stats.channels.length > 0 && (
+            <FilterSection title="Канали та гілки" badge={stats.channels.length}>
+              <div className="space-y-1">
+                {stats.channels.map((c, i) => (
+                  <div key={i} className="flex items-center gap-2 text-xs text-gray-600 dark:text-gray-300">
+                    <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${c.chat_type === 'forum' ? 'bg-sky-400' : 'bg-emerald-400'}`} />
+                    <span className="truncate flex-1" title={c.chat_title}>{c.chat_title}</span>
+                    <span className="font-medium whitespace-nowrap text-gray-400">{c.post_count}</span>
+                  </div>
+                ))}
+              </div>
+            </FilterSection>
+          )}
+        </>
+      )}
+    </div>
+  );
+};
 
 /* ── Sync Modal ────────────────────────────────────────────────────── */
 
@@ -396,6 +448,10 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [expandedDetail, setExpandedDetail] = useState<any>(null);
   const [expandedLoading, setExpandedLoading] = useState(false);
+  // Створення поста: прев'ю → діалог редагування → публікація живою.
+  const [tgPreview, setTgPreview] = useState<TelegramPreview | null>(null);
+  const [tgPreviewing, setTgPreviewing] = useState<number | null>(null);
+  const [tgBusy, setTgBusy] = useState(false);
 
   // ── Column visibility (right-click menu) ─────────────────────────
   const colMenuRef = useRef<HTMLDivElement | null>(null);
@@ -570,11 +626,11 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
     try {
       const res = await fetch('/api/publications/relink', { method: 'POST' });
       const data = await res.json();
-      alert(`Пов\'язано: ${data.rows_affected} постів`);
+      notify.success(`Пов'язано: ${data.rows_affected} постів`);
       fetchItems();
       fetchStats();
     } catch (e: any) {
-      alert(e.message);
+      notify.error(e.message);
     }
   };
 
@@ -648,6 +704,91 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
     }
   };
 
+  // ── Створення поста ────────────────────────────────────────────────────
+  // Прев'ю нічого не створює в Telegram — можна натискати без наслідків.
+  const openPublishDialog = async (productId: number) => {
+    if (tgPreviewing !== null) return;
+    setTgPreviewing(productId);
+    try {
+      const res = await fetch('/api/publications/telegram/preview-post', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ product_id: productId }),
+      });
+      const d = await res.json();
+      if (!res.ok) { notify.error(`Не вдалося зібрати пост: ${d.detail || res.status}`); return; }
+      setTgPreview(d);
+    } catch (e: any) {
+      notify.error(e.message || 'Помилка звʼязку');
+    } finally {
+      setTgPreviewing(null);
+    }
+  };
+
+  const handlePublish = async (payload: TelegramPublishPayload) => {
+    if (!tgPreview) return;
+    setTgBusy(true);
+    try {
+      const res = await fetch('/api/publications/telegram/create-post', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ product_id: tgPreview.product_id, ...payload }),
+      });
+      const d = await res.json();
+      if (!res.ok) { notify.error(`Публікація не вдалася: ${d.detail || res.status}`); return; }
+
+      // Репетиція нічого не змінює в каталозі — і список перечитувати нема сенсу.
+      if (d.test_mode) {
+        setTgPreview(null);
+        await alertDialog({
+          title: `Тестовий пост #${d.productnumber} надіслано`,
+          body: `Перевір «${d.archive_title}» у Telegram: ${d.image_count} фото.\n`
+              + 'У каталог і канал нічого не пішло, товар не позначений опублікованим.',
+        });
+        return;
+      }
+
+      const lines = [`Оригінал у «${tgPreview.root_topic.thread_title}»`];
+      if (d.threads_posted?.length) {
+        lines.push(`Копії в гілки: ${d.threads_posted.map((t: any) => t.thread_title).join(', ')}`);
+      }
+      if (d.channel) {
+        lines.push(d.channel.scheduled_at
+          ? `Канал: заплановано на ${new Date(d.channel.scheduled_at).toLocaleString('uk-UA', { dateStyle: 'short', timeStyle: 'short' })}`
+          : 'Канал: переслано зараз');
+      }
+      if (d.failed?.length) {
+        lines.push(`⚠️ Не вдалося: ${d.failed.map((f: any) => f.thread_title || f.channel || '?').join(', ')}`);
+      }
+      setTgPreview(null);
+      // Довгий підсумок краще діалогом: тост зникає раніше, ніж його дочитають.
+      await alertDialog({ title: `Опубліковано #${d.productnumber}`, body: lines.join('\n') });
+      fetchItems();
+      fetchStats();
+    } catch (e: any) {
+      notify.error(e.message || 'Помилка звʼязку');
+    } finally {
+      setTgBusy(false);
+    }
+  };
+
+  // Гілки форуму зчитуються з Telegram і кешуються локально — інакше діалог
+  // не знає, куди взагалі можна публікувати.
+  const handleRefreshThreads = async () => {
+    if (syncingAll) return;
+    setSyncingAll(true); setSyncAllMsg(null);
+    try {
+      const res = await fetch('/api/publications/telegram/refresh-threads', { method: 'POST' });
+      const d = await res.json();
+      setSyncAllMsg(res.ok
+        ? `✅ Гілки форуму оновлено: ${d.threads}.`
+        : `❌ Гілки: ${d.detail || res.status}`);
+      setTimeout(() => setSyncAllMsg(null), 6000);
+    } catch (e: any) {
+      setSyncAllMsg(`❌ Гілки: ${e.message || 'Помилка'}`);
+    } finally { setSyncingAll(false); }
+  };
+
   const handleUnpublish = async (productId: number) => {
     if (!(await confirmDialog('Зняти з публікації? Пост буде переслано у WORKSHOP (архів) і видалено з усіх каналів/гілок.'))) return;
     setUnpublishing(productId);
@@ -655,7 +796,7 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
       const res = await fetch(`/api/publications/unpublish/${productId}`, { method: 'POST' });
       const data = await res.json();
       if (!res.ok) {
-        alert(`Помилка: ${data.detail || res.status}`);
+        notify.error(`Помилка: ${data.detail || res.status}`);
       } else {
         const failCount = data.failed?.length || 0;
         const parts = [];
@@ -671,12 +812,12 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
           parts.push(...shown);
           if (failCount > shown.length) parts.push(`  …і ще ${failCount - shown.length}`);
         }
-        alert(parts.join('\n') || 'Готово');
+        await alertDialog({ title: 'Знято з публікації', body: parts.join('\n') || 'Готово' });
         fetchItems();
         fetchStats();
       }
     } catch (e: any) {
-      alert(e.message);
+      notify.error(e.message);
     } finally {
       setUnpublishing(null);
     }
@@ -695,7 +836,7 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
       });
       const data = await res.json();
       if (!res.ok) {
-        alert(`Помилка: ${data.detail || res.status}`);
+        notify.error(`Помилка: ${data.detail || res.status}`);
       } else {
         const lines = [
           `Оброблено: ${data.products_processed} товарів`,
@@ -716,13 +857,13 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
             lines.push(`  • prod ${f.product_id} / ${f.chat || '?'} #${f.msg_id ?? '?'} — ${f.action || 'process'}: ${(f.error || '').slice(0, 100)}`);
           }
         }
-        alert(lines.join('\n'));
+        await alertDialog({ title: 'Масове зняття завершено', body: lines.join('\n') });
         setSelectedIds(new Set());
         fetchItems();
         fetchStats();
       }
     } catch (e: any) {
-      alert(e.message);
+      notify.error(e.message);
     } finally {
       setBulkUnpublishing(false);
     }
@@ -813,11 +954,30 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
         {loading && items.length === 0 ? (
           <LoadingSpinner variant="section" size="large" text="Завантаження публікацій…" />
         ) : error ? (
-          <div className="flex justify-center items-center h-48 text-red-500">{error}</div>
+          /* Помилка мусить мати вихід: фоновий джоб інколи віддає 500 на
+             частку секунди, і без кнопки вкладка лишалась би мертвою до
+             перезавантаження вікна. */
+          <div className="flex flex-col items-center justify-center h-64 gap-3">
+            <WarningOutlined style={{ fontSize: 28 }} className="text-rose-400" />
+            <div className="text-sm text-gray-600 dark:text-gray-300">Не вдалося завантажити список</div>
+            <div className="text-xs text-gray-400">{error}</div>
+            <button
+              onClick={handleRefresh}
+              className="px-4 py-2 rounded-lg text-sm font-medium border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
+            >
+              Спробувати ще раз
+            </button>
+          </div>
         ) : items.length === 0 ? (
-          <div className="flex flex-col items-center justify-center h-64 text-gray-400">
-            <div className="text-lg mb-2">Публікацій ще немає</div>
-            <div className="text-sm">Натисніть "Синхронізувати" щоб завантажити пости з Telegram</div>
+          <div className="flex flex-col items-center justify-center h-64 gap-2 text-gray-400">
+            <div className="text-sm text-gray-600 dark:text-gray-300">
+              {filterMode === 'unpublished' ? 'Усі товари вже опубліковані' : 'Публікацій ще немає'}
+            </div>
+            <div className="text-xs">
+              {filterMode === 'unpublished'
+                ? 'Змініть фільтр зліва, щоб побачити інші товари.'
+                : 'Відкрийте «Інтеграції» → «Синхронізувати все», щоб підтягнути пости з Telegram.'}
+            </div>
           </div>
         ) : (
           <>
@@ -948,16 +1108,21 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
                       )}
                       {isPubColVisible('status') && (
                       <td className="px-3 py-2">
-                        <span className={`text-xs px-2 py-0.5 rounded ${
+                        {/* Стан рядка — пігулка з вектор-іконкою, а не емодзі-стікер:
+                            той самий словник форм, що в решті таблиць програми. */}
+                        <span className={`inline-flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 rounded-md border ${
                           needsManualEdit
-                            ? 'bg-yellow-100 dark:bg-yellow-900/30 text-yellow-800 dark:text-yellow-300 font-semibold'
+                            ? 'bg-amber-50 dark:bg-amber-900/25 text-amber-800 dark:text-amber-300 border-amber-200 dark:border-amber-800'
                             : isUnlinked
-                            ? 'bg-orange-100 dark:bg-orange-900/30 text-orange-700 dark:text-orange-300 font-semibold'
+                            ? 'bg-amber-50 dark:bg-amber-900/25 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-800'
                             : isProblematic
-                            ? 'bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300 font-semibold'
-                            : 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300'
+                            ? 'bg-rose-50 dark:bg-rose-900/25 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-800'
+                            : 'bg-gray-50 dark:bg-gray-700/60 text-gray-600 dark:text-gray-300 border-gray-200 dark:border-gray-600'
                         }`}>
-                          {needsManualEdit ? '✏️ Потребує ручного редагування' : isUnlinked ? '🔴 Незв\'язаний' : isProblematic ? '⚠️ Продано' : (item.status || '—')}
+                          {needsManualEdit ? <><EditOutlined style={{ fontSize: 10 }} />Правити вручну</>
+                            : isUnlinked ? <><DisconnectOutlined style={{ fontSize: 10 }} />Незвʼязаний</>
+                            : isProblematic ? <><WarningOutlined style={{ fontSize: 10 }} />Продано</>
+                            : (item.status || '—')}
                         </span>
                         {needsManualEdit && item.product_id && (
                           <button
@@ -993,27 +1158,52 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
                       )}
                       {isPubColVisible('actions') && (
                       <td className="px-3 py-2 text-center whitespace-nowrap" onClick={e => e.stopPropagation()}>
-                        {item.publication_count > 0 && !isUnlinked && item.product_id !== null && (
+                        {!isUnlinked && item.product_id !== null && (
                           <div className="flex items-center justify-center gap-1">
+                            {/* Опублікувати — головна дія для товару без постів;
+                                для вже опублікованого лишається доступною
+                                (наприклад, після зняття з продажу), але тьмяна. */}
                             <button
-                              onClick={() => setDetailProductId(item.product_id as number)}
-                              className="text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300 text-xs"
+                              onClick={() => openPublishDialog(item.product_id as number)}
+                              disabled={tgPreviewing === item.product_id}
+                              title={item.publication_count > 0
+                                ? 'Створити ще один пост (старі лишаться)'
+                                : 'Створити пост у Telegram'}
+                              className={`inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium border transition-colors disabled:opacity-50 ${
+                                item.publication_count > 0
+                                  ? 'border-gray-200 dark:border-gray-600 text-gray-400 hover:text-sky-600 hover:border-sky-300'
+                                  : 'border-sky-300 dark:border-sky-700 text-sky-600 dark:text-sky-400 bg-sky-50/60 dark:bg-sky-900/20 hover:bg-sky-100 dark:hover:bg-sky-900/40'
+                              }`}
                             >
-                              Деталі
+                              <SendOutlined style={{ fontSize: 11 }} />
+                              {tgPreviewing === item.product_id ? '…' : 'Опублікувати'}
                             </button>
-                            <button
-                              onClick={() => handleUnpublish(item.product_id as number)}
-                              disabled={unpublishing === item.product_id}
-                              className="text-red-600 hover:text-red-800 dark:text-red-400 dark:hover:text-red-300 text-xs ml-2 disabled:opacity-50"
-                              title="Переслати в WORKSHOP і видалити з усіх каналів"
-                            >
-                              {unpublishing === item.product_id ? '...' : '🗑 Зняти'}
-                            </button>
+                            {item.publication_count > 0 && (
+                              <>
+                                <button
+                                  onClick={() => setDetailProductId(item.product_id as number)}
+                                  title="Показати тексти постів"
+                                  className="p-1 rounded-md text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 transition-colors"
+                                >
+                                  <EyeOutlined style={{ fontSize: 13 }} />
+                                </button>
+                                <button
+                                  onClick={() => handleUnpublish(item.product_id as number)}
+                                  disabled={unpublishing === item.product_id}
+                                  className="p-1 rounded-md text-gray-400 hover:text-red-600 dark:hover:text-red-400 transition-colors disabled:opacity-50"
+                                  title="Переслати в WORKSHOP і видалити з усіх каналів"
+                                >
+                                  {unpublishing === item.product_id
+                                    ? <span className="text-xs">…</span>
+                                    : <DeleteOutlined style={{ fontSize: 13 }} />}
+                                </button>
+                              </>
+                            )}
                           </div>
                         )}
                         {isUnlinked && (
-                          <span className="text-xs text-orange-500 dark:text-orange-400" title="Немає відповідника в базі товарів">
-                            ?
+                          <span className="text-xs text-amber-500 dark:text-amber-400" title="Немає відповідника в базі товарів">
+                            —
                           </span>
                         )}
                       </td>
@@ -1172,6 +1362,16 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
         onClose={() => setCardProductId(null)}
       />
 
+      {/* Створення поста: редагування тексту й вибір гілок перед відправкою */}
+      {tgPreview && (
+        <TelegramPublishDialog
+          data={tgPreview}
+          busy={tgBusy}
+          onCancel={() => { if (!tgBusy) setTgPreview(null); }}
+          onConfirm={handlePublish}
+        />
+      )}
+
       {/* Панель «Інтеграції» — керування каналами (Telegram / OLX / Prom) в одному місці */}
       {integrationsOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
@@ -1199,6 +1399,9 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
                 </button>
                 <button onClick={() => { setIntegrationsOpen(false); setSyncOpen(true); }}
                   className="px-3 py-1.5 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded">📡 Один канал</button>
+                <button onClick={handleRefreshThreads} disabled={syncingAll}
+                  title="Перечитати список тематичних гілок форуму — саме з нього діалог публікації пропонує, куди класти товар"
+                  className="px-3 py-1.5 text-xs bg-gray-100 hover:bg-gray-200 dark:bg-gray-700 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-200 rounded disabled:opacity-60">🗂 Оновити гілки форуму</button>
                 <button onClick={handleRelink}
                   className="px-3 py-1.5 text-xs bg-gray-100 hover:bg-gray-200 dark:bg-gray-700 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-200 rounded">🔗 Перепов'язати</button>
               </div>

@@ -922,6 +922,80 @@ def relink_publications(db: Session = Depends(get_db)):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Telegram — СТВОРЕННЯ постів (запис). Дзеркалить флоу Prom: прев'ю → діалог
+# редагування → публікація. Прев'ю нічого не створює й безпечне для кліків.
+# ─────────────────────────────────────────────────────────────────────────────
+def _tg_pub():
+    try:
+        from services import telegram_publisher
+    except ImportError:
+        from backend.services import telegram_publisher
+    return telegram_publisher
+
+
+@router.get("/api/publications/telegram/threads")
+def telegram_threads(db: Session = Depends(get_db)):
+    """Кеш гілок форуму — без мережі, миттєво."""
+    return {"threads": _tg_pub().get_threads(db)}
+
+
+@router.post("/api/publications/telegram/refresh-threads")
+async def telegram_refresh_threads(db: Session = Depends(get_db)):
+    """Перечитати живий список гілок форуму з Telegram (read-only)."""
+    r = await _tg_pub().refresh_threads(db)
+    if not r.get("ok"):
+        raise HTTPException(status_code=400, detail=r.get("error", "Не вдалося оновити гілки"))
+    return r
+
+
+@router.post("/api/publications/telegram/preview-post")
+def telegram_preview_post(body: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
+    """Зібрати текст поста, фото, розміри й запропоновані гілки. НІЧОГО не створює."""
+    pid = body.get("product_id")
+    if not pid:
+        raise HTTPException(status_code=400, detail="Немає product_id")
+    r = _tg_pub().preview_post(db, int(pid))
+    if not r.get("ok"):
+        raise HTTPException(status_code=404, detail=r.get("error", "Не вдалося зібрати прев'ю"))
+    return r
+
+
+@router.post("/api/publications/telegram/build-caption")
+def telegram_build_caption(body: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
+    """Перезібрати підпис із відредагованих частин — щоб живе прев'ю в діалозі
+    показувало РІВНО те, що піде в канал, а не наближення на фронті."""
+    pid = body.get("product_id")
+    if not pid:
+        raise HTTPException(status_code=400, detail="Немає product_id")
+    r = _tg_pub().rebuild_caption(db, int(pid), body)
+    if not r.get("ok"):
+        raise HTTPException(status_code=400, detail=r.get("error", "Не вдалося зібрати текст"))
+    return r
+
+
+@router.post("/api/publications/telegram/create-post")
+async def telegram_create_post(body: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
+    """ОПУБЛІКУВАТИ: альбом у «ВСІ ПРОПОЗИЦІЇ» → копії в обрані гілки →
+    форвард у канал BrandStore (зараз або за розкладом)."""
+    pid = body.get("product_id")
+    if not pid:
+        raise HTTPException(status_code=400, detail="Немає product_id")
+    r = await _tg_pub().create_post(db, int(pid), body)
+    if not r.get("ok"):
+        # «вже опубліковано» — не помилка, а сигнал фронту показати підтвердження
+        if r.get("already_published"):
+            return r
+        raise HTTPException(status_code=400, detail=r.get("error", "Публікація не вдалася"))
+    return r
+
+
+@router.get("/api/publications/telegram/product-status/{product_id}")
+def telegram_product_status(product_id: int, db: Session = Depends(get_db)):
+    """Де товар уже є в Telegram + що заплановано в канал."""
+    return _tg_pub().product_status(db, product_id)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # OLX (read-only v1) — офіційний OLX API, OAuth2. Дзеркало Telegram-флоу.
 # ─────────────────────────────────────────────────────────────────────────────
 
