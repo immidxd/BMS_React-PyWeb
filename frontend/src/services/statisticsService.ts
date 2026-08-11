@@ -7,6 +7,8 @@ export interface SalesPeriodData {
   revenue: number;
   cost: number;
   ship: number;
+  advertising_cost: number;
+  profit_before_advertising: number;
   profit: number;
 }
 
@@ -69,6 +71,7 @@ export interface SummaryStats {
   total_revenue: number;
   total_purchase_cost: number;
   total_delivery_cost: number;
+  total_advertising_cost: number;
   net_profit: number;
   unsold_inventory_cost: number;
   total_inventory_cost: number;
@@ -152,7 +155,13 @@ export interface ProductsStatsResponse {
   top_products: { productnumber: string; model: string | null; brand: string | null; type: string | null; sold_count: number; revenue: number }[];
   top_brands: { brand: string; orders_count: number; sold_count: number; revenue: number }[];
   type_distribution: { type: string; sold_count: number; revenue: number }[];
-  channel_distribution: { channel: string; orders_count: number; revenue: number }[];
+  channel_distribution: {
+    channel: string;
+    orders_count: number;
+    revenue: number;
+    advertising_cost: number;
+    net_revenue: number;
+  }[];
   inventory_summary: {
     total_products: number;
     total_units: number;

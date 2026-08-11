@@ -91,7 +91,7 @@ BATCH_CHUNK = int(os.getenv("PARSER_BATCH_CHUNK", "50"))  # sheets per batch rea
 #
 # Bump PARSER_VERSION whenever the orders parsing logic changes in a way that
 # would produce different output for the same input → forces a full reparse.
-PARSER_VERSION = 10  # v10: + Level 0T — дедуп zero-total ордерів за pnum_key+клієнт+вікно (Level 1K/2N вимагали total>0, тож total=0 щопрогону плодив дубль). v9: source_pnum_key (resolution-INDEPENDENT identity) + Level 1K дедуп + анонімний sweep + Level 2N. Корінь ghost-дублів закрито: той самий рядок аркуша не створює дубль навіть при нестабільному resolution / анонімному клієнті / legacy без gid / zero-total
+PARSER_VERSION = 11  # v11: імпорт «Витрати на рекламу» з підсумкового блоку вкладки. v10: + Level 0T — дедуп zero-total ордерів за pnum_key+клієнт+вікно (Level 1K/2N вимагали total>0, тож total=0 щопрогону плодив дубль). v9: source_pnum_key (resolution-INDEPENDENT identity) + Level 1K дедуп + анонімний sweep + Level 2N. Корінь ghost-дублів закрито: той самий рядок аркуша не створює дубль навіть при нестабільному resolution / анонімному клієнті / legacy без gid / zero-total
 HASH_SKIP_ENABLED = os.getenv("PARSER_HASH_SKIP", "1") != "0"
 
 # ── Layer C: whole-file change gate ───────────────────────────────────────────
@@ -1812,6 +1812,125 @@ def parse_date_from_sheet_title(title: str) -> Optional[date]:
         except ValueError:
             pass
     return None
+
+
+_ADVERTISING_EXPENSE_LABEL = "витрати на рекламу"
+
+
+def _parse_nonnegative_money(raw) -> Optional[float]:
+    """Parse a Sheets money cell without depending on its visual currency format."""
+    from decimal import Decimal, InvalidOperation
+
+    text_value = str(raw or "").strip()
+    if not text_value:
+        return None
+
+    match = re.search(r"-?[\d\s\u00a0.,]+", text_value)
+    if not match:
+        return None
+    token = match.group(0).replace(" ", "").replace("\u00a0", "")
+
+    # Support both Ukrainian 1.234,56 and English 1,234.56 formatting.
+    if "," in token and "." in token:
+        if token.rfind(",") > token.rfind("."):
+            token = token.replace(".", "").replace(",", ".")
+        else:
+            token = token.replace(",", "")
+    elif "," in token:
+        token = token.replace(",", ".")
+
+    try:
+        amount = Decimal(token)
+    except InvalidOperation:
+        return None
+    if amount < 0:
+        return None
+    return float(amount)
+
+
+def _extract_advertising_expense(rows: list) -> dict:
+    """Read the exact summary label and the value directly below it.
+
+    Free-text mentions such as ``500 грн на рекламу`` inside order comments are
+    intentionally ignored: only a cell equal to ``Витрати на рекламу`` is a
+    source-of-truth expense.
+    """
+    matches: list[tuple[int, int]] = []
+    for row_idx, row in enumerate(rows):
+        for col_idx, cell in enumerate(row):
+            if str(cell or "").strip().casefold() == _ADVERTISING_EXPENSE_LABEL:
+                matches.append((row_idx, col_idx))
+
+    if not matches:
+        return {"found": False, "amount": None, "label_cell": None, "value_cell": None}
+
+    if len(matches) > 1:
+        logger.warning("Multiple 'Витрати на рекламу' blocks found; using the first")
+
+    row_idx, col_idx = matches[0]
+    raw_value = ""
+    if row_idx + 1 < len(rows) and col_idx < len(rows[row_idx + 1]):
+        raw_value = rows[row_idx + 1][col_idx]
+
+    return {
+        "found": True,
+        "amount": _parse_nonnegative_money(raw_value),
+        "label_cell": gspread.utils.rowcol_to_a1(row_idx + 1, col_idx + 1),
+        "value_cell": gspread.utils.rowcol_to_a1(row_idx + 2, col_idx + 1),
+    }
+
+
+def _sync_advertising_expense(
+    session: Session,
+    ws: gspread.Worksheet,
+    sheet_date: date,
+    rows: list,
+) -> Optional[float]:
+    """Mirror one sheet-level advertising expense without creating duplicates."""
+    extracted = _extract_advertising_expense(rows)
+    source = {"sid": ORDERS_ID, "gid": int(ws.id)}
+
+    if not extracted["found"]:
+        session.execute(text("""
+            DELETE FROM advertising_expenses
+            WHERE source_spreadsheet_id = :sid AND source_sheet_gid = :gid
+        """), source)
+        return None
+
+    amount = extracted["amount"]
+    if amount is None:
+        logger.warning(
+            "Advertising expense has an invalid/empty value: sheet=%s cell=%s",
+            ws.title, extracted["value_cell"],
+        )
+        return None
+
+    session.execute(text("""
+        INSERT INTO advertising_expenses (
+            expense_date, amount, sales_channel,
+            source_spreadsheet_id, source_sheet_gid, source_sheet_title,
+            source_label_cell, source_value_cell, updated_at
+        ) VALUES (
+            :expense_date, :amount, 'Ефір',
+            :sid, :gid, :title, :label_cell, :value_cell, NOW()
+        )
+        ON CONFLICT (source_spreadsheet_id, source_sheet_gid) DO UPDATE SET
+            expense_date = EXCLUDED.expense_date,
+            amount = EXCLUDED.amount,
+            sales_channel = EXCLUDED.sales_channel,
+            source_sheet_title = EXCLUDED.source_sheet_title,
+            source_label_cell = EXCLUDED.source_label_cell,
+            source_value_cell = EXCLUDED.source_value_cell,
+            updated_at = NOW()
+    """), {
+        **source,
+        "expense_date": sheet_date,
+        "amount": amount,
+        "title": ws.title[:255],
+        "label_cell": extracted["label_cell"],
+        "value_cell": extracted["value_cell"],
+    })
+    return amount
 
 
 def parse_supplier_from_sheet_title(title: str) -> Optional[str]:
@@ -4134,6 +4253,10 @@ def _parse_orders_sheet(
                 "touched_order_ids": set()}
 
     header = [h.strip() for h in rows[0]]
+
+    # Sheet-level operating expense: import once, independently from order rows.
+    # The surrounding parser transaction keeps it atomic with this sheet parse.
+    _sync_advertising_expense(session, ws, sheet_date, rows)
 
     def col(row, name, default=""):
         try:

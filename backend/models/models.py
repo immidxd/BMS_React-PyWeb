@@ -1,4 +1,7 @@
-from sqlalchemy import Column, Integer, String, Float, Numeric, DateTime, ForeignKey, Boolean, Text, Date, func
+from sqlalchemy import (
+    BigInteger, Boolean, Column, Date, DateTime, Float, ForeignKey, Integer,
+    Numeric, String, Text, UniqueConstraint, func,
+)
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import relationship
 from datetime import datetime
@@ -264,6 +267,29 @@ class Order(Base):
     delivery_status = relationship("DeliveryStatus", back_populates="orders")
     broadcast = relationship("Broadcast", back_populates="orders")
     items = relationship("OrderItem", back_populates="order", cascade="all, delete-orphan")
+
+
+class AdvertisingExpense(Base):
+    """Рекламна витрата ефіру з однієї датованої вкладки «Замовлення»."""
+    __tablename__ = "advertising_expenses"
+    __table_args__ = (
+        UniqueConstraint(
+            "source_spreadsheet_id", "source_sheet_gid",
+            name="uq_advertising_expense_sheet",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    expense_date = Column(Date, nullable=False, index=True)
+    amount = Column(Numeric(12, 2), nullable=False, default=0)
+    sales_channel = Column(String(50), nullable=False, default="Ефір")
+    source_spreadsheet_id = Column(String(128), nullable=False)
+    source_sheet_gid = Column(BigInteger, nullable=False)
+    source_sheet_title = Column(String(255), nullable=True)
+    source_label_cell = Column(String(20), nullable=True)
+    source_value_cell = Column(String(20), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
 class SupplierGroup(Base):
     __tablename__ = "supplier_groups"

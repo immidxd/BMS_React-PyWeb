@@ -33,6 +33,7 @@ const fmtShort = (n: number) => {
 const COLORS = {
   revenue: '#10b981',
   cost: '#f59e0b',
+  advertising: '#ef4444',
   profit: '#6366f1',
   orders: '#3b82f6',
   items: '#8b5cf6',
@@ -313,7 +314,7 @@ const StatisticsPage: React.FC<StatisticsPageProps> = () => {
                 За весь час ({years.length > 0 ? `${years[0]}–${years[years.length - 1]}` : '...'})
               </span>
             </div>
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-4">
               <KpiCard
                 label="Всього товарів"
                 value={fmtNum(summary.total_products)}
@@ -328,8 +329,14 @@ const StatisticsPage: React.FC<StatisticsPageProps> = () => {
               <KpiCard
                 label="Чистий прибуток"
                 value={fmtPrice(summary.net_profit)}
-                sub={`Виторг ${fmtShort(summary.total_revenue)} − Собівартість ${fmtShort(summary.total_purchase_cost)} − Доставка ${fmtShort(summary.total_delivery_cost)}`}
+                sub={`Виторг ${fmtShort(summary.total_revenue)} − Собівартість ${fmtShort(summary.total_purchase_cost)} − Доставка ${fmtShort(summary.total_delivery_cost)} − Реклама ${fmtShort(summary.total_advertising_cost)}`}
                 color={summary.net_profit >= 0 ? 'text-indigo-600' : 'text-red-600'}
+              />
+              <KpiCard
+                label="Реклама (ефір)"
+                value={fmtPrice(summary.total_advertising_cost)}
+                sub="Віднято від фінального чистого прибутку"
+                color="text-red-600"
               />
               <KpiCard
                 label="Потенц. виторг залишку"
@@ -358,7 +365,7 @@ const StatisticsPage: React.FC<StatisticsPageProps> = () => {
             <div className="space-y-6">
               {/* Revenue + Cost + Profit bar chart */}
               <div>
-                <h3 className="text-sm font-medium text-gray-600 dark:text-gray-300 mb-2">Виторг / Собівартість / Прибуток</h3>
+                <h3 className="text-sm font-medium text-gray-600 dark:text-gray-300 mb-2">Виторг / Витрати / Чистий прибуток</h3>
                 <ResponsiveContainer width="100%" height={320}>
                   <ComposedChart data={salesData.data} margin={{ top: 5, right: 20, bottom: 5, left: 10 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
@@ -368,7 +375,8 @@ const StatisticsPage: React.FC<StatisticsPageProps> = () => {
                     <Legend wrapperStyle={{ fontSize: 12 }} />
                     <Bar dataKey="revenue" name="Виторг" fill={COLORS.revenue} radius={[4, 4, 0, 0]} />
                     <Bar dataKey="cost" name="Собівартість" fill={COLORS.cost} radius={[4, 4, 0, 0]} />
-                    <Line dataKey="profit" name="Прибуток" stroke={COLORS.profit} strokeWidth={2} dot={{ r: 3 }} />
+                    <Bar dataKey="advertising_cost" name="Реклама (ефір)" fill={COLORS.advertising} radius={[4, 4, 0, 0]} />
+                    <Line dataKey="profit" name="Чистий прибуток" stroke={COLORS.profit} strokeWidth={2} dot={{ r: 3 }} />
                   </ComposedChart>
                 </ResponsiveContainer>
               </div>
@@ -884,10 +892,18 @@ const StatisticsPage: React.FC<StatisticsPageProps> = () => {
                         'Магазин': 'bg-green-100 text-green-700 border-green-200',
                       };
                       return (
-                        <div key={ch.channel} className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border text-xs font-medium ${colorMap[ch.channel] || 'bg-gray-100 text-gray-700 border-gray-200'}`}>
-                          <span>{ch.channel}</span>
-                          <span className="font-bold">{fmtNum(ch.orders_count)}</span>
-                          <span className="opacity-70">замовл.</span>
+                        <div key={ch.channel} className={`flex flex-col gap-0.5 px-3 py-1.5 rounded-lg border text-xs font-medium ${colorMap[ch.channel] || 'bg-gray-100 text-gray-700 border-gray-200'}`}>
+                          <div className="flex items-center gap-2">
+                            <span>{ch.channel}</span>
+                            <span className="font-bold">{fmtNum(ch.orders_count)}</span>
+                            <span className="opacity-70">замовл.</span>
+                          </div>
+                          <div className="text-[10px] opacity-75">Виторг: {fmtShort(ch.revenue)}₴</div>
+                          {ch.advertising_cost > 0 && (
+                            <div className="text-[10px] leading-tight">
+                              Реклама: −{fmtShort(ch.advertising_cost)}₴ · після реклами: {fmtShort(ch.net_revenue)}₴
+                            </div>
+                          )}
                         </div>
                       );
                     })}

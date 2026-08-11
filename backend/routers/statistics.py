@@ -94,7 +94,9 @@ def get_sales_stats(
       • cost       – собівартість проданого: розподілена закупівля позицій
                      (cost_allocation) + оцінка для оплачених ордерів без позицій
       • ship       – розподілена доставка проданих позицій
-      • profit     – revenue − cost − ship
+      • advertising_cost – витрати на рекламу ефіру з вкладок «Замовлення»
+      • profit_before_advertising – revenue − cost − ship
+      • profit     – revenue − cost − ship − advertising_cost
     """
     params: Dict[str, Any] = {}
     date_conds = ["o.order_date IS NOT NULL", REAL_ORDER_SQL]
@@ -151,21 +153,58 @@ def get_sales_stats(
 
     item_map = {r["period_label"]: r for r in item_rows}
 
+    # Реклама — операційна витрата ефіру за датою вкладки «Замовлення».
+    # Вона не має прив'язки до постачальника, тому у supplier-filtered зрізі не
+    # розподіляємо її довільно (і не віднімаємо повну суму від кожного).
+    if supplier_id:
+        advertising_rows = []
+    else:
+        if period == "month":
+            expense_group_expr = "TO_CHAR(e.expense_date, 'YYYY-MM')"
+        elif period == "quarter":
+            expense_group_expr = (
+                "TO_CHAR(e.expense_date, 'YYYY') || '-Q' || "
+                "EXTRACT(QUARTER FROM e.expense_date)::int"
+            )
+        else:
+            expense_group_expr = "TO_CHAR(e.expense_date, 'YYYY')"
+        expense_where = ["e.sales_channel = 'Ефір'", "e.expense_date IS NOT NULL"]
+        expense_params: Dict[str, Any] = {}
+        if year:
+            expense_where.append("EXTRACT(YEAR FROM e.expense_date) = :year")
+            expense_params["year"] = year
+        advertising_rows = db.execute(text(f"""
+            SELECT {expense_group_expr} AS period_label,
+                   COALESCE(SUM(e.amount), 0)::float AS advertising_cost
+            FROM advertising_expenses e
+            WHERE {' AND '.join(expense_where)}
+            GROUP BY {expense_group_expr}
+            ORDER BY {expense_group_expr}
+        """), expense_params).mappings().all()
+
+    order_map = {r["period_label"]: r for r in order_rows}
+    advertising_map = {r["period_label"]: r["advertising_cost"] for r in advertising_rows}
+    period_labels = sorted(set(order_map) | set(advertising_map))
+
     data = []
-    for r in order_rows:
-        label = r["period_label"]
+    for label in period_labels:
+        r = order_map.get(label, {})
         it = item_map.get(label, {})
-        revenue = r["revenue"] or 0
-        cost = (r["cogs_itemless"] or 0) + (it.get("cogs_items", 0) or 0)
+        revenue = r.get("revenue", 0) or 0
+        cost = (r.get("cogs_itemless", 0) or 0) + (it.get("cogs_items", 0) or 0)
         ship = it.get("ship_items", 0) or 0
+        advertising_cost = advertising_map.get(label, 0) or 0
+        profit_before_advertising = revenue - cost - ship
         data.append({
             "period": label,
-            "orders": r["orders_count"],
+            "orders": r.get("orders_count", 0) or 0,
             "items_sold": it.get("items_sold", 0) or 0,
             "revenue": round(revenue, 2),
             "cost": round(cost, 2),
             "ship": round(ship, 2),
-            "profit": round(revenue - cost - ship, 2),
+            "advertising_cost": round(advertising_cost, 2),
+            "profit_before_advertising": round(profit_before_advertising, 2),
+            "profit": round(profit_before_advertising - advertising_cost, 2),
         })
 
     return {"period_type": period, "data": data}
@@ -378,7 +417,8 @@ def get_summary_stats(db: Session = Depends(get_db)) -> Dict[str, Any]:
                                   (cost_allocation) + оцінка для оплачених ордерів
                                   без позицій (total_amount × ratio)
       • total_delivery_cost     – розподілена доставка проданих позицій
-      • net_profit              – revenue − purchase_cost − delivery_cost
+      • total_advertising_cost  – реклама ефіру з датованих вкладок «Замовлення»
+      • net_profit              – revenue − purchase_cost − delivery_cost − advertising
       • unsold_inventory_cost   – SUM(p.price) for products with remaining stock
                                   (ПРОДАЖНА ціна = потенційний виторг залишку)
       • total_inventory_cost    – SUM(p.price) FROM products (raw)
@@ -440,6 +480,10 @@ def get_summary_stats(db: Session = Depends(get_db)) -> Dict[str, Any]:
              JOIN product_cost pc ON pc.product_id = oi.product_id
              WHERE {PAID_REVENUE}) AS total_delivery_cost,
 
+            (SELECT COALESCE(SUM(e.amount), 0)::float
+             FROM advertising_expenses e
+             WHERE e.sales_channel = 'Ефір') AS total_advertising_cost,
+
             (SELECT COALESCE(SUM(p.price), 0)::float FROM products p
                 LEFT JOIN product_sales ps ON ps.product_id = p.id
                 WHERE COALESCE(ps.sold_units, 0) < COALESCE(NULLIF(p.quantity, 0), 1)) AS unsold_inventory_cost,
@@ -458,7 +502,8 @@ def get_summary_stats(db: Session = Depends(get_db)) -> Dict[str, Any]:
     rev = data["total_revenue"] or 0
     cost = data["total_purchase_cost"] or 0
     dcost = data["total_delivery_cost"] or 0
-    data["net_profit"] = round(rev - cost - dcost, 2)
+    advertising = data["total_advertising_cost"] or 0
+    data["net_profit"] = round(rev - cost - dcost - advertising, 2)
     return data
 
 
@@ -471,7 +516,11 @@ def get_available_years(db: Session = Depends(get_db)) -> Dict[str, Any]:
     shipment_years = db.execute(text(
         "SELECT DISTINCT EXTRACT(YEAR FROM deliverydate)::int AS yr FROM deliveries WHERE deliverydate IS NOT NULL ORDER BY yr"
     )).scalars().all()
-    all_years = sorted(set(order_years) | set(shipment_years))
+    expense_years = db.execute(text(
+        "SELECT DISTINCT EXTRACT(YEAR FROM expense_date)::int AS yr "
+        "FROM advertising_expenses WHERE expense_date IS NOT NULL ORDER BY yr"
+    )).scalars().all()
+    all_years = sorted(set(order_years) | set(shipment_years) | set(expense_years))
     return {"years": all_years}
 
 
@@ -947,7 +996,7 @@ def get_products_stats(
     """)).fetchall()
 
     channel_expr = _effective_sales_channel("o")
-    channel_dist = db.execute(text(f"""
+    channel_rows = db.execute(text(f"""
         SELECT {channel_expr} AS channel,
                COUNT(DISTINCT o.id) AS orders_count,
                COALESCE(SUM(oi.price * oi.quantity)
@@ -958,7 +1007,20 @@ def get_products_stats(
           AND o.order_status_id NOT IN {CANCELLED_OR_RET_SQL}
         GROUP BY 1
         ORDER BY orders_count DESC
-    """)).fetchall()
+    """)).mappings().all()
+
+    total_advertising_cost = db.execute(text("""
+        SELECT COALESCE(SUM(amount), 0)::float
+        FROM advertising_expenses
+        WHERE sales_channel = 'Ефір'
+    """)).scalar() or 0
+    channel_dist = []
+    for row in channel_rows:
+        item = dict(row)
+        advertising_cost = total_advertising_cost if item["channel"] == "Ефір" else 0
+        item["advertising_cost"] = round(advertising_cost, 2)
+        item["net_revenue"] = round((item["revenue"] or 0) - advertising_cost, 2)
+        channel_dist.append(item)
 
     # Inventory summary: total / fully sold / partially sold / available / rostovkas.
     # "fully_sold" uses confirmed-sold units ≥ quantity (so multi-unit products
@@ -986,6 +1048,6 @@ def get_products_stats(
         "top_products": [dict(r._mapping) for r in top_products],
         "top_brands": [dict(r._mapping) for r in top_brands],
         "type_distribution": [dict(r._mapping) for r in type_dist],
-        "channel_distribution": [dict(r._mapping) for r in channel_dist],
+        "channel_distribution": channel_dist,
         "inventory_summary": dict(inventory_summary._mapping) if inventory_summary else {},
     }
