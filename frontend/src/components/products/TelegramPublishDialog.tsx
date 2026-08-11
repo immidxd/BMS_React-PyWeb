@@ -2,9 +2,11 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   CloseOutlined, SendOutlined, WarningOutlined, PlusOutlined,
   DeleteOutlined, LockOutlined, ClockCircleOutlined, ThunderboltOutlined,
-  ExperimentOutlined, CheckOutlined,
+  ExperimentOutlined, CheckOutlined, LoadingOutlined, SwapOutlined,
 } from '@ant-design/icons';
 import SmartImage from '../common/SmartImage';
+import { productService } from '../../services/productService';
+import { emitProductPhotosChanged, taskManager } from '../../services/taskManager';
 
 /*
  * Діалог створення поста в Telegram — дзеркало PromPublishDialog за структурою
@@ -89,6 +91,9 @@ interface Props {
    *  до плиток, а не публікує пост. */
   mode?: 'publish' | 'draft';
   initialPayload?: TelegramPublishPayload;
+  /** Канонічне редагування фото змінює URL-версію і в батьківській картці,
+   *  щоб пакетне прев'ю одразу показало нові пікселі. */
+  onPreviewChange?: (preview: TelegramPreview) => void;
 }
 
 const TG_BLUE = '#229ED9';
@@ -164,6 +169,13 @@ function localDateTimeValue(iso: string | null | undefined): string {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
+function withImageVersion(url: string, version: string): string {
+  const [path, query = ''] = url.split('?');
+  const params = new URLSearchParams(query);
+  params.set('v', version);
+  return `${path}?${params.toString()}`;
+}
+
 // Найчастіші емодзі з реальних постів каналу — щоб не шукати в системній
 // палітрі. Поле лишається вільним: там регулярно зʼявляється творчий вибір
 // (🐈‍⬛ під котячий принт, 🌋, 🥏).
@@ -223,7 +235,9 @@ function renderMarkdown(src: string, keyPrefix = 'm'): React.ReactNode[] {
   return out;
 }
 
-const TelegramPublishDialog: React.FC<Props> = ({ data, busy, onCancel, onConfirm, mode = 'publish', initialPayload }) => {
+const TelegramPublishDialog: React.FC<Props> = ({
+  data, busy, onCancel, onConfirm, mode = 'publish', initialPayload, onPreviewChange,
+}) => {
   const draftMode = mode === 'draft';
   const [emoji, setEmoji] = useState(initialPayload?.emoji ?? data.emoji ?? '👟');
   const [tagline, setTagline] = useState(initialPayload?.tagline ?? data.tagline ?? '');
@@ -235,6 +249,8 @@ const TelegramPublishDialog: React.FC<Props> = ({ data, busy, onCancel, onConfir
   const [sizeIds, setSizeIds] = useState<number[]>(initialPayload?.size_ids ?? data.sizes.map(s => s.product_id));
   // Порядок у масиві = порядок фото в альбомі; перше — обкладинка поста.
   const [imageIdx, setImageIdx] = useState<number[]>(initialPayload?.image_idx ?? data.default_image_idx ?? []);
+  const [imageUrls, setImageUrls] = useState<string[]>(data.image_urls);
+  const [mirroringImage, setMirroringImage] = useState<number | null>(null);
   const [threadIds, setThreadIds] = useState<number[]>(initialPayload?.thread_ids ?? data.suggested_threads ?? []);
   const [toChannel, setToChannel] = useState(initialPayload?.to_channel ?? true);
   const initialChannelAt = initialPayload?.channel_at;
@@ -326,7 +342,8 @@ const TelegramPublishDialog: React.FC<Props> = ({ data, busy, onCancel, onConfir
     !customWhenValid || customWhen!.getTime() < Date.now() + 2 * 60_000
   ));
   const scheduleTooFar = !!(customWhenValid && customWhen!.getTime() > Date.now() + 365 * 24 * 60 * 60_000);
-  const blocked = busy || rebuilding || noPhotos || overLimit || !!problem || imageIdx.length === 0 || scheduleTooSoon || scheduleTooFar;
+  const dialogBusy = busy || mirroringImage !== null;
+  const blocked = dialogBusy || rebuilding || noPhotos || overLimit || !!problem || imageIdx.length === 0 || scheduleTooSoon || scheduleTooFar;
   const maxThreads = data.max_threads_per_post ?? 6;
 
   // Клік по фото: додає в кінець альбому або прибирає. Знімати останнє не даємо
@@ -341,6 +358,31 @@ const TelegramPublishDialog: React.FC<Props> = ({ data, busy, onCancel, onConfir
     if (cur.includes(id)) return cur.filter(x => x !== id);
     return cur.length >= maxThreads ? cur : [...cur, id];
   });
+
+  const mirrorPhoto = async (index: number) => {
+    const filename = data.image_names[index];
+    if (!filename || dialogBusy) return;
+    setMirroringImage(index);
+    try {
+      const result = await taskManager.run(
+        `Віддзеркалення фото #${data.productnumber}`,
+        () => productService.transformProductPhoto(data.product_id, filename, 'flip_horizontal'),
+        {
+          successMsg: 'Фото віддзеркалено та синхронізовано з Cloudflare.',
+          errorMsg: 'Фото не віддзеркалено',
+        },
+      );
+      const version = result.version || Date.now().toString(36);
+      const nextUrls = imageUrls.map((url, i) => i === index ? withImageVersion(url, version) : url);
+      setImageUrls(nextUrls);
+      onPreviewChange?.({ ...data, image_urls: nextUrls });
+      emitProductPhotosChanged(data.product_id);
+    } catch {
+      // Task Center уже зберіг точну помилку й показав сповіщення.
+    } finally {
+      setMirroringImage(null);
+    }
+  };
 
   const makePayload = (conditionConfirmed = false): TelegramPublishPayload => ({
     caption,
@@ -379,7 +421,7 @@ const TelegramPublishDialog: React.FC<Props> = ({ data, busy, onCancel, onConfir
 
   return (
     <div className="bms-dialog-host fixed inset-0 z-[100] flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-black/45 backdrop-blur-[2px]" onClick={busy ? undefined : closeDialog} />
+      <div className="absolute inset-0 bg-black/45 backdrop-blur-[2px]" onClick={dialogBusy ? undefined : closeDialog} />
 
       <div className="relative w-full max-w-4xl max-h-[90vh] flex flex-col rounded-2xl bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 shadow-2xl overflow-hidden bms-fade-in">
         {/* Header */}
@@ -407,7 +449,7 @@ const TelegramPublishDialog: React.FC<Props> = ({ data, busy, onCancel, onConfir
                 Ростовка: {data.sizes.length} розмірів
               </span>
             )}
-            <button onClick={busy ? undefined : closeDialog}
+            <button onClick={dialogBusy ? undefined : closeDialog}
                     className="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition-colors"
                     aria-label="Закрити">
               <CloseOutlined className="text-sm" />
@@ -460,24 +502,36 @@ const TelegramPublishDialog: React.FC<Props> = ({ data, busy, onCancel, onConfir
                 <>
                   <div className="text-[11px] text-gray-400 dark:text-gray-500 mt-0.5 mb-1.5 leading-snug">
                     У твоїх постах їх зазвичай {data.album_limit}. Клік — додати чи прибрати;
-                    цифра показує порядок, перше фото стане обкладинкою.
+                    цифра показує порядок, перше фото стане обкладинкою. ↔ віддзеркалює
+                    канонічне фото в BMS і Cloudflare.
                   </div>
                   <div className="flex gap-1.5 overflow-x-auto pb-1">
-                    {data.image_urls.map((u, i) => {
+                    {imageUrls.map((u, i) => {
                       const pos = imageIdx.indexOf(i);
                       const on = pos >= 0;
                       return (
-                        <button key={i} type="button" disabled={busy} onClick={() => toggleImage(i)}
-                                title={data.image_names[i] || undefined}
-                                className={`relative h-16 w-16 rounded-lg shrink-0 overflow-hidden border-2 transition-all ${
-                                  on ? 'border-sky-500' : 'border-transparent opacity-40 hover:opacity-70'}`}>
-                          <SmartImage src={u} thumb={96} thumbOnly className="h-full w-full object-cover" />
-                          {on && (
-                            <span className="absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-sky-500 text-white text-[10px] font-bold flex items-center justify-center shadow">
-                              {pos + 1}
-                            </span>
-                          )}
-                        </button>
+                        <div key={data.image_names[i] || i} className="relative h-16 w-16 shrink-0 group/tgphoto">
+                          <button type="button" disabled={dialogBusy} onClick={() => toggleImage(i)}
+                                  title={data.image_names[i] || undefined}
+                                  className={`relative h-full w-full rounded-lg overflow-hidden border-2 transition-all ${
+                                    on ? 'border-sky-500' : 'border-transparent opacity-40 hover:opacity-70'}`}>
+                            <SmartImage src={u} thumb={96} thumbOnly className="h-full w-full object-cover" />
+                            {on && (
+                              <span className="absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-sky-500 text-white text-[10px] font-bold flex items-center justify-center shadow">
+                                {pos + 1}
+                              </span>
+                            )}
+                          </button>
+                          <button type="button" disabled={dialogBusy}
+                                  onClick={(e) => { e.stopPropagation(); void mirrorPhoto(i); }}
+                                  title="Віддзеркалити горизонтально та зберегти в BMS і Cloudflare"
+                                  aria-label={`Віддзеркалити фото ${i + 1}`}
+                                  className="absolute bottom-1 right-1 w-5 h-5 rounded-full inline-flex items-center justify-center bg-gray-950/75 text-white shadow backdrop-blur-sm opacity-80 hover:opacity-100 hover:bg-sky-600 active:scale-95 transition disabled:opacity-50">
+                            {mirroringImage === i
+                              ? <LoadingOutlined spin style={{ fontSize: 10 }} />
+                              : <SwapOutlined style={{ fontSize: 10 }} />}
+                          </button>
+                        </div>
                       );
                     })}
                   </div>
@@ -770,7 +824,7 @@ const TelegramPublishDialog: React.FC<Props> = ({ data, busy, onCancel, onConfir
             )}
           </span>
           <div className="flex items-center gap-2 shrink-0">
-            <button onClick={onCancel} disabled={busy}
+            <button onClick={onCancel} disabled={dialogBusy}
                     className="px-4 py-2 rounded-lg text-sm font-medium border border-gray-200 dark:border-gray-700 text-gray-600 hover:text-gray-900 hover:bg-gray-50 dark:text-gray-300 dark:hover:text-gray-100 dark:hover:bg-gray-800 transition-colors duration-150 disabled:opacity-60">
               {draftMode ? 'Без останніх змін' : 'Скасувати'}
             </button>

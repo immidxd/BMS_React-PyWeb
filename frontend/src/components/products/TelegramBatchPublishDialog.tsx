@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   CheckOutlined, CloseOutlined, EditOutlined, SendOutlined,
   SettingOutlined, WarningOutlined,
@@ -90,6 +90,12 @@ function defaultDraft(preview: TelegramPreview, index: number): TelegramPublishP
 }
 
 const TelegramBatchPublishDialog: React.FC<Props> = ({ productIds, busy, onCancel, onPublish }) => {
+  // Пакет є знімком виділення в момент відкриття. Новий array reference від
+  // батьківського render не означає новий пакет і не повинен скидати ручні
+  // галочки після повернення з редактора картки.
+  const initialProductIdsRef = useRef(
+    Array.from(new Set(productIds.map(Number).filter(id => Number.isFinite(id) && id > 0))),
+  );
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [meta, setMeta] = useState<BatchPreviewResponse | null>(null);
@@ -112,7 +118,7 @@ const TelegramBatchPublishDialog: React.FC<Props> = ({ productIds, busy, onCance
     fetch('/api/publications/telegram/preview-posts-batch', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ product_ids: productIds }),
+      body: JSON.stringify({ product_ids: initialProductIdsRef.current }),
     })
       .then(async res => {
         const data = await res.json().catch(() => ({}));
@@ -145,7 +151,9 @@ const TelegramBatchPublishDialog: React.FC<Props> = ({ productIds, busy, onCance
       .catch(err => { if (alive) setError(err.message || 'Не вдалося підготувати пакет'); })
       .finally(() => { if (alive) setLoading(false); });
     return () => { alive = false; };
-  }, [productIds]);
+    // Новий набір товарів відкриває новий екземпляр діалогу. Повторний fetch
+    // усередині відкритого діалогу знищив би ручні налаштування користувача.
+  }, []);
 
   const editing = entries.find(entry => entry.productId === editingId) ?? null;
   const included = entries.filter(entry => entry.included);
@@ -165,6 +173,9 @@ const TelegramBatchPublishDialog: React.FC<Props> = ({ productIds, busy, onCance
 
   const updateEntry = (id: number, patch: Partial<Entry>) =>
     setEntries(current => current.map(entry => entry.productId === id ? { ...entry, ...patch } : entry));
+
+  const removeEntry = (id: number) =>
+    setEntries(current => current.filter(entry => entry.productId !== id));
 
   const applyCommon = () => {
     const base = baseDate;
@@ -234,6 +245,7 @@ const TelegramBatchPublishDialog: React.FC<Props> = ({ productIds, busy, onCance
         busy={busy}
         mode="draft"
         initialPayload={editing.draft}
+        onPreviewChange={preview => updateEntry(editing.productId, { preview })}
         onCancel={() => setEditingId(null)}
         onConfirm={draft => {
           updateEntry(editing.productId, { draft, edited: true });
@@ -254,7 +266,7 @@ const TelegramBatchPublishDialog: React.FC<Props> = ({ productIds, busy, onCance
           <div className="min-w-0 flex-1">
             <div className="text-base font-semibold text-gray-900 dark:text-gray-50">Пакетна публікація в Telegram</div>
             <div className="text-xs text-gray-400 mt-0.5">
-              {meta ? `${meta.selected_count} рядків → ${meta.unique_count} унікальних постів${meta.merged_count ? ` · ${meta.merged_count} рядків ростовок об’єднано` : ''}` : 'Готую картки…'}
+              {meta ? `${meta.selected_count} рядків → ${entries.length} карток у пакеті${meta.unique_count > entries.length ? ` · ${meta.unique_count - entries.length} прибрано` : meta.merged_count ? ` · ${meta.merged_count} рядків ростовок об’єднано` : ''}` : 'Готую картки…'}
             </div>
           </div>
           <button onClick={busy ? undefined : onCancel} className="p-2 rounded-lg text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800" aria-label="Закрити">
@@ -379,12 +391,25 @@ const TelegramBatchPublishDialog: React.FC<Props> = ({ productIds, busy, onCance
                         <div className="min-w-0 flex-1">
                           <div className="flex items-start gap-2">
                             <label className="flex items-center gap-1.5 text-xs font-semibold text-gray-800 dark:text-gray-100 cursor-pointer">
-                              <input type="checkbox" checked={entry.included} onChange={e => updateEntry(entry.productId, { included: e.target.checked })} className="accent-sky-600" />
+                              <input type="checkbox" checked={entry.included}
+                                     aria-label={`Публікувати #${p.productnumber}`}
+                                     onChange={e => updateEntry(entry.productId, { included: e.target.checked })}
+                                     className="accent-sky-600" />
                               #{p.productnumber}
                             </label>
                             <label className={`ml-auto flex items-center gap-1 text-[10px] cursor-pointer ${entry.commonSelected ? 'text-sky-600' : 'text-gray-400'}`} title="Загальні налаштування діятимуть на цю картку">
-                              <input type="checkbox" checked={entry.commonSelected} onChange={e => updateEntry(entry.productId, { commonSelected: e.target.checked })} className="accent-sky-600" /> ⚙
+                              <input type="checkbox" checked={entry.commonSelected}
+                                     aria-label={`Загальні налаштування для #${p.productnumber}`}
+                                     onChange={e => updateEntry(entry.productId, { commonSelected: e.target.checked })}
+                                     className="accent-sky-600" /> ⚙
                             </label>
+                            <button type="button" disabled={busy}
+                                    onClick={() => removeEntry(entry.productId)}
+                                    title="Прибрати картку з пакета"
+                                    aria-label={`Прибрати #${p.productnumber} з пакета`}
+                                    className="w-5 h-5 -mt-0.5 -mr-0.5 rounded-md inline-flex items-center justify-center text-gray-300 hover:text-rose-500 hover:bg-rose-50 dark:text-gray-600 dark:hover:text-rose-400 dark:hover:bg-rose-900/20 transition-colors disabled:opacity-40">
+                              <CloseOutlined style={{ fontSize: 9 }} />
+                            </button>
                           </div>
                           <div className="mt-1 text-sm font-medium text-gray-800 dark:text-gray-100 truncate">{p.brand || '—'} {p.model || ''}</div>
                           <div className="mt-1 text-[11px] text-gray-400">
@@ -415,6 +440,12 @@ const TelegramBatchPublishDialog: React.FC<Props> = ({ productIds, busy, onCance
                 })}
               </div>
             </>
+          )}
+          {!loading && entries.length === 0 && (
+            <div className="py-20 text-center">
+              <div className="text-sm font-medium text-gray-600 dark:text-gray-300">Усі картки прибрано з пакета</div>
+              <div className="mt-1 text-xs text-gray-400">Закрий це вікно й вибери товари знову, якщо передумаєш.</div>
+            </div>
           )}
         </div>
 

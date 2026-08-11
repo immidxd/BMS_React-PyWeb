@@ -185,7 +185,7 @@ export const productService = {
         id: number,
         filename: string,
         operation: 'rotate_left' | 'rotate_180' | 'rotate_right' | 'flip_horizontal',
-    ): Promise<{ transformed: string; operation: string; width: number; height: number }> {
+    ): Promise<{ transformed: string; operation: string; width: number; height: number; version: string }> {
         const res = await axios.post(`${API_URL}/${id}/photos/transform`, { operation }, {
             params: { filename },
         });

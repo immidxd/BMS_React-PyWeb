@@ -40,6 +40,8 @@ def test_rotate_right_replaces_same_master_and_keeps_orientation(monkeypatch, tm
 
     assert result["filename"] == path.name
     assert result["width"] == 40 and result["height"] == 80
+    stat = path.stat()
+    assert result["version"] == f"{stat.st_mtime_ns:x}{stat.st_size:x}"
     assert list(path.parent.glob(".__bms_transform_*")) == []
     with Image.open(path) as image:
         assert image.size == (40, 80)

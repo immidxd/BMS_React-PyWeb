@@ -344,12 +344,16 @@ def transform_photo(pnum: str, category: str, filename: str, operation: str) -> 
             except OSError:
                 pass
 
+    stat = dest.stat()
     return {
         "filename": filename,
         "operation": operation,
         "width": width,
         "height": height,
-        "bytes": dest.stat().st_size,
+        "bytes": stat.st_size,
+        # Той самий формат, що `?v=` у product_images._file_version. Frontend
+        # може одразу показати нові пікселі без повторного сканування галереї.
+        "version": f"{stat.st_mtime_ns:x}{stat.st_size:x}",
     }
 
 

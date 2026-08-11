@@ -1400,6 +1400,7 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
         <TelegramPublishDialog
           data={tgPreview}
           busy={tgBusy}
+          onPreviewChange={setTgPreview}
           onCancel={() => { if (!tgBusy) setTgPreview(null); }}
           onConfirm={handlePublish}
         />

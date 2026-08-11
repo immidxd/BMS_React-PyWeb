@@ -931,6 +931,7 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
         <TelegramPublishDialog
           data={telegramPreview}
           busy={telegramBusy}
+          onPreviewChange={setTelegramPreview}
           onCancel={() => { if (!telegramBusy) setTelegramPreview(null); }}
           onConfirm={publishSingleTelegram}
         />
