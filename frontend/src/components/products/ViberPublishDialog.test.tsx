@@ -123,4 +123,47 @@ describe('ViberPublishDialog photo editing', () => {
       expect.objectContaining({ method: 'POST' }),
     ));
   });
+
+  it('lets all selected frames shrink below the neutral 100% scale', () => {
+    const onConfirm = jest.fn();
+    const twoPhotos: ViberPreview = {
+      ...preview,
+      image_count: 2,
+      image_urls: ['/product-images/Ф42_01.webp', '/product-images/Ф42_02.webp'],
+      image_names: ['Ф42_01.webp', 'Ф42_02.webp'],
+      default_image_idx: [0, 1],
+      collage: {
+        ...preview.collage,
+        image_idx: [0, 1],
+        frames: [
+          { image_idx: 0, zoom: 1, x: 0, y: 0 },
+          { image_idx: 1, zoom: 1, x: 0, y: 0 },
+        ],
+      },
+    };
+    render(
+      <ViberPublishDialog
+        data={twoPhotos}
+        busy={false}
+        mode="draft"
+        onCancel={jest.fn()}
+        onConfirm={onConfirm}
+      />,
+    );
+
+    const singleZoom = screen.getByLabelText('Масштаб фото') as HTMLInputElement;
+    expect(singleZoom.min).toBe('0.5');
+    expect(singleZoom.value).toBe('1');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Усі 2' }));
+    const groupZoom = screen.getByLabelText('Масштаб вибраних фото') as HTMLInputElement;
+    expect(groupZoom.min).toBe('-0.5');
+    expect(groupZoom.value).toBe('0');
+    fireEvent.change(groupZoom, { target: { value: '-0.25' } });
+    fireEvent.click(screen.getByRole('button', { name: /Зберегти картку/ }));
+
+    expect(onConfirm).toHaveBeenCalledTimes(1);
+    expect(onConfirm.mock.calls[0][0].collage.frames.map((frame: any) => frame.zoom)).toEqual([0.75, 0.75]);
+    expect(screen.queryByText('×')).toBeNull();
+  });
 });

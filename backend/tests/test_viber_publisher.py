@@ -55,6 +55,32 @@ def test_collage_spec_is_bounded_deduplicated_and_keeps_manual_order():
     assert spec["frames"][0] == {"image_idx": 3, "zoom": 3.0, "x": -1.0, "y": 1.0}
 
 
+def test_collage_zoom_can_shrink_below_default_but_stays_bounded():
+    spec = vp.normalize_collage_spec({
+        "image_idx": [0, 1],
+        "frames": [
+            {"image_idx": 0, "zoom": 0.75, "x": 0, "y": 0},
+            {"image_idx": 1, "zoom": 0.1, "x": 0, "y": 0},
+        ],
+    }, 2)
+
+    assert spec["frames"][0]["zoom"] == 0.75
+    assert spec["frames"][1]["zoom"] == vp.FRAME_ZOOM_MIN
+
+
+def test_render_tile_zoom_below_one_adds_space_around_product():
+    raw = _jpeg(size=(100, 100), color=(240, 80, 40))
+    tile = vp._render_tile(
+        raw,
+        (200, 200),
+        {"image_idx": 0, "zoom": 0.5, "x": 0, "y": 0},
+        (255, 255, 255),
+    )
+
+    assert tile.getpixel((0, 0)) == (255, 255, 255)
+    assert tile.getpixel((100, 100)) != (255, 255, 255)
+
+
 def test_five_photo_smart_layout_matches_historical_viber_two_plus_three_grid():
     cells = vp._layout_cells(5, "auto", 4)
 

@@ -1,8 +1,9 @@
 """Офіційна публікація товарів у Viber Channel через хмарний диспетчер.
 
 Viber Channels Post API не має альбомів. BMS тому створює одну незмінну
-JPEG-картку 1080×1080 із 1–5 канонічних фото. Оригінали не змінюються:
-публікаційна похідна лежить під content-addressed ключем у R2.
+JPEG-картку 1080×1080 із 1–5 канонічних фото. Компонування не змінює
+оригінали: публікаційна похідна лежить під content-addressed ключем у R2.
+Явне віддзеркалення в редакторі проходить окремим канонічним photo-manager.
 
 Секрет Viber навмисно не потрапляє ані у frontend, ані у PostgreSQL, ані в
 desktop `.env`. Його зберігає Cloudflare Worker. BMS передає диспетчеру вже
@@ -60,6 +61,8 @@ VIBER_COLUMN_SPLIT = 0.63
 VIBER_LEFT_SPLIT = 0.505
 VIBER_RIGHT_TOP = 0.347
 VIBER_RIGHT_MIDDLE = 0.307
+FRAME_ZOOM_MIN = 0.5
+FRAME_ZOOM_MAX = 3.0
 
 
 def _tg():
@@ -166,7 +169,7 @@ def normalize_collage_spec(payload: dict, image_count: int) -> dict:
             continue
         by_index[idx] = {
             "image_idx": idx,
-            "zoom": _clamp(raw.get("zoom"), 1.0, 3.0, 1.0),
+            "zoom": _clamp(raw.get("zoom"), FRAME_ZOOM_MIN, FRAME_ZOOM_MAX, 1.0),
             "x": _clamp(raw.get("x"), -1.0, 1.0, 0.0),
             "y": _clamp(raw.get("y"), -1.0, 1.0, 0.0),
         }

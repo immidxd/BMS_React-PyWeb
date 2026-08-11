@@ -100,6 +100,8 @@ const VIBER_GRID_DEFAULTS = {
   right_top: 0.347,
   right_middle: 0.307,
 };
+const FRAME_ZOOM_MIN = 0.5;
+const FRAME_ZOOM_MAX = 3;
 
 function uuid(): string {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
@@ -152,7 +154,10 @@ type FrameControlKey = 'zoom' | 'x' | 'y';
 type ViberGridKey = 'column_split' | 'left_split' | 'right_top' | 'right_middle';
 
 function clampFrameValue(key: FrameControlKey, value: number): number {
-  return Math.max(key === 'zoom' ? 1 : -1, Math.min(key === 'zoom' ? 3 : 1, value));
+  return Math.max(
+    key === 'zoom' ? FRAME_ZOOM_MIN : -1,
+    Math.min(key === 'zoom' ? FRAME_ZOOM_MAX : 1, value),
+  );
 }
 
 export const ViberConditionPublishConfirmation: React.FC<{
@@ -268,6 +273,7 @@ const ViberPublishDialog: React.FC<Props> = ({
   const renderUrlRef = useRef<string | null>(null);
   const renderSequence = useRef(0);
   const groupBaseRef = useRef<Map<number, ViberCollageFrame>>(new Map());
+  const thumbnailDragRef = useRef(false);
 
   useEffect(() => () => {
     if (renderUrlRef.current) URL.revokeObjectURL(renderUrlRef.current);
@@ -363,19 +369,17 @@ const ViberPublishDialog: React.FC<Props> = ({
     updateSelected(next);
   };
 
+  const finishThumbnailDrag = () => {
+    setDragIndex(null);
+    window.setTimeout(() => { thumbnailDragRef.current = false; }, 100);
+  };
+
   const updateFrame = (patch: Partial<ViberCollageFrame>) => {
     if (!activeFrame) return;
     setCollage(current => ({
       ...current,
       frames: current.frames.map(frame => frame.image_idx === activeFrame.image_idx ? { ...frame, ...patch } : frame),
     }));
-  };
-
-  const selectSingleFrame = (index: number) => {
-    setActiveImage(index);
-    setEditTargets([index]);
-    groupBaseRef.current = new Map();
-    setGroupAdjust({ zoom: 0, x: 0, y: 0 });
   };
 
   const toggleEditTarget = (index: number) => {
@@ -521,6 +525,9 @@ const ViberPublishDialog: React.FC<Props> = ({
   };
 
   const previewTitle = [data.brand, data.model, data.type].filter(Boolean).join(' ');
+  const zoomControlLabel = editingMany
+    ? `Масштаб разом · ${groupAdjust.zoom === 0 ? 'без змін' : `${groupAdjust.zoom > 0 ? '+' : ''}${Math.round(groupAdjust.zoom * 100)}%`}`
+    : `Масштаб · ${Math.round((activeFrame?.zoom ?? 1) * 100)}%`;
 
   return (
     <div className="bms-dialog-host fixed inset-0 z-[110] flex items-center justify-center p-4">
@@ -542,38 +549,41 @@ const ViberPublishDialog: React.FC<Props> = ({
                 <span className={LABEL}>Фото для колажу · {collage.image_idx.length} з {Math.min(5, data.image_count)}</span>
                 <span className="text-[11px] text-gray-400">порядок = розташування</span>
               </div>
-              <div className="mt-2 flex gap-2 overflow-x-auto pb-1">
+              <div className="mt-2 flex gap-1.5 overflow-x-auto pb-1">
                 {imageUrls.map((url, index) => {
                   const order = collage.image_idx.indexOf(index);
                   const selected = order >= 0;
                   return (
-                    <div key={`${url}-${index}`} className="group/viber-photo relative h-20 w-20 shrink-0">
+                    <div key={data.image_names[index] || index} className="group/viber-photo relative h-16 w-16 shrink-0">
                       <button type="button" draggable={selected && !dialogBusy}
                               disabled={dialogBusy}
-                              onDragStart={() => setDragIndex(order)}
+                              onDragStart={() => { thumbnailDragRef.current = true; setDragIndex(order); }}
+                              onDragEnd={finishThumbnailDrag}
                               onDragOver={event => { if (selected) event.preventDefault(); }}
-                              onDrop={() => { if (selected && dragIndex !== null) moveSelected(dragIndex, order); setDragIndex(null); }}
-                              onClick={() => { if (selected) selectSingleFrame(index); else toggleImage(index); }}
-                              className={`relative h-full w-full overflow-hidden rounded-xl border-2 bg-gray-100 transition disabled:cursor-wait ${selected ? 'border-violet-500' : 'border-transparent opacity-60 hover:opacity-100'} ${activeImage === index && selected ? 'ring-2 ring-violet-500/25' : ''}`}
-                              title={selected ? 'Клік — налаштувати кадр; перетягни для зміни порядку' : 'Додати до колажу'}>
+                              onDrop={() => { if (selected && dragIndex !== null) moveSelected(dragIndex, order); finishThumbnailDrag(); }}
+                              onClick={() => { if (!thumbnailDragRef.current) toggleImage(index); }}
+                              aria-label={selected ? `Прибрати фото ${order + 1} з колажу` : `Додати фото ${index + 1} до колажу`}
+                              className={`relative h-full w-full overflow-hidden rounded-lg border-2 bg-gray-100 transition-all disabled:cursor-wait ${selected ? 'border-violet-500' : 'border-transparent opacity-40 hover:opacity-70'}`}
+                              title={selected ? 'Клік — прибрати; перетягни для зміни порядку' : 'Клік — додати до колажу'}>
                         <SmartImage src={url} thumb={320} thumbOnly className="h-full w-full object-cover" />
-                        {selected && <span className="absolute left-1 top-1 flex h-5 min-w-5 items-center justify-center rounded-full bg-violet-600 px-1 text-[10px] font-bold text-white">{order + 1}</span>}
-                        {selected && <span role="button" aria-label={`Прибрати фото ${order + 1}`} onClick={event => { event.stopPropagation(); toggleImage(index); }} className="absolute right-1 top-1 flex h-5 w-5 items-center justify-center rounded-full bg-black/55 text-[9px] text-white">×</span>}
-                        {selected && <DragOutlined className="absolute bottom-1 left-1 rounded bg-black/45 p-1 text-[9px] text-white" />}
+                        {selected && <span className="absolute left-0.5 top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-violet-500 px-1 text-[10px] font-bold text-white shadow">{order + 1}</span>}
+                        {selected && <span className="absolute bottom-1 left-1 inline-flex h-5 w-5 items-center justify-center rounded-full bg-gray-950/75 text-white opacity-80 shadow backdrop-blur-sm" title="Перетягни для зміни порядку"><DragOutlined style={{ fontSize: 10 }} /></span>}
                       </button>
                       <button type="button"
                               disabled={dialogBusy || !data.image_names[index]}
                               onClick={event => { event.stopPropagation(); void mirrorPhoto(index); }}
                               aria-label={`Віддзеркалити фото ${index + 1}`}
                               title="Віддзеркалити горизонтально та зберегти в BMS і Cloudflare"
-                              className="absolute bottom-1 right-1 z-10 flex h-6 w-6 items-center justify-center rounded-md border border-white/70 bg-black/60 text-[11px] text-white shadow-sm transition hover:bg-violet-600 disabled:cursor-wait disabled:opacity-60">
-                        {mirroringImage === index ? <LoadingOutlined spin /> : <SwapOutlined />}
+                              className="absolute bottom-1 right-1 z-10 inline-flex h-5 w-5 items-center justify-center rounded-full bg-gray-950/75 text-white opacity-80 shadow backdrop-blur-sm transition hover:bg-violet-600 hover:opacity-100 active:scale-95 disabled:cursor-wait disabled:opacity-50">
+                        {mirroringImage === index
+                          ? <LoadingOutlined spin style={{ fontSize: 10 }} />
+                          : <SwapOutlined style={{ fontSize: 10 }} />}
                       </button>
                     </div>
                   );
                 })}
               </div>
-              <p className="mt-1.5 text-[11px] leading-relaxed text-gray-400">Колаж зберігається окремо у форматі 1080×1080. Кнопка <SwapOutlined className="mx-0.5" /> віддзеркалює саме оригінал — зміна буде однаковою в BMS, хмарі та всіх публікаціях.</p>
+              <p className="mt-1.5 text-[11px] leading-relaxed text-gray-400">Клік — додати чи прибрати; цифра показує порядок, перетягування його змінює. <SwapOutlined className="mx-0.5" /> віддзеркалює оригінал у BMS і Cloudflare.</p>
             </div>
 
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-[1fr_auto]">
@@ -657,12 +667,13 @@ const ViberPublishDialog: React.FC<Props> = ({
                 </p>
                 <div className="mt-3 grid gap-3 sm:grid-cols-3">
                   {([
-                    [editingMany ? 'Масштаб усіх' : 'Масштаб', 'zoom', editingMany ? -1 : 1, editingMany ? 2 : 3, 0.05],
+                    [zoomControlLabel, 'zoom', editingMany ? FRAME_ZOOM_MIN - 1 : FRAME_ZOOM_MIN, editingMany ? FRAME_ZOOM_MAX - 1 : FRAME_ZOOM_MAX, 0.05],
                     [editingMany ? 'Разом ліворуч / праворуч' : 'Ліворуч / праворуч', 'x', -1, 1, 0.05],
                     [editingMany ? 'Разом вгору / вниз' : 'Вгору / вниз', 'y', -1, 1, 0.05],
                   ] as const).map(([label, key, min, max, step]) => (
                     <label key={key} className="text-[11px] text-gray-500">{label}
                       <input type="range" min={min} max={max} step={step} value={editingMany ? groupAdjust[key] : activeFrame[key]}
+                             aria-label={key === 'zoom' ? (editingMany ? 'Масштаб вибраних фото' : 'Масштаб фото') : undefined}
                              onChange={event => editingMany
                                ? updateFramesTogether(key, Number(event.target.value))
                                : updateFrame({ [key]: Number(event.target.value) })}
