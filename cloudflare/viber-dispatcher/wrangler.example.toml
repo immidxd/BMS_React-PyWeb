@@ -1,0 +1,16 @@
+name = "bms-viber-dispatcher"
+main = "src/index.js"
+compatibility_date = "2026-08-01"
+
+[triggers]
+crons = ["* * * * *"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "bms-viber-dispatcher"
+database_id = "REPLACE_WITH_D1_DATABASE_ID"
+
+# Секрети додаються лише через `wrangler secret put`, не в цей файл:
+# - VIBER_CHANNEL_TOKEN
+# - VIBER_CHANNEL_SENDER_ID (ID superadmin з get_account_info)
+# - BMS_DISPATCHER_KEY (окремий довгий випадковий ключ між BMS і Worker)

@@ -1,0 +1,9 @@
+{
+  "name": "bms-viber-dispatcher",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "node --check src/index.js",
+    "test": "node --test test/*.test.js"
+  }
+}

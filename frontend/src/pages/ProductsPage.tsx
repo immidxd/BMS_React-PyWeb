@@ -28,6 +28,12 @@ import TelegramPublishDialog, {
 import TelegramBatchPublishDialog, {
   type TelegramBatchRequest,
 } from '../components/products/TelegramBatchPublishDialog';
+import ViberPublishDialog, {
+  type ViberPreview, type ViberPublishPayload,
+} from '../components/products/ViberPublishDialog';
+import ViberBatchPublishDialog, {
+  type ViberBatchRequest,
+} from '../components/products/ViberBatchPublishDialog';
 
 // Placeholder for actual filter components for Products
 
@@ -71,6 +77,9 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
   const [telegramPreview, setTelegramPreview] = useState<TelegramPreview | null>(null);
   const [telegramBatchIds, setTelegramBatchIds] = useState<number[] | null>(null);
   const [telegramBusy, setTelegramBusy] = useState(false);
+  const [viberPreview, setViberPreview] = useState<ViberPreview | null>(null);
+  const [viberBatchIds, setViberBatchIds] = useState<number[] | null>(null);
+  const [viberBusy, setViberBusy] = useState(false);
             
   // Effect to react to global search changes and fetch insights
   useEffect(() => {
@@ -603,6 +612,120 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
     });
   };
 
+  const openSelectedViber = async () => {
+    const ids = selection.ids.slice();
+    if (!ids.length) return;
+    if (ids.length > 1) {
+      setViberBatchIds(ids);
+      return;
+    }
+    setViberBusy(true);
+    try {
+      const response = await fetch('/api/publications/viber/preview-post', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ product_id: ids[0] }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.detail || 'Не вдалося підготувати Viber-пост');
+      setViberPreview(data);
+    } catch (error: any) {
+      notify.error({ message: `Viber: ${error.message || 'Не вдалося підготувати пост'}`, duration: 8 });
+    } finally {
+      setViberBusy(false);
+    }
+  };
+
+  const publishSingleViber = (payload: ViberPublishPayload) => {
+    if (!viberPreview) return;
+    const productId = viberPreview.product_id;
+    const productNumber = viberPreview.productnumber;
+    setViberBusy(true);
+    taskManager.run(
+      `Viber-публікація #${productNumber}`,
+      async () => {
+        const response = await fetch('/api/publications/viber/create-post', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ product_id: productId, ...payload }),
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || !data.ok) {
+          const error: any = new Error(data.detail || data.error || 'Viber-публікація не вдалася');
+          error.response = { data: { detail: data.detail || data.error } };
+          throw error;
+        }
+        return data;
+      },
+      {
+        silentSuccess: true,
+        resultStatus: (result: any) => ({
+          status: 'success',
+          detail: result.status === 'scheduled'
+            ? `Заплановано на ${new Date(result.scheduled_at).toLocaleString('uk-UA')}`
+            : result.status === 'published' ? 'Опубліковано у Viber' : 'Прийнято у захищену чергу',
+        }),
+        onSuccess: (result: any) => {
+          notify.success({
+            message: result.status === 'scheduled' ? `#${productNumber} заплановано у Viber` : `#${productNumber} передано у Viber`,
+            description: result.status === 'scheduled' && result.scheduled_at ? new Date(result.scheduled_at).toLocaleString('uk-UA') : undefined,
+            duration: 7,
+          });
+          setViberPreview(null);
+          selection.clear();
+          setSelectionMode(false);
+          window.dispatchEvent(new CustomEvent('bms:viber-status-refresh'));
+        },
+      },
+    ).catch(() => undefined).finally(() => {
+      setViberBusy(false);
+      window.dispatchEvent(new CustomEvent('bms:viber-status-refresh'));
+    });
+  };
+
+  const publishViberBatch = (request: ViberBatchRequest) => {
+    const count = request.items.length;
+    setViberBusy(true);
+    taskManager.run(
+      `Пакетна Viber-публікація: ${count} постів`,
+      async () => {
+        const response = await fetch('/api/publications/viber/create-posts-batch', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(request),
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || !data.ok) {
+          const error: any = new Error(data.detail || data.error || 'Пакетна Viber-публікація не вдалася');
+          error.response = { data: { detail: data.detail || data.error } };
+          throw error;
+        }
+        return data;
+      },
+      {
+        silentSuccess: true,
+        resultStatus: (result: any) => {
+          const counts = result.counts || {};
+          const issues = (result.results || []).filter((item: any) => item.error)
+            .map((item: any) => `#${item.productnumber}: ${item.error}`).join(' · ');
+          return {
+            status: result.status === 'success' ? 'success' : 'partial',
+            detail: [`${counts.success || 0} прийнято`, counts.error ? `${counts.error} з помилкою` : '', issues].filter(Boolean).join(' · '),
+          };
+        },
+        onSuccess: (result: any) => {
+          const counts = result.counts || {};
+          if (result.status === 'success') notify.success({ message: 'Пакет Viber прийнято', description: `${counts.success || 0} постів у захищеній черзі`, duration: 7 });
+          else notify.warning({ message: 'Пакет Viber виконано частково', description: `${counts.success || 0} прийнято · ${counts.error || 0} з помилкою. Подробиці є у Сповіщеннях.`, duration: 11 });
+          setViberBatchIds(null);
+          selection.clear();
+          setSelectionMode(false);
+          window.dispatchEvent(new CustomEvent('bms:viber-status-refresh'));
+        },
+      },
+    ).catch(() => undefined).finally(() => {
+      setViberBusy(false);
+      window.dispatchEvent(new CustomEvent('bms:viber-status-refresh'));
+    });
+  };
+
   // Esc — зняти виділення (дія користувача). Скидання буфера ЛИШЕ явними діями:
   // Esc / кнопка «Зняти виділення» / вихід з режиму «Виділити».
   // isActivePage: при keep-alive «Товари» лишаються змонтованими на будь-якій
@@ -824,6 +947,7 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
                     { key: 'shafa', icon: <span className="inline-flex h-4 w-4 items-center justify-center rounded bg-black text-[9px] leading-none text-white font-black">S</span>, label: 'Відправити на Shafa' },
                     { key: 'olx', icon: <span className="inline-flex h-4 items-center justify-center rounded bg-[#002f34] px-1 text-[8px] leading-none text-[#a9e000] font-black">OLX</span>, label: 'Відправити на OLX' },
                     { key: 'telegram', icon: <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-[#229ED9] text-[9px] leading-none text-white">➤</span>, label: 'Відправити в Telegram' },
+                    { key: 'viber', icon: <span className="inline-flex h-4 w-4 items-center justify-center rounded bg-[#7360F2] text-[9px] leading-none text-white font-black">V</span>, label: 'Відправити у Viber' },
                     { type: 'divider' as const },
                     { key: 'clear', label: 'Зняти виділення' },
                   ],
@@ -832,6 +956,7 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
                     else if (key === 'shafa') void sendSelectedToShafa();
                     else if (key === 'olx') void sendSelectedToOlx();
                     else if (key === 'telegram') void openSelectedTelegram();
+                    else if (key === 'viber') void openSelectedViber();
                     else if (key === 'clear') selection.clear();
                   },
                 }}
@@ -942,6 +1067,22 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
           busy={telegramBusy}
           onCancel={() => { if (!telegramBusy) setTelegramBatchIds(null); }}
           onPublish={publishTelegramBatch}
+        />
+      )}
+      {viberPreview && (
+        <ViberPublishDialog
+          data={viberPreview}
+          busy={viberBusy}
+          onCancel={() => { if (!viberBusy) setViberPreview(null); }}
+          onConfirm={publishSingleViber}
+        />
+      )}
+      {viberBatchIds && (
+        <ViberBatchPublishDialog
+          productIds={viberBatchIds}
+          busy={viberBusy}
+          onCancel={() => { if (!viberBusy) setViberBatchIds(null); }}
+          onPublish={publishViberBatch}
         />
       )}
     </MainLayout>

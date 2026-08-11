@@ -1,0 +1,473 @@
+import React, { useEffect, useRef, useState } from 'react';
+import {
+  CheckOutlined, CloseOutlined, ClockCircleOutlined, DragOutlined,
+  LoadingOutlined, ReloadOutlined, SendOutlined, WarningOutlined,
+} from '@ant-design/icons';
+import SmartImage from '../common/SmartImage';
+
+export interface ViberCollageFrame {
+  image_idx: number;
+  zoom: number;
+  x: number;
+  y: number;
+}
+
+export interface ViberCollageSpec {
+  version: number;
+  width: number;
+  height: number;
+  image_idx: number[];
+  layout: 'auto' | 'hero' | 'grid';
+  background: 'white' | 'soft' | 'warm' | 'dark';
+  gap: number;
+  frames: ViberCollageFrame[];
+}
+
+export interface ViberPreview {
+  ok: boolean;
+  product_id: number;
+  productnumber: string;
+  brand: string | null;
+  model: string | null;
+  type: string | null;
+  condition: string | null;
+  condition_name: string | null;
+  condition_confirmation_required: boolean;
+  caption: string;
+  caption_len: number;
+  caption_limit: number;
+  sizes: { product_id: number; size: string; measurementscm: string; available: number }[];
+  image_count: number;
+  image_kind: 'official' | 'real' | 'none';
+  image_urls: string[];
+  image_names: string[];
+  default_image_idx: number[];
+  collage: ViberCollageSpec;
+  layouts: { key: ViberCollageSpec['layout']; label: string }[];
+  backgrounds: { key: ViberCollageSpec['background']; label: string }[];
+  channel: { title: string };
+  connection: {
+    configured: boolean;
+    live_publish_available: boolean;
+    schedule_available: boolean;
+    missing: string[];
+    collage: { width: number; height: number; max_bytes: number; max_photos: number };
+  };
+  already_published: number;
+  pending_publications: number;
+  batch_max_products: number;
+  default_publish_at: string;
+  warnings: string[];
+}
+
+export interface ViberPublishPayload {
+  caption: string;
+  collage: ViberCollageSpec;
+  publish_at: string | null;
+  idempotency_key: string;
+  force?: boolean;
+  condition_confirmed?: boolean;
+}
+
+interface Props {
+  data: ViberPreview;
+  busy: boolean;
+  onCancel: () => void;
+  onConfirm: (payload: ViberPublishPayload) => void;
+  mode?: 'publish' | 'draft';
+  initialPayload?: ViberPublishPayload;
+}
+
+const VIBER_PURPLE = '#7360F2';
+const INPUT = 'w-full rounded-lg border border-gray-200 bg-white px-2.5 py-2 text-sm text-gray-800 outline-none transition focus:border-violet-400 focus:ring-2 focus:ring-violet-500/20 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100';
+const LABEL = 'text-[11px] font-semibold uppercase tracking-wide text-gray-400 dark:text-gray-500';
+const BACKGROUNDS: Record<ViberCollageSpec['background'], string> = {
+  white: '#ffffff', soft: '#f4f6f8', warm: '#f8f5f0', dark: '#181b20',
+};
+
+function uuid(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+  return `viber-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function asLocal(iso: string | null | undefined): string {
+  if (!iso) return '';
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return '';
+  const pad = (value: number) => String(value).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function normalizeFrames(spec: ViberCollageSpec, imageIdx: number[]): ViberCollageSpec {
+  const byIndex = new Map(spec.frames.map(frame => [frame.image_idx, frame]));
+  return {
+    ...spec,
+    image_idx: imageIdx,
+    frames: imageIdx.map(index => byIndex.get(index) ?? { image_idx: index, zoom: 1, x: 0, y: 0 }),
+  };
+}
+
+function initialSpec(data: ViberPreview, payload?: ViberPublishPayload): ViberCollageSpec {
+  const source = payload?.collage ?? data.collage;
+  const selected = (source.image_idx?.length ? source.image_idx : data.default_image_idx).slice(0, 5);
+  return normalizeFrames({
+    ...source,
+    version: 1,
+    width: 1080,
+    height: 1080,
+    layout: source.layout || 'auto',
+    background: source.background || 'white',
+    gap: source.gap ?? 14,
+  }, selected);
+}
+
+export const ViberConditionPublishConfirmation: React.FC<{
+  items: { productnumber: string; conditionName: string; title?: string }[];
+  busy?: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}> = ({ items, busy = false, onCancel, onConfirm }) => {
+  if (!items.length) return null;
+  return (
+    <div className="fixed inset-0 z-[150] flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/55 backdrop-blur-[2px]" onClick={busy ? undefined : onCancel} />
+      <div className="relative w-full max-w-md overflow-hidden rounded-2xl border border-amber-200 bg-white shadow-2xl dark:border-amber-800 dark:bg-gray-900">
+        <div className="flex gap-3 px-5 pt-5">
+          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300"><WarningOutlined /></span>
+          <div>
+            <div className="font-semibold text-gray-900 dark:text-gray-50">Перевір стан перед Viber-публікацією</div>
+            <p className="mt-1 text-xs leading-relaxed text-gray-500 dark:text-gray-400">Цей стан буде прямо вказаний у пості й його побачать підписники каналу.</p>
+          </div>
+        </div>
+        <div className="mx-5 mt-4 max-h-52 space-y-2 overflow-y-auto">
+          {items.map(item => (
+            <div key={`${item.productnumber}-${item.conditionName}`} className="rounded-xl border border-amber-200 bg-amber-50/70 px-3 py-2.5 dark:border-amber-800 dark:bg-amber-900/20">
+              <div className="text-sm font-semibold text-gray-900 dark:text-gray-100">#{item.productnumber} · {item.conditionName}</div>
+              {item.title && <div className="mt-0.5 truncate text-xs text-gray-500 dark:text-gray-400">{item.title}</div>}
+            </div>
+          ))}
+        </div>
+        <div className="mt-5 flex justify-end gap-2 border-t border-gray-100 px-5 py-3.5 dark:border-gray-800">
+          <button type="button" onClick={onCancel} disabled={busy} className="rounded-lg border border-gray-200 px-4 py-2 text-sm text-gray-600 disabled:opacity-50 dark:border-gray-700 dark:text-gray-300">Повернутися</button>
+          <button type="button" onClick={onConfirm} disabled={busy} className="rounded-lg bg-amber-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">Так, опублікувати</button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const ViberPublishDialog: React.FC<Props> = ({
+  data, busy, onCancel, onConfirm, mode = 'publish', initialPayload,
+}) => {
+  const draftMode = mode === 'draft';
+  const [caption, setCaption] = useState(initialPayload?.caption ?? data.caption);
+  const [collage, setCollage] = useState<ViberCollageSpec>(() => initialSpec(data, initialPayload));
+  const [activeImage, setActiveImage] = useState<number>(() => initialSpec(data, initialPayload).image_idx[0] ?? 0);
+  const [timing, setTiming] = useState<'now' | 'custom'>(() => initialPayload?.publish_at ? 'custom' : 'now');
+  const [customAt, setCustomAt] = useState(asLocal(initialPayload?.publish_at ?? data.default_publish_at));
+  const [force, setForce] = useState(initialPayload?.force ?? false);
+  const [idempotencyKey] = useState(initialPayload?.idempotency_key ?? uuid());
+  const [renderUrl, setRenderUrl] = useState<string | null>(null);
+  const [renderBytes, setRenderBytes] = useState<number | null>(null);
+  const [rendering, setRendering] = useState(false);
+  const [renderError, setRenderError] = useState<string | null>(null);
+  const [dragIndex, setDragIndex] = useState<number | null>(null);
+  const [conditionConfirmOpen, setConditionConfirmOpen] = useState(false);
+  const renderUrlRef = useRef<string | null>(null);
+  const renderSequence = useRef(0);
+
+  useEffect(() => () => {
+    if (renderUrlRef.current) URL.revokeObjectURL(renderUrlRef.current);
+  }, []);
+
+  useEffect(() => {
+    if (!collage.image_idx.length) return;
+    const sequence = ++renderSequence.current;
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      setRendering(true);
+      setRenderError(null);
+      fetch('/api/publications/viber/render-collage', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ product_id: data.product_id, collage }),
+        signal: controller.signal,
+      })
+        .then(async response => {
+          if (!response.ok) {
+            const detail = await response.json().catch(() => ({}));
+            throw new Error(detail.detail || 'Не вдалося зібрати колаж');
+          }
+          const blob = await response.blob();
+          return { blob, bytes: Number(response.headers.get('X-BMS-Image-Bytes')) || blob.size };
+        })
+        .then(({ blob, bytes }) => {
+          if (sequence !== renderSequence.current) return;
+          const url = URL.createObjectURL(blob);
+          if (renderUrlRef.current) URL.revokeObjectURL(renderUrlRef.current);
+          renderUrlRef.current = url;
+          setRenderUrl(url);
+          setRenderBytes(bytes);
+        })
+        .catch(error => {
+          if (error?.name !== 'AbortError' && sequence === renderSequence.current) {
+            setRenderError(error?.message || 'Не вдалося зібрати колаж');
+          }
+        })
+        .finally(() => { if (sequence === renderSequence.current) setRendering(false); });
+    }, 260);
+    return () => { window.clearTimeout(timer); controller.abort(); };
+  }, [collage, data.product_id]);
+
+  const activeFrame = collage.frames.find(frame => frame.image_idx === activeImage) ?? collage.frames[0];
+  const captionProblem = !caption.trim()
+    ? 'Підпис порожній'
+    : caption.length > data.caption_limit ? `Перевищено ліміт на ${caption.length - data.caption_limit} символів` : null;
+  const scheduleDate = customAt ? new Date(customAt) : null;
+  const scheduleProblem = timing === 'custom' && (
+    !scheduleDate || Number.isNaN(scheduleDate.getTime())
+      ? 'Вкажи коректний час'
+      : scheduleDate.getTime() < Date.now() + 2 * 60_000
+        ? 'Не раніше ніж через 2 хвилини'
+        : scheduleDate.getTime() > Date.now() + 365 * 24 * 60 * 60_000
+          ? 'Не далі ніж на 365 днів'
+          : null
+  );
+  const blockedRepeat = !draftMode && (data.already_published > 0 || data.pending_publications > 0) && !force;
+  const cannotPublish = busy || rendering || !collage.image_idx.length || !!captionProblem
+    || !!scheduleProblem || blockedRepeat || (!draftMode && !data.connection.live_publish_available);
+
+  const updateSelected = (next: number[]) => {
+    const unique = Array.from(new Set(next)).slice(0, 5);
+    if (!unique.length) return;
+    setCollage(current => normalizeFrames(current, unique));
+    if (!unique.includes(activeImage)) setActiveImage(unique[0]);
+  };
+
+  const toggleImage = (index: number) => {
+    if (collage.image_idx.includes(index)) {
+      if (collage.image_idx.length > 1) updateSelected(collage.image_idx.filter(value => value !== index));
+    } else if (collage.image_idx.length < 5) {
+      updateSelected([...collage.image_idx, index]);
+      setActiveImage(index);
+    }
+  };
+
+  const moveSelected = (from: number, to: number) => {
+    if (from === to || from < 0 || to < 0 || from >= collage.image_idx.length || to >= collage.image_idx.length) return;
+    const next = [...collage.image_idx];
+    const [value] = next.splice(from, 1);
+    next.splice(to, 0, value);
+    updateSelected(next);
+  };
+
+  const updateFrame = (patch: Partial<ViberCollageFrame>) => {
+    if (!activeFrame) return;
+    setCollage(current => ({
+      ...current,
+      frames: current.frames.map(frame => frame.image_idx === activeFrame.image_idx ? { ...frame, ...patch } : frame),
+    }));
+  };
+
+  const payload = (conditionConfirmed = false): ViberPublishPayload => ({
+    caption: caption.trim(),
+    collage,
+    publish_at: timing === 'custom' && scheduleDate && !Number.isNaN(scheduleDate.getTime()) ? scheduleDate.toISOString() : null,
+    idempotency_key: idempotencyKey,
+    force: force || undefined,
+    condition_confirmed: conditionConfirmed || undefined,
+  });
+
+  const submit = () => {
+    if (cannotPublish) return;
+    if (!draftMode && data.condition_confirmation_required) {
+      setConditionConfirmOpen(true);
+      return;
+    }
+    onConfirm(payload());
+  };
+
+  const previewTitle = [data.brand, data.model, data.type].filter(Boolean).join(' ');
+
+  return (
+    <div className="bms-dialog-host fixed inset-0 z-[110] flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/45 backdrop-blur-[2px]" onClick={busy ? undefined : onCancel} />
+      <div className="relative flex max-h-[94vh] w-full max-w-6xl flex-col overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl dark:border-gray-700 dark:bg-gray-900">
+        <header className="flex items-center gap-3 border-b border-gray-100 px-5 py-4 dark:border-gray-800">
+          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-lg font-black text-white" style={{ background: VIBER_PURPLE }}>V</span>
+          <div className="min-w-0 flex-1">
+            <div className="font-semibold text-gray-900 dark:text-gray-50">{draftMode ? 'Редагування Viber-картки' : 'Публікація у Viber'}</div>
+            <div className="mt-0.5 truncate text-xs text-gray-400">#{data.productnumber} · один колаж і підпис у «{data.channel.title}»</div>
+          </div>
+          <button type="button" onClick={busy ? undefined : onCancel} className="rounded-lg p-2 text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800" aria-label="Закрити"><CloseOutlined /></button>
+        </header>
+
+        <div className="grid flex-1 grid-cols-1 gap-0 overflow-y-auto lg:grid-cols-[1.1fr_0.9fr] lg:overflow-hidden">
+          <section className="space-y-4 p-5 lg:overflow-y-auto">
+            <div>
+              <div className="flex items-center justify-between gap-2">
+                <span className={LABEL}>Фото для колажу · {collage.image_idx.length} з {Math.min(5, data.image_count)}</span>
+                <span className="text-[11px] text-gray-400">порядок = розташування</span>
+              </div>
+              <div className="mt-2 flex gap-2 overflow-x-auto pb-1">
+                {data.image_urls.map((url, index) => {
+                  const order = collage.image_idx.indexOf(index);
+                  const selected = order >= 0;
+                  return (
+                    <button key={`${url}-${index}`} type="button" draggable={selected}
+                            onDragStart={() => setDragIndex(order)}
+                            onDragOver={event => { if (selected) event.preventDefault(); }}
+                            onDrop={() => { if (selected && dragIndex !== null) moveSelected(dragIndex, order); setDragIndex(null); }}
+                            onClick={() => { if (selected) setActiveImage(index); else toggleImage(index); }}
+                            className={`relative h-20 w-20 shrink-0 overflow-hidden rounded-xl border-2 bg-gray-100 transition ${selected ? 'border-violet-500' : 'border-transparent opacity-60 hover:opacity-100'} ${activeImage === index && selected ? 'ring-2 ring-violet-500/25' : ''}`}
+                            title={selected ? 'Клік — налаштувати кадр; перетягни для зміни порядку' : 'Додати до колажу'}>
+                      <SmartImage src={url} thumb={320} thumbOnly className="h-full w-full object-cover" />
+                      {selected && <span className="absolute left-1 top-1 flex h-5 min-w-5 items-center justify-center rounded-full bg-violet-600 px-1 text-[10px] font-bold text-white">{order + 1}</span>}
+                      {selected && <span role="button" aria-label={`Прибрати фото ${order + 1}`} onClick={event => { event.stopPropagation(); toggleImage(index); }} className="absolute right-1 top-1 flex h-5 w-5 items-center justify-center rounded-full bg-black/55 text-[9px] text-white">×</span>}
+                      {selected && <DragOutlined className="absolute bottom-1 right-1 rounded bg-black/45 p-1 text-[9px] text-white" />}
+                    </button>
+                  );
+                })}
+              </div>
+              <p className="mt-1.5 text-[11px] leading-relaxed text-gray-400">Оригінали не змінюються. BMS створить окрему оптимізовану Viber-картку 1080×1080.</p>
+            </div>
+
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-[1fr_auto]">
+              <div>
+                <span className={LABEL}>Композиція</span>
+                <div className="mt-2 grid grid-cols-3 gap-2">
+                  {data.layouts.map(item => (
+                    <button key={item.key} type="button" onClick={() => setCollage(current => ({ ...current, layout: item.key }))}
+                            className={`rounded-lg border px-2 py-2 text-xs font-medium ${collage.layout === item.key ? 'border-violet-500 bg-violet-50 text-violet-700 dark:bg-violet-900/25 dark:text-violet-300' : 'border-gray-200 text-gray-500 dark:border-gray-700'}`}>{item.label}</button>
+                  ))}
+                </div>
+              </div>
+              <div>
+                <span className={LABEL}>Тло</span>
+                <div className="mt-2 flex gap-2">
+                  {data.backgrounds.map(item => (
+                    <button key={item.key} type="button" onClick={() => setCollage(current => ({ ...current, background: item.key }))}
+                            title={item.label} aria-label={`Тло: ${item.label}`}
+                            className={`h-9 w-9 rounded-lg border ${collage.background === item.key ? 'border-violet-500 ring-2 ring-violet-500/25' : 'border-gray-200 dark:border-gray-700'}`}
+                            style={{ background: BACKGROUNDS[item.key] }} />
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            {activeFrame && (
+              <div className="rounded-xl border border-gray-200 bg-gray-50/60 p-3 dark:border-gray-700 dark:bg-gray-800/40">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold text-gray-700 dark:text-gray-200">Кадр фото {collage.image_idx.indexOf(activeFrame.image_idx) + 1}</span>
+                  <button type="button" onClick={() => updateFrame({ zoom: 1, x: 0, y: 0 })} className="text-[11px] text-violet-600 hover:underline"><ReloadOutlined className="mr-1" />Скинути</button>
+                </div>
+                <div className="mt-3 grid gap-3 sm:grid-cols-3">
+                  {([
+                    ['Масштаб', 'zoom', 1, 3, 0.05],
+                    ['Ліворуч / праворуч', 'x', -1, 1, 0.05],
+                    ['Вгору / вниз', 'y', -1, 1, 0.05],
+                  ] as const).map(([label, key, min, max, step]) => (
+                    <label key={key} className="text-[11px] text-gray-500">{label}
+                      <input type="range" min={min} max={max} step={step} value={activeFrame[key]}
+                             onChange={event => updateFrame({ [key]: Number(event.target.value) })}
+                             className="mt-1 block w-full accent-violet-600" />
+                    </label>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div>
+              <div className="flex items-center justify-between">
+                <span className={LABEL}>Підпис</span>
+                <span className={`text-[11px] ${captionProblem ? 'font-semibold text-rose-500' : 'text-gray-400'}`}>{caption.length} / {data.caption_limit}</span>
+              </div>
+              <textarea rows={9} value={caption} onChange={event => setCaption(event.target.value)} className={`${INPUT} mt-2 resize-y font-sans leading-relaxed`} />
+              {captionProblem && <div className="mt-1 text-[11px] text-rose-500">{captionProblem}</div>}
+            </div>
+          </section>
+
+          <aside className="space-y-4 border-t border-gray-100 bg-gray-50/60 p-5 dark:border-gray-800 dark:bg-gray-950/20 lg:overflow-y-auto lg:border-l lg:border-t-0">
+            <div>
+              <div className="flex items-center justify-between">
+                <span className={LABEL}>Як побачать підписники</span>
+                <span className="text-[11px] text-gray-400">JPEG · {renderBytes ? `${Math.ceil(renderBytes / 1024)} КБ` : 'прев’ю'}</span>
+              </div>
+              <div className="relative mt-2 aspect-square overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-sm dark:border-gray-700 dark:bg-gray-800">
+                {renderUrl ? <img src={renderUrl} alt="Viber-колаж" className="h-full w-full object-contain" /> : collage.image_idx[0] !== undefined ? <SmartImage src={data.image_urls[collage.image_idx[0]]} thumb={640} thumbOnly className="h-full w-full object-contain" /> : null}
+                {rendering && <div className="absolute inset-0 flex items-center justify-center bg-white/70 text-violet-600 backdrop-blur-[1px] dark:bg-gray-900/70"><LoadingOutlined className="mr-2" /> Оновлюю</div>}
+              </div>
+              {renderError && <div className="mt-2 rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-600 dark:bg-rose-900/20 dark:text-rose-300">{renderError}</div>}
+              <div className="mt-2 rounded-xl border border-gray-200 bg-white p-3 dark:border-gray-700 dark:bg-gray-900">
+                <div className="text-sm font-semibold text-gray-900 dark:text-gray-100">{previewTitle || `Товар #${data.productnumber}`}</div>
+                <div className="mt-2 whitespace-pre-wrap text-xs leading-relaxed text-gray-600 dark:text-gray-300">{caption || 'Підпис порожній'}</div>
+              </div>
+            </div>
+
+            <div className="rounded-xl border border-violet-200 bg-violet-50/70 p-3 dark:border-violet-800 dark:bg-violet-900/15">
+              <div className="flex items-center gap-2 text-sm font-semibold text-gray-800 dark:text-gray-100"><span className="flex h-6 w-6 items-center justify-center rounded-md text-[11px] font-black text-white" style={{ background: VIBER_PURPLE }}>V</span>{data.channel.title}</div>
+              <div className="mt-1 text-[11px] leading-relaxed text-gray-500 dark:text-gray-400">Viber Channel API надсилає один колаж із підписом. Окремого режиму «без звуку» в цьому API немає.</div>
+            </div>
+
+            <div>
+              <span className={LABEL}>Час публікації</span>
+              <div className="mt-2 grid grid-cols-2 gap-2">
+                <button type="button" onClick={() => setTiming('now')} className={`rounded-lg border px-3 py-2 text-xs font-medium ${timing === 'now' ? 'border-violet-500 bg-violet-50 text-violet-700 dark:bg-violet-900/25 dark:text-violet-300' : 'border-gray-200 text-gray-500 dark:border-gray-700'}`}><SendOutlined className="mr-1" />Зараз</button>
+                <button type="button" onClick={() => setTiming('custom')} className={`rounded-lg border px-3 py-2 text-xs font-medium ${timing === 'custom' ? 'border-violet-500 bg-violet-50 text-violet-700 dark:bg-violet-900/25 dark:text-violet-300' : 'border-gray-200 text-gray-500 dark:border-gray-700'}`}><ClockCircleOutlined className="mr-1" />Запланувати</button>
+              </div>
+              {timing === 'custom' && (
+                <div className="mt-2">
+                  <input type="datetime-local" value={customAt} onChange={event => setCustomAt(event.target.value)}
+                         min={asLocal(new Date(Date.now() + 2 * 60_000).toISOString())}
+                         max={asLocal(new Date(Date.now() + 365 * 24 * 60 * 60_000).toISOString())}
+                         className={INPUT} />
+                  {scheduleProblem && <div className="mt-1 text-[11px] text-rose-500">{scheduleProblem}</div>}
+                </div>
+              )}
+            </div>
+
+            {(data.already_published > 0 || data.pending_publications > 0) && (
+              <label className="flex cursor-pointer gap-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-300">
+                <input type="checkbox" checked={force} onChange={event => setForce(event.target.checked)} className="mt-0.5 accent-amber-600" />
+                <span><b>{data.already_published > 0 ? `Уже є ${data.already_published} опублікованих постів.` : `Уже є ${data.pending_publications} постів у черзі або розкладі.`}</b><br />Створити ще одну версію свідомо.</span>
+              </label>
+            )}
+
+            {data.warnings.length > 0 && (
+              <div className="space-y-1.5">
+                {data.warnings.map((warning, index) => <div key={`${warning}-${index}`} className="flex gap-2 rounded-lg bg-amber-50 px-3 py-2 text-[11px] leading-relaxed text-amber-700 dark:bg-amber-900/20 dark:text-amber-300"><WarningOutlined className="mt-0.5" />{warning}</div>)}
+              </div>
+            )}
+            {!draftMode && !data.connection.live_publish_available && (
+              <div className="rounded-xl border border-gray-200 bg-white p-3 text-xs leading-relaxed text-gray-500 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-400">
+                Редактор і колаж уже працюють. Жива кнопка стане доступною після захищеного підключення Viber у Cloudflare; секрет у BMS не зберігатиметься.
+              </div>
+            )}
+          </aside>
+        </div>
+
+        <footer className="flex items-center justify-between gap-3 border-t border-gray-100 bg-white px-5 py-3.5 dark:border-gray-800 dark:bg-gray-900">
+          <span className="text-xs text-gray-400">{draftMode ? 'Зміни збережуться в картці пакета' : timing === 'custom' ? 'Пост виконає хмарний розклад' : 'Пост буде поставлено у захищену чергу'}</span>
+          <div className="flex gap-2">
+            <button type="button" onClick={onCancel} disabled={busy} className="rounded-lg border border-gray-200 px-4 py-2 text-sm text-gray-600 disabled:opacity-50 dark:border-gray-700 dark:text-gray-300">Скасувати</button>
+            <button type="button" onClick={submit} disabled={cannotPublish}
+                    className="flex items-center gap-1.5 rounded-lg px-4 py-2 text-sm font-semibold text-white disabled:opacity-45" style={{ background: VIBER_PURPLE }}>
+              {busy ? <LoadingOutlined /> : draftMode ? <CheckOutlined /> : <SendOutlined />}
+              {busy ? 'Виконую…' : draftMode ? 'Зберегти картку' : timing === 'custom' ? 'Запланувати' : 'Опублікувати'}
+            </button>
+          </div>
+        </footer>
+      </div>
+      {conditionConfirmOpen && (
+        <ViberConditionPublishConfirmation
+          items={[{ productnumber: data.productnumber, conditionName: data.condition_name || data.condition || 'Вживаний', title: previewTitle }]}
+          busy={busy}
+          onCancel={() => setConditionConfirmOpen(false)}
+          onConfirm={() => { setConditionConfirmOpen(false); onConfirm(payload(true)); }}
+        />
+      )}
+    </div>
+  );
+};
+
+export default ViberPublishDialog;

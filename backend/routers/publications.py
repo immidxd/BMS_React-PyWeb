@@ -8,6 +8,7 @@ import os
 import logging
 from typing import List, Optional, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, Query, Body
+from fastapi.responses import Response
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from dotenv import load_dotenv
@@ -159,7 +160,7 @@ def get_publications_overview(
 
     Filter modes:
       - all: all products
-      - published: products with at least 1 TG post
+      - published: products with at least 1 live Telegram or Viber post
       - problematic: SOLD products that still have live posts
       - unpublished: products NOT in any channel
       - unlinked: telegram_posts with no matching product (separate query)
@@ -270,7 +271,12 @@ def get_publications_overview(
             )""")
 
         if filter_mode == "published":
-            where_parts.append("EXISTS (SELECT 1 FROM telegram_posts tp WHERE tp.product_id = p.id AND tp.tg_status = 'published')")
+            where_parts.append("""
+                (
+                    EXISTS (SELECT 1 FROM telegram_posts tp WHERE tp.product_id = p.id AND tp.tg_status = 'published')
+                    OR EXISTS (SELECT 1 FROM viber_publications vp WHERE vp.product_id = p.id AND vp.status = 'published')
+                )
+            """)
         elif filter_mode in ("problematic", "sold_live"):
             # Product row is problematic when:
             # 1. p is sold (status='Продано' OR latest order is in active/confirmed state)
@@ -305,6 +311,11 @@ def get_publications_overview(
         elif filter_mode == "unpublished":
             where_parts.append("""
                 NOT EXISTS (SELECT 1 FROM telegram_posts tp WHERE tp.product_id = p.id AND tp.tg_status = 'published')
+                AND NOT EXISTS (
+                    SELECT 1 FROM viber_publications vp
+                    WHERE vp.product_id = p.id
+                      AND vp.status IN ('queued', 'scheduled', 'processing', 'retrying', 'published')
+                )
                 AND p.statusid NOT IN (SELECT id FROM statuses WHERE statusname = 'Продано')
             """)
 
@@ -340,6 +351,9 @@ def get_publications_overview(
                     COALESCE(pubs.channels, '') AS channels,
                     COALESCE(pubs.threads, '') AS threads,
                     COALESCE(pubs.needs_manual_edit, false) AS needs_manual_edit,
+                    COALESCE(pubs.telegram_count, 0) AS telegram_count,
+                    COALESCE(pubs.viber_count, 0) AS viber_count,
+                    COALESCE(pubs.viber_pending_count, 0) AS viber_pending_count,
                     b.brandname AS brand_name,
                     t.typename  AS type_name,
                     st.subtypename AS subtype_name,
@@ -355,9 +369,33 @@ def get_publications_overview(
                         COUNT(*) AS pub_count,
                         STRING_AGG(DISTINCT chat_title, ', ') AS channels,
                         STRING_AGG(DISTINCT COALESCE(thread_title, ''), ', ') AS threads,
-                        BOOL_OR(COALESCE(needs_manual_edit, false)) AS needs_manual_edit
-                    FROM telegram_posts
-                    WHERE product_id = p.id AND tg_status = 'published'
+                        BOOL_OR(COALESCE(needs_manual_edit, false)) AS needs_manual_edit,
+                        COUNT(*) FILTER (WHERE platform = 'telegram') AS telegram_count,
+                        COUNT(*) FILTER (WHERE platform = 'viber' AND publication_status = 'published') AS viber_count,
+                        COUNT(*) FILTER (WHERE platform = 'viber' AND publication_status <> 'published') AS viber_pending_count
+                    FROM (
+                        SELECT tp.chat_title, tp.thread_title, tp.needs_manual_edit,
+                               'telegram' AS platform, tp.tg_status AS publication_status
+                        FROM telegram_posts tp
+                        WHERE tp.product_id = p.id AND tp.tg_status = 'published'
+                        UNION ALL
+                        SELECT
+                            COALESCE(vp.channel_title, 'Viber') ||
+                                CASE vp.status
+                                    WHEN 'scheduled' THEN ' · заплановано'
+                                    WHEN 'queued' THEN ' · у черзі'
+                                    WHEN 'processing' THEN ' · публікується'
+                                    WHEN 'retrying' THEN ' · повторна спроба'
+                                    ELSE ''
+                                END AS chat_title,
+                            '' AS thread_title,
+                            false AS needs_manual_edit,
+                            'viber' AS platform,
+                            vp.status AS publication_status
+                        FROM viber_publications vp
+                        WHERE vp.product_id = p.id
+                          AND vp.status IN ('queued', 'scheduled', 'processing', 'retrying', 'published')
+                    ) social_posts
                 ) pubs ON true
                 WHERE {where_clause}
                 ORDER BY pub_count DESC NULLS LAST, p.id DESC
@@ -380,12 +418,15 @@ def get_publications_overview(
                 "threads": row[7],
                 "is_unlinked": False,
                 "needs_manual_edit": bool(row[8]),
-                "brand_name":   row[9],
-                "type_name":    row[10],
-                "subtype_name": row[11],
-                "sizeeu":       row[12],
-                "marking":      row[13],
-                "year":         row[14],
+                "telegram_publication_count": int(row[9] or 0),
+                "viber_publication_count": int(row[10] or 0),
+                "viber_pending_count": int(row[11] or 0),
+                "brand_name":   row[12],
+                "type_name":    row[13],
+                "subtype_name": row[14],
+                "sizeeu":       row[15],
+                "marking":      row[16],
+                "year":         row[17],
             })
 
         return {
@@ -426,6 +467,7 @@ def get_product_publications(
         for row in rows:
             publications.append({
                 "id": row[0],
+                "platform": "telegram",
                 "chat_id": row[1],
                 "chat_title": row[2],
                 "chat_type": row[3],
@@ -439,6 +481,40 @@ def get_product_publications(
                 "is_multi_size": row[11],
                 "sizes_in_post": row[12],
             })
+
+        viber_rows = db.execute(text("""
+            SELECT id, channel_title, status, caption, scheduled_at,
+                   published_at, created_at, collage_url, error
+            FROM viber_publications
+            WHERE product_id = :pid
+               OR product_number = (SELECT productnumber FROM products WHERE id = :pid)
+            ORDER BY COALESCE(published_at, scheduled_at, created_at) DESC
+        """), {"pid": product_id}).mappings().all()
+        for row in viber_rows:
+            publications.append({
+                "id": f"viber-{row['id']}",
+                "platform": "viber",
+                "chat_id": 0,
+                "chat_title": row["channel_title"] or "Viber",
+                "chat_type": "viber",
+                "thread_id": None,
+                "thread_title": None,
+                "message_id": 0,
+                "message_text": row["caption"],
+                "message_date": (
+                    row["published_at"] or row["scheduled_at"] or row["created_at"]
+                ).isoformat() if (row["published_at"] or row["scheduled_at"] or row["created_at"]) else None,
+                "is_master": True,
+                "tg_status": row["status"],
+                "is_multi_size": False,
+                "sizes_in_post": None,
+                "collage_url": row["collage_url"],
+                "error": row["error"],
+            })
+
+        publications.sort(
+            key=lambda item: item.get("message_date") or "", reverse=True,
+        )
 
         return {"product_id": product_id, "publications": publications}
     except Exception as e:
@@ -585,7 +661,29 @@ def get_publications_stats(db: Session = Depends(get_db)):
             WHERE tg_status = 'published'
         """)).fetchone()
 
-        # Sold-but-live count (only published posts matter)
+        viber = db.execute(text("""
+            SELECT
+                COUNT(*) FILTER (WHERE status = 'published') AS published_posts,
+                COUNT(DISTINCT product_id) FILTER (WHERE status = 'published') AS published_products,
+                COUNT(*) FILTER (WHERE status IN ('queued', 'scheduled', 'processing', 'retrying')) AS pending_posts,
+                COUNT(DISTINCT channel_title) FILTER (WHERE status = 'published') AS channel_count
+            FROM viber_publications
+        """)).fetchone()
+
+        all_published_products = db.execute(text("""
+            SELECT COUNT(DISTINCT product_id)
+            FROM (
+                SELECT product_id FROM telegram_posts
+                WHERE tg_status = 'published' AND product_id IS NOT NULL
+                UNION ALL
+                SELECT product_id FROM viber_publications
+                WHERE status = 'published' AND product_id IS NOT NULL
+            ) social_products
+        """)).scalar() or 0
+
+        # Sold-but-live count is currently the actionable Telegram cleanup
+        # queue. Viber Channels API has no delete endpoint; do not imply that
+        # the existing cleanup button can remove a Viber post.
         sold_live = db.execute(text("""
             SELECT COUNT(DISTINCT p.id)
             FROM products p
@@ -603,23 +701,42 @@ def get_publications_stats(db: Session = Depends(get_db)):
 
         # Channels breakdown (only published)
         channels = db.execute(text("""
-            SELECT chat_title, chat_type, COUNT(*) AS post_count,
-                   COUNT(DISTINCT product_id) AS unique_products
-            FROM telegram_posts
-            WHERE tg_status = 'published'
+            SELECT chat_title, chat_type, SUM(post_count) AS post_count,
+                   SUM(unique_products) AS unique_products
+            FROM (
+                SELECT chat_title, chat_type, COUNT(*) AS post_count,
+                       COUNT(DISTINCT product_id) AS unique_products
+                FROM telegram_posts
+                WHERE tg_status = 'published'
+                GROUP BY chat_title, chat_type
+                UNION ALL
+                SELECT COALESCE(channel_title, 'Viber'), 'viber', COUNT(*),
+                       COUNT(DISTINCT product_id)
+                FROM viber_publications
+                WHERE status = 'published'
+                GROUP BY channel_title
+            ) social_channels
             GROUP BY chat_title, chat_type
             ORDER BY post_count DESC
         """)).fetchall()
 
+        viber_posts = int(viber[0] or 0) if viber else 0
+        viber_products = int(viber[1] or 0) if viber else 0
+        viber_pending = int(viber[2] or 0) if viber else 0
+        viber_channels = int(viber[3] or 0) if viber else 0
+
         return {
-            "total_chats": stats[0] if stats else 0,
-            "published_products": stats[1] if stats else 0,
-            "total_posts": stats[2] if stats else 0,
+            "total_chats": (stats[0] if stats else 0) + viber_channels,
+            "published_products": int(all_published_products),
+            "total_posts": (stats[2] if stats else 0) + viber_posts,
             "channel_posts": stats[3] if stats else 0,
             "forum_posts": stats[4] if stats else 0,
             "archive_posts": stats[5] if stats else 0,
             "forum_products": stats[6] if stats else 0,
             "channel_products": stats[7] if stats else 0,
+            "viber_posts": viber_posts,
+            "viber_products": viber_products,
+            "viber_pending": viber_pending,
             "sold_but_live_count": sold_live[0] if sold_live else 0,
             "unlinked_count": unlinked[0] if unlinked else 0,
             "channels": [
@@ -1025,6 +1142,14 @@ def _tg_pub():
     return telegram_publisher
 
 
+def _viber_pub():
+    try:
+        from services import viber_publisher
+    except ImportError:
+        from backend.services import viber_publisher
+    return viber_publisher
+
+
 @router.get("/api/publications/telegram/threads")
 def telegram_threads(db: Session = Depends(get_db)):
     """Кеш гілок форуму — без мережі, миттєво."""
@@ -1112,6 +1237,99 @@ async def telegram_create_posts_batch(body: Dict[str, Any] = Body(...), db: Sess
 def telegram_product_status(product_id: int, db: Session = Depends(get_db)):
     """Де товар уже є в Telegram + що заплановано в канал."""
     return _tg_pub().product_status(db, product_id)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Viber Channel — одна JPEG-картка/колаж на товар. Preview і render не мають
+# зовнішніх побічних ефектів; create передає незмінний snapshot диспетчеру.
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.get("/api/publications/viber/status")
+def viber_connection_status():
+    """Безпечний стан конфігурації без секретів і без мережевих викликів."""
+    return _viber_pub().connection_status()
+
+
+@router.post("/api/publications/viber/preview-post")
+def viber_preview_post(body: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
+    pid = body.get("product_id")
+    if not pid:
+        raise HTTPException(status_code=400, detail="Немає product_id")
+    result = _viber_pub().preview_post(db, int(pid))
+    if not result.get("ok"):
+        raise HTTPException(status_code=404, detail=result.get("error", "Не вдалося зібрати Viber-прев'ю"))
+    return result
+
+
+@router.post("/api/publications/viber/preview-posts-batch")
+def viber_preview_posts_batch(body: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
+    product_ids = body.get("product_ids")
+    if not isinstance(product_ids, list) or not product_ids:
+        raise HTTPException(status_code=400, detail="Не вибрано товари")
+    result = _viber_pub().preview_posts_batch(db, product_ids)
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("error", "Не вдалося зібрати пакет Viber"))
+    return result
+
+
+@router.post("/api/publications/viber/render-collage")
+async def viber_render_collage(body: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
+    """Точний JPEG-прев'ю з backend renderer. Нічого не завантажує у R2."""
+    pid = body.get("product_id")
+    if not pid:
+        raise HTTPException(status_code=400, detail="Немає product_id")
+    try:
+        from starlette.concurrency import run_in_threadpool
+        main, _thumb, _spec = await run_in_threadpool(
+            _viber_pub().render_for_product, db, int(pid), body.get("collage") or body,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return Response(
+        content=main,
+        media_type="image/jpeg",
+        headers={
+            "Cache-Control": "no-store",
+            "X-BMS-Image-Bytes": str(len(main)),
+            "Content-Disposition": 'inline; filename="bms-viber-card.jpeg"',
+        },
+    )
+
+
+@router.post("/api/publications/viber/create-post")
+async def viber_create_post(body: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
+    pid = body.get("product_id")
+    if not pid:
+        raise HTTPException(status_code=400, detail="Немає product_id")
+    result = await _viber_pub().create_post(db, int(pid), body)
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("error", "Публікація Viber не вдалася"))
+    return result
+
+
+@router.post("/api/publications/viber/create-posts-batch")
+async def viber_create_posts_batch(body: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
+    result = await _viber_pub().create_posts_batch(db, body.get("items"), body.get("batch_id"))
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("error", "Пакет Viber не виконано"))
+    return result
+
+
+@router.get("/api/publications/viber/product-status/{product_id}")
+def viber_product_status(product_id: int, db: Session = Depends(get_db)):
+    return _viber_pub().product_status(db, product_id)
+
+
+@router.post("/api/publications/viber/sync-status")
+async def viber_sync_status(body: Dict[str, Any] = Body(default={}), db: Session = Depends(get_db)):
+    """Звірити незавершені локальні job із Cloudflare, нічого не публікуючи."""
+    raw_pid = body.get("product_id") if isinstance(body, dict) else None
+    result = await _viber_pub().sync_statuses(
+        db, product_id=int(raw_pid) if raw_pid else None,
+    )
+    if not result.get("ok") and not result.get("errors"):
+        raise HTTPException(status_code=400, detail=result.get("error", "Не вдалося оновити Viber-стан"))
+    return result
 
 
 # ─────────────────────────────────────────────────────────────────────────────

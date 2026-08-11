@@ -34,6 +34,11 @@ backend/scripts/temporary/*.json
 **/newproject2024-*.json
 **/*service_account*.json
 
+# Cloudflare local configuration and secrets (templates are *.example.toml)
+cloudflare/**/wrangler.toml
+cloudflare/**/.dev.vars
+cloudflare/**/.wrangler/
+
 # Cache files
 backend/scripts/cache/
 

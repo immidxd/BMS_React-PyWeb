@@ -7,8 +7,11 @@ import MainLayout from '../layouts/MainLayout';
 import Pagination from '../components/common/Pagination';
 import ProductDetailsModal from '../components/products/ProductDetailsModal';
 import TelegramPublishDialog, { type TelegramPreview, type TelegramPublishPayload } from '../components/products/TelegramPublishDialog';
+import ViberPublishDialog, { type ViberPreview, type ViberPublishPayload } from '../components/products/ViberPublishDialog';
+import ViberBatchPublishDialog, { type ViberBatchRequest } from '../components/products/ViberBatchPublishDialog';
 import { confirmDialog, alertDialog, notify } from '../ui/feedback';
 import LoadingSpinner from '../components/common/LoadingSpinner';
+import { taskManager } from '../services/taskManager';
 
 /* ── Types ─────────────────────────────────────────────────────────── */
 
@@ -23,6 +26,9 @@ interface PublicationItem {
   threads: string;
   is_unlinked?: boolean;
   needs_manual_edit?: boolean;
+  telegram_publication_count?: number;
+  viber_publication_count?: number;
+  viber_pending_count?: number;
   // Розширені поля для column-selector
   brand_name?: string | null;
   type_name?: string | null;
@@ -56,7 +62,8 @@ const PUB_COLUMN_ORDER: { id: PubColumnId; title: string; optional: boolean }[] 
 const PUB_COLUMNS_STORAGE_KEY = 'publications_table_columns_v1';
 
 interface PublicationDetail {
-  id: number;
+  id: number | string;
+  platform?: 'telegram' | 'viber';
   chat_id: number;
   chat_title: string;
   chat_type: string;
@@ -69,6 +76,8 @@ interface PublicationDetail {
   tg_status: string;
   is_multi_size?: boolean;
   sizes_in_post?: string;
+  collage_url?: string | null;
+  error?: string | null;
 }
 
 interface PublicationStats {
@@ -80,6 +89,9 @@ interface PublicationStats {
   archive_posts: number;
   channel_products: number;
   forum_products: number;
+  viber_posts: number;
+  viber_products: number;
+  viber_pending: number;
   sold_but_live_count: number;
   unlinked_count: number;
   channels: Array<{
@@ -187,6 +199,8 @@ const PublicationsFilterPanel: React.FC<{
                 { label: 'Унік. товарів', value: stats.published_products, title: 'Різні привʼязані товари серед активних публікацій' },
                 { label: 'У форумі', value: stats.forum_products, title: `${stats.forum_products} унікальних товарів · ${stats.forum_posts} постів із копіями по гілках` },
                 { label: 'У каналі', value: stats.channel_products, title: `${stats.channel_products} унікальних товарів · ${stats.channel_posts} постів` },
+                { label: 'У Viber', value: stats.viber_products, title: `${stats.viber_products} унікальних товарів · ${stats.viber_posts} живих постів` },
+                { label: 'Viber у черзі', value: stats.viber_pending, title: 'Заплановані пости й незавершені повторні спроби Viber' },
               ].map(s => (
                 <div key={s.label} title={s.title} className="px-2 py-1.5 rounded-lg bg-gray-50 dark:bg-gray-700/50 border border-gray-100 dark:border-gray-700">
                   <div className="text-[10px] uppercase tracking-wide text-gray-400 dark:text-gray-500">{s.label}</div>
@@ -201,7 +215,7 @@ const PublicationsFilterPanel: React.FC<{
               <div className="space-y-1">
                 {stats.channels.map((c, i) => (
                   <div key={i} className="flex items-center gap-2 text-xs text-gray-600 dark:text-gray-300">
-                    <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${c.chat_type === 'forum' ? 'bg-sky-400' : 'bg-emerald-400'}`} />
+                    <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${c.chat_type === 'forum' ? 'bg-sky-400' : c.chat_type === 'viber' ? 'bg-violet-500' : 'bg-emerald-400'}`} />
                     <span className="truncate flex-1" title={c.chat_title}>{c.chat_title}</span>
                     <span className="font-medium whitespace-nowrap text-gray-400">{c.post_count}</span>
                   </div>
@@ -376,6 +390,7 @@ const DetailModal: React.FC<{
                   <div>
                     <div className="font-semibold text-sm text-gray-900 dark:text-gray-100">
                       {d.chat_title}
+                      {d.platform === 'viber' && <span className="ml-2 rounded bg-violet-100 px-1.5 py-0.5 text-xs text-violet-700 dark:bg-violet-900/30 dark:text-violet-300">VIBER</span>}
                       {d.is_master && <span className="ml-2 text-xs px-1.5 py-0.5 bg-yellow-100 dark:bg-yellow-900/30 text-yellow-800 dark:text-yellow-300 rounded">ГОЛОВНА</span>}
                       {d.is_multi_size && <span className="ml-2 text-xs px-1.5 py-0.5 bg-purple-100 dark:bg-purple-900/30 text-purple-800 dark:text-purple-300 rounded">MULTI-SIZE</span>}
                     </div>
@@ -395,6 +410,7 @@ const DetailModal: React.FC<{
                   </div>
                   <span className={`text-xs px-2 py-0.5 rounded ${
                     d.tg_status === 'published' ? 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300' :
+                    ['scheduled', 'queued', 'processing', 'retrying'].includes(d.tg_status) ? 'bg-violet-100 dark:bg-violet-900/30 text-violet-700 dark:text-violet-300' :
                     d.tg_status === 'archived' ? 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300' :
                     'bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300'
                   }`}>
@@ -406,6 +422,8 @@ const DetailModal: React.FC<{
                     {d.message_text}
                   </div>
                 )}
+                {d.collage_url && <img src={d.collage_url} alt="Viber-колаж" className="mt-2 h-24 w-24 rounded-lg border border-gray-200 object-cover dark:border-gray-700" />}
+                {d.error && <div className="mt-1 text-xs text-rose-500">{d.error}</div>}
                 {d.message_date && (
                   <div className="text-xs text-gray-400 mt-1">
                     {new Date(d.message_date).toLocaleString('uk-UA')}
@@ -458,6 +476,10 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
   const [tgPreview, setTgPreview] = useState<TelegramPreview | null>(null);
   const [tgPreviewing, setTgPreviewing] = useState<number | null>(null);
   const [tgBusy, setTgBusy] = useState(false);
+  const [viberPreview, setViberPreview] = useState<ViberPreview | null>(null);
+  const [viberPreviewing, setViberPreviewing] = useState<number | null>(null);
+  const [viberBatchIds, setViberBatchIds] = useState<number[] | null>(null);
+  const [viberBusy, setViberBusy] = useState(false);
 
   // ── Column visibility (right-click menu) ─────────────────────────
   const colMenuRef = useRef<HTMLDivElement | null>(null);
@@ -469,6 +491,8 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
   // Панель «Інтеграції» (Telegram/OLX/Prom) — усе керування каналами в одному місці.
   const [integrationsOpen, setIntegrationsOpen] = useState(false);
   const [olxStatus, setOlxStatus] = useState<any | null>(null);
+  const [viberStatus, setViberStatus] = useState<any | null>(null);
+  const [viberSyncing, setViberSyncing] = useState(false);
   // Prom-інтеграція: статус (термін токена), панель замовлень-дзеркала.
   const [promStatus, setPromStatus] = useState<any | null>(null);
   const [promOrders, setPromOrders] = useState<any[] | null>(null);
@@ -487,7 +511,46 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
     try { const r = await fetch('/api/publications/monobazar/status'); if (r.ok) setMonobazarStatus(await r.json()); }
     catch { /* нехай тихо */ }
   }, []);
-  useEffect(() => { fetchPromStatus(); fetchOlxStatus(); fetchMonobazarStatus(); }, [fetchPromStatus, fetchOlxStatus, fetchMonobazarStatus]);
+  const fetchViberStatus = React.useCallback(async () => {
+    try { const r = await fetch('/api/publications/viber/status'); if (r.ok) setViberStatus(await r.json()); }
+    catch { /* редактор лишається доступним; стан повторимо при відкритті */ }
+  }, []);
+  useEffect(() => { fetchPromStatus(); fetchOlxStatus(); fetchMonobazarStatus(); fetchViberStatus(); }, [fetchPromStatus, fetchOlxStatus, fetchMonobazarStatus, fetchViberStatus]);
+  useEffect(() => {
+    const refresh = () => { void fetchViberStatus(); };
+    window.addEventListener('bms:viber-status-refresh', refresh);
+    return () => window.removeEventListener('bms:viber-status-refresh', refresh);
+  }, [fetchViberStatus]);
+
+  const handleViberStatusSync = () => {
+    if (viberSyncing || !viberStatus?.configured) {
+      void fetchViberStatus();
+      return;
+    }
+    setViberSyncing(true);
+    taskManager.run(
+      'Оновлення станів Viber-публікацій',
+      async () => {
+        const response = await fetch('/api/publications/viber/sync-status', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(data.detail || 'Не вдалося звірити Viber-чергу');
+        return data;
+      },
+      {
+        silentSuccess: true,
+        resultStatus: (result: any) => result.errors?.length
+          ? { status: 'partial', detail: `${result.updated || 0} оновлено · ${result.errors.length} помилок` }
+          : { status: 'success', detail: `${result.updated || 0} станів оновлено` },
+        onSuccess: (result: any) => {
+          notify.success({ message: 'Стани Viber оновлено', description: `Перевірено ${result.checked || 0} записів`, duration: 5 });
+          fetchItems();
+          fetchStats();
+        },
+      },
+    ).catch(() => undefined).finally(() => setViberSyncing(false));
+  };
 
   // monoБазар: синхронізувати вітрину продавця (публічний API, без токенів).
   const handleMonobazarSync = async () => {
@@ -784,6 +847,101 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
     }
   };
 
+  const openViberDialog = async (productId: number) => {
+    if (viberPreviewing !== null) return;
+    setViberPreviewing(productId);
+    try {
+      const response = await fetch('/api/publications/viber/preview-post', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ product_id: productId }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.detail || 'Не вдалося зібрати Viber-пост');
+      setViberPreview(data);
+      setViberStatus(data.connection || null);
+    } catch (reason: any) {
+      notify.error({ message: `Viber: ${reason.message || 'Помилка зв’язку'}`, duration: 8 });
+    } finally {
+      setViberPreviewing(null);
+    }
+  };
+
+  const handleViberPublish = (payload: ViberPublishPayload) => {
+    if (!viberPreview) return;
+    const productId = viberPreview.product_id;
+    const productNumber = viberPreview.productnumber;
+    setViberBusy(true);
+    taskManager.run(
+      `Viber-публікація #${productNumber}`,
+      async () => {
+        const response = await fetch('/api/publications/viber/create-post', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ product_id: productId, ...payload }),
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || !data.ok) {
+          const error: any = new Error(data.detail || data.error || 'Viber-публікація не вдалася');
+          error.response = { data: { detail: data.detail || data.error } };
+          throw error;
+        }
+        return data;
+      },
+      {
+        silentSuccess: true,
+        resultStatus: (result: any) => ({ status: 'success', detail: result.status === 'scheduled' && result.scheduled_at ? `Заплановано на ${new Date(result.scheduled_at).toLocaleString('uk-UA')}` : 'Прийнято у захищену чергу' }),
+        onSuccess: (result: any) => {
+          notify.success({ message: result.status === 'scheduled' ? `#${productNumber} заплановано у Viber` : `#${productNumber} передано у Viber`, duration: 7 });
+          setViberPreview(null);
+          fetchItems();
+          fetchStats();
+        },
+      },
+    ).catch(() => undefined).finally(() => {
+      setViberBusy(false);
+      window.dispatchEvent(new CustomEvent('bms:viber-status-refresh'));
+    });
+  };
+
+  const handleViberBatchPublish = (request: ViberBatchRequest) => {
+    setViberBusy(true);
+    taskManager.run(
+      `Пакетна Viber-публікація: ${request.items.length} постів`,
+      async () => {
+        const response = await fetch('/api/publications/viber/create-posts-batch', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(request),
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || !data.ok) {
+          const error: any = new Error(data.detail || data.error || 'Пакетна Viber-публікація не вдалася');
+          error.response = { data: { detail: data.detail || data.error } };
+          throw error;
+        }
+        return data;
+      },
+      {
+        silentSuccess: true,
+        resultStatus: (result: any) => {
+          const counts = result.counts || {};
+          const details = (result.results || []).filter((item: any) => item.error).map((item: any) => `#${item.productnumber}: ${item.error}`).join(' · ');
+          return { status: result.status === 'success' ? 'success' : 'partial', detail: [`${counts.success || 0} прийнято`, counts.error ? `${counts.error} з помилкою` : '', details].filter(Boolean).join(' · ') };
+        },
+        onSuccess: (result: any) => {
+          const counts = result.counts || {};
+          if (result.status === 'success') notify.success({ message: 'Пакет Viber прийнято', description: `${counts.success || 0} постів у черзі`, duration: 7 });
+          else notify.warning({ message: 'Пакет Viber виконано частково', description: `${counts.success || 0} прийнято · ${counts.error || 0} з помилкою. Деталі — у Сповіщеннях.`, duration: 11 });
+          setViberBatchIds(null);
+          setSelectedIds(new Set());
+          fetchItems();
+          fetchStats();
+        },
+      },
+    ).catch(() => undefined).finally(() => {
+      setViberBusy(false);
+      window.dispatchEvent(new CustomEvent('bms:viber-status-refresh'));
+    });
+  };
+
   // Гілки форуму зчитуються з Telegram і кешуються локально — інакше діалог
   // не знає, куди взагалі можна публікувати.
   const handleRefreshThreads = async () => {
@@ -836,9 +994,15 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
   };
 
   const handleBulkUnpublish = async () => {
-    const ids = Array.from(selectedIds);
-    if (ids.length === 0) return;
-    if (!(await confirmDialog(`Зняти з публікації ${ids.length} товарів? Кожен буде переслано у WORKSHOP і видалено з усіх каналів.`))) return;
+    const ids = Array.from(selectedIds).filter(id => {
+      const item = items.find(row => row.product_id === id);
+      return !!item && (item.telegram_publication_count ?? item.publication_count) > 0;
+    });
+    if (ids.length === 0) {
+      notify.warning({ message: 'Серед вибраного немає Telegram-постів для зняття', duration: 6 });
+      return;
+    }
+    if (!(await confirmDialog(`Зняти з Telegram ${ids.length} товарів? Кожен Telegram-пост буде переслано у WORKSHOP і видалено з Telegram-каналів.`))) return;
     setBulkUnpublishing(true);
     try {
       const res = await fetch('/api/publications/unpublish-bulk', {
@@ -937,11 +1101,11 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
             {currentSearchTerm && (
               <span className="text-sm text-gray-500 dark:text-gray-400">Пошук: «{currentSearchTerm}»</span>
             )}
-            {/* Усі інтеграції (Telegram/OLX/Prom) — за однією кнопкою, щоб тулбар був чистим */}
+            {/* Усі інтеграції — за однією кнопкою, щоб тулбар був чистим */}
             <button
               onClick={() => setIntegrationsOpen(true)}
               className="px-3 py-1.5 text-sm bg-gray-800 hover:bg-gray-900 dark:bg-gray-200 dark:hover:bg-white text-white dark:text-gray-900 rounded transition-colors flex items-center gap-1.5"
-              title="Синхронізація та керування каналами: Telegram, OLX, Prom"
+              title="Синхронізація та керування каналами: Telegram, Viber, OLX, Prom"
             >
               ⚙ Інтеграції
               {promStatus?.token_expiring_soon && <span className="w-2 h-2 rounded-full bg-amber-400" title="Токен Prom спливає" />}
@@ -995,17 +1159,24 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
           <>
           {/* Bulk action bar */}
           {selectedIds.size > 0 && (
-            <div className="mb-3 p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg flex items-center justify-between">
-              <span className="text-sm font-medium text-red-700 dark:text-red-300">
+            <div className="mb-3 flex items-center justify-between rounded-lg border border-gray-200 bg-gray-50 p-3 dark:border-gray-700 dark:bg-gray-900/40">
+              <span className="text-sm font-medium text-gray-700 dark:text-gray-200">
                 Обрано: {selectedIds.size} товарів
               </span>
-              <button
-                onClick={handleBulkUnpublish}
-                disabled={bulkUnpublishing}
-                className="px-4 py-2 text-sm bg-red-600 hover:bg-red-700 text-white rounded transition-colors disabled:opacity-50"
-              >
-                {bulkUnpublishing ? 'Знімаю...' : `🗑 Зняти ${selectedIds.size} з публікації`}
-              </button>
+              <div className="flex items-center gap-2">
+                <button type="button" onClick={() => setViberBatchIds(Array.from(selectedIds))} disabled={viberBusy}
+                        className="flex items-center gap-1.5 rounded bg-[#7360F2] px-4 py-2 text-sm font-medium text-white transition hover:brightness-110 disabled:opacity-50">
+                  <span className="font-black">V</span> Опублікувати у Viber
+                </button>
+                <button
+                  onClick={handleBulkUnpublish}
+                  disabled={bulkUnpublishing || !items.some(item => item.product_id !== null && selectedIds.has(item.product_id) && (item.telegram_publication_count ?? item.publication_count) > 0)}
+                  title="Стосується лише Telegram: Viber Channels API не має безпечної дії видалення поста"
+                  className="rounded bg-red-600 px-4 py-2 text-sm text-white transition-colors hover:bg-red-700 disabled:opacity-50"
+                >
+                  {bulkUnpublishing ? 'Знімаю...' : `🗑 Зняти з Telegram`}
+                </button>
+              </div>
             </div>
           )}
 
@@ -1190,6 +1361,14 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
                               <SendOutlined style={{ fontSize: 11 }} />
                               {tgPreviewing === item.product_id ? '…' : 'Опублікувати'}
                             </button>
+                            <button
+                              onClick={() => openViberDialog(item.product_id as number)}
+                              disabled={viberPreviewing === item.product_id}
+                              title="Створити колаж і пост у Viber"
+                              className="inline-flex items-center gap-1 rounded-md border border-violet-300 bg-violet-50/60 px-2 py-1 text-xs font-medium text-violet-600 transition-colors hover:bg-violet-100 disabled:opacity-50 dark:border-violet-700 dark:bg-violet-900/20 dark:text-violet-300 dark:hover:bg-violet-900/40"
+                            >
+                              <span className="font-black">V</span>{viberPreviewing === item.product_id ? '…' : 'Viber'}
+                            </button>
                             {item.publication_count > 0 && (
                               <>
                                 <button
@@ -1199,16 +1378,18 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
                                 >
                                   <EyeOutlined style={{ fontSize: 13 }} />
                                 </button>
-                                <button
-                                  onClick={() => handleUnpublish(item.product_id as number)}
-                                  disabled={unpublishing === item.product_id}
-                                  className="p-1 rounded-md text-gray-400 hover:text-red-600 dark:hover:text-red-400 transition-colors disabled:opacity-50"
-                                  title="Переслати в WORKSHOP і видалити з усіх каналів"
-                                >
-                                  {unpublishing === item.product_id
-                                    ? <span className="text-xs">…</span>
-                                    : <DeleteOutlined style={{ fontSize: 13 }} />}
-                                </button>
+                                {(item.telegram_publication_count ?? item.publication_count) > 0 && (
+                                  <button
+                                    onClick={() => handleUnpublish(item.product_id as number)}
+                                    disabled={unpublishing === item.product_id}
+                                    className="p-1 rounded-md text-gray-400 hover:text-red-600 dark:hover:text-red-400 transition-colors disabled:opacity-50"
+                                    title="Переслати Telegram-пост у WORKSHOP і видалити з Telegram-каналів"
+                                  >
+                                    {unpublishing === item.product_id
+                                      ? <span className="text-xs">…</span>
+                                      : <DeleteOutlined style={{ fontSize: 13 }} />}
+                                  </button>
+                                )}
                               </>
                             )}
                           </div>
@@ -1405,8 +1586,24 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
           onConfirm={handlePublish}
         />
       )}
+      {viberPreview && (
+        <ViberPublishDialog
+          data={viberPreview}
+          busy={viberBusy}
+          onCancel={() => { if (!viberBusy) setViberPreview(null); }}
+          onConfirm={handleViberPublish}
+        />
+      )}
+      {viberBatchIds && (
+        <ViberBatchPublishDialog
+          productIds={viberBatchIds}
+          busy={viberBusy}
+          onCancel={() => { if (!viberBusy) setViberBatchIds(null); }}
+          onPublish={handleViberBatchPublish}
+        />
+      )}
 
-      {/* Панель «Інтеграції» — керування каналами (Telegram / OLX / Prom) в одному місці */}
+      {/* Панель «Інтеграції» — керування каналами в одному місці */}
       {integrationsOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
              onClick={() => setIntegrationsOpen(false)}>
@@ -1416,7 +1613,7 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
               <h3 className="text-lg font-semibold">⚙ Інтеграції</h3>
               <button onClick={() => setIntegrationsOpen(false)} className="text-gray-400 hover:text-gray-700 text-xl">✕</button>
             </div>
-            <p className="text-xs text-gray-500 mb-4">Синхронізація й так відбувається автоматично: Telegram/OLX — кожні 30 хв, Prom — кожні ~10 хв, а наявність на Prom оновлюється сама після кожного оновлення BMS. Ці кнопки — щоб оновити «зараз».</p>
+            <p className="text-xs text-gray-500 mb-4">Синхронізація й так відбувається автоматично: Telegram/OLX — кожні 30 хв, Prom — кожні ~10 хв, а наявність на Prom оновлюється сама після кожного оновлення BMS. Viber-розклад виконуватиме окремий захищений хмарний диспетчер.</p>
             {syncAllMsg && (
               <div className="mb-4 p-2 text-sm bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-700 rounded">{syncAllMsg}</div>
             )}
@@ -1438,6 +1635,25 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
                   className="px-3 py-1.5 text-xs bg-gray-100 hover:bg-gray-200 dark:bg-gray-700 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-200 rounded disabled:opacity-60">🗂 Оновити гілки форуму</button>
                 <button onClick={handleRelink}
                   className="px-3 py-1.5 text-xs bg-gray-100 hover:bg-gray-200 dark:bg-gray-700 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-200 rounded">🔗 Перепов'язати</button>
+              </div>
+              {/* Viber Channel */}
+              <div className="flex flex-col gap-2 rounded-lg border border-gray-200 p-3 dark:border-gray-700">
+                <div className="flex items-center gap-2 font-medium">
+                  <span className="inline-flex h-5 w-5 items-center justify-center rounded bg-[#7360F2] text-[10px] font-black text-white">V</span> Viber Channel
+                </div>
+                <span className={`text-xs ${viberStatus?.configured ? 'text-green-600 dark:text-green-400' : 'text-amber-600 dark:text-amber-400'}`}>
+                  {viberStatus?.configured ? '● захищене підключення активне' : '◐ редактор готовий · відправлення ще не підключене'}
+                </span>
+                <span className="text-[11px] leading-relaxed text-gray-500 dark:text-gray-400">
+                  Один пост = колаж 1080×1080 із 1–5 фото + підпис. Пакети й розклад підтримуються.
+                </span>
+                {!viberStatus?.configured && !!viberStatus?.missing?.length && (
+                  <span className="text-[10px] leading-relaxed text-gray-400">Очікує: {viberStatus.missing.join(', ')}</span>
+                )}
+                <button type="button" onClick={handleViberStatusSync} disabled={viberSyncing}
+                        className="mt-auto rounded bg-violet-50 px-3 py-1.5 text-xs text-violet-700 hover:bg-violet-100 dark:bg-violet-900/25 dark:text-violet-300 dark:hover:bg-violet-900/40">
+                  {viberSyncing ? 'Оновлюю…' : viberStatus?.configured ? 'Оновити стани публікацій' : 'Перевірити стан'}
+                </button>
               </div>
               {/* OLX */}
               <div className="border border-gray-200 dark:border-gray-700 rounded-lg p-3 flex flex-col gap-2">

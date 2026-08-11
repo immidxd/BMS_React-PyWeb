@@ -34,6 +34,18 @@
 
 Ключові файли: `backend/services/telegram_publisher.py`, `backend/routers/publications.py`, `frontend/src/components/products/TelegramPublishDialog.tsx`, `frontend/src/components/products/TelegramBatchPublishDialog.tsx`, `frontend/src/pages/PublicationsPage.tsx`, `frontend/src/pages/ProductsPage.tsx`.
 
+### Viber Channel
+
+- Viber використовує офіційний Channels Post API, не bot/chat API. Один picture-пост підтримує лише один JPEG і підпис до 768 символів; media має закінчуватися на `.jpeg` і бути до 1 МБ, thumbnail — JPEG до 100 КБ, рекомендовано 400×400.
+- BMS компілює окрему незмінну публікаційну похідну 1080×1080 із 1–5 фото. Є розумна/hero/grid-композиції, порядок фото, світлі/темне тло та індивідуальний zoom/pan кожного кадру. Канонічні фото товару не змінюються і не перезаписуються.
+- Одиночний редактор і пакет до 10 унікальних товарів доступні з «Товарів» та «Публікацій». Пакет є стабільним знімком вибору: ручні прапорці, вилучені картки й окремі чернетки не скидаються після повернення з редактора. Спільні композиція, тло й розклад діють лише на позначені картки.
+- Viber Channels Post API не має режиму silent/«без звуку», альбомів і безпечного API-видалення поста. Інтерфейс має говорити це прямо; Telegram-зняття з публікації не можна показувати як видалення з Viber.
+- Розклад виконує окремий Cloudflare Worker + D1 щохвилини, а не Mac. Кожен job має idempotency key, атомарне захоплення, до 5 повторів із паузами, відновлення завислої спроби та послідовне надсилання. Вказаний час ніколи не перетворюється мовчки на «зараз».
+- Viber token і sender ID повинні жити лише у Cloudflare Secrets. PostgreSQL зберігає snapshot підпису/колажу, job/message id і стан, але не секрети. BMS вміє звіряти незавершені локальні стани з Worker, бо Channels Post API не дає callback на власні пости.
+- Станом на 2026-08-11 код редактора, batch, backend, міграція та Worker scaffold готові й перевірені локально, але Worker/D1 ще не розгорнуті, Viber token не копіювався, webhook не встановлювався і живих тестових постів не було. Зовнішнє підключення робити лише після окремого підтвердження: deploy → verify-account/superadmin → set_webhook → один погоджений тестовий пост → тільки потім пакети.
+
+Ключові файли: `backend/services/viber_publisher.py`, `backend/migrations/2026_08_11_002_create_viber_publications.sql`, `backend/routers/publications.py`, `frontend/src/components/products/ViberPublishDialog.tsx`, `frontend/src/components/products/ViberBatchPublishDialog.tsx`, `cloudflare/viber-dispatcher/`.
+
 ### Фото товарів
 
 - У картці товару є поворот ліворуч, на 180°, праворуч і горизонтальне віддзеркалення.
@@ -54,6 +66,8 @@
 ## Мінімальна перевірка релевантних змін
 
 - Telegram: `PYTHONDONTWRITEBYTECODE=1 ./venv/bin/python -m pytest backend/tests/test_telegram_publisher.py -q`
+- Viber backend: `PYTHONDONTWRITEBYTECODE=1 ./venv/bin/python -m pytest backend/tests/test_viber_publisher.py -q`
+- Viber dispatcher: `npm test` у `cloudflare/viber-dispatcher`.
 - Фото: `PYTHONDONTWRITEBYTECODE=1 ./venv/bin/python -m pytest backend/tests/test_photo_manager_transform.py -q`
 - Статистика: `PYTHONDONTWRITEBYTECODE=1 ./venv/bin/python -m pytest backend/tests/test_sales_channel_detection.py backend/tests/test_advertising_expense_parser.py -q`
 - Frontend: `npm run build` у `frontend` (або коренева команда, якщо вона проксіює цей build).
