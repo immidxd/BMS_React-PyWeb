@@ -27,11 +27,15 @@ export interface TelegramPreview {
   productnumber: string;
   brand: string | null;
   model: string | null;
+  type: string | null;
   emoji: string;
   tagline: string;
   features: string[];
   search_q: string;
   condition: string | null;
+  condition_icon: string;
+  condition_name: string | null;
+  condition_confirmation_required: boolean;
   price: string | null;
   sizes: { product_id: number; size: string; measurementscm: string; available: number }[];
   is_bag: boolean;
@@ -73,6 +77,7 @@ export interface TelegramPublishPayload {
   test_mode: boolean;
   silent: boolean;
   force?: boolean;
+  condition_confirmed?: boolean;
 }
 
 interface Props {
@@ -89,6 +94,67 @@ interface Props {
 const TG_BLUE = '#229ED9';
 const INPUT_CLS = 'w-full px-2.5 py-1.5 rounded-lg text-sm border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-sky-500/40 focus:border-sky-400 transition-colors disabled:opacity-60 disabled:bg-gray-50 dark:disabled:bg-gray-800/50';
 const LABEL_CLS = 'text-[11px] font-semibold uppercase tracking-wide text-gray-400 dark:text-gray-500';
+
+export interface TelegramConditionConfirmationItem {
+  productnumber: string;
+  conditionName: string;
+  title?: string;
+}
+
+export const TelegramConditionPublishConfirmation: React.FC<{
+  items: TelegramConditionConfirmationItem[];
+  busy?: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}> = ({ items, busy = false, onCancel, onConfirm }) => {
+  if (!items.length) return null;
+  const many = items.length > 1;
+  return (
+    <div className="fixed inset-0 z-[140] flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/55 backdrop-blur-[2px]" onClick={busy ? undefined : onCancel} />
+      <div className="relative w-full max-w-md overflow-hidden rounded-2xl border border-amber-200 dark:border-amber-800 bg-white dark:bg-gray-900 shadow-2xl bms-fade-in">
+        <div className="flex items-start gap-3 px-5 pt-5">
+          <span className="w-10 h-10 rounded-xl bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300 flex items-center justify-center shrink-0">
+            <WarningOutlined style={{ fontSize: 18 }} />
+          </span>
+          <div>
+            <div className="text-base font-semibold text-gray-900 dark:text-gray-50">
+              {many ? 'Перевір стани перед публікацією' : 'Опублікувати товар із цим станом?'}
+            </div>
+            <p className="mt-1 text-xs leading-relaxed text-gray-500 dark:text-gray-400">
+              {many
+                ? `У пакеті є ${items.length} товарів зі станом «Вживаний» або «Пошкоджений».`
+                : 'Цей стан буде прямо вказаний у пості й пост побачать підписники Telegram.'}
+            </p>
+          </div>
+        </div>
+        <div className="mx-5 mt-4 max-h-52 overflow-y-auto space-y-2">
+          {items.map(item => (
+            <div key={`${item.productnumber}-${item.conditionName}`} className="rounded-xl border border-amber-200 bg-amber-50/70 px-3 py-2.5 dark:border-amber-800 dark:bg-amber-900/20">
+              <div className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+                #{item.productnumber} · {item.conditionName}
+              </div>
+              {item.title && <div className="mt-0.5 text-xs text-gray-500 dark:text-gray-400 truncate">{item.title}</div>}
+            </div>
+          ))}
+        </div>
+        <p className="mx-5 mt-3 text-[11px] leading-relaxed text-amber-800 dark:text-amber-300">
+          Переконайся, що поточний стан у BMS правильний. Після підтвердження почнеться жива публікація.
+        </p>
+        <div className="mt-5 flex justify-end gap-2 border-t border-gray-100 px-5 py-3.5 dark:border-gray-800">
+          <button type="button" onClick={onCancel} disabled={busy}
+                  className="px-4 py-2 rounded-lg border border-gray-200 dark:border-gray-700 text-sm text-gray-600 dark:text-gray-300 disabled:opacity-50">
+            Повернутися й перевірити
+          </button>
+          <button type="button" onClick={onConfirm} disabled={busy}
+                  className="px-4 py-2 rounded-lg bg-amber-600 text-white text-sm font-semibold hover:bg-amber-700 disabled:opacity-50">
+            Так, опублікувати
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
 
 function localDateTimeValue(iso: string | null | undefined): string {
   if (!iso) return '';
@@ -187,6 +253,7 @@ const TelegramPublishDialog: React.FC<Props> = ({ data, busy, onCancel, onConfir
   const [captionLen, setCaptionLen] = useState((initialPayload?.caption ?? data.caption).length);
   const [problem, setProblem] = useState<string | null>(null);
   const [rebuilding, setRebuilding] = useState(false);
+  const [conditionConfirmOpen, setConditionConfirmOpen] = useState(false);
 
   // Гілки без «ВСІ ПРОПОЗИЦІЇ» — вона завжди публікується й вимкнути її не можна:
   // це оригінал, з якого живуть усі копії та вся подальша знімалка з продажу.
@@ -275,7 +342,7 @@ const TelegramPublishDialog: React.FC<Props> = ({ data, busy, onCancel, onConfir
     return cur.length >= maxThreads ? cur : [...cur, id];
   });
 
-  const submit = () => onConfirm({
+  const makePayload = (conditionConfirmed = false): TelegramPublishPayload => ({
     caption,
     emoji, tagline, search_q: searchQ, price,
     features: features.filter(f => f.trim()),
@@ -287,7 +354,17 @@ const TelegramPublishDialog: React.FC<Props> = ({ data, busy, onCancel, onConfir
     test_mode: testMode,
     silent,
     force: data.already_published > 0,
+    condition_confirmed: conditionConfirmed || undefined,
   });
+
+  const submit = () => {
+    const needsConfirmation = !draftMode && !testMode && data.condition_confirmation_required;
+    if (needsConfirmation) {
+      setConditionConfirmOpen(true);
+      return;
+    }
+    onConfirm(makePayload());
+  };
 
   // У редакторі batch-чернетки «згорнути назад» означає зберегти поточний
   // валідний стан. Під час перебудови або за невалідних даних редактор лишається
@@ -479,7 +556,7 @@ const TelegramPublishDialog: React.FC<Props> = ({ data, busy, onCancel, onConfir
                        onChange={e => setPrice(e.target.value)} disabled={busy} />
               </div>
               <div className="text-xs text-gray-500 dark:text-gray-400 pt-5 leading-relaxed">
-                Стан: <b>{data.condition || '—'}</b>
+                Стан: <b>{data.condition ? `${data.condition_icon || '✅'} ${data.condition}` : '—'}</b>
                 <span className="text-gray-400 dark:text-gray-500"> · береться зі стану й пакування товару</span>
               </div>
             </div>
@@ -707,6 +784,21 @@ const TelegramPublishDialog: React.FC<Props> = ({ data, busy, onCancel, onConfir
           </div>
         </div>
       </div>
+      {conditionConfirmOpen && (
+        <TelegramConditionPublishConfirmation
+          items={[{
+            productnumber: data.productnumber,
+            conditionName: data.condition_name || data.condition || 'Вживаний',
+            title: [data.brand, data.model, data.type].filter(Boolean).join(' '),
+          }]}
+          busy={busy}
+          onCancel={() => setConditionConfirmOpen(false)}
+          onConfirm={() => {
+            setConditionConfirmOpen(false);
+            onConfirm(makePayload(true));
+          }}
+        />
+      )}
     </div>
   );
 };

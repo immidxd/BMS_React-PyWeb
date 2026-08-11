@@ -431,27 +431,69 @@ def _size_block(bms: dict, sizes: List[dict]) -> Optional[str]:
 
 
 _NEW_WORD: Dict[str, str] = {"pl": "Нові", "f": "Нова", "m": "Новий", "n": "Нове"}
+_STOCK_NEW_WORD: Dict[str, str] = {
+    "pl": "Стан нових (Сток)",
+    "f": "Стан нової (Сток)",
+    "m": "Стан нового (Сток)",
+    "n": "Стан нового (Сток)",
+}
+_USED_CONDITION_WORDS: Dict[str, Dict[str, str]] = {
+    "легковживаний": {
+        "pl": "Легковживані", "f": "Легковживана",
+        "m": "Легковживаний", "n": "Легковживане",
+    },
+    "вживаний": {
+        "pl": "Вживані", "f": "Вживана", "m": "Вживаний", "n": "Вживане",
+    },
+    "б/у": {
+        "pl": "Вживані", "f": "Вживана", "m": "Вживаний", "n": "Вживане",
+    },
+    "пошкоджений": {
+        "pl": "Пошкоджені", "f": "Пошкоджена",
+        "m": "Пошкоджений", "n": "Пошкоджене",
+    },
+}
+_CONDITION_CONFIRMATION_REQUIRED = {"вживаний", "б/у", "пошкоджений"}
 
 
 def _condition_line(bms: dict) -> Optional[str]:
-    """Рядок «✅» у телеграмному вигляді.
+    """Текст стану для Telegram, узгоджений із числом/родом типу товару.
 
-    ⚠️ Свідомо НЕ переюзуємо `prom_service._condition_line`: там конвенція
-    маркетплейсів — «Нові (Сток), без коробки». У Telegram власник роками пише
-    інакше — просто «Нові», а дужки зʼявляються ЛИШЕ коли коробка є:
-    «Нові (в коробці)». «Сток» у канал не йде взагалі. Стан вживаного
-    показуємо чесно, як він записаний у BMS.
+    «Хороший» у BMS означає сток у стані нового, але не тотожний стану
+    «Новий», тому в пості це видно прямо. Для вживаних станів не копіюємо
+    чоловічу форму з довідника: «сумка» має бути «Легковживана», а
+    «кросівки» — «Легковживані».
     """
     prom = _prom()
     cond = _low(bms.get("conditionname"))
     pack = _low(bms.get("packagingname"))
+    form = _type_form(bms.get("typename"))
     if cond in prom._COND_NEWLIKE:
-        word = _NEW_WORD[_type_form(bms.get("typename"))]
         has_box = "коробк" in pack and "без" not in pack
+        if cond == "хороший":
+            word = _STOCK_NEW_WORD[form]
+            return f"{word} · в коробці" if has_box else word
+        word = _NEW_WORD[form]
         return f"{word} (в коробці)" if has_box else word
     if cond in prom._COND_USED:
-        return _cap(bms.get("conditionname"))
+        words = _USED_CONDITION_WORDS.get(cond)
+        return words[form] if words else _cap(bms.get("conditionname"))
     return None
+
+
+def _condition_icon(bms: dict) -> str:
+    """Значок перед станом: справді новий / сток / вживаний клас."""
+    cond = _low(bms.get("conditionname"))
+    if cond == "хороший":
+        return "🆕"
+    if cond in _USED_CONDITION_WORDS:
+        return "🆗"
+    return "✅"
+
+
+def _condition_requires_confirmation(bms: dict) -> bool:
+    """Ризикові стани не можна відправити живим постом без явної згоди."""
+    return _low(bms.get("conditionname")) in _CONDITION_CONFIRMATION_REQUIRED
 
 
 def _fmt_price(price: Any) -> Optional[str]:
@@ -476,6 +518,7 @@ def build_caption(
     condition: Optional[str],
     price: Optional[str],
     productnumber: str,
+    condition_icon: str = "✅",
 ) -> str:
     """Складання підпису за уніфікованим шаблоном (Telegram Markdown).
 
@@ -508,7 +551,7 @@ def build_caption(
     if feat:
         blocks.append("\n".join(feat))
     if condition:
-        blocks.append(f"✅ {condition}")
+        blocks.append(f"{condition_icon} {condition}")
     if price:
         blocks.append(f"🛒 Ціна: {price} грн")
     blocks.append(f"🚚 Доставка: {DELIVERY_LINE}")
@@ -909,6 +952,12 @@ def preview_post(db: Session, product_id: int) -> dict:
         warnings.append("Немає доступних розмірів у наявності.")
     if not threads:
         warnings.append("Список гілок форуму порожній — натисни «Оновити гілки».")
+    confirmation_required = _condition_requires_confirmation(bms)
+    if confirmation_required:
+        warnings.append(
+            f"Увага: поточний стан — «{_cap(bms.get('conditionname'))}». "
+            "Перед живою публікацією BMS обов’язково попросить підтвердження."
+        )
 
     # Один Telegram-пост представляє весь номер/ростовку. Тому живі пости,
     # прив'язані до будь-якого рядка того самого productnumber, мають блокувати
@@ -924,6 +973,7 @@ def preview_post(db: Session, product_id: int) -> dict:
         search_q=search_q, tagline=tagline, size_block=_size_block(bms, sizes),
         features=features, condition=_condition_line(bms),
         price=_fmt_price(bms.get("price")), productnumber=pnum,
+        condition_icon=_condition_icon(bms),
     )
 
     return {
@@ -938,6 +988,9 @@ def preview_post(db: Session, product_id: int) -> dict:
         "features": features,
         "search_q": search_q,
         "condition": _condition_line(bms),
+        "condition_icon": _condition_icon(bms),
+        "condition_name": _cap(bms.get("conditionname")) or None,
+        "condition_confirmation_required": confirmation_required,
         "price": _fmt_price(bms.get("price")),
         "sizes": sizes,
         "is_bag": _is_bag(bms),
@@ -1062,6 +1115,7 @@ def rebuild_caption(db: Session, product_id: int, parts: dict) -> dict:
         condition=_condition_line(bms),
         price=_fmt_price(parts.get("price") if parts.get("price") not in (None, "") else bms.get("price")),
         productnumber=pnum,
+        condition_icon=_condition_icon(bms),
     )
     return {
         "ok": True,
@@ -1301,7 +1355,8 @@ async def create_post(db: Session, product_id: int, payload: dict, *,
              image_idx[] (які фото і в якому порядку), test_mode (репетиція
              у WORKSHOP), emoji/tagline/features/search_q (щоб запамʼятати текст
              моделі), silent (все без звуку), force (публікувати попри вже
-             наявні пости).
+             наявні пости), condition_confirmed (явна згода для ризикового
+             стану «Вживаний»/«Пошкоджений»).
     """
     # Одна Telegram user-session не повинна одночасно виконувати дві ручні
     # публікації (single або batch). Внутрішні виклики batch уже тримають lock.
@@ -1315,6 +1370,22 @@ async def create_post(db: Session, product_id: int, payload: dict, *,
     if not bms:
         return {"ok": False, "error": "Товар не знайдено"}
     pnum = bms.get("productnumber") or ""
+
+    # Перевіряємо СВІЖИЙ поточний стан із БД, а не дані старого прев'ю. Так
+    # прямий API-виклик або зміна стану в іншому вікні не обходять запобіжник.
+    if (not bool(payload.get("test_mode"))
+            and _condition_requires_confirmation(bms)
+            and payload.get("condition_confirmed") is not True):
+        condition_name = _cap(bms.get("conditionname")) or "ризиковий"
+        return {
+            "ok": False,
+            "confirmation_required": True,
+            "condition_name": condition_name,
+            "error": (
+                f"Товар має стан «{condition_name}». "
+                "Підтвердь живу публікацію цього стану в Telegram."
+            ),
+        }
 
     caption = (payload.get("caption") or "").strip()
     problem = validate_caption(caption)
@@ -1557,6 +1628,11 @@ def _preflight_batch_item(db: Session, product_id: int, payload: dict) -> Option
     bms = _load_product(db, product_id)
     if not bms:
         return "Товар не знайдено"
+    if (not bool(payload.get("test_mode"))
+            and _condition_requires_confirmation(bms)
+            and payload.get("condition_confirmed") is not True):
+        condition_name = _cap(bms.get("conditionname")) or "ризиковий"
+        return f"стан «{condition_name}» потребує окремого підтвердження"
     problem = validate_caption(str(payload.get("caption") or "").strip())
     if problem:
         return problem

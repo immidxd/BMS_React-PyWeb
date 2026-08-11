@@ -56,8 +56,7 @@ def test_gender_adjective_agrees_with_type():
 # ── Рядок стану ──────────────────────────────────────────────────────────────
 
 def test_condition_line_is_telegram_style_not_prom():
-    """У Telegram власник пише «Нові», а дужки зʼявляються ЛИШЕ під коробку.
-    Промівське «Нові (Сток), без коробки» в канал не йде ніколи."""
+    """Справді новий товар не називаємо стоком; пакування лишається видимим."""
     assert tp._condition_line(_p(packagingname="")) == "Нові"
     assert tp._condition_line(_p(packagingname="Без коробки")) == "Нові"
     assert tp._condition_line(_p(packagingname="Коробка")) == "Нові (в коробці)"
@@ -70,13 +69,27 @@ def test_condition_line_gender_number():
 
 
 def test_condition_line_used_is_honest():
-    assert tp._condition_line(_p(conditionname="Вживаний")) == "Вживаний"
-    assert tp._condition_line(_p(conditionname="Пошкоджений")) == "Пошкоджений"
+    assert tp._condition_line(_p(conditionname="Легковживаний")) == "Легковживані"
+    assert tp._condition_line(_p(conditionname="Вживаний")) == "Вживані"
+    assert tp._condition_line(_p(conditionname="Пошкоджений")) == "Пошкоджені"
+    assert tp._condition_line(_p(typename="Сумка", conditionname="Легковживаний")) == "Легковживана"
+    assert tp._condition_line(_p(typename="Рюкзак", conditionname="Пошкоджений")) == "Пошкоджений"
 
 
 def test_good_condition_counts_as_new():
-    """Правило власника: «Хороший» — це стоковий новий, не вживаний."""
-    assert tp._condition_line(_p(conditionname="Хороший")) == "Нові"
+    """«Хороший» — це сток у стані нового, але не стан «Новий»."""
+    assert tp._condition_line(_p(conditionname="Хороший")) == "Стан нових (Сток)"
+    assert tp._condition_line(_p(typename="Сумка", conditionname="Хороший")) == "Стан нової (Сток)"
+    assert tp._condition_line(_p(typename="Рюкзак", conditionname="Хороший")) == "Стан нового (Сток)"
+    assert tp._condition_icon(_p(conditionname="Хороший")) == "🆕"
+
+
+def test_condition_confirmation_is_only_for_risky_used_states():
+    assert tp._condition_requires_confirmation(_p(conditionname="Вживаний")) is True
+    assert tp._condition_requires_confirmation(_p(conditionname="Пошкоджений")) is True
+    assert tp._condition_requires_confirmation(_p(conditionname="Легковживаний")) is False
+    assert tp._condition_requires_confirmation(_p(conditionname="Хороший")) is False
+    assert tp._condition_icon(_p(conditionname="Легковживаний")) == "🆗"
 
 
 # ── Блок розмірів / замірів ──────────────────────────────────────────────────
@@ -158,6 +171,12 @@ def test_validate_caption_accepts_real_template():
     assert tp.validate_caption(caption) is None
     assert "🛒 Ціна: 3500 грн" in caption
     assert "📲 Пиши `#Ф3977` менеджеру" in caption
+
+
+def test_caption_uses_condition_specific_icon():
+    caption = _sample_caption(condition="Стан нових (Сток)", condition_icon="🆕")
+    assert "🆕 Стан нових (Сток)" in caption
+    assert "✅ Стан нових (Сток)" not in caption
 
 
 # ── Найважливіше: те, що ДІЙСНО побачить підписник ───────────────────────────
@@ -354,6 +373,20 @@ def test_bag_goes_to_bags_thread_only():
 
 
 # ── Наскрізний прапорець «усе без звуку» ────────────────────────────────────
+
+def test_live_publish_rejects_risky_condition_without_confirmation(monkeypatch):
+    monkeypatch.setattr(
+        tp, "_load_product",
+        lambda _db, _pid: _p(conditionname="Вживаний"),
+    )
+
+    result = asyncio.run(tp.create_post(object(), 1, {"caption": _sample_caption()}))
+
+    assert result["ok"] is False
+    assert result["confirmation_required"] is True
+    assert "Вживаний" in result["error"]
+    assert "підтвердж" in (tp._preflight_batch_item(object(), 1, {}) or "")
+
 
 def test_create_post_passes_silent_to_original_threads_and_channel(monkeypatch):
     """Одна галочка має дійти до КОЖНОГО Telegram API-виклику альбому."""

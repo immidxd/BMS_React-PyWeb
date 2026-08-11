@@ -5,6 +5,7 @@ import {
 } from '@ant-design/icons';
 import SmartImage from '../common/SmartImage';
 import TelegramPublishDialog, {
+  TelegramConditionPublishConfirmation,
   type TelegramPreview, type TelegramPublishPayload,
 } from './TelegramPublishDialog';
 
@@ -95,6 +96,7 @@ const TelegramBatchPublishDialog: React.FC<Props> = ({ productIds, busy, onCance
   const [entries, setEntries] = useState<Entry[]>([]);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(true);
+  const [conditionConfirmOpen, setConditionConfirmOpen] = useState(false);
 
   const [targetPreset, setTargetPreset] = useState<TargetPreset>('keep');
   const [soundPreset, setSoundPreset] = useState<SoundPreset>('keep');
@@ -147,6 +149,7 @@ const TelegramBatchPublishDialog: React.FC<Props> = ({ productIds, busy, onCance
 
   const editing = entries.find(entry => entry.productId === editingId) ?? null;
   const included = entries.filter(entry => entry.included);
+  const riskyIncluded = included.filter(entry => entry.preview.condition_confirmation_required);
   const commonCount = entries.filter(entry => entry.commonSelected).length;
   const baseDate = baseTime ? new Date(baseTime) : null;
   const baseTimeInvalid = timePreset === 'stagger' && (
@@ -199,12 +202,29 @@ const TelegramBatchPublishDialog: React.FC<Props> = ({ productIds, busy, onCance
   const scopeAll = (value: boolean) =>
     setEntries(current => current.map(entry => ({ ...entry, commonSelected: value })));
 
-  const submit = () => {
+  const publish = (conditionConfirmed = false) => {
     if (!included.length) return;
     onPublish({
       batch_id: uuid(),
-      items: included.map(entry => ({ product_id: entry.productId, payload: entry.draft })),
+      items: included.map(entry => ({
+        product_id: entry.productId,
+        payload: {
+          ...entry.draft,
+          condition_confirmed: conditionConfirmed && entry.preview.condition_confirmation_required
+            ? true
+            : undefined,
+        },
+      })),
     });
+  };
+
+  const submit = () => {
+    if (!included.length) return;
+    if (riskyIncluded.length) {
+      setConditionConfirmOpen(true);
+      return;
+    }
+    publish();
   };
 
   if (editing) {
@@ -371,6 +391,10 @@ const TelegramBatchPublishDialog: React.FC<Props> = ({ productIds, busy, onCance
                             {p.image_count} фото · {p.sizes.length || 'без'} розмірів
                             {entry.sourceIds.length > 1 ? ` · ${entry.sourceIds.length} рядків об’єднано` : ''}
                           </div>
+                          <div className={`mt-1 text-[10px] ${p.condition_confirmation_required ? 'font-semibold text-amber-600 dark:text-amber-400' : 'text-gray-400'}`}>
+                            {p.condition_icon || '✅'} {p.condition || 'Стан не вказаний'}
+                            {p.condition_confirmation_required ? ' · потрібне підтвердження' : ''}
+                          </div>
                           {p.already_published > 0 && <div className="mt-1 text-[10px] text-rose-500">Уже є {p.already_published} живих постів — картку вимкнено за замовчуванням</div>}
                         </div>
                       </div>
@@ -395,7 +419,10 @@ const TelegramBatchPublishDialog: React.FC<Props> = ({ productIds, busy, onCance
         </div>
 
         <div className="flex items-center justify-between gap-3 px-5 py-3.5 border-t border-gray-100 dark:border-gray-800 bg-white dark:bg-gray-900">
-          <span className="text-xs text-gray-400">Буде опубліковано: <b className="text-gray-700 dark:text-gray-200">{included.length}</b> постів · послідовно, з контролем помилок</span>
+          <span className="text-xs text-gray-400">
+            Буде опубліковано: <b className="text-gray-700 dark:text-gray-200">{included.length}</b> постів · послідовно, з контролем помилок
+            {riskyIncluded.length > 0 && <span className="ml-1 font-semibold text-amber-600 dark:text-amber-400">· {riskyIncluded.length} потребують підтвердження стану</span>}
+          </span>
           <div className="flex gap-2">
             <button onClick={onCancel} disabled={busy} className="px-4 py-2 rounded-lg border border-gray-200 dark:border-gray-700 text-sm text-gray-600 dark:text-gray-300 disabled:opacity-50">Скасувати</button>
             <button onClick={submit} disabled={busy || loading || included.length === 0}
@@ -405,6 +432,21 @@ const TelegramBatchPublishDialog: React.FC<Props> = ({ productIds, busy, onCance
           </div>
         </div>
       </div>
+      {conditionConfirmOpen && (
+        <TelegramConditionPublishConfirmation
+          items={riskyIncluded.map(entry => ({
+            productnumber: entry.preview.productnumber,
+            conditionName: entry.preview.condition_name || entry.preview.condition || 'Вживаний',
+            title: [entry.preview.brand, entry.preview.model, entry.preview.type].filter(Boolean).join(' '),
+          }))}
+          busy={busy}
+          onCancel={() => setConditionConfirmOpen(false)}
+          onConfirm={() => {
+            setConditionConfirmOpen(false);
+            publish(true);
+          }}
+        />
+      )}
     </div>
   );
 };
