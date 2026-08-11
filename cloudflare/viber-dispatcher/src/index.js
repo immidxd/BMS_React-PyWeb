@@ -1,5 +1,6 @@
 const VIBER_POST_URL = 'https://chatapi.viber.com/pa/post';
 const VIBER_ACCOUNT_URL = 'https://chatapi.viber.com/pa/get_account_info';
+const VIBER_WEBHOOK_URL = 'https://chatapi.viber.com/pa/set_webhook';
 const CAPTION_LIMIT = 768;
 const MAX_ATTEMPTS = 5;
 const MAX_BATCH_PER_TICK = 10;
@@ -197,10 +198,35 @@ async function verifyAccount(env) {
   return json({
     ok: true,
     channel_id: data.Id || null,
-    channel_title: data.chat_hostname || null,
+    channel_title: data.chat_hostname || data.name || data.title || null,
     sender_configured: !!env.VIBER_CHANNEL_SENDER_ID,
     configured_sender_is_superadmin: superadmins.some(member => member.id === env.VIBER_CHANNEL_SENDER_ID),
     superadmins: superadmins.map(member => ({ id: member.id, name: member.name || '' })),
+  });
+}
+
+async function configureWebhook(request, env) {
+  if (!env.VIBER_CHANNEL_TOKEN) return error('Viber token не налаштований', 503);
+  const requestUrl = new URL(request.url);
+  if (requestUrl.protocol !== 'https:') return error('Webhook потребує HTTPS', 400);
+  const webhookUrl = new URL('/viber/webhook', requestUrl.origin).toString();
+  const response = await fetch(VIBER_WEBHOOK_URL, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      auth_token: env.VIBER_CHANNEL_TOKEN,
+      url: webhookUrl,
+    }),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || Number(data.status) !== 0) {
+    return error(data.status_message || `Viber HTTP ${response.status}`, 502);
+  }
+  return json({
+    ok: true,
+    status: Number(data.status),
+    status_message: data.status_message || 'ok',
+    webhook_url: webhookUrl,
   });
 }
 
@@ -219,6 +245,7 @@ export default {
       return json({ ok: true, configured: !!(env.VIBER_CHANNEL_TOKEN && env.VIBER_CHANNEL_SENDER_ID && env.DB), scheduler: 'cron-every-minute' });
     }
     if (url.pathname === '/v1/verify-account' && request.method === 'POST') return verifyAccount(env);
+    if (url.pathname === '/v1/configure-webhook' && request.method === 'POST') return configureWebhook(request, env);
     if (url.pathname === '/v1/jobs' && request.method === 'POST') return createJob(request, env);
     const match = url.pathname.match(/^\/v1\/jobs\/([^/]+)$/);
     if (match && request.method === 'GET') {

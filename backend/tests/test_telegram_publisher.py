@@ -226,6 +226,23 @@ def _seg(plain, ent):
     return del_surrogate(s[ent.offset:ent.offset + ent.length])
 
 
+@pytest.mark.parametrize(("size_block", "label"), [
+    ("👣 **Розмір**: 44 (на ніжку 28 см)", "Розмір"),
+    ("👣 **Розміри**: \n— 43 (на ніжку 27.5 см)\n— 44 (на ніжку 28 см)", "Розміри"),
+    ("📏 **Заміри**: 28 × 16 × 12 см", "Заміри"),
+])
+def test_size_heading_is_a_real_telegram_bold_entity(size_block, label):
+    """Перевіряємо не зірочки у чернетці, а сутність у фактичному Telegram HTML."""
+    from telethon.tl.types import MessageEntityBold
+
+    plain, entities = _parsed(_sample_caption(size_block=size_block))
+
+    assert any(
+        isinstance(entity, MessageEntityBold) and _seg(plain, entity) == label
+        for entity in entities
+    )
+
+
 def test_no_markdown_leaks_into_visible_text():
     """Регресія: заголовок будувався як `[**Модель**](url)`, і Telethon лишав
     зірочки видимим текстом — у каналі було «Teva **ReFlip**»."""
