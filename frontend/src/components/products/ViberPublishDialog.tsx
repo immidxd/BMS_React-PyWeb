@@ -1,9 +1,11 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
   CheckOutlined, CloseOutlined, ClockCircleOutlined, DragOutlined,
-  LoadingOutlined, ReloadOutlined, SendOutlined, WarningOutlined,
+  LoadingOutlined, ReloadOutlined, SendOutlined, SwapOutlined, WarningOutlined,
 } from '@ant-design/icons';
 import SmartImage from '../common/SmartImage';
+import { productService } from '../../services/productService';
+import { emitProductPhotosChanged, taskManager } from '../../services/taskManager';
 
 export interface ViberCollageFrame {
   image_idx: number;
@@ -81,6 +83,8 @@ interface Props {
   onConfirm: (payload: ViberPublishPayload) => void;
   mode?: 'publish' | 'draft';
   initialPayload?: ViberPublishPayload;
+  /** Канонічне редагування фото оновлює картку і в пакетному прев'ю. */
+  onPreviewChange?: (preview: ViberPreview) => void;
 }
 
 const VIBER_PURPLE = '#7360F2';
@@ -100,6 +104,13 @@ const VIBER_GRID_DEFAULTS = {
 function uuid(): string {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
   return `viber-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function withImageVersion(url: string, version: string): string {
+  const [path, query = ''] = url.split('?');
+  const params = new URLSearchParams(query);
+  params.set('v', version);
+  return `${path}?${params.toString()}`;
 }
 
 function asLocal(iso: string | null | undefined): string {
@@ -225,7 +236,7 @@ export const ViberLivePublishConfirmation: React.FC<{
 };
 
 const ViberPublishDialog: React.FC<Props> = ({
-  data, busy, onCancel, onConfirm, mode = 'publish', initialPayload,
+  data, busy, onCancel, onConfirm, mode = 'publish', initialPayload, onPreviewChange,
 }) => {
   const draftMode = mode === 'draft';
   const [caption, setCaption] = useState(initialPayload?.caption ?? data.caption);
@@ -251,6 +262,9 @@ const ViberPublishDialog: React.FC<Props> = ({
   const [checking, setChecking] = useState(false);
   const [checkResult, setCheckResult] = useState<string | null>(null);
   const [checkError, setCheckError] = useState<string | null>(null);
+  const [imageUrls, setImageUrls] = useState<string[]>(data.image_urls);
+  const [mirroringImage, setMirroringImage] = useState<number | null>(null);
+  const [photoRevision, setPhotoRevision] = useState(0);
   const renderUrlRef = useRef<string | null>(null);
   const renderSequence = useRef(0);
   const groupBaseRef = useRef<Map<number, ViberCollageFrame>>(new Map());
@@ -296,7 +310,7 @@ const ViberPublishDialog: React.FC<Props> = ({
         .finally(() => { if (sequence === renderSequence.current) setRendering(false); });
     }, 260);
     return () => { window.clearTimeout(timer); controller.abort(); };
-  }, [collage, data.product_id]);
+  }, [collage, data.product_id, photoRevision]);
 
   const primaryEditImage = editTargets.includes(activeImage) ? activeImage : editTargets[0];
   const activeFrame = collage.frames.find(frame => frame.image_idx === primaryEditImage) ?? collage.frames[0];
@@ -315,7 +329,8 @@ const ViberPublishDialog: React.FC<Props> = ({
           : null
   );
   const blockedRepeat = !draftMode && (data.already_published > 0 || data.pending_publications > 0) && !force;
-  const cannotPublish = busy || rendering || !collage.image_idx.length || !!captionProblem
+  const dialogBusy = busy || mirroringImage !== null;
+  const cannotPublish = dialogBusy || rendering || !collage.image_idx.length || !!captionProblem
     || !!scheduleProblem || blockedRepeat || (!draftMode && !data.connection.live_publish_available);
 
   const updateSelected = (next: number[]) => {
@@ -431,6 +446,36 @@ const ViberPublishDialog: React.FC<Props> = ({
     setCollage(current => ({ ...current, ...VIBER_GRID_DEFAULTS }));
   };
 
+  const mirrorPhoto = async (index: number) => {
+    const filename = data.image_names[index];
+    if (!filename || dialogBusy) return;
+    setMirroringImage(index);
+    setCheckResult(null);
+    setCheckError(null);
+    try {
+      const result = await taskManager.run(
+        `Віддзеркалення фото #${data.productnumber}`,
+        () => productService.transformProductPhoto(data.product_id, filename, 'flip_horizontal'),
+        {
+          successMsg: 'Фото віддзеркалено та синхронізовано з Cloudflare.',
+          errorMsg: 'Фото не віддзеркалено',
+        },
+      );
+      const version = result.version || Date.now().toString(36);
+      const nextUrls = imageUrls.map((url, imageIndex) => (
+        imageIndex === index ? withImageVersion(url, version) : url
+      ));
+      setImageUrls(nextUrls);
+      setPhotoRevision(current => current + 1);
+      onPreviewChange?.({ ...data, image_urls: nextUrls });
+      emitProductPhotosChanged(data.product_id);
+    } catch {
+      // Task Center уже показав точну помилку й залишив канонічне фото без змін.
+    } finally {
+      setMirroringImage(null);
+    }
+  };
+
   const payload = (conditionConfirmed = false): ViberPublishPayload => ({
     caption: caption.trim(),
     collage,
@@ -455,7 +500,7 @@ const ViberPublishDialog: React.FC<Props> = ({
   };
 
   const runSafeCheck = async () => {
-    if (checking || rendering || !collage.image_idx.length || captionProblem || scheduleProblem) return;
+    if (checking || dialogBusy || rendering || !collage.image_idx.length || captionProblem || scheduleProblem) return;
     setChecking(true);
     setCheckResult(null);
     setCheckError(null);
@@ -479,7 +524,7 @@ const ViberPublishDialog: React.FC<Props> = ({
 
   return (
     <div className="bms-dialog-host fixed inset-0 z-[110] flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-black/45 backdrop-blur-[2px]" onClick={busy ? undefined : onCancel} />
+      <div className="absolute inset-0 bg-black/45 backdrop-blur-[2px]" onClick={dialogBusy ? undefined : onCancel} />
       <div className="relative flex max-h-[94vh] w-full max-w-6xl flex-col overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl dark:border-gray-700 dark:bg-gray-900">
         <header className="flex items-center gap-3 border-b border-gray-100 px-5 py-4 dark:border-gray-800">
           <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-lg font-black text-white" style={{ background: VIBER_PURPLE }}>V</span>
@@ -487,7 +532,7 @@ const ViberPublishDialog: React.FC<Props> = ({
             <div className="font-semibold text-gray-900 dark:text-gray-50">{draftMode ? 'Редагування Viber-картки' : 'Публікація у Viber'}</div>
             <div className="mt-0.5 truncate text-xs text-gray-400">#{data.productnumber} · один колаж і підпис у «{data.channel.title}»</div>
           </div>
-          <button type="button" onClick={busy ? undefined : onCancel} className="rounded-lg p-2 text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800" aria-label="Закрити"><CloseOutlined /></button>
+          <button type="button" onClick={dialogBusy ? undefined : onCancel} className="rounded-lg p-2 text-gray-400 hover:bg-gray-100 disabled:opacity-50 dark:hover:bg-gray-800" disabled={dialogBusy} aria-label="Закрити"><CloseOutlined /></button>
         </header>
 
         <div className="grid flex-1 grid-cols-1 gap-0 overflow-y-auto lg:grid-cols-[1.1fr_0.9fr] lg:overflow-hidden">
@@ -498,26 +543,37 @@ const ViberPublishDialog: React.FC<Props> = ({
                 <span className="text-[11px] text-gray-400">порядок = розташування</span>
               </div>
               <div className="mt-2 flex gap-2 overflow-x-auto pb-1">
-                {data.image_urls.map((url, index) => {
+                {imageUrls.map((url, index) => {
                   const order = collage.image_idx.indexOf(index);
                   const selected = order >= 0;
                   return (
-                    <button key={`${url}-${index}`} type="button" draggable={selected}
-                            onDragStart={() => setDragIndex(order)}
-                            onDragOver={event => { if (selected) event.preventDefault(); }}
-                            onDrop={() => { if (selected && dragIndex !== null) moveSelected(dragIndex, order); setDragIndex(null); }}
-                            onClick={() => { if (selected) selectSingleFrame(index); else toggleImage(index); }}
-                            className={`relative h-20 w-20 shrink-0 overflow-hidden rounded-xl border-2 bg-gray-100 transition ${selected ? 'border-violet-500' : 'border-transparent opacity-60 hover:opacity-100'} ${activeImage === index && selected ? 'ring-2 ring-violet-500/25' : ''}`}
-                            title={selected ? 'Клік — налаштувати кадр; перетягни для зміни порядку' : 'Додати до колажу'}>
-                      <SmartImage src={url} thumb={320} thumbOnly className="h-full w-full object-cover" />
-                      {selected && <span className="absolute left-1 top-1 flex h-5 min-w-5 items-center justify-center rounded-full bg-violet-600 px-1 text-[10px] font-bold text-white">{order + 1}</span>}
-                      {selected && <span role="button" aria-label={`Прибрати фото ${order + 1}`} onClick={event => { event.stopPropagation(); toggleImage(index); }} className="absolute right-1 top-1 flex h-5 w-5 items-center justify-center rounded-full bg-black/55 text-[9px] text-white">×</span>}
-                      {selected && <DragOutlined className="absolute bottom-1 right-1 rounded bg-black/45 p-1 text-[9px] text-white" />}
-                    </button>
+                    <div key={`${url}-${index}`} className="group/viber-photo relative h-20 w-20 shrink-0">
+                      <button type="button" draggable={selected && !dialogBusy}
+                              disabled={dialogBusy}
+                              onDragStart={() => setDragIndex(order)}
+                              onDragOver={event => { if (selected) event.preventDefault(); }}
+                              onDrop={() => { if (selected && dragIndex !== null) moveSelected(dragIndex, order); setDragIndex(null); }}
+                              onClick={() => { if (selected) selectSingleFrame(index); else toggleImage(index); }}
+                              className={`relative h-full w-full overflow-hidden rounded-xl border-2 bg-gray-100 transition disabled:cursor-wait ${selected ? 'border-violet-500' : 'border-transparent opacity-60 hover:opacity-100'} ${activeImage === index && selected ? 'ring-2 ring-violet-500/25' : ''}`}
+                              title={selected ? 'Клік — налаштувати кадр; перетягни для зміни порядку' : 'Додати до колажу'}>
+                        <SmartImage src={url} thumb={320} thumbOnly className="h-full w-full object-cover" />
+                        {selected && <span className="absolute left-1 top-1 flex h-5 min-w-5 items-center justify-center rounded-full bg-violet-600 px-1 text-[10px] font-bold text-white">{order + 1}</span>}
+                        {selected && <span role="button" aria-label={`Прибрати фото ${order + 1}`} onClick={event => { event.stopPropagation(); toggleImage(index); }} className="absolute right-1 top-1 flex h-5 w-5 items-center justify-center rounded-full bg-black/55 text-[9px] text-white">×</span>}
+                        {selected && <DragOutlined className="absolute bottom-1 left-1 rounded bg-black/45 p-1 text-[9px] text-white" />}
+                      </button>
+                      <button type="button"
+                              disabled={dialogBusy || !data.image_names[index]}
+                              onClick={event => { event.stopPropagation(); void mirrorPhoto(index); }}
+                              aria-label={`Віддзеркалити фото ${index + 1}`}
+                              title="Віддзеркалити горизонтально та зберегти в BMS і Cloudflare"
+                              className="absolute bottom-1 right-1 z-10 flex h-6 w-6 items-center justify-center rounded-md border border-white/70 bg-black/60 text-[11px] text-white shadow-sm transition hover:bg-violet-600 disabled:cursor-wait disabled:opacity-60">
+                        {mirroringImage === index ? <LoadingOutlined spin /> : <SwapOutlined />}
+                      </button>
+                    </div>
                   );
                 })}
               </div>
-              <p className="mt-1.5 text-[11px] leading-relaxed text-gray-400">Оригінали не змінюються. BMS створить окрему оптимізовану Viber-картку 1080×1080.</p>
+              <p className="mt-1.5 text-[11px] leading-relaxed text-gray-400">Колаж зберігається окремо у форматі 1080×1080. Кнопка <SwapOutlined className="mx-0.5" /> віддзеркалює саме оригінал — зміна буде однаковою в BMS, хмарі та всіх публікаціях.</p>
             </div>
 
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-[1fr_auto]">
@@ -634,7 +690,7 @@ const ViberPublishDialog: React.FC<Props> = ({
                 <span className="text-[11px] text-gray-400">JPEG · {renderBytes ? `${Math.ceil(renderBytes / 1024)} КБ` : 'прев’ю'}</span>
               </div>
               <div className="relative mt-2 aspect-square overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-sm dark:border-gray-700 dark:bg-gray-800">
-                {renderUrl ? <img src={renderUrl} alt="Viber-колаж" className="h-full w-full object-contain" /> : collage.image_idx[0] !== undefined ? <SmartImage src={data.image_urls[collage.image_idx[0]]} thumb={640} thumbOnly className="h-full w-full object-contain" /> : null}
+                {renderUrl ? <img src={renderUrl} alt="Viber-колаж" className="h-full w-full object-contain" /> : collage.image_idx[0] !== undefined ? <SmartImage src={imageUrls[collage.image_idx[0]]} thumb={640} thumbOnly className="h-full w-full object-contain" /> : null}
                 {rendering && <div className="absolute inset-0 flex items-center justify-center bg-white/70 text-violet-600 backdrop-blur-[1px] dark:bg-gray-900/70"><LoadingOutlined className="mr-2" /> Оновлюю</div>}
               </div>
               {renderError && <div className="mt-2 rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-600 dark:bg-rose-900/20 dark:text-rose-300">{renderError}</div>}
@@ -701,16 +757,16 @@ const ViberPublishDialog: React.FC<Props> = ({
           <div className="flex gap-2">
             {!draftMode && (
               <button type="button" onClick={runSafeCheck}
-                      disabled={checking || rendering || !collage.image_idx.length || !!captionProblem || !!scheduleProblem}
+                      disabled={checking || dialogBusy || rendering || !collage.image_idx.length || !!captionProblem || !!scheduleProblem}
                       className="rounded-lg border border-violet-200 px-3 py-2 text-sm font-medium text-violet-700 disabled:opacity-45 dark:border-violet-800 dark:text-violet-300">
                 {checking ? <><LoadingOutlined className="mr-1.5" />Перевіряю…</> : 'Перевірити без надсилання'}
               </button>
             )}
-            <button type="button" onClick={onCancel} disabled={busy} className="rounded-lg border border-gray-200 px-4 py-2 text-sm text-gray-600 disabled:opacity-50 dark:border-gray-700 dark:text-gray-300">Скасувати</button>
+            <button type="button" onClick={onCancel} disabled={dialogBusy} className="rounded-lg border border-gray-200 px-4 py-2 text-sm text-gray-600 disabled:opacity-50 dark:border-gray-700 dark:text-gray-300">Скасувати</button>
             <button type="button" onClick={submit} disabled={cannotPublish}
                     className="flex items-center gap-1.5 rounded-lg px-4 py-2 text-sm font-semibold text-white disabled:opacity-45" style={{ background: VIBER_PURPLE }}>
-              {busy ? <LoadingOutlined /> : draftMode ? <CheckOutlined /> : <SendOutlined />}
-              {busy ? 'Виконую…' : draftMode ? 'Зберегти картку' : timing === 'custom' ? 'Запланувати в канал' : 'Опублікувати в канал'}
+              {dialogBusy ? <LoadingOutlined /> : draftMode ? <CheckOutlined /> : <SendOutlined />}
+              {mirroringImage !== null ? 'Зберігаю фото…' : busy ? 'Виконую…' : draftMode ? 'Зберегти картку' : timing === 'custom' ? 'Запланувати в канал' : 'Опублікувати в канал'}
             </button>
           </div>
         </footer>

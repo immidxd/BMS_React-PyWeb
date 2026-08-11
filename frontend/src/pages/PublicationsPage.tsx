@@ -1590,6 +1590,7 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
         <ViberPublishDialog
           data={viberPreview}
           busy={viberBusy}
+          onPreviewChange={setViberPreview}
           onCancel={() => { if (!viberBusy) setViberPreview(null); }}
           onConfirm={handleViberPublish}
         />

@@ -200,6 +200,7 @@ const ViberBatchPublishDialog: React.FC<Props> = ({ productIds, busy, onCancel, 
         busy={busy}
         mode="draft"
         initialPayload={editing.draft}
+        onPreviewChange={preview => updateEntry(editing.productId, { preview })}
         onCancel={() => setEditingId(null)}
         onConfirm={draft => {
           updateEntry(editing.productId, { draft, edited: true });

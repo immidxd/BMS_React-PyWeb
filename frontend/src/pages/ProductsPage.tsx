@@ -1073,6 +1073,7 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
         <ViberPublishDialog
           data={viberPreview}
           busy={viberBusy}
+          onPreviewChange={setViberPreview}
           onCancel={() => { if (!viberBusy) setViberPreview(null); }}
           onConfirm={publishSingleViber}
         />
