@@ -85,7 +85,7 @@ const GENDER_ACTIVE_TINT: Record<'female' | 'male' | 'unisex', string> = {
 // Майданчики публікації — фільтр «де опубліковано». Чіпи = ІКОНКИ (без тексту),
 // стиль як у статі/кольору. Розширюваний: додати Instagram = +1 рядок тут +
 // файл іконки в /media-logos/ + (бек) гілка в published_on. key збігається з
-// бек-значеннями ('telegram'|'olx'). icon — файл у public/media-logos/.
+// бек-значеннями ('telegram'|'viber'|'olx'|…). icon — файл у public/media-logos/.
 // «Каталог» не має файлу-лого (це наш публічний інтернет-каталог / TG Mini App) —
 // малюємо той самий storefront-гліф, що маркер «У каталозі» в таблиці (emerald),
 // щоб фільтр і рядок читались як одне. svg має пріоритет над icon.
@@ -105,6 +105,7 @@ const ShafaFilterGlyph: React.FC = () => (
 type PublicationPlatform = { key: string; label: string; icon?: string; svg?: React.ReactNode; tone?: 'emerald' | 'black' };
 const PUBLICATION_PLATFORMS: PublicationPlatform[] = [
   { key: 'telegram', label: 'Telegram', icon: '/media-logos/telegram-logo.png' },
+  { key: 'viber',    label: 'Viber',    icon: '/media-logos/viber-logo.png' },
   { key: 'olx',      label: 'OLX',      icon: '/media-logos/olx-mark-emerald.png' },
   { key: 'prom',     label: 'Prom',     icon: '/media-logos/prom-logo.png' },
   { key: 'shafa',    label: 'Shafa',    svg: <ShafaFilterGlyph />, tone: 'black' },
@@ -169,7 +170,7 @@ function PlatformChip({ platform, state, onClick, onExclude }: {
       onClick={onClick}
       onContextMenu={(e) => { e.preventDefault(); onExclude(); }}
       className={[
-        "relative flex-1 min-w-[52px] flex items-center justify-center py-2 rounded-md border transition-all",
+        "relative min-w-0 flex items-center justify-center py-2 rounded-md border transition-all",
         state === 'excluded'
           ? "bg-red-50 dark:bg-red-900/25 border-red-500 dark:border-red-500 ring-1 ring-red-300 dark:ring-red-700"
           : state === 'on'
@@ -427,7 +428,9 @@ const ProductFiltersPanel: React.FC<ProductFiltersPanelProps> = ({ filters, sele
     + (selectedFilters.sizeeu?.length || 0)
     + (selectedFilters.min_sizeeu !== undefined || selectedFilters.max_sizeeu !== undefined ? 1 : 0)
     + (selectedFilters.size_letter?.length || 0)
-    + (selectedFilters.min_measurementscm !== undefined || selectedFilters.max_measurementscm !== undefined ? 1 : 0);
+    + (selectedFilters.min_measurementscm !== undefined || selectedFilters.max_measurementscm !== undefined ? 1 : 0)
+    + (selectedFilters.published_on?.length || 0)
+    + (selectedFilters.published_on_not?.length || 0);
 
   // Цілі EU-розміри для сітки. Дробові (39.5, 39.6…) не показуємо окремими
   // комірками — кожна дробова частина «приписана» до цілого за BMS-конвентом:
@@ -862,7 +865,7 @@ const ProductFiltersPanel: React.FC<ProductFiltersPanelProps> = ({ filters, sele
              + (((selectedFilters as any).published_on_not?.length) || 0)}
         defaultOpen
       >
-        <div className="flex gap-1.5">
+        <div className="grid grid-cols-6 gap-1.5">
           {PUBLICATION_PLATFORMS.map(pl => {
             const pos = (((selectedFilters as any).published_on || []) as string[]);
             const neg = (((selectedFilters as any).published_on_not || []) as string[]);

@@ -198,6 +198,17 @@ _PRODUCT_FROM_SQL = """
             WHERE tp2.tg_status = 'published' AND p2.productnumber IS NOT NULL
         ) tgpub ON tgpub.pnum = TRIM(LEADING '#' FROM p.productnumber)
         LEFT JOIN (
+            -- Лише фактично надіслані Viber-пости. Черга/розклад ще не є
+            -- «опубліковано». Нормалізований номер покриває всю ростовку.
+            SELECT DISTINCT TRIM(LEADING '#' FROM BTRIM(
+                       COALESCE(NULLIF(BTRIM(p2.productnumber), ''), vp.product_number)
+                   )) AS pnum
+            FROM viber_publications vp
+            LEFT JOIN products p2 ON p2.id = vp.product_id
+            WHERE vp.status = 'published'
+              AND COALESCE(NULLIF(BTRIM(p2.productnumber), ''), NULLIF(BTRIM(vp.product_number), '')) IS NOT NULL
+        ) viberpub ON viberpub.pnum = TRIM(LEADING '#' FROM BTRIM(p.productnumber))
+        LEFT JOIN (
             -- Найкращий OLX-стан за номером: 'active' = повністю ПУБЛІЧНЕ,
             -- 'limited' = створене, але з обмеженою видимістю (потрібен пакет).
             SELECT TRIM(LEADING '#' FROM p2.productnumber) AS pnum,
@@ -407,6 +418,7 @@ def _build_product_where(filters: Optional["schemas.ProductFilter"]) -> tuple:
         # щоб NULL (не опубліковано, напр. shafa_status IS NULL) лишався у вибірці.
         _PUB_EXPR = {
             'telegram': "tgpub.pnum IS NOT NULL",
+            'viber':    "viberpub.pnum IS NOT NULL",
             'olx':      "olxpub.pnum IS NOT NULL",
             'prom':     "prompub.pnum IS NOT NULL",
             # Shafa-фільтр охоплює весь чесний pipeline: жовті очікувані стани
@@ -669,6 +681,8 @@ def get_products(
                -- маркер вмикаємо для всіх рядків номера, якщо хоч один sibling
                -- має published-пост → tgpub (за нормалізованим productnumber).
                (tgpub.pnum IS NOT NULL) AS published_tg,
+               -- Viber: тільки status=published; черга й розклад не є живим постом.
+               (viberpub.pnum IS NOT NULL) AS published_viber,
                -- Опубліковано на OLX (active/limited оголошення) — той самий
                -- принцип «за номером» (одне оголошення покриває всю ростовку).
                -- Зелена OLX-іконка ЛИШЕ для повністю публічного ('active');
@@ -767,6 +781,15 @@ def get_products(
             JOIN products p2 ON p2.id = tp2.product_id
             WHERE tp2.tg_status = 'published' AND p2.productnumber IS NOT NULL
         ) tgpub ON tgpub.pnum = TRIM(LEADING '#' FROM p.productnumber)
+        LEFT JOIN (
+            SELECT DISTINCT TRIM(LEADING '#' FROM BTRIM(
+                       COALESCE(NULLIF(BTRIM(p2.productnumber), ''), vp.product_number)
+                   )) AS pnum
+            FROM viber_publications vp
+            LEFT JOIN products p2 ON p2.id = vp.product_id
+            WHERE vp.status = 'published'
+              AND COALESCE(NULLIF(BTRIM(p2.productnumber), ''), NULLIF(BTRIM(vp.product_number), '')) IS NOT NULL
+        ) viberpub ON viberpub.pnum = TRIM(LEADING '#' FROM BTRIM(p.productnumber))
         LEFT JOIN (
             -- Найкращий OLX-стан за номером: active (публічне) / limited (обмежене).
             SELECT TRIM(LEADING '#' FROM p2.productnumber) AS pnum,
@@ -975,6 +998,7 @@ def get_products(
                 'pending_candidates_count': int(m.get('pending_candidates_count') or 0),
                 'is_rostovka': bool(m.get('is_rostovka', False)),
                 'published_tg': bool(m.get('published_tg', False)),
+                'published_viber': bool(m.get('published_viber', False)),
                 'published_olx': bool(m.get('published_olx', False)),
                 'olx_status': m.get('olx_status'),
                 'published_prom': bool(m.get('published_prom', False)),

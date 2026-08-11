@@ -173,10 +173,30 @@ def test_validate_caption_accepts_real_template():
     assert "📲 Пиши `#Ф3977` менеджеру" in caption
 
 
+def test_technology_abbreviations_are_uppercase_in_default_and_edited_features():
+    assert tp.normalize_technology_abbreviations(
+        "Проміжна підошва — eva, вставка tpu, abzorb, блискавка sbs, c cap"
+    ) == "Проміжна підошва — EVA, вставка TPU, ABZORB, блискавка SBS, C-CAP"
+
+    caption = _sample_caption(features=["підошва eva + pu", "амортизація abzorb"])
+    assert "▪️ підошва EVA + PU" in caption
+    assert "▪️ амортизація ABZORB" in caption
+
+
 def test_caption_uses_condition_specific_icon():
     caption = _sample_caption(condition="Стан нових (Сток)", condition_icon="🆕")
     assert "🆕 Стан нових (Сток)" in caption
     assert "✅ Стан нових (Сток)" not in caption
+
+
+def test_manual_caption_supports_strike_and_monospace_entities():
+    from telethon.tl.types import MessageEntityCode, MessageEntityStrike
+
+    plain, entities = _parsed("~~стара ціна~~ і `#Ф3977`")
+
+    assert plain == "стара ціна і #Ф3977"
+    assert any(isinstance(entity, MessageEntityStrike) and _seg(plain, entity) == "стара ціна" for entity in entities)
+    assert any(isinstance(entity, MessageEntityCode) and _seg(plain, entity) == "#Ф3977" for entity in entities)
 
 
 # ── Найважливіше: те, що ДІЙСНО побачить підписник ───────────────────────────

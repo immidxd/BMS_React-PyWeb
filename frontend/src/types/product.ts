@@ -148,6 +148,7 @@ export interface Product {
 
     // Маркери рядка
     published_tg?: boolean;    // опубліковано в Telegram
+    published_viber?: boolean; // фактично опубліковано у Viber
     published_olx?: boolean;   // ПУБЛІЧНЕ (active) оголошення на OLX
     olx_status?: 'active' | 'limited' | 'other' | null;  // limited = потрібен пакет
     published_prom?: boolean;  // опубліковано на Prom

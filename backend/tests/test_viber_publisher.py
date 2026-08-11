@@ -139,6 +139,10 @@ def test_default_caption_never_exceeds_picture_description_limit(monkeypatch):
         @staticmethod
         def default_features(_bms): return ["Дуже довга перевага " * 50] * 6
         @staticmethod
+        def normalize_technology_abbreviations(value):
+            from backend.services.telegram_publisher import normalize_technology_abbreviations
+            return normalize_technology_abbreviations(value)
+        @staticmethod
         def _condition_line(_bms): return "Стан нових (Сток)"
         @staticmethod
         def _condition_icon(_bms): return "🆕"
@@ -155,7 +159,42 @@ def test_default_caption_never_exceeds_picture_description_limit(monkeypatch):
     assert "#Ф42" in caption
     assert "1900 грн" in caption
     assert "🚚 Доставка: 1–2 дні" in caption
-    assert "📲 Пиши #Ф42 для замовлення 👉 +380972337387" in caption
+    assert "📲 Пиши ```#Ф42``` для замовлення 👉 +380972337387" in caption
+    assert "📏 Розмір: 43 (на ніжку 28 см)" in caption
+    assert caption.startswith("*👟 Brand Model • кросівки*")
+
+
+def test_default_caption_formats_title_features_and_number(monkeypatch):
+    class Tg:
+        @staticmethod
+        def _is_bag(_bms): return False
+        @staticmethod
+        def default_tagline(_bms): return "кросівки"
+        @staticmethod
+        def default_emoji(_bms): return "👟"
+        @staticmethod
+        def default_features(_bms): return ["Проміжна підошва eva, вставка tpu, abzorb, sbs"]
+        @staticmethod
+        def normalize_technology_abbreviations(value):
+            from backend.services.telegram_publisher import normalize_technology_abbreviations
+            return normalize_technology_abbreviations(value)
+        @staticmethod
+        def _condition_line(_bms): return "Нові"
+        @staticmethod
+        def _condition_icon(_bms): return "✅"
+        @staticmethod
+        def _fmt_price(_value): return "3500"
+
+    monkeypatch.setattr(vp, "_tg", lambda: Tg)
+    caption = vp.build_caption({
+        "brandname": "HOKA", "model": "Kawana Mid", "price": 3500,
+        "productnumber": "Ф3914",
+    }, [{"size": "44.6", "measurementscm": "28.5"}])
+
+    assert caption.startswith("*👟 HOKA Kawana Mid • кросівки*")
+    assert "▪️ *_Проміжна підошва EVA, вставка TPU, ABZORB, SBS_*" in caption
+    assert "📏 Розмір: 44.6 (на ніжку 28.5 см)" in caption
+    assert "📲 Пиши ```#Ф3914``` для замовлення" in caption
 
 
 def test_live_create_stops_before_render_or_upload_when_dispatcher_is_not_configured(monkeypatch):

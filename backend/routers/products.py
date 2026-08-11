@@ -53,8 +53,8 @@ def get_products(
     color_group_ids: Optional[List[int]] = Query(None),
     statusids: Optional[List[int]] = Query(None),
     conditionids: Optional[List[int]] = Query(None),
-    published_on: Optional[List[str]] = Query(None, description="Де опубліковано: telegram|olx|prom|shafa|catalog"),
-    published_on_not: Optional[List[str]] = Query(None, description="Виключити опубліковані на: telegram|olx|prom|shafa|catalog (AND, незалежно від published_on)"),
+    published_on: Optional[List[str]] = Query(None, description="Де опубліковано: telegram|viber|olx|prom|shafa|catalog"),
+    published_on_not: Optional[List[str]] = Query(None, description="Виключити опубліковані на: telegram|viber|olx|prom|shafa|catalog (AND, незалежно від published_on)"),
     # Нові фільтри
     styleid: Optional[int] = Query(None),
     styleids: Optional[List[int]] = Query(None),

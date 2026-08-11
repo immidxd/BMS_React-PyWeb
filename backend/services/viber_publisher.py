@@ -412,7 +412,7 @@ def _fmt_sizes(bms: dict, sizes: Sequence[dict]) -> str:
         measurement = str(row.get("measurementscm") or "").strip()
         if not size:
             continue
-        labels.append(f"{size} ({measurement} см)" if measurement else size)
+        labels.append(f"{size} (на ніжку {measurement} см)" if measurement else size)
     if not labels:
         return ""
     prefix = "Розмір" if len(labels) == 1 else "Розміри"
@@ -428,7 +428,10 @@ def build_caption(bms: dict, sizes: Sequence[dict], *, features: Optional[Iterab
     title = " ".join(value for value in (brand, model) if value).strip()
     if tagline:
         title = f"{title} • {tagline}" if title else tagline
-    leading = [f"{emoji} {title}".strip()]
+    # Viber використовує власну Markdown-підмножину: *bold*, _italic_,
+    # ```mono```, ~strike~. Маркери є частиною підпису, який піде в API.
+    headline = f"{emoji} {title}".strip()
+    leading = [f"*{headline}*"]
     size_line = _fmt_sizes(bms, sizes)
     if size_line:
         leading.append(size_line)
@@ -443,7 +446,7 @@ def build_caption(bms: dict, sizes: Sequence[dict], *, features: Optional[Iterab
     if DELIVERY_LINE:
         protected.append(f"🚚 Доставка: {DELIVERY_LINE}")
     pnum = str(bms.get("productnumber") or "").lstrip("#")
-    order_line = f"📲 Пиши #{pnum} для замовлення"
+    order_line = f"📲 Пиши ```#{pnum}``` для замовлення"
     if ORDER_PHONE:
         order_line += f" 👉 {ORDER_PHONE}"
     protected.append(order_line)
@@ -452,7 +455,14 @@ def build_caption(bms: dict, sizes: Sequence[dict], *, features: Optional[Iterab
 
     # Дефолт ніколи мовчки не перевищує API-ліміт. Спершу прибираємо останні
     # переваги; CTA з номером і телефоном, ціна та доставка завжди захищені.
-    feature_lines = [f"▪️ {value}" for value in feature_values[:4]]
+    # Технології/переваги за бізнес-шаблоном виділяються одночасно
+    # жирним і курсивом. Знімаємо Telegram-маркери з історичних шаблонів.
+    def viber_feature(value: str) -> str:
+        plain = value.replace("**", "").replace("__", "").replace("~~", "").replace("`", "").strip()
+        plain = tg.normalize_technology_abbreviations(plain)
+        return f"▪️ *_{plain}_*"
+
+    feature_lines = [viber_feature(value) for value in feature_values[:4]]
 
     def compose() -> str:
         sections = [*leading]

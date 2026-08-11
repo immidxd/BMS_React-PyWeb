@@ -430,6 +430,7 @@ class ProductList(BaseModel):
     pending_candidates_count: int = 0  # merge-candidate UX badge
     is_rostovka: bool = False          # набір розмірів (маркер у списку)
     published_tg: bool = False         # є published-пост у Telegram
+    published_viber: bool = False      # є фактично опублікований Viber-пост
     published_olx: bool = False        # є ПУБЛІЧНЕ (active) оголошення на OLX
     olx_status: Optional[str] = None   # active (публічне) | limited (потрібен пакет)
     published_prom: bool = False       # є товар on_display на Prom
@@ -470,7 +471,7 @@ class ProductFilter(BaseModel):
     color_group_ids: Optional[List[int]] = None
     statusids: Optional[List[int]] = None
     conditionids: Optional[List[int]] = None
-    # Публікації: фільтр «де опубліковано» (telegram | olx | ...). OR-семантика.
+    # Публікації: фільтр «де опубліковано» (telegram | viber | olx | ...). OR-семантика.
     published_on: Optional[List[str]] = None
     # Негативні публікації: виключити товари, опубліковані на цих майданчиках.
     # AND-семантика, незалежна від published_on (можна показувати з одного і

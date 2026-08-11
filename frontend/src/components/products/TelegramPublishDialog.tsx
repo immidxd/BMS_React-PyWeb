@@ -5,6 +5,7 @@ import {
   ExperimentOutlined, CheckOutlined, LoadingOutlined, SwapOutlined,
 } from '@ant-design/icons';
 import SmartImage from '../common/SmartImage';
+import TextFormattingToolbar from '../common/TextFormattingToolbar';
 import { productService } from '../../services/productService';
 import { emitProductPhotosChanged, taskManager } from '../../services/taskManager';
 
@@ -78,6 +79,8 @@ export interface TelegramPublishPayload {
   channel_at: string | null;
   test_mode: boolean;
   silent: boolean;
+  /** Не перезбирати відредагований вручну текст після повернення з batch-картки. */
+  caption_manual?: boolean;
   force?: boolean;
   condition_confirmed?: boolean;
 }
@@ -184,9 +187,9 @@ const EMOJI_CHOICES = ['👟', '👞', '🥾', '👡', '🩴', '🥿', '👠', '
 /* Прев'ю мусить показувати пост ТАК, ЯК ЙОГО ПОБАЧАТЬ ПІДПИСНИКИ, а не сирий
    текст із зірочками: інакше неможливо оцінити, де жирне, а де випадково
    зламана розмітка. Розбираємо той самий діалект, що приймає Telegram:
-   **жирний**, __курсив__, `моно`, [текст](посилання). Вкладеність (**__X__**)
+   **жирний**, __курсив__, `моно`, ~~закреслений~~, [текст](посилання). Вкладеність (**__X__**)
    у постах каналу трапляється постійно, тому парсер рекурсивний. */
-const MD_TOKEN = /(\*\*|__|`|\[)/;
+const MD_TOKEN = /(\*\*|__|~~|`|\[)/;
 
 /** Українська форма числа: 1 копія, 2 копії, 5 копій. */
 function plural(n: number, one: string, few: string, many: string): string {
@@ -228,6 +231,7 @@ function renderMarkdown(src: string, keyPrefix = 'm'): React.ReactNode[] {
     out.push(
       tok === '**' ? <b key={`${keyPrefix}${k++}`}>{kids}</b>
       : tok === '__' ? <i key={`${keyPrefix}${k++}`}>{kids}</i>
+      : tok === '~~' ? <s key={`${keyPrefix}${k++}`}>{kids}</s>
       : <code key={`${keyPrefix}${k++}`} className="px-1 rounded bg-gray-200/70 dark:bg-gray-700 font-mono text-[11px]">{kids}</code>,
     );
     rest = rest.slice(close + tok.length);
@@ -267,6 +271,8 @@ const TelegramPublishDialog: React.FC<Props> = ({
 
   const [caption, setCaption] = useState(initialPayload?.caption ?? data.caption);
   const [captionLen, setCaptionLen] = useState((initialPayload?.caption ?? data.caption).length);
+  const [captionManual, setCaptionManual] = useState(initialPayload?.caption_manual ?? false);
+  const captionRef = useRef<HTMLTextAreaElement>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const [rebuilding, setRebuilding] = useState(false);
   const [conditionConfirmOpen, setConditionConfirmOpen] = useState(false);
@@ -282,6 +288,7 @@ const TelegramPublishDialog: React.FC<Props> = ({
   const rebuildTimer = useRef<number | null>(null);
   const reqSeq = useRef(0);
   const rebuild = useCallback(async () => {
+    if (captionManual) return;
     const seq = ++reqSeq.current;
     setRebuilding(true);
     try {
@@ -310,7 +317,7 @@ const TelegramPublishDialog: React.FC<Props> = ({
     } finally {
       if (seq === reqSeq.current) setRebuilding(false);
     }
-  }, [data.product_id, emoji, tagline, searchQ, price, features, sizeIds]);
+  }, [data.product_id, emoji, tagline, searchQ, price, features, sizeIds, captionManual]);
 
   useEffect(() => {
     if (rebuildTimer.current) window.clearTimeout(rebuildTimer.current);
@@ -320,6 +327,20 @@ const TelegramPublishDialog: React.FC<Props> = ({
 
   const setFeature = (i: number, v: string) =>
     setFeatures(fs => fs.map((f, j) => (j === i ? v : f)));
+  const setManualCaption = (value: string) => {
+    // Інвалідуємо вже запущену автоматичну перебудову: її запізніла відповідь
+    // не повинна перезаписати щойно відформатований користувачем текст.
+    reqSeq.current += 1;
+    setRebuilding(false);
+    setCaptionManual(true);
+    setCaption(value);
+    setCaptionLen(value.length);
+    setProblem(!value.trim()
+      ? 'Порожній текст поста'
+      : value.length > data.caption_limit
+        ? `Текст завдовгий: ${value.length} символів, ліміт Telegram — ${data.caption_limit}`
+        : null);
+  };
   const toggle = (arr: number[], id: number) =>
     arr.includes(id) ? arr.filter(x => x !== id) : [...arr, id];
 
@@ -395,6 +416,7 @@ const TelegramPublishDialog: React.FC<Props> = ({
     channel_at: channelAt,
     test_mode: testMode,
     silent,
+    caption_manual: captionManual || undefined,
     force: data.already_published > 0,
     condition_confirmed: conditionConfirmed || undefined,
   });
@@ -651,7 +673,25 @@ const TelegramPublishDialog: React.FC<Props> = ({
                   {rebuilding ? 'оновлюю…' : `${captionLen} / ${data.caption_limit}`}
                 </span>
               </div>
-              <div className="mt-1 p-3 rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50 text-[12px] leading-relaxed text-gray-800 dark:text-gray-100 whitespace-pre-wrap break-words max-h-72 overflow-y-auto">
+              <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+                <TextFormattingToolbar dialect="telegram" targetRef={captionRef} value={caption} onChange={setManualCaption} disabled={dialogBusy} accent="sky" />
+                {captionManual && (
+                  <button type="button" onClick={() => {
+                    reqSeq.current += 1;
+                    setRebuilding(false);
+                    setCaptionManual(false);
+                    setProblem(null);
+                  }} disabled={dialogBusy}
+                          className="text-[10px] font-medium text-sky-600 hover:underline disabled:opacity-50 dark:text-sky-400">
+                    Знову зібрати з полів
+                  </button>
+                )}
+              </div>
+              <textarea ref={captionRef} aria-label="Текст Telegram-поста" rows={7} value={caption}
+                        onChange={event => setManualCaption(event.target.value)} disabled={dialogBusy}
+                        className={`${INPUT_CLS} mt-2 resize-y font-sans text-xs leading-relaxed`} />
+              {captionManual && <div className="mt-1 text-[10px] text-sky-600 dark:text-sky-400">Ручне редагування активне — поля ліворуч не перезапишуть цей текст.</div>}
+              <div className="mt-2 p-3 rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50 text-[12px] leading-relaxed text-gray-800 dark:text-gray-100 whitespace-pre-wrap break-words max-h-56 overflow-y-auto">
                 {renderMarkdown(caption)}
               </div>
               {problem && (

@@ -53,6 +53,15 @@ const TelegramGlyph: React.FC<{ size?: number }> = ({ size = 14 }) => (
     </svg>
 );
 
+// Офіційний Viber-знак з Brand Center; файл спільний з фільтром.
+const ViberGlyph: React.FC<{ size?: number }> = ({ size = 13 }) => (
+    <img
+        src="/media-logos/viber-logo.png"
+        alt="Viber"
+        style={{ height: size, width: 'auto', display: 'block' }}
+    />
+);
+
 // Маркер OLX — власний лого (перефарбований у темно-смарагдовий
 // `/media-logos/olx-mark-emerald.png`). Якщо картинка не завантажиться —
 // запасний текстовий піл «OLX», щоб рядок ніколи не «ламався».
@@ -115,13 +124,18 @@ export const CatalogGlyph: React.FC<{ size?: number }> = ({ size = 12 }) => (
     </svg>
 );
 
-const RowIndicators: React.FC<{ publishedTg?: boolean; publishedOlx?: boolean; olxStatus?: string | null; publishedProm?: boolean; publishedShafa?: boolean; shafaStatus?: string | null; publishedCatalog?: boolean }> = ({ publishedTg, publishedOlx, olxStatus, publishedProm, publishedShafa, shafaStatus, publishedCatalog }) => {
-    if (!publishedTg && !publishedOlx && !olxStatus && !publishedProm && !publishedShafa && !shafaStatus && !publishedCatalog) return null;
+const RowIndicators: React.FC<{ publishedTg?: boolean; publishedViber?: boolean; publishedOlx?: boolean; olxStatus?: string | null; publishedProm?: boolean; publishedShafa?: boolean; shafaStatus?: string | null; publishedCatalog?: boolean }> = ({ publishedTg, publishedViber, publishedOlx, olxStatus, publishedProm, publishedShafa, shafaStatus, publishedCatalog }) => {
+    if (!publishedTg && !publishedViber && !publishedOlx && !olxStatus && !publishedProm && !publishedShafa && !shafaStatus && !publishedCatalog) return null;
     return (
         <span className="inline-flex items-center gap-1 leading-none select-none shrink-0">
             {publishedTg && (
                 <Tooltip title="Опубліковано в Telegram">
                     <span style={{ color: '#229ED9', display: 'inline-flex' }}><TelegramGlyph size={11} /></span>
+                </Tooltip>
+            )}
+            {publishedViber && (
+                <Tooltip title="Опубліковано у Viber">
+                    <span style={{ display: 'inline-flex' }}><ViberGlyph size={11} /></span>
                 </Tooltip>
             )}
             {(publishedOlx || olxStatus === 'limited') && (
@@ -447,10 +461,10 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
                 if (isUnknownValue(label)) {
                     return (
                         <div className="flex items-center justify-center gap-1.5">
-                            <RowIndicators publishedTg={record.published_tg} publishedOlx={record.published_olx} olxStatus={record.olx_status} publishedProm={record.published_prom} publishedShafa={record.published_shafa} shafaStatus={record.shafa_status} publishedCatalog={record.published_catalog} />
+                            <RowIndicators publishedTg={record.published_tg} publishedViber={record.published_viber} publishedOlx={record.published_olx} olxStatus={record.olx_status} publishedProm={record.published_prom} publishedShafa={record.published_shafa} shafaStatus={record.shafa_status} publishedCatalog={record.published_catalog} />
                             <UnknownIf value={label} className="text-xs font-medium" />
                             <span className="invisible" aria-hidden="true">
-                                <RowIndicators publishedTg={record.published_tg} publishedOlx={record.published_olx} olxStatus={record.olx_status} publishedProm={record.published_prom} publishedShafa={record.published_shafa} shafaStatus={record.shafa_status} publishedCatalog={record.published_catalog} />
+                                <RowIndicators publishedTg={record.published_tg} publishedViber={record.published_viber} publishedOlx={record.published_olx} olxStatus={record.olx_status} publishedProm={record.published_prom} publishedShafa={record.published_shafa} shafaStatus={record.shafa_status} publishedCatalog={record.published_catalog} />
                             </span>
                         </div>
                     );
@@ -477,7 +491,7 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
                 );
                 return (
                     <div className="flex items-center justify-center gap-1.5">
-                        <RowIndicators publishedTg={record.published_tg} publishedOlx={record.published_olx} olxStatus={record.olx_status} publishedProm={record.published_prom} publishedShafa={record.published_shafa} shafaStatus={record.shafa_status} publishedCatalog={record.published_catalog} />
+                        <RowIndicators publishedTg={record.published_tg} publishedViber={record.published_viber} publishedOlx={record.published_olx} olxStatus={record.olx_status} publishedProm={record.published_prom} publishedShafa={record.published_shafa} shafaStatus={record.shafa_status} publishedCatalog={record.published_catalog} />
                         {numberCell}
                         {eff.isClone && (
                             <span
@@ -486,7 +500,7 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
                             >клон</span>
                         )}
                         <span className="invisible" aria-hidden="true">
-                            <RowIndicators publishedTg={record.published_tg} publishedOlx={record.published_olx} olxStatus={record.olx_status} publishedProm={record.published_prom} publishedShafa={record.published_shafa} shafaStatus={record.shafa_status} publishedCatalog={record.published_catalog} />
+                            <RowIndicators publishedTg={record.published_tg} publishedViber={record.published_viber} publishedOlx={record.published_olx} olxStatus={record.olx_status} publishedProm={record.published_prom} publishedShafa={record.published_shafa} shafaStatus={record.shafa_status} publishedCatalog={record.published_catalog} />
                         </span>
                     </div>
                 );

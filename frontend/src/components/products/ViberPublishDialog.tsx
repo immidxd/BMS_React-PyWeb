@@ -4,6 +4,7 @@ import {
   LoadingOutlined, ReloadOutlined, SendOutlined, SwapOutlined, WarningOutlined,
 } from '@ant-design/icons';
 import SmartImage from '../common/SmartImage';
+import TextFormattingToolbar from '../common/TextFormattingToolbar';
 import { productService } from '../../services/productService';
 import { emitProductPhotosChanged, taskManager } from '../../services/taskManager';
 
@@ -102,6 +103,34 @@ const VIBER_GRID_DEFAULTS = {
 };
 const FRAME_ZOOM_MIN = 0.5;
 const FRAME_ZOOM_MAX = 3;
+
+// Channels Post API приймає Viber Markdown прямо у text picture-поста.
+// Прев'ю має показувати вже оформлений результат, а не службові маркери.
+const VIBER_MD_TOKEN = /(```|\*|_|~)/;
+
+function renderViberMarkdown(src: string, keyPrefix = 'v'): React.ReactNode[] {
+  const out: React.ReactNode[] = [];
+  let rest = src;
+  let key = 0;
+  while (rest) {
+    const match = rest.match(VIBER_MD_TOKEN);
+    if (!match || match.index === undefined) { out.push(rest); break; }
+    if (match.index > 0) { out.push(rest.slice(0, match.index)); rest = rest.slice(match.index); }
+    const token = match[1];
+    const close = rest.indexOf(token, token.length);
+    if (close === -1) { out.push(rest); break; }
+    const inner = rest.slice(token.length, close);
+    const children = token === '```' ? inner : renderViberMarkdown(inner, `${keyPrefix}${key}i`);
+    out.push(
+      token === '*' ? <b key={`${keyPrefix}${key++}`}>{children}</b>
+      : token === '_' ? <i key={`${keyPrefix}${key++}`}>{children}</i>
+      : token === '~' ? <s key={`${keyPrefix}${key++}`}>{children}</s>
+      : <code key={`${keyPrefix}${key++}`} className="rounded bg-gray-200/70 px-1 font-mono text-[11px] dark:bg-gray-700">{children}</code>,
+    );
+    rest = rest.slice(close + token.length);
+  }
+  return out;
+}
 
 function uuid(): string {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
@@ -245,6 +274,7 @@ const ViberPublishDialog: React.FC<Props> = ({
 }) => {
   const draftMode = mode === 'draft';
   const [caption, setCaption] = useState(initialPayload?.caption ?? data.caption);
+  const captionRef = useRef<HTMLTextAreaElement>(null);
   const [collage, setCollage] = useState<ViberCollageSpec>(() => initialSpec(data, initialPayload));
   const [activeImage, setActiveImage] = useState<number>(() => initialSpec(data, initialPayload).image_idx[0] ?? 0);
   const [editTargets, setEditTargets] = useState<number[]>(() => {
@@ -697,7 +727,11 @@ const ViberPublishDialog: React.FC<Props> = ({
                 <span className={LABEL}>Підпис</span>
                 <span className={`text-[11px] ${captionProblem ? 'font-semibold text-rose-500' : 'text-gray-400'}`}>{caption.length} / {data.caption_limit}</span>
               </div>
-              <textarea rows={9} value={caption} onChange={event => setCaption(event.target.value)} className={`${INPUT} mt-2 resize-y font-sans leading-relaxed`} />
+              <div className="mt-2 flex items-center justify-between gap-2">
+                <TextFormattingToolbar dialect="viber" targetRef={captionRef} value={caption} onChange={setCaption} disabled={dialogBusy} accent="violet" />
+                <span className="text-[10px] text-gray-400">Виділи текст і обери формат</span>
+              </div>
+              <textarea ref={captionRef} aria-label="Підпис Viber" rows={9} value={caption} onChange={event => setCaption(event.target.value)} className={`${INPUT} mt-2 resize-y font-sans leading-relaxed`} />
               {captionProblem && <div className="mt-1 text-[11px] text-rose-500">{captionProblem}</div>}
             </div>
           </section>
@@ -715,7 +749,7 @@ const ViberPublishDialog: React.FC<Props> = ({
               {renderError && <div className="mt-2 rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-600 dark:bg-rose-900/20 dark:text-rose-300">{renderError}</div>}
               <div className="mt-2 rounded-xl border border-gray-200 bg-white p-3 dark:border-gray-700 dark:bg-gray-900">
                 <div className="text-sm font-semibold text-gray-900 dark:text-gray-100">{previewTitle || `Товар #${data.productnumber}`}</div>
-                <div className="mt-2 whitespace-pre-wrap text-xs leading-relaxed text-gray-600 dark:text-gray-300">{caption || 'Підпис порожній'}</div>
+                <div className="mt-2 whitespace-pre-wrap text-xs leading-relaxed text-gray-600 dark:text-gray-300">{caption ? renderViberMarkdown(caption) : 'Підпис порожній'}</div>
               </div>
             </div>
 

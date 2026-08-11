@@ -335,6 +335,27 @@ _POSITION_PREFIX: Dict[str, str] = {
     "middle": "Середній шар — ",
 }
 
+# Технічні скорочення, для яких регістр є частиною коректної назви. Не робимо
+# generic upper() для всіх коротких слів, бо це зіпсувало б українські «на», «із».
+_TECH_ABBREVIATIONS = re.compile(
+    r"(?<![\w-])(eva|tpu|pu|tpr|pvc|abs|pe|pp|pet|sbs|ykk|abzorb|encap|gtx)(?![\w-])",
+    re.IGNORECASE,
+)
+_TECH_STYLED = (
+    (re.compile(r"(?<!\w)c[\s-]?cap(?!\w)", re.IGNORECASE), "C-CAP"),
+    (re.compile(r"(?<!\w)n[\s-]?ergy(?!\w)", re.IGNORECASE), "N-ERGY"),
+    (re.compile(r"(?<!\w)gore[\s-]?tex(?!\w)", re.IGNORECASE), "GORE-TEX"),
+)
+
+
+def normalize_technology_abbreviations(value: Any) -> str:
+    """Канонічний регістр поширених матеріалів і технологій у тексті поста."""
+    text_value = str(value or "")
+    text_value = _TECH_ABBREVIATIONS.sub(lambda match: match.group(1).upper(), text_value)
+    for pattern, replacement in _TECH_STYLED:
+        text_value = pattern.sub(replacement, text_value)
+    return text_value
+
 
 def _fmt_cm(lo: Any, hi: Any) -> Optional[str]:
     def num(v):
@@ -386,6 +407,7 @@ def default_features(bms: dict) -> List[str]:
     # Дублікати трапляються, коли верх і підкладка з одного матеріалу.
     seen, uniq = set(), []
     for line in out:
+        line = normalize_technology_abbreviations(line)
         k = line.lower()
         if k not in seen:
             seen.add(k)
@@ -547,7 +569,7 @@ def build_caption(
 
     if size_block:
         blocks.append(size_block)
-    feat = [f"▪️ {f}" for f in features if str(f).strip()]
+    feat = [f"▪️ {normalize_technology_abbreviations(f)}" for f in features if str(f).strip()]
     if feat:
         blocks.append("\n".join(feat))
     if condition:
@@ -1187,13 +1209,20 @@ _MD_CODE_RE = re.compile(r"`([^`\n]+)`")
 _MD_LINK_RE = re.compile(r"\[([^\]]*)\]\(([^)\s]*)\)")
 _MD_BOLD_RE = re.compile(r"\*\*(.+?)\*\*", re.DOTALL)
 _MD_ITALIC_RE = re.compile(r"__(.+?)__", re.DOTALL)
+_MD_STRIKE_RE = re.compile(r"~~(.+?)~~", re.DOTALL)
 
 
 def md_to_html(text: str) -> str:
     """Наш підмножинний Markdown → HTML, який розуміє Telegram."""
     out = (str(text or "")
            .replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
-    out = _MD_CODE_RE.sub(lambda m: f"<code>{m.group(1)}</code>", out)
+    # Код тимчасово ховаємо, щоб маркери всередині моноширинного фрагмента не
+    # перетворювались удруге на bold/italic/strike.
+    code_parts: List[str] = []
+    def stash_code(match: re.Match) -> str:
+        code_parts.append(match.group(1))
+        return f"\ue000CODE{len(code_parts) - 1}\ue001"
+    out = _MD_CODE_RE.sub(stash_code, out)
     # Посилання — ДО жирного: тоді `**` усередині підпису стануть <b> усередині
     # <a>, а `**`, що обгортають лінк, — <b> навколо <a>. Обидва варіанти валідні.
     out = _MD_LINK_RE.sub(
@@ -1201,6 +1230,9 @@ def md_to_html(text: str) -> str:
         out)
     out = _MD_BOLD_RE.sub(lambda m: f"<b>{m.group(1)}</b>", out)
     out = _MD_ITALIC_RE.sub(lambda m: f"<i>{m.group(1)}</i>", out)
+    out = _MD_STRIKE_RE.sub(lambda m: f"<s>{m.group(1)}</s>", out)
+    for index, value in enumerate(code_parts):
+        out = out.replace(f"\ue000CODE{index}\ue001", f"<code>{value}</code>")
     return out
 
 
@@ -1224,8 +1256,8 @@ def validate_caption(caption: str) -> Optional[str]:
         return f"Розмітка не розбирається: {exc}"
     if not plain.strip():
         return "Після розбору розмітки текст порожній — перевір зірочки й дужки"
-    if "**" in plain or "__" in plain:
-        return "Непарні зірочки або підкреслення — вони покажуться в пості як текст"
+    if "**" in plain or "__" in plain or "~~" in plain or "`" in plain:
+        return "Непарні маркери форматування — вони покажуться в пості як текст"
     return None
 
 
