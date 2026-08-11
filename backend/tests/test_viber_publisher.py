@@ -74,6 +74,21 @@ def test_five_photo_smart_layout_has_one_hero_three_right_details_and_wide_foote
         assert y + height <= vp.COLLAGE_SIZE
 
 
+def test_uniform_white_photo_margins_are_trimmed_around_product():
+    image = Image.new("RGB", (1000, 800), "white")
+    # Умовний товар із легкою тінню на білому офіційному фото.
+    for x in range(260, 760):
+        for y in range(250, 560):
+            image.putpixel((x, y), (80, 110, 150))
+
+    trimmed = vp._trim_uniform_photo_background(image)
+
+    assert trimmed.width < 650
+    assert trimmed.height < 430
+    assert trimmed.width > 500
+    assert trimmed.height > 310
+
+
 def test_schedule_never_silently_turns_invalid_time_into_publish_now():
     too_soon = (datetime.now(timezone.utc) + timedelta(seconds=30)).isoformat()
     parsed, error = vp._validate_schedule(too_soon)

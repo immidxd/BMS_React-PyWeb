@@ -25,7 +25,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 from zoneinfo import ZoneInfo
 
 import httpx
-from PIL import Image, ImageDraw, ImageOps
+from PIL import Image, ImageChops, ImageDraw, ImageOps
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
@@ -220,34 +220,76 @@ def _layout_cells(count: int, layout: str, gap: int) -> List[Tuple[int, int, int
             (margin + hero_w + gap, margin + 2 * (third + gap), side_w,
              inner - 2 * (third + gap)),
         ]
-    # П’ять фото: editorial-композиція, схожа на живі товарні Viber-картки.
-    # Головний ракурс займає більшу частину лівого верхнього блоку, праворуч
-    # лежить один широкий і два компактні оглядові кадри, а останній кадр
-    # завершує композицію широкою нижньою смугою. Так жодне з чотирьох
-    # додаткових фото не стискається до вузької однакової плитки.
-    top_h = int((inner - gap) * 0.62)
-    bottom_h = inner - gap - top_h
-    hero_w = int((inner - gap) * 0.62)
-    side_w = inner - gap - hero_w
-    side_top_h = int((top_h - gap) * 0.46)
-    side_bottom_h = top_h - gap - side_top_h
-    half_side_w = (side_w - gap) // 2
-    side_x = margin + hero_w + gap
-    side_bottom_y = margin + side_top_h + gap
+    # П’ять фото: асиметрична fashion/product-композиція за референсом.
+    # Це навмисно НЕ мозаїка, яка заповнює кожен сантиметр: повітря є частиною
+    # дизайну. 1 — великий головний ліворуч, 2 — широкий зверху праворуч,
+    # 3–4 — два вертикальні деталі під ним, 5 — великий другий ракурс унизу.
     return [
-        (margin, margin, hero_w, top_h),
-        (side_x, margin, side_w, side_top_h),
-        (side_x, side_bottom_y, half_side_w, side_bottom_h),
-        (side_x + half_side_w + gap, side_bottom_y,
-         side_w - half_side_w - gap, side_bottom_h),
-        (margin, margin + top_h + gap, inner, bottom_h),
+        (40, 78, 600, 440),
+        (690, 38, 350, 250),
+        (688, 320, 160, 270),
+        (880, 320, 160, 270),
+        (68, 638, 650, 382),
     ]
+
+
+def _trim_uniform_photo_background(image: Image.Image) -> Image.Image:
+    """Прибирає лише впевнено однорідні поля офіційних товарних фото.
+
+    Більшість офіційних фото вже мають білий/майже білий фон і широкі поля.
+    Без цього етапу renderer масштабує не товар, а весь білий квадрат — саме
+    тому предмети виходили дрібними та випадково розкиданими. Якщо край фото
+    неоднорідний (живе фото/інтер’єр), функція нічого не обрізає.
+    """
+    if image.width < 40 or image.height < 40:
+        return image
+    px = image.load()
+    edge_points: List[Tuple[int, int, int]] = []
+    step_x = max(1, image.width // 40)
+    step_y = max(1, image.height // 40)
+    for x in range(0, image.width, step_x):
+        edge_points.extend((px[x, 0], px[x, image.height - 1]))
+    for y in range(0, image.height, step_y):
+        edge_points.extend((px[0, y], px[image.width - 1, y]))
+    channels = [sorted(point[channel] for point in edge_points) for channel in range(3)]
+    background = tuple(values[len(values) // 2] for values in channels)
+    close = sum(
+        1 for point in edge_points
+        if max(abs(point[channel] - background[channel]) for channel in range(3)) <= 16
+    )
+    if close / max(1, len(edge_points)) < 0.82:
+        return image
+
+    diff = ImageChops.difference(image, Image.new("RGB", image.size, background))
+    mask = ImageChops.lighter(
+        ImageChops.lighter(diff.getchannel("R"), diff.getchannel("G")),
+        diff.getchannel("B"),
+    ).point(lambda value: 255 if value > 18 else 0)
+    bbox = mask.getbbox()
+    if not bbox:
+        return image
+    left, top, right, bottom = bbox
+    subject_w, subject_h = right - left, bottom - top
+    if subject_w < image.width * 0.08 or subject_h < image.height * 0.08:
+        return image
+    pad_x = max(8, round(subject_w * 0.07))
+    pad_y = max(8, round(subject_h * 0.07))
+    expanded = (
+        max(0, left - pad_x), max(0, top - pad_y),
+        min(image.width, right + pad_x), min(image.height, bottom + pad_y),
+    )
+    # Не робимо зайву повторну інтерполяцію, якщо полів фактично немає.
+    if expanded[0] <= image.width * 0.02 and expanded[1] <= image.height * 0.02 \
+            and expanded[2] >= image.width * 0.98 and expanded[3] >= image.height * 0.98:
+        return image
+    return image.crop(expanded)
 
 
 def _render_tile(raw: bytes, size: Tuple[int, int], frame: dict,
                  background: Tuple[int, int, int]) -> Image.Image:
     with Image.open(io.BytesIO(raw)) as source:
         image = ImageOps.exif_transpose(source).convert("RGB")
+    image = _trim_uniform_photo_background(image)
     width, height = size
     tile = Image.new("RGB", (width, height), background)
     fit = min(width / max(1, image.width), height / max(1, image.height))
