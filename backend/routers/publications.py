@@ -1150,6 +1150,14 @@ def _viber_pub():
     return viber_publisher
 
 
+def _instagram_pub():
+    try:
+        from services import instagram_publisher
+    except ImportError:
+        from backend.services import instagram_publisher
+    return instagram_publisher
+
+
 @router.get("/api/publications/telegram/threads")
 def telegram_threads(db: Session = Depends(get_db)):
     """Кеш гілок форуму — без мережі, миттєво."""
@@ -1332,6 +1340,60 @@ async def viber_sync_status(body: Dict[str, Any] = Body(default={}), db: Session
     )
     if not result.get("ok") and not result.get("errors"):
         raise HTTPException(status_code=400, detail=result.get("error", "Не вдалося оновити Viber-стан"))
+    return result
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Instagram Platform — етап 1: preview/dry-run only. Тут навмисно немає
+# create/publish endpoint, тому навіть помилковий клік не може звернутися до Meta.
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.get("/api/publications/instagram/status")
+def instagram_connection_status():
+    return _instagram_pub().connection_status()
+
+
+@router.post("/api/publications/instagram/preview-post")
+def instagram_preview_post(body: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
+    product_id = body.get("product_id")
+    if not product_id:
+        raise HTTPException(status_code=400, detail="Немає product_id")
+    result = _instagram_pub().preview_post(db, int(product_id))
+    if not result.get("ok"):
+        raise HTTPException(
+            status_code=404,
+            detail=result.get("error", "Не вдалося зібрати Instagram-прев'ю"),
+        )
+    return result
+
+
+@router.post("/api/publications/instagram/preview-posts-batch")
+def instagram_preview_posts_batch(
+    body: Dict[str, Any] = Body(...), db: Session = Depends(get_db),
+):
+    product_ids = body.get("product_ids")
+    if not isinstance(product_ids, list) or not product_ids:
+        raise HTTPException(status_code=400, detail="Не вибрано товари")
+    result = _instagram_pub().preview_posts_batch(db, product_ids)
+    if not result.get("ok"):
+        raise HTTPException(
+            status_code=400,
+            detail=result.get("error", "Не вдалося зібрати пакет Instagram"),
+        )
+    return result
+
+
+@router.post("/api/publications/instagram/dry-run")
+def instagram_dry_run(body: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
+    product_id = body.get("product_id")
+    if not product_id:
+        raise HTTPException(status_code=400, detail="Немає product_id")
+    result = _instagram_pub().dry_run(db, int(product_id), body)
+    if not result.get("ok"):
+        raise HTTPException(
+            status_code=400,
+            detail=result.get("error", "Instagram dry-run не пройдено"),
+        )
     return result
 
 

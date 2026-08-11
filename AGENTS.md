@@ -56,6 +56,19 @@
 
 Ключові файли: `backend/services/viber_publisher.py`, `backend/migrations/2026_08_11_002_create_viber_publications.sql`, `backend/routers/publications.py`, `frontend/src/components/products/ViberPublishDialog.tsx`, `frontend/src/components/products/ViberBatchPublishDialog.tsx`, `cloudflare/viber-dispatcher/`.
 
+### Instagram Platform
+
+- Станом на 2026-08-11 браузерний read-only аудит підтвердив, що `@brandxstoreua` є професійним Instagram-акаунтом (доступна професійна панель), а його Direct і коментарі підключені до Meta Business Suite. Жодних налаштувань Meta, токенів або публікацій під час аудиту не змінювали.
+- Для повної інтеграції обрано офіційний Instagram Platform API через Facebook Login for Business: акаунт уже пов'язаний зі сторінкою, а цей шлях залишає доступними розширені можливості на кшталт product tagging, collaborators/partnership features і hashtag search. Наявний development-застосунок `MessagerEvent` стосується Messenger; безпечніше не змішувати його з публікаційним контуром і створити окремий Meta App `BMS Instagram` лише після явного підтвердження користувача.
+- Етап 1 навмисно працює тільки як `preview/dry-run`: `backend/services/instagram_publisher.py` не містить access token, не викликає Meta/R2/Cloudflare і не має живої функції publish. Router надає лише status, одиночне/пакетне preview та dry-run; create/publish endpoint відсутній, тож випадковий клік не може опублікувати пост.
+- Feed підтримує один JPEG або карусель до 10 зображень/відео. Зображення: лише JPEG, до 8 МБ, співвідношення 4:5–1.91:1, ширина 320–1440 px, sRGB. Базовий BMS preset — 1080×1350 (4:5), додатково 1080×1080 і 1080×566. Публікаційні crop/zoom/позиція мають створювати окремі content-addressed JPEG-похідні в R2 й ніколи не змінювати оригінали; явне віддзеркалення надалі використовуватиме спільний канонічний photo-manager.
+- Підпис Instagram — plain text до 2200 символів, максимум 30 хештегів і 20 згадок. Типовий товарний шаблон наслідує актуальні пости профілю: заголовок, `Розмір/Розміри` з «на ніжку», переваги з канонічними абревіатурами, стан, ціна, доставка й CTA `📲 Пиши #НОМЕР в приватні 👉 +380972337387`.
+- Meta створює media container, асинхронно готує медіа, після `FINISHED` приймає `/media_publish`; container спливає через 24 години. Офіційний API не має параметра майбутнього часу, тому розклад, idempotency, rate-limit guard, polling і retries повинні виконуватися окремим Cloudflare Worker + D1. Meta App Secret і довгоживучий token (60 днів із refresh) зберігати лише в Cloudflare Secrets.
+- Перед живою інтеграцією потрібен окремий професійний тестовий Instagram-акаунт. API не підтримує редагування або видалення опублікованого media, тому `@brandxstoreua` не можна використовувати для першого технічного тесту без окремого фінального підтвердження.
+- Офіційна документація станом на аудит суперечлива щодо добового publishing limit (загальний розділ каже 100, carousel subsection — 50). Не хардкодити оптимістичне значення: перед постановкою job перевіряти `/<IG_ID>/content_publishing_limit` і додатково тримати консервативний локальний ліміт.
+
+Ключові файли першого етапу: `backend/services/instagram_publisher.py`, `backend/migrations/2026_08_11_003_create_instagram_publications.sql`, `backend/routers/publications.py`, `backend/tests/test_instagram_publisher.py`.
+
 ### Фото товарів
 
 - У картці товару є поворот ліворуч, на 180°, праворуч і горизонтальне віддзеркалення.
@@ -79,6 +92,7 @@
 - Telegram: `PYTHONDONTWRITEBYTECODE=1 ./venv/bin/python -m pytest backend/tests/test_telegram_publisher.py -q`
 - Viber backend: `PYTHONDONTWRITEBYTECODE=1 ./venv/bin/python -m pytest backend/tests/test_viber_publisher.py -q`
 - Viber dispatcher: `npm test` у `cloudflare/viber-dispatcher`.
+- Instagram preview/dry-run: `PYTHONDONTWRITEBYTECODE=1 ./venv/bin/python -m pytest backend/tests/test_instagram_publisher.py -q`
 - Фото: `PYTHONDONTWRITEBYTECODE=1 ./venv/bin/python -m pytest backend/tests/test_photo_manager_transform.py -q`
 - Статистика: `PYTHONDONTWRITEBYTECODE=1 ./venv/bin/python -m pytest backend/tests/test_sales_channel_detection.py backend/tests/test_advertising_expense_parser.py -q`
 - Frontend: `npm run build` у `frontend` (або коренева команда, якщо вона проксіює цей build).
