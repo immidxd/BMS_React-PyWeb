@@ -39,6 +39,18 @@ def test_collage_v1_is_square_jpeg_and_respects_viber_limits():
         assert image.size == (400, 400)
 
 
+def test_ui_preview_can_skip_unused_thumbnail_without_changing_main_card():
+    images = [_jpeg(color=(60, 120, 180)), _jpeg(color=(180, 120, 60))]
+    spec = vp.normalize_collage_spec({"image_idx": [0, 1], "background": "soft"}, 2)
+
+    main, thumb = vp.render_collage(images, spec, include_thumbnail=False)
+
+    assert main.startswith(b"\xff\xd8")
+    assert thumb == b""
+    with Image.open(io.BytesIO(main)) as image:
+        assert image.size == (1080, 1080)
+
+
 def test_collage_spec_is_bounded_deduplicated_and_keeps_manual_order():
     spec = vp.normalize_collage_spec({
         "image_idx": [3, 1, 3, 99, -1, 2, 0, 4, 5],
@@ -222,6 +234,35 @@ def test_live_create_stops_before_render_or_upload_when_dispatcher_is_not_config
     assert result["ok"] is False
     assert "не підключений" in result["error"]
     assert called == {"prepare": 0, "upload": 0}
+
+
+def test_batch_dry_run_works_without_dispatcher_and_has_no_external_side_effects(monkeypatch):
+    monkeypatch.setattr(vp, "connection_status", lambda: {
+        "configured": False,
+        "missing": ["VIBER_DISPATCHER_URL", "VIBER_DISPATCHER_KEY"],
+    })
+    monkeypatch.setattr(vp, "_prepare", lambda _db, pid, _payload: {
+        "pnum": f"Ф{pid}",
+        "main": b"jpeg-main",
+        "thumb": b"jpeg-thumb",
+        "spec": {"image_idx": [0]},
+    })
+    monkeypatch.setattr(vp, "create_post", lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        AssertionError("dry-run must not dispatch a post")
+    ))
+
+    result = asyncio.run(vp.create_posts_batch(
+        object(),
+        [{"product_id": 41, "payload": {"caption": "one"}},
+         {"product_id": 42, "payload": {"caption": "two"}}],
+        "dry-batch",
+        dry_run=True,
+    ))
+
+    assert result["ok"] is True
+    assert result["dry_run"] is True
+    assert result["counts"] == {"success": 2, "error": 0, "total": 2}
+    assert [row["status"] for row in result["results"]] == ["validated", "validated"]
 
 
 def test_dry_run_renders_but_never_uploads_records_or_dispatches(monkeypatch):

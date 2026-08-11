@@ -302,6 +302,7 @@ const ViberPublishDialog: React.FC<Props> = ({
   const [photoRevision, setPhotoRevision] = useState(0);
   const renderUrlRef = useRef<string | null>(null);
   const renderSequence = useRef(0);
+  const renderDelayRef = useRef(260);
   const groupBaseRef = useRef<Map<number, ViberCollageFrame>>(new Map());
   const thumbnailDragRef = useRef(false);
 
@@ -320,6 +321,8 @@ const ViberPublishDialog: React.FC<Props> = ({
     // реакцію одразу, а важкий JPEG усе одно збираємо лише після короткої паузи.
     setRendering(true);
     setRenderError(null);
+    const delay = renderDelayRef.current;
+    renderDelayRef.current = 260;
     const timer = window.setTimeout(() => {
       fetch('/api/publications/viber/render-collage', {
         method: 'POST',
@@ -349,7 +352,7 @@ const ViberPublishDialog: React.FC<Props> = ({
           }
         })
         .finally(() => { if (sequence === renderSequence.current) setRendering(false); });
-    }, 260);
+    }, delay);
     return () => { window.clearTimeout(timer); controller.abort(); };
   }, [collage, data.product_id, photoRevision]);
 
@@ -635,7 +638,13 @@ const ViberPublishDialog: React.FC<Props> = ({
                 <span className={LABEL}>Тло</span>
                 <div className="mt-2 flex gap-2">
                   {data.backgrounds.map(item => (
-                    <button key={item.key} type="button" onClick={() => setCollage(current => ({ ...current, background: item.key }))}
+                    <button key={item.key} type="button" onClick={() => {
+                              if (collage.background === item.key) return;
+                              // Дискретний клік не потребує slider-debounce: кешований
+                              // набір фото дозволяє віддати нове тло одразу.
+                              renderDelayRef.current = 0;
+                              setCollage(current => ({ ...current, background: item.key }));
+                            }}
                             title={item.label} aria-label={`Тло: ${item.label}`}
                             className={`h-9 w-9 rounded-lg border ${collage.background === item.key ? 'border-violet-500 ring-2 ring-violet-500/25' : 'border-gray-200 dark:border-gray-700'}`}
                             style={{ background: BACKGROUNDS[item.key] }} />
@@ -744,7 +753,9 @@ const ViberPublishDialog: React.FC<Props> = ({
               </div>
               <div className="relative mt-2 aspect-square overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-sm dark:border-gray-700 dark:bg-gray-800">
                 {renderUrl ? <img src={renderUrl} alt="Viber-колаж" className="h-full w-full object-contain" /> : collage.image_idx[0] !== undefined ? <SmartImage src={imageUrls[collage.image_idx[0]]} thumb={640} thumbOnly className="h-full w-full object-contain" /> : null}
-                {rendering && <div className="absolute inset-0 flex items-center justify-center bg-white/70 text-violet-600 backdrop-blur-[1px] dark:bg-gray-900/70"><LoadingOutlined className="mr-2" /> Оновлюю</div>}
+                {rendering && (renderUrl
+                  ? <div className="absolute right-3 top-3 flex items-center rounded-full bg-white/90 px-2.5 py-1 text-[11px] font-medium text-violet-600 shadow-sm backdrop-blur dark:bg-gray-900/90"><LoadingOutlined className="mr-1.5" /> Оновлюю</div>
+                  : <div className="absolute inset-0 flex items-center justify-center bg-white/70 text-violet-600 backdrop-blur-[1px] dark:bg-gray-900/70"><LoadingOutlined className="mr-2" /> Збираю прев’ю</div>)}
               </div>
               {renderError && <div className="mt-2 rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-600 dark:bg-rose-900/20 dark:text-rose-300">{renderError}</div>}
               <div className="mt-2 rounded-xl border border-gray-200 bg-white p-3 dark:border-gray-700 dark:bg-gray-900">

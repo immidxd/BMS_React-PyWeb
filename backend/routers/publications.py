@@ -1282,6 +1282,7 @@ async def viber_render_collage(body: Dict[str, Any] = Body(...), db: Session = D
         from starlette.concurrency import run_in_threadpool
         main, _thumb, _spec = await run_in_threadpool(
             _viber_pub().render_for_product, db, int(pid), body.get("collage") or body,
+            include_thumbnail=False,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -1309,7 +1310,9 @@ async def viber_create_post(body: Dict[str, Any] = Body(...), db: Session = Depe
 
 @router.post("/api/publications/viber/create-posts-batch")
 async def viber_create_posts_batch(body: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
-    result = await _viber_pub().create_posts_batch(db, body.get("items"), body.get("batch_id"))
+    result = await _viber_pub().create_posts_batch(
+        db, body.get("items"), body.get("batch_id"), dry_run=body.get("dry_run") is True,
+    )
     if not result.get("ok"):
         raise HTTPException(status_code=400, detail=result.get("error", "Пакет Viber не виконано"))
     return result

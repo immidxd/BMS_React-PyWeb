@@ -4,6 +4,7 @@ import {
   SettingOutlined, WarningOutlined,
 } from '@ant-design/icons';
 import SmartImage from '../common/SmartImage';
+import { taskManager } from '../../services/taskManager';
 import ViberPublishDialog, {
   ViberConditionPublishConfirmation,
   ViberLivePublishConfirmation,
@@ -40,6 +41,7 @@ interface Entry {
 export interface ViberBatchRequest {
   batch_id: string;
   items: { product_id: number; payload: ViberPublishPayload }[];
+  dry_run?: boolean;
 }
 
 interface Props {
@@ -58,6 +60,17 @@ const INPUT = 'rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs 
 function uuid(): string {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
   return `viber-batch-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function cardsLabel(count: number): string {
+  const mod10 = count % 10;
+  const mod100 = count % 100;
+  const noun = mod10 === 1 && mod100 !== 11
+    ? 'картку'
+    : mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)
+      ? 'картки'
+      : 'карток';
+  return `${count} ${noun}`;
 }
 
 function asLocal(iso: string | null | undefined): string {
@@ -93,6 +106,9 @@ const ViberBatchPublishDialog: React.FC<Props> = ({ productIds, busy, onCancel, 
   const [conditionConfirmOpen, setConditionConfirmOpen] = useState(false);
   const [liveConfirmOpen, setLiveConfirmOpen] = useState(false);
   const [conditionApproved, setConditionApproved] = useState(false);
+  const [checking, setChecking] = useState(false);
+  const [checkResult, setCheckResult] = useState<string | null>(null);
+  const [checkError, setCheckError] = useState<string | null>(null);
   const [layoutPreset, setLayoutPreset] = useState<LayoutPreset>('keep');
   const [backgroundPreset, setBackgroundPreset] = useState<BackgroundPreset>('keep');
   const [timePreset, setTimePreset] = useState<TimePreset>('stagger');
@@ -140,6 +156,13 @@ const ViberBatchPublishDialog: React.FC<Props> = ({ productIds, busy, onCancel, 
   const risky = included.filter(entry => entry.preview.condition_confirmation_required);
   const commonCount = entries.filter(entry => entry.commonSelected).length;
   const unconfigured = included.some(entry => !entry.preview.connection.live_publish_available);
+  const missingSetup = Array.from(new Set(
+    included.flatMap(entry => entry.preview.connection.missing || []),
+  )).map(value => value === 'VIBER_DISPATCHER_URL'
+    ? 'адреса Cloudflare-диспетчера'
+    : value === 'VIBER_DISPATCHER_KEY'
+      ? 'захищений ключ диспетчера'
+      : value);
   const baseDate = baseTime ? new Date(baseTime) : null;
   const timeProblem = timePreset === 'stagger' && (
     !baseDate || Number.isNaN(baseDate.getTime())
@@ -183,6 +206,47 @@ const ViberBatchPublishDialog: React.FC<Props> = ({ productIds, busy, onCancel, 
       },
     })),
   });
+
+  const runSafeCheck = async () => {
+    if (checking || busy || loading || !included.length || timeProblem) return;
+    setChecking(true);
+    setCheckResult(null);
+    setCheckError(null);
+    const request: ViberBatchRequest = {
+      batch_id: uuid(),
+      dry_run: true,
+      items: included.map(entry => ({
+        product_id: entry.productId,
+        payload: { ...entry.draft },
+      })),
+    };
+    try {
+      const result = await taskManager.run(
+        `Перевірка Viber-пакета: ${cardsLabel(included.length)}`,
+        async () => {
+          const response = await fetch('/api/publications/viber/create-posts-batch', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(request),
+          });
+          const data = await response.json().catch(() => ({}));
+          if (!response.ok || !data.ok) throw new Error(data.detail || data.error || 'Перевірка пакета не вдалася');
+          return data;
+        },
+        {
+          silentSuccess: true,
+          resultStatus: (value: any) => ({
+            status: 'success',
+            detail: `Перевірено ${cardsLabel(value.counts?.success || 0)}, нічого не надіслано`,
+          }),
+        },
+      );
+      setCheckResult(`Перевірено ${cardsLabel(result.counts?.success || included.length)}: колажі, підписи й розклад коректні. У Viber і Cloudflare нічого не надіслано.`);
+    } catch (reason: any) {
+      setCheckError(reason?.message || 'Перевірка пакета не вдалася');
+    } finally {
+      setChecking(false);
+    }
+  };
 
   const submit = () => {
     if (!included.length || unconfigured || timeProblem) return;
@@ -316,6 +380,13 @@ const ViberBatchPublishDialog: React.FC<Props> = ({ productIds, busy, onCancel, 
                   );
                 })}
               </div>
+              {unconfigured && (
+                <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2.5 text-xs leading-relaxed text-amber-800 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-300">
+                  Жива публікація ще вимкнена: потрібно підключити {missingSetup.join(' і ')}. Повна перевірка без надсилання доступна вже зараз.
+                </div>
+              )}
+              {checkResult && <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2.5 text-xs text-emerald-700 dark:border-emerald-800 dark:bg-emerald-900/20 dark:text-emerald-300"><CheckOutlined className="mr-2" />{checkResult}</div>}
+              {checkError && <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2.5 text-xs text-rose-700 dark:border-rose-800 dark:bg-rose-900/20 dark:text-rose-300"><WarningOutlined className="mr-2" />{checkError}</div>}
             </>
           )}
           {!loading && entries.length === 0 && <div className="py-20 text-center"><div className="text-sm font-medium text-gray-600 dark:text-gray-300">Усі картки прибрано з пакета</div><div className="mt-1 text-xs text-gray-400">Закрий вікно й вибери товари знову, якщо передумаєш.</div></div>}
@@ -324,6 +395,10 @@ const ViberBatchPublishDialog: React.FC<Props> = ({ productIds, busy, onCancel, 
         <footer className="flex items-center justify-between gap-3 border-t border-gray-100 bg-white px-5 py-3.5 dark:border-gray-800 dark:bg-gray-900">
           <span className="text-xs text-gray-400">Буде опубліковано: <b className="text-gray-700 dark:text-gray-200">{included.length}</b> постів · послідовно, з контролем помилок{risky.length ? <span className="ml-1 font-semibold text-amber-600">· {risky.length} потребують підтвердження</span> : null}</span>
           <div className="flex gap-2">
+            <button type="button" onClick={runSafeCheck} disabled={checking || busy || loading || !included.length || !!timeProblem}
+                    className="rounded-lg border border-violet-200 px-3 py-2 text-sm font-medium text-violet-700 disabled:opacity-45 dark:border-violet-800 dark:text-violet-300">
+              {checking ? 'Перевіряю…' : `Перевірити ${cardsLabel(included.length)} без надсилання`}
+            </button>
             <button type="button" onClick={onCancel} disabled={busy} className="rounded-lg border border-gray-200 px-4 py-2 text-sm text-gray-600 disabled:opacity-50 dark:border-gray-700 dark:text-gray-300">Скасувати</button>
             <button type="button" onClick={submit} disabled={busy || loading || !included.length || !!timeProblem || unconfigured} className="flex items-center gap-1.5 rounded-lg bg-[#7360F2] px-4 py-2 text-sm font-semibold text-white disabled:opacity-45"><SendOutlined />{busy ? 'Публікую чергу…' : `Опублікувати ${included.length}`}</button>
           </div>

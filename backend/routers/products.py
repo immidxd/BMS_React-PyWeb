@@ -518,16 +518,18 @@ def _photo_owner_and_category(product_id: int, filename: str, db: Session):
     return _pnum_and_category(product_id, db)
 
 
-def _invalidate_photo_cache():
-    """Скинути кеш «чи є фото», щоб маркери в списку оновились одразу."""
+def _invalidate_photo_cache(*productnumbers: str, membership_changed: bool = False):
+    """Скинути списки фото; за зміни кількості також оновити маркери таблиці."""
     try:
-        from services.product_images import get_photo_pnum_set
+        from services.product_images import get_photo_pnum_set, invalidate_image_list_cache
     except ImportError:
-        from backend.services.product_images import get_photo_pnum_set
-    try:
-        get_photo_pnum_set(force=True)
-    except Exception:
-        pass
+        from backend.services.product_images import get_photo_pnum_set, invalidate_image_list_cache
+    invalidate_image_list_cache(*productnumbers)
+    if membership_changed:
+        try:
+            get_photo_pnum_set(force=True)
+        except Exception:
+            pass
 
 
 @router.post("/api/products/{product_id}/photos")
@@ -577,7 +579,7 @@ async def add_product_photos(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"Не вдалося додати фото ({len(errors)}): {reasons}")
     if added:
-        _invalidate_photo_cache()
+        _invalidate_photo_cache(pnum, membership_changed=True)
     return {"added": added, "category": category, "kind": kind, "errors": errors}
 
 
@@ -599,7 +601,7 @@ def move_product_photos_kind(
         result = move_photos_kind(pnum, category, from_kind, to_kind)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    _invalidate_photo_cache()
+    _invalidate_photo_cache(pnum)
     return {**result, "from_kind": from_kind, "to_kind": to_kind, "category": category}
 
 
@@ -621,7 +623,7 @@ def move_one_product_photo(
         result = move_one_photo(pnum, category, filename, to_kind)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    _invalidate_photo_cache()
+    _invalidate_photo_cache(pnum)
     return {**result, "category": category}
 
 
@@ -654,6 +656,7 @@ async def replace_product_photo(
     finally:
         try: _os.unlink(tmp)
         except OSError: pass
+    _invalidate_photo_cache(pnum)
     return {"replaced": filename}
 
 
@@ -700,6 +703,7 @@ async def transform_product_photo(
             status_code=502,
             detail=f"Не вдалося синхронізувати фото з Cloudflare; оригінал не змінено: {e}",
         )
+    _invalidate_photo_cache(pnum)
     return {"transformed": filename, "category": category, **result}
 
 
@@ -720,6 +724,7 @@ def reorder_product_photos(
         result = reorder_photos(pnum, category, order, kind=kind)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    _invalidate_photo_cache(pnum)
     return {"order": result, "kind": kind}
 
 
@@ -739,7 +744,7 @@ def delete_product_photo(
         delete_photo(pnum, category, filename)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    _invalidate_photo_cache()
+    _invalidate_photo_cache(pnum, membership_changed=True)
     return {"deleted": filename}
 
 

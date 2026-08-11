@@ -359,8 +359,10 @@ def _jpeg_under_limit(image: Image.Image, max_bytes: int, *, thumb: bool = False
     )
 
 
-def render_collage(photo_bytes: Sequence[bytes], spec: dict) -> Tuple[bytes, bytes]:
-    """Детерміновано рендерить основну картку й Viber thumbnail."""
+def render_collage(
+    photo_bytes: Sequence[bytes], spec: dict, *, include_thumbnail: bool = True,
+) -> Tuple[bytes, bytes]:
+    """Детерміновано рендерить картку; thumbnail можна пропустити для UI-прев'ю."""
     if not photo_bytes:
         raise ValueError("Для колажу потрібно хоча б одне фото")
     if len(photo_bytes) > MAX_COLLAGE_PHOTOS:
@@ -379,8 +381,10 @@ def render_collage(photo_bytes: Sequence[bytes], spec: dict) -> Tuple[bytes, byt
         ImageDraw.Draw(mask).rounded_rectangle((0, 0, width, height), radius=radius, fill=255)
         canvas.paste(tile, (x, y), mask)
     main = _jpeg_under_limit(canvas, COLLAGE_MAX_BYTES)
-    thumb_image = ImageOps.fit(canvas, (THUMB_SIZE, THUMB_SIZE), Image.Resampling.LANCZOS)
-    thumb = _jpeg_under_limit(thumb_image, THUMB_MAX_BYTES, thumb=True)
+    thumb = b""
+    if include_thumbnail:
+        thumb_image = ImageOps.fit(canvas, (THUMB_SIZE, THUMB_SIZE), Image.Resampling.LANCZOS)
+        thumb = _jpeg_under_limit(thumb_image, THUMB_MAX_BYTES, thumb=True)
     return main, thumb
 
 
@@ -628,13 +632,15 @@ def preview_posts_batch(db: Session, product_ids: List[int]) -> dict:
     }
 
 
-def render_for_product(db: Session, product_id: int, payload: dict) -> Tuple[bytes, bytes, dict]:
+def render_for_product(
+    db: Session, product_id: int, payload: dict, *, include_thumbnail: bool = True,
+) -> Tuple[bytes, bytes, dict]:
     tg = _tg()
     bms = tg._load_product(db, product_id)
     if not bms:
         raise ValueError("Товар не знайдено")
     _photos, spec, values = _read_selected_photos(bms, payload)
-    main, thumb = render_collage(values, spec)
+    main, thumb = render_collage(values, spec, include_thumbnail=include_thumbnail)
     return main, thumb, spec
 
 
@@ -857,7 +863,9 @@ async def create_post(db: Session, product_id: int, payload: dict,
         return {"ok": False, "error": str(exc), "idempotency_key": idempotency_key}
 
 
-async def create_posts_batch(db: Session, items: Any, batch_id: Any) -> dict:
+async def create_posts_batch(
+    db: Session, items: Any, batch_id: Any, *, dry_run: bool = False,
+) -> dict:
     if not isinstance(items, list) or not items:
         return {"ok": False, "error": "Пакет Viber порожній"}
     if len(items) > BATCH_MAX_PRODUCTS:
@@ -866,7 +874,7 @@ async def create_posts_batch(db: Session, items: Any, batch_id: Any) -> dict:
     if not batch:
         return {"ok": False, "error": "Пакет не має batch_id"}
     status = connection_status()
-    if not status["configured"]:
+    if not dry_run and not status["configured"]:
         return {
             "ok": False,
             "error": "Viber-диспетчер ще не підключений: " + ", ".join(status["missing"]),
@@ -879,6 +887,8 @@ async def create_posts_batch(db: Session, items: Any, batch_id: Any) -> dict:
             return {"ok": False, "error": f"Картка {index + 1} пошкоджена"}
         pid = int(item["product_id"])
         payload = dict(item.get("payload") or item)
+        if dry_run:
+            payload["dry_run"] = True
         payload["idempotency_key"] = str(
             payload.get("idempotency_key") or f"{batch}:{pid}"
         )[:160]
@@ -891,6 +901,26 @@ async def create_posts_batch(db: Session, items: Any, batch_id: Any) -> dict:
             return {"ok": False, "error": f"Товар {ready['pnum']} повторюється в пакеті"}
         product_numbers.add(number_key)
         prepared_items.append((pid, payload, ready))
+
+    # Пакетна репетиція проходить той самий повний renderer і всі перевірки,
+    # але не завантажує JPEG у R2, не створює D1 job і не звертається до Viber.
+    if dry_run:
+        results = [{
+            "product_id": pid,
+            "productnumber": ready["pnum"].lstrip("#"),
+            "status": "validated",
+            "image_bytes": len(ready["main"]),
+            "thumbnail_bytes": len(ready["thumb"]),
+            "error": None,
+        } for pid, _payload, ready in prepared_items]
+        return {
+            "ok": True,
+            "dry_run": True,
+            "batch_id": batch,
+            "status": "success",
+            "counts": {"success": len(results), "error": 0, "total": len(results)},
+            "results": results,
+        }
 
     results = []
     for position, (pid, payload, ready) in enumerate(prepared_items):

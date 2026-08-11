@@ -11,6 +11,8 @@ import os
 import re
 import time
 import logging
+import threading
+from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
@@ -230,6 +232,28 @@ def _list_drive_only(target: str) -> List[ImageEntry]:
     ]
 
 
+# Повний локальний пошук проходить великий фотоархів і на робочій базі може
+# тривати кілька секунд. У межах відкритої картки набір файлів той самий, тому
+# кешуємо вже перевірений список за номером. Усі мутації BMS явно скидають цей
+# кеш; TTL лишається страховкою для файлів, змінених поза програмою.
+_IMAGE_LIST_CACHE_TTL = float(os.environ.get("PRODUCT_IMAGE_LIST_TTL", "120"))
+_IMAGE_LIST_CACHE_MAX = int(os.environ.get("PRODUCT_IMAGE_LIST_CACHE_MAX", "512"))
+_IMAGE_LIST_CACHE: "OrderedDict[str, tuple[float, List[ImageEntry]]]" = OrderedDict()
+_IMAGE_LIST_CACHE_LOCK = threading.Lock()
+
+
+def invalidate_image_list_cache(*productnumbers: str) -> None:
+    """Скинути кеш конкретних номерів; без аргументів — увесь кеш списків."""
+    with _IMAGE_LIST_CACHE_LOCK:
+        if not productnumbers:
+            _IMAGE_LIST_CACHE.clear()
+            return
+        for productnumber in productnumbers:
+            key = _normalize_number(productnumber).lower()
+            if key:
+                _IMAGE_LIST_CACHE.pop(key, None)
+
+
 def list_images(productnumber: str) -> List[ImageEntry]:
     """Об'єднаний список фото товару (локально + Drive) з дедуплікацією за filename.
 
@@ -242,6 +266,18 @@ def list_images(productnumber: str) -> List[ImageEntry]:
     target = _normalize_number(productnumber)
     if not target:
         return []
+
+    cache_key = target.lower()
+    now = time.monotonic()
+    with _IMAGE_LIST_CACHE_LOCK:
+        cached = _IMAGE_LIST_CACHE.get(cache_key)
+        if cached and now - cached[0] < _IMAGE_LIST_CACHE_TTL:
+            _IMAGE_LIST_CACHE.move_to_end(cache_key)
+            # Не віддаємо сам кешований list: споживач може сортувати/обрізати
+            # його локально, але не повинен змінити наступний lookup.
+            return list(cached[1])
+        if cached:
+            _IMAGE_LIST_CACHE.pop(cache_key, None)
 
     local = _list_local_only(target)
     drive = _list_drive_only(target)
@@ -258,10 +294,16 @@ def list_images(productnumber: str) -> List[ImageEntry]:
         merged, key=lambda e: _sort_key(e.filename, target)
     )
     # Re-index sequentially (0..N) on the merged result
-    return [
+    result = [
         ImageEntry(filename=e.filename, url=e.url, index=i, is_defect=e.is_defect, kind=e.kind)
         for i, e in enumerate(merged_sorted)
     ]
+    with _IMAGE_LIST_CACHE_LOCK:
+        _IMAGE_LIST_CACHE[cache_key] = (now, result)
+        _IMAGE_LIST_CACHE.move_to_end(cache_key)
+        while len(_IMAGE_LIST_CACHE) > max(1, _IMAGE_LIST_CACHE_MAX):
+            _IMAGE_LIST_CACHE.popitem(last=False)
+    return list(result)
 
 
 def read_image_bytes(entry: ImageEntry) -> Optional[bytes]:
