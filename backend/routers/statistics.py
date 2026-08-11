@@ -48,6 +48,35 @@ REAL_ORDER_SQL = real_order_sql("o")
 PAID_REVENUE = f"o.order_status_id IN {REVENUE_SQL} AND o.payment_status_id = {PAID_STATUS_ID}"
 
 
+# Канал продажу для статистики. Явно задане не-дефолтне значення завжди має
+# пріоритет; для старих замовлень із sales_channel='Ефір' дочитуємо маркер із
+# notes, щоб історичні PROM / MONO / CT / CG / Catalog не губилися в «Ефірі».
+# Межі — лише пробіли/пунктуація: це свідомо НЕ ловить «промасляні», monobank,
+# catalogue або CGI як назви платформ.
+_CHANNEL_DELIM = r"[[:space:][:punct:]]"
+_PROM_NOTE_RE = rf"(^|{_CHANNEL_DELIM})(prom|[пП][рР][оО][мМ])($|{_CHANNEL_DELIM})"
+_MONO_NOTE_RE = rf"(^|{_CHANNEL_DELIM})(mono|[мМ][оО][нН][оО])($|{_CHANNEL_DELIM})"
+_CATALOG_NOTE_RE = rf"(^|{_CHANNEL_DELIM})(ct|cg|catalog)($|{_CHANNEL_DELIM})"
+
+
+def _effective_sales_channel(order_alias: str = "o") -> str:
+    raw = f"BTRIM(COALESCE({order_alias}.sales_channel, ''))"
+    raw_lower = f"LOWER({raw})"
+    notes = f"LOWER(COALESCE({order_alias}.notes, ''))"
+    return f"""CASE
+        WHEN {raw_lower} = 'prom' OR {raw} ~ '^[пП][рР][оО][мМ]$' THEN 'Prom'
+        WHEN {raw_lower} = 'mono' OR {raw} ~ '^[мМ][оО][нН][оО]$' THEN 'MONO'
+        WHEN {raw_lower} IN ('catalog', 'ct', 'cg')
+             OR {raw} ~ '^[кК][аА][тТ][аА][лЛ][оО][гГ]$' THEN 'Каталог'
+        WHEN {raw} <> '' AND {raw} !~ '^[еЕ][фФ][іІ][рР]$'
+            THEN {raw}
+        WHEN {notes} ~ '{_PROM_NOTE_RE}' THEN 'Prom'
+        WHEN {notes} ~ '{_MONO_NOTE_RE}' THEN 'MONO'
+        WHEN {notes} ~ '{_CATALOG_NOTE_RE}' THEN 'Каталог'
+        ELSE 'Ефір'
+    END"""
+
+
 # ── Sales statistics ─────────────────────────────────────────────────────────
 @router.get("/api/statistics/sales")
 def get_sales_stats(
@@ -917,8 +946,9 @@ def get_products_stats(
         LIMIT 10
     """)).fetchall()
 
+    channel_expr = _effective_sales_channel("o")
     channel_dist = db.execute(text(f"""
-        SELECT COALESCE(o.sales_channel, 'Ефір') AS channel,
+        SELECT {channel_expr} AS channel,
                COUNT(DISTINCT o.id) AS orders_count,
                COALESCE(SUM(oi.price * oi.quantity)
                         FILTER (WHERE {PAID_REVENUE}), 0)::float AS revenue
@@ -926,7 +956,7 @@ def get_products_stats(
         LEFT JOIN order_items oi ON oi.order_id = o.id
         WHERE {REAL_ORDER_SQL}
           AND o.order_status_id NOT IN {CANCELLED_OR_RET_SQL}
-        GROUP BY COALESCE(o.sales_channel, 'Ефір')
+        GROUP BY 1
         ORDER BY orders_count DESC
     """)).fetchall()
 

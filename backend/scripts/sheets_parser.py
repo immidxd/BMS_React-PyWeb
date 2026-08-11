@@ -545,7 +545,7 @@ ORDER_WB_SEARCH_TABS = int(os.getenv("ORDER_WB_SEARCH_TABS", "6"))  # newest tab
 # Canonical channel → token written into "Уточнення" (matches _SALES_CHANNEL_PATTERNS).
 CHANNEL_TOKENS = {"Telegram": "TG", "Viber": "Viber", "Instagram": "IG",
                   "TikTok": "TT", "OLX": "OLX", "Grailed": "Grailed", "Shafa": "Shafa",
-                  "Prom": "Prom"}
+                  "Prom": "Prom", "MONO": "MONO", "Каталог": "Catalog"}
 
 
 def compute_order_fingerprint(client_name: str, order_date, product_numbers) -> str:
@@ -1736,6 +1736,8 @@ _SALES_CHANNEL_PATTERNS = [
     (re.compile(r'\b(?:shafa|шафа)\b', re.IGNORECASE), 'Shafa'),
     # \b після «пром» НЕ матчить «промокод» (там далі літера) — лише окреме слово/prom.ua
     (re.compile(r'\b(?:prom|пром)\b', re.IGNORECASE), 'Prom'),
+    (re.compile(r'\b(?:mono|моно)\b', re.IGNORECASE), 'MONO'),
+    (re.compile(r'\b(?:ct|cg|catalog)\b', re.IGNORECASE), 'Каталог'),
 ]
 
 

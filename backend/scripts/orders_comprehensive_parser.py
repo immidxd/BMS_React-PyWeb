@@ -196,6 +196,9 @@ class SalesChannelDetector:
         'Viber': [r'\bvb\b', r'\bviber\b', r'\bвайбер\b', r'\bвб\b'],
         'Instagram': [r'\binst\b', r'\binstagram\b', r'\binsta\b', r'\big\b', r'\bінст\b'],
         'GRAILED': [r'\bgrailed\b'],
+        'Prom': [r'\bprom\b', r'\bпром\b'],
+        'MONO': [r'\bmono\b', r'\bмоно\b'],
+        'Каталог': [r'\bct\b', r'\bcg\b', r'\bcatalog\b'],
         'Магазин': [r'\bмагазин\b', r'\bshop\b'],
     }
 

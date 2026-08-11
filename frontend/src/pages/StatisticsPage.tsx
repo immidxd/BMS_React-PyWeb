@@ -876,6 +876,8 @@ const StatisticsPage: React.FC<StatisticsPageProps> = () => {
                         'Telegram': 'bg-blue-100 text-blue-700 border-blue-200',
                         'OLX': 'bg-orange-100 text-orange-700 border-orange-200',
                         'Prom': 'bg-indigo-100 text-indigo-700 border-indigo-200',
+                        'MONO': 'bg-black text-white border-black',
+                        'Каталог': 'bg-emerald-100 text-emerald-700 border-emerald-200',
                         'Viber': 'bg-violet-100 text-violet-700 border-violet-200',
                         'Instagram': 'bg-pink-100 text-pink-700 border-pink-200',
                         'GRAILED': 'bg-gray-100 text-gray-700 border-gray-200',
