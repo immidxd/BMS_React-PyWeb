@@ -1,0 +1,20 @@
+name = "bms-instagram-dispatcher"
+main = "src/index.js"
+compatibility_date = "2026-08-11"
+workers_dev = true
+
+[vars]
+META_APP_ID = "1332015002340070"
+META_API_VERSION = "v25.0"
+META_REDIRECT_URI = "https://bms-instagram-dispatcher.<your-subdomain>.workers.dev/oauth/callback"
+EXPECTED_IG_USERNAME = "brandxstoreua"
+INSTAGRAM_LIVE_ENABLED = "false"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "bms-instagram-dispatcher"
+database_id = "<create-with-wrangler>"
+
+# Secrets are added only through `wrangler secret put` and never committed:
+# BMS_DISPATCHER_KEY, META_APP_SECRET, TOKEN_ENCRYPTION_KEY.
+# META_LOGIN_CONFIG_ID is added after Facebook Login for Business configuration.
