@@ -7,6 +7,7 @@ import MainLayout from '../layouts/MainLayout';
 import Pagination from '../components/common/Pagination';
 import ProductDetailsModal from '../components/products/ProductDetailsModal';
 import TelegramPublishDialog, { type TelegramPreview, type TelegramPublishPayload } from '../components/products/TelegramPublishDialog';
+import TelegramBatchPublishDialog, { type TelegramBatchRequest } from '../components/products/TelegramBatchPublishDialog';
 import ViberPublishDialog, { type ViberPreview, type ViberPublishPayload } from '../components/products/ViberPublishDialog';
 import ViberBatchPublishDialog, { type ViberBatchRequest } from '../components/products/ViberBatchPublishDialog';
 import { confirmDialog, alertDialog, notify } from '../ui/feedback';
@@ -474,6 +475,7 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
   const [expandedLoading, setExpandedLoading] = useState(false);
   // Створення поста: прев'ю → діалог редагування → публікація живою.
   const [tgPreview, setTgPreview] = useState<TelegramPreview | null>(null);
+  const [tgBatchIds, setTgBatchIds] = useState<number[] | null>(null);
   const [tgPreviewing, setTgPreviewing] = useState<number | null>(null);
   const [tgBusy, setTgBusy] = useState(false);
   const [viberPreview, setViberPreview] = useState<ViberPreview | null>(null);
@@ -847,6 +849,68 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
     }
   };
 
+  const handleTelegramBatchPublish = (request: TelegramBatchRequest) => {
+    const count = request.items.length;
+    setTgBusy(true);
+    taskManager.run(
+      `Пакетна Telegram-публікація: ${count} постів`,
+      async () => {
+        const response = await fetch('/api/publications/telegram/create-posts-batch', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(request),
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || !data.ok) {
+          const error: any = new Error(data.detail || data.error || 'Пакетна Telegram-публікація не вдалася');
+          error.response = { data: { detail: data.detail || data.error } };
+          throw error;
+        }
+        return data;
+      },
+      {
+        silentSuccess: true,
+        resultStatus: (result: any) => {
+          const counts = result.counts || {};
+          const summary = [
+            counts.success ? `${counts.success} успішно` : '',
+            counts.partial ? `${counts.partial} частково` : '',
+            counts.error ? `${counts.error} з помилкою` : '',
+            counts.skipped ? `${counts.skipped} не надсилали` : '',
+          ].filter(Boolean).join(' · ');
+          const issues = (result.results || [])
+            .filter((item: any) => item.status !== 'success')
+            .map((item: any) => {
+              const failed = item.result?.failed
+                ?.map((failure: any) => failure.thread_title || failure.channel || failure.error)
+                .join(', ');
+              return `#${item.productnumber}: ${item.error || failed || item.status}`;
+            })
+            .join(' · ');
+          return {
+            status: result.status === 'success' ? 'success' : 'partial',
+            detail: [summary, issues].filter(Boolean).join(' — '),
+          };
+        },
+        onSuccess: (result: any) => {
+          const counts = result.counts || {};
+          const detail = `${counts.success || 0} успішно${counts.partial ? ` · ${counts.partial} частково` : ''}${counts.error ? ` · ${counts.error} з помилкою` : ''}${counts.skipped ? ` · ${counts.skipped} не надсилали` : ''}`;
+          if (result.status === 'success') {
+            notify.success({ message: 'Пакет Telegram опубліковано', description: detail, duration: 7 });
+          } else {
+            notify.warning({ message: 'Пакет Telegram виконано частково', description: `${detail}. Подробиці збережено у Сповіщеннях.`, duration: 11 });
+          }
+          setTgBatchIds(null);
+          setSelectedIds(new Set());
+          fetchItems();
+          fetchStats();
+        },
+      },
+    ).catch(() => undefined).finally(() => {
+      setTgBusy(false);
+      window.dispatchEvent(new CustomEvent('bms:telegram-status-refresh'));
+    });
+  };
+
   const openViberDialog = async (productId: number) => {
     if (viberPreviewing !== null) return;
     setViberPreviewing(productId);
@@ -1163,7 +1227,11 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
               <span className="text-sm font-medium text-gray-700 dark:text-gray-200">
                 Обрано: {selectedIds.size} товарів
               </span>
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center justify-end gap-2">
+                <button type="button" onClick={() => setTgBatchIds(Array.from(selectedIds))} disabled={tgBusy}
+                        className="flex items-center gap-1.5 rounded bg-[#229ED9] px-4 py-2 text-sm font-medium text-white transition hover:brightness-110 disabled:opacity-50">
+                  <SendOutlined /> Опублікувати у Telegram
+                </button>
                 <button type="button" onClick={() => setViberBatchIds(Array.from(selectedIds))} disabled={viberBusy}
                         className="flex items-center gap-1.5 rounded bg-[#7360F2] px-4 py-2 text-sm font-medium text-white transition hover:brightness-110 disabled:opacity-50">
                   <span className="font-black">V</span> Опублікувати у Viber
@@ -1584,6 +1652,14 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
           onPreviewChange={setTgPreview}
           onCancel={() => { if (!tgBusy) setTgPreview(null); }}
           onConfirm={handlePublish}
+        />
+      )}
+      {tgBatchIds && (
+        <TelegramBatchPublishDialog
+          productIds={tgBatchIds}
+          busy={tgBusy}
+          onCancel={() => { if (!tgBusy) setTgBatchIds(null); }}
+          onPublish={handleTelegramBatchPublish}
         />
       )}
       {viberPreview && (

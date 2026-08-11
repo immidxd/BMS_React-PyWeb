@@ -280,12 +280,17 @@ const ViberPublishDialog: React.FC<Props> = ({
   }, []);
 
   useEffect(() => {
-    if (!collage.image_idx.length) return;
+    if (!collage.image_idx.length) {
+      setRendering(false);
+      return;
+    }
     const sequence = ++renderSequence.current;
     const controller = new AbortController();
+    // У WKWebView повзунок може рухатися довше, ніж debounce прев'ю. Показуємо
+    // реакцію одразу, а важкий JPEG усе одно збираємо лише після короткої паузи.
+    setRendering(true);
+    setRenderError(null);
     const timer = window.setTimeout(() => {
-      setRendering(true);
-      setRenderError(null);
       fetch('/api/publications/viber/render-collage', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -665,6 +670,9 @@ const ViberPublishDialog: React.FC<Props> = ({
                     ? `Вибрано ${editTargets.length} фото. Спільні повзунки додають однакову корекцію, не стираючи індивідуальні налаштування.`
                     : `Налаштовується фото ${collage.image_idx.indexOf(activeFrame.image_idx) + 1}. Натисни номери або «Усі», щоб рухати кілька кадрів разом.`}
                 </p>
+                <p className="mt-1 text-[11px] leading-relaxed text-violet-500/90">
+                  Масштаб і позиція змінюють лише цю Viber-картку. Оригінальне фото товару не редагується.
+                </p>
                 <div className="mt-3 grid gap-3 sm:grid-cols-3">
                   {([
                     [zoomControlLabel, 'zoom', editingMany ? FRAME_ZOOM_MIN - 1 : FRAME_ZOOM_MIN, editingMany ? FRAME_ZOOM_MAX - 1 : FRAME_ZOOM_MAX, 0.05],
@@ -674,9 +682,9 @@ const ViberPublishDialog: React.FC<Props> = ({
                     <label key={key} className="text-[11px] text-gray-500">{label}
                       <input type="range" min={min} max={max} step={step} value={editingMany ? groupAdjust[key] : activeFrame[key]}
                              aria-label={key === 'zoom' ? (editingMany ? 'Масштаб вибраних фото' : 'Масштаб фото') : undefined}
-                             onChange={event => editingMany
-                               ? updateFramesTogether(key, Number(event.target.value))
-                               : updateFrame({ [key]: Number(event.target.value) })}
+                             onInput={event => editingMany
+                               ? updateFramesTogether(key, Number(event.currentTarget.value))
+                               : updateFrame({ [key]: Number(event.currentTarget.value) })}
                              className="mt-1 block w-full accent-violet-600" />
                     </label>
                   ))}

@@ -124,7 +124,7 @@ describe('ViberPublishDialog photo editing', () => {
     ));
   });
 
-  it('lets all selected frames shrink below the neutral 100% scale', () => {
+  it('lets all selected frames shrink below 100% and sends that scale to the collage renderer only', async () => {
     const onConfirm = jest.fn();
     const twoPhotos: ViberPreview = {
       ...preview,
@@ -159,11 +159,19 @@ describe('ViberPublishDialog photo editing', () => {
     const groupZoom = screen.getByLabelText('Масштаб вибраних фото') as HTMLInputElement;
     expect(groupZoom.min).toBe('-0.5');
     expect(groupZoom.value).toBe('0');
-    fireEvent.change(groupZoom, { target: { value: '-0.25' } });
-    fireEvent.click(screen.getByRole('button', { name: /Зберегти картку/ }));
+    fireEvent.input(groupZoom, { target: { value: '-0.25' } });
+    await waitFor(() => expect((global.fetch as jest.Mock).mock.calls.some((call: any[]) => {
+      if (call[0] !== '/api/publications/viber/render-collage') return false;
+      const body = JSON.parse(call[1]?.body || '{}');
+      return body.collage?.frames?.every((frame: any) => frame.zoom === 0.75);
+    })).toBe(true));
+    const saveButton = screen.getByRole('button', { name: /Зберегти картку/ }) as HTMLButtonElement;
+    await waitFor(() => expect(saveButton.disabled).toBe(false));
+    fireEvent.click(saveButton);
 
     expect(onConfirm).toHaveBeenCalledTimes(1);
     expect(onConfirm.mock.calls[0][0].collage.frames.map((frame: any) => frame.zoom)).toEqual([0.75, 0.75]);
+    expect(productService.transformProductPhoto).not.toHaveBeenCalled();
     expect(screen.queryByText('×')).toBeNull();
   });
 });
