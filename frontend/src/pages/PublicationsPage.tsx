@@ -10,6 +10,8 @@ import TelegramPublishDialog, { type TelegramPreview, type TelegramPublishPayloa
 import TelegramBatchPublishDialog, { type TelegramBatchRequest } from '../components/products/TelegramBatchPublishDialog';
 import ViberPublishDialog, { type ViberPreview, type ViberPublishPayload } from '../components/products/ViberPublishDialog';
 import ViberBatchPublishDialog, { type ViberBatchRequest } from '../components/products/ViberBatchPublishDialog';
+import InstagramPublishDialog, { InstagramMark, type InstagramDraftPayload, type InstagramPreview } from '../components/products/InstagramPublishDialog';
+import InstagramBatchDraftDialog, { type InstagramBatchRequest } from '../components/products/InstagramBatchDraftDialog';
 import { confirmDialog, alertDialog, notify } from '../ui/feedback';
 import LoadingSpinner from '../components/common/LoadingSpinner';
 import { taskManager } from '../services/taskManager';
@@ -30,6 +32,8 @@ interface PublicationItem {
   telegram_publication_count?: number;
   viber_publication_count?: number;
   viber_pending_count?: number;
+  instagram_publication_count?: number;
+  instagram_pending_count?: number;
   // Розширені поля для column-selector
   brand_name?: string | null;
   type_name?: string | null;
@@ -64,7 +68,8 @@ const PUB_COLUMNS_STORAGE_KEY = 'publications_table_columns_v1';
 
 interface PublicationDetail {
   id: number | string;
-  platform?: 'telegram' | 'viber';
+  local_publication_id?: number;
+  platform?: 'telegram' | 'viber' | 'instagram';
   chat_id: number;
   chat_title: string;
   chat_type: string;
@@ -78,6 +83,8 @@ interface PublicationDetail {
   is_multi_size?: boolean;
   sizes_in_post?: string;
   collage_url?: string | null;
+  permalink?: string | null;
+  scheduled_at?: string | null;
   error?: string | null;
 }
 
@@ -93,6 +100,9 @@ interface PublicationStats {
   viber_posts: number;
   viber_products: number;
   viber_pending: number;
+  instagram_posts: number;
+  instagram_products: number;
+  instagram_pending: number;
   sold_but_live_count: number;
   unlinked_count: number;
   channels: Array<{
@@ -202,6 +212,8 @@ const PublicationsFilterPanel: React.FC<{
                 { label: 'У каналі', value: stats.channel_products, title: `${stats.channel_products} унікальних товарів · ${stats.channel_posts} постів` },
                 { label: 'У Viber', value: stats.viber_products, title: `${stats.viber_products} унікальних товарів · ${stats.viber_posts} живих постів` },
                 { label: 'Viber у черзі', value: stats.viber_pending, title: 'Заплановані пости й незавершені повторні спроби Viber' },
+                { label: 'В Instagram', value: stats.instagram_products, title: `${stats.instagram_products} унікальних товарів · ${stats.instagram_posts} опублікованих матеріалів` },
+                { label: 'Instagram у черзі', value: stats.instagram_pending, title: 'Заплановані пости, Stories, Reels і повторні спроби Instagram' },
               ].map(s => (
                 <div key={s.label} title={s.title} className="px-2 py-1.5 rounded-lg bg-gray-50 dark:bg-gray-700/50 border border-gray-100 dark:border-gray-700">
                   <div className="text-[10px] uppercase tracking-wide text-gray-400 dark:text-gray-500">{s.label}</div>
@@ -358,6 +370,9 @@ const DetailModal: React.FC<{
 }> = ({ productId, onClose }) => {
   const [details, setDetails] = useState<PublicationDetail[]>([]);
   const [loading, setLoading] = useState(false);
+  const [refreshKey, setRefreshKey] = useState(0);
+  const [managingId, setManagingId] = useState<number | null>(null);
+  const [rescheduleInputs, setRescheduleInputs] = useState<Record<number, string>>({});
 
   useEffect(() => {
     if (productId === null) return;
@@ -366,7 +381,48 @@ const DetailModal: React.FC<{
       .then(r => r.json())
       .then(d => setDetails(d.publications || []))
       .finally(() => setLoading(false));
-  }, [productId]);
+  }, [productId, refreshKey]);
+
+  const manageInstagram = async (detail: PublicationDetail, action: 'cancel' | 'reschedule') => {
+    const publicationId = detail.local_publication_id;
+    if (!publicationId || managingId !== null) return;
+    let body: Record<string, string> | undefined;
+    if (action === 'reschedule') {
+      const localValue = rescheduleInputs[publicationId];
+      if (!localValue) {
+        notify.warning({ message: 'Оберіть нову дату й час', duration: 5 });
+        return;
+      }
+      const parsed = new Date(localValue);
+      if (Number.isNaN(parsed.getTime()) || parsed.getTime() <= Date.now()) {
+        notify.warning({ message: 'Час має бути в майбутньому', duration: 5 });
+        return;
+      }
+      body = { publish_at: parsed.toISOString() };
+    }
+    const confirmed = await confirmDialog(
+      action === 'cancel'
+        ? 'Скасувати цю заплановану Instagram-публікацію? Медіа в Instagram ще не буде створено.'
+        : `Перенести Instagram-публікацію на ${new Date(body!.publish_at).toLocaleString('uk-UA')}?`,
+    );
+    if (!confirmed) return;
+    setManagingId(publicationId);
+    try {
+      const response = await fetch(`/api/publications/instagram/publications/${publicationId}/${action}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body || {}),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok || !result.ok) throw new Error(result.detail || result.error || 'Операція не виконана');
+      notify.success({ message: action === 'cancel' ? 'Instagram-публікацію скасовано' : 'Час Instagram-публікації змінено', duration: 6 });
+      setRefreshKey(value => value + 1);
+    } catch (reason: any) {
+      notify.error({ message: 'Instagram', description: reason.message || 'Не вдалося оновити чергу', duration: 8 });
+    } finally {
+      setManagingId(null);
+    }
+  };
 
   if (productId === null) return null;
 
@@ -392,6 +448,7 @@ const DetailModal: React.FC<{
                     <div className="font-semibold text-sm text-gray-900 dark:text-gray-100">
                       {d.chat_title}
                       {d.platform === 'viber' && <span className="ml-2 rounded bg-violet-100 px-1.5 py-0.5 text-xs text-violet-700 dark:bg-violet-900/30 dark:text-violet-300">VIBER</span>}
+                      {d.platform === 'instagram' && <span className="ml-2 rounded bg-pink-100 px-1.5 py-0.5 text-xs text-pink-700 dark:bg-pink-900/30 dark:text-pink-300">INSTAGRAM</span>}
                       {d.is_master && <span className="ml-2 text-xs px-1.5 py-0.5 bg-yellow-100 dark:bg-yellow-900/30 text-yellow-800 dark:text-yellow-300 rounded">ГОЛОВНА</span>}
                       {d.is_multi_size && <span className="ml-2 text-xs px-1.5 py-0.5 bg-purple-100 dark:bg-purple-900/30 text-purple-800 dark:text-purple-300 rounded">MULTI-SIZE</span>}
                     </div>
@@ -423,11 +480,28 @@ const DetailModal: React.FC<{
                     {d.message_text}
                   </div>
                 )}
-                {d.collage_url && <img src={d.collage_url} alt="Viber-колаж" className="mt-2 h-24 w-24 rounded-lg border border-gray-200 object-cover dark:border-gray-700" />}
+                {d.collage_url && (/\.(mp4|mov)(\?|$)/i.test(d.collage_url)
+                  ? <video src={d.collage_url} muted controls className="mt-2 h-32 w-24 rounded-lg border border-gray-200 object-cover dark:border-gray-700" />
+                  : <img src={d.collage_url} alt={d.platform === 'instagram' ? 'Instagram-медіа' : 'Viber-колаж'} className="mt-2 h-24 w-24 rounded-lg border border-gray-200 object-cover dark:border-gray-700" />)}
                 {d.error && <div className="mt-1 text-xs text-rose-500">{d.error}</div>}
                 {d.message_date && (
                   <div className="text-xs text-gray-400 mt-1">
                     {new Date(d.message_date).toLocaleString('uk-UA')}
+                  </div>
+                )}
+                {d.permalink && <a href={d.permalink} target="_blank" rel="noreferrer" className="mt-2 inline-block text-xs font-medium text-pink-600 hover:underline">Відкрити в Instagram ↗</a>}
+                {d.platform === 'instagram' && d.local_publication_id && ['scheduled', 'queued', 'retrying'].includes(d.tg_status) && (
+                  <div className="mt-3 flex flex-wrap items-end gap-2 rounded-lg bg-pink-50 p-2 dark:bg-pink-950/20">
+                    <label className="min-w-[210px] flex-1 text-[11px] font-medium text-gray-600 dark:text-gray-300">Новий час
+                      <input type="datetime-local"
+                        value={rescheduleInputs[d.local_publication_id] || ''}
+                        onChange={event => setRescheduleInputs(current => ({ ...current, [d.local_publication_id!]: event.target.value }))}
+                        className="mt-1 w-full rounded border border-pink-200 bg-white px-2 py-1.5 text-xs dark:border-pink-900 dark:bg-gray-800" />
+                    </label>
+                    <button type="button" onClick={() => manageInstagram(d, 'reschedule')} disabled={managingId !== null}
+                      className="rounded bg-pink-600 px-2.5 py-1.5 text-xs font-medium text-white disabled:opacity-50">Перенести</button>
+                    <button type="button" onClick={() => manageInstagram(d, 'cancel')} disabled={managingId !== null}
+                      className="rounded border border-rose-300 px-2.5 py-1.5 text-xs font-medium text-rose-600 disabled:opacity-50">Скасувати</button>
                   </div>
                 )}
               </div>
@@ -482,6 +556,10 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
   const [viberPreviewing, setViberPreviewing] = useState<number | null>(null);
   const [viberBatchIds, setViberBatchIds] = useState<number[] | null>(null);
   const [viberBusy, setViberBusy] = useState(false);
+  const [instagramPreview, setInstagramPreview] = useState<InstagramPreview | null>(null);
+  const [instagramPreviewing, setInstagramPreviewing] = useState<number | null>(null);
+  const [instagramBatchIds, setInstagramBatchIds] = useState<number[] | null>(null);
+  const [instagramBusy, setInstagramBusy] = useState(false);
 
   // ── Column visibility (right-click menu) ─────────────────────────
   const colMenuRef = useRef<HTMLDivElement | null>(null);
@@ -494,7 +572,9 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
   const [integrationsOpen, setIntegrationsOpen] = useState(false);
   const [olxStatus, setOlxStatus] = useState<any | null>(null);
   const [viberStatus, setViberStatus] = useState<any | null>(null);
+  const [instagramStatus, setInstagramStatus] = useState<any | null>(null);
   const [viberSyncing, setViberSyncing] = useState(false);
+  const [instagramSyncing, setInstagramSyncing] = useState(false);
   // Prom-інтеграція: статус (термін токена), панель замовлень-дзеркала.
   const [promStatus, setPromStatus] = useState<any | null>(null);
   const [promOrders, setPromOrders] = useState<any[] | null>(null);
@@ -517,7 +597,22 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
     try { const r = await fetch('/api/publications/viber/status'); if (r.ok) setViberStatus(await r.json()); }
     catch { /* редактор лишається доступним; стан повторимо при відкритті */ }
   }, []);
-  useEffect(() => { fetchPromStatus(); fetchOlxStatus(); fetchMonobazarStatus(); fetchViberStatus(); }, [fetchPromStatus, fetchOlxStatus, fetchMonobazarStatus, fetchViberStatus]);
+  const fetchInstagramStatus = React.useCallback(async () => {
+    try { const r = await fetch('/api/publications/instagram/status'); if (r.ok) setInstagramStatus(await r.json()); }
+    catch { /* dry-run редактор лишається доступним */ }
+  }, []);
+  const handleInstagramConnect = async () => {
+    try {
+      const response = await fetch('/api/publications/instagram/oauth/start', { method: 'POST' });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok || !result.authorization_url) throw new Error(result.detail || result.error || 'OAuth ще не налаштовано');
+      window.open(result.authorization_url, '_blank', 'noopener,noreferrer');
+      notify.info({ message: 'Відкрито підключення Instagram', description: 'Після підтвердження Meta поверніться в BMS і натисніть «Перевірити стан».', duration: 10 });
+    } catch (reason: any) {
+      notify.error({ message: 'Instagram OAuth', description: reason.message || 'Не вдалося почати підключення', duration: 9 });
+    }
+  };
+  useEffect(() => { fetchPromStatus(); fetchOlxStatus(); fetchMonobazarStatus(); fetchViberStatus(); fetchInstagramStatus(); }, [fetchPromStatus, fetchOlxStatus, fetchMonobazarStatus, fetchViberStatus, fetchInstagramStatus]);
   useEffect(() => {
     const refresh = () => { void fetchViberStatus(); };
     window.addEventListener('bms:viber-status-refresh', refresh);
@@ -552,6 +647,37 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
         },
       },
     ).catch(() => undefined).finally(() => setViberSyncing(false));
+  };
+
+  const handleInstagramStatusSync = () => {
+    if (instagramSyncing || !instagramStatus?.oauth_connected) {
+      void fetchInstagramStatus();
+      return;
+    }
+    setInstagramSyncing(true);
+    taskManager.run(
+      'Оновлення станів Instagram-публікацій',
+      async () => {
+        const response = await fetch('/api/publications/instagram/sync-status', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(data.detail || 'Не вдалося звірити Instagram-чергу');
+        return data;
+      },
+      {
+        silentSuccess: true,
+        resultStatus: (result: any) => result.errors?.length
+          ? { status: 'partial', detail: `${result.updated || 0} оновлено · ${result.errors.length} помилок` }
+          : { status: 'success', detail: `${result.updated || 0} станів оновлено` },
+        onSuccess: (result: any) => {
+          notify.success({ message: 'Стани Instagram оновлено', description: `Перевірено ${result.checked || 0} записів`, duration: 5 });
+          fetchItems();
+          fetchStats();
+          fetchInstagramStatus();
+        },
+      },
+    ).catch(() => undefined).finally(() => setInstagramSyncing(false));
   };
 
   // monoБазар: синхронізувати вітрину продавця (публічний API, без токенів).
@@ -1006,6 +1132,87 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
     });
   };
 
+  const openInstagramDialog = async (productId: number) => {
+    if (instagramPreviewing !== null) return;
+    setInstagramPreviewing(productId);
+    try {
+      const response = await fetch('/api/publications/instagram/preview-post', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ product_id: productId }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.detail || 'Не вдалося зібрати Instagram-чернетку');
+      setInstagramPreview(data);
+      setInstagramStatus(data.connection || instagramStatus);
+    } catch (reason: any) {
+      notify.error({ message: `Instagram: ${reason.message || 'Помилка зв’язку'}`, duration: 8 });
+    } finally {
+      setInstagramPreviewing(null);
+    }
+  };
+
+  const handleInstagramPublish = async (payload: InstagramDraftPayload) => {
+    if (!instagramPreview || instagramBusy) return;
+    const approved = await confirmDialog({
+      title: payload.publish_at ? 'Запланувати Instagram-публікацію?' : 'Опублікувати в Instagram зараз?',
+      body: `#${instagramPreview.productnumber} · ${payload.publish_type === 'feed' ? 'пост/карусель' : payload.publish_type === 'story' ? 'Story' : 'Reel'}\nАкаунт: ${instagramPreview.connection.account}${payload.publish_at ? `\nЧас: ${new Date(payload.publish_at).toLocaleString('uk-UA')}` : ''}`,
+      okText: payload.publish_at ? 'Запланувати' : 'Опублікувати', kind: 'warning',
+    });
+    if (!approved) return;
+    setInstagramBusy(true);
+    taskManager.run(
+      `Instagram #${instagramPreview.productnumber}`,
+      async () => {
+        const response = await fetch('/api/publications/instagram/create-post', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+        });
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok || !result.ok) throw new Error(result.detail || result.error || 'Instagram-публікація не вдалася');
+        return result;
+      },
+      {
+        silentSuccess: true,
+        resultStatus: (result: any) => ({ status: 'success', detail: result.scheduled_at ? `Заплановано: ${new Date(result.scheduled_at).toLocaleString('uk-UA')}` : 'Передано у захищену чергу' }),
+        onSuccess: (result: any) => {
+          notify.success({ message: result.scheduled_at ? 'Instagram-публікацію заплановано' : 'Instagram-публікацію передано в чергу', duration: 7 });
+          setInstagramPreview(null); setSelectedIds(new Set()); fetchItems(); fetchStats();
+        },
+      },
+    ).catch(() => undefined).finally(() => setInstagramBusy(false));
+  };
+
+  const handleInstagramBatchPublish = async (request: InstagramBatchRequest) => {
+    if (instagramBusy) return;
+    const approved = await confirmDialog({
+      title: 'Передати пакет в Instagram?',
+      body: `${request.items.length} окремих публікацій буде передано у захищену хмарну чергу.`,
+      okText: 'Передати пакет', kind: 'warning',
+    });
+    if (!approved) return;
+    setInstagramBusy(true);
+    taskManager.run(
+      `Пакет Instagram: ${request.items.length} публікацій`,
+      async () => {
+        const response = await fetch('/api/publications/instagram/create-posts-batch', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(request),
+        });
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok || !result.ok) throw new Error(result.detail || result.error || 'Instagram-пакет не виконано');
+        return result;
+      },
+      {
+        silentSuccess: true,
+        resultStatus: (result: any) => ({ status: result.status === 'success' ? 'success' : 'partial', detail: `${result.counts?.success || 0} прийнято · ${result.counts?.error || 0} помилок` }),
+        onSuccess: (result: any) => {
+          const counts = result.counts || {};
+          if (result.status === 'success') notify.success({ message: 'Instagram-пакет прийнято', description: `${counts.success || 0} публікацій`, duration: 7 });
+          else notify.warning({ message: 'Instagram-пакет прийнято частково', description: `${counts.success || 0} прийнято · ${counts.error || 0} помилок`, duration: 10 });
+          setInstagramBatchIds(null); setSelectedIds(new Set()); fetchItems(); fetchStats();
+        },
+      },
+    ).catch(() => undefined).finally(() => setInstagramBusy(false));
+  };
+
   // Гілки форуму зчитуються з Telegram і кешуються локально — інакше діалог
   // не знає, куди взагалі можна публікувати.
   const handleRefreshThreads = async () => {
@@ -1236,6 +1443,10 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
                         className="flex items-center gap-1.5 rounded bg-[#7360F2] px-4 py-2 text-sm font-medium text-white transition hover:brightness-110 disabled:opacity-50">
                   <span className="font-black">V</span> Опублікувати у Viber
                 </button>
+                <button type="button" onClick={() => setInstagramBatchIds(Array.from(selectedIds))}
+                        className="flex items-center gap-1.5 rounded bg-gradient-to-r from-[#833AB4] to-[#E1306C] px-4 py-2 text-sm font-medium text-white transition hover:brightness-110">
+                  <InstagramMark className="h-4 w-4 text-[10px]" /> Підготувати для Instagram
+                </button>
                 <button
                   onClick={handleBulkUnpublish}
                   disabled={bulkUnpublishing || !items.some(item => item.product_id !== null && selectedIds.has(item.product_id) && (item.telegram_publication_count ?? item.publication_count) > 0)}
@@ -1436,6 +1647,14 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
                               className="inline-flex items-center gap-1 rounded-md border border-violet-300 bg-violet-50/60 px-2 py-1 text-xs font-medium text-violet-600 transition-colors hover:bg-violet-100 disabled:opacity-50 dark:border-violet-700 dark:bg-violet-900/20 dark:text-violet-300 dark:hover:bg-violet-900/40"
                             >
                               <span className="font-black">V</span>{viberPreviewing === item.product_id ? '…' : 'Viber'}
+                            </button>
+                            <button
+                              onClick={() => openInstagramDialog(item.product_id as number)}
+                              disabled={instagramPreviewing === item.product_id}
+                              title="Підготувати й перевірити Instagram-чернетку без надсилання"
+                              className="inline-flex items-center gap-1 rounded-md border border-pink-300 bg-pink-50/60 px-2 py-1 text-xs font-medium text-pink-600 transition-colors hover:bg-pink-100 disabled:opacity-50 dark:border-pink-800 dark:bg-pink-900/20 dark:text-pink-300 dark:hover:bg-pink-900/40"
+                            >
+                              <InstagramMark className="h-4 w-4 text-[9px]" />{instagramPreviewing === item.product_id ? '…' : 'Instagram'}
                             </button>
                             {item.publication_count > 0 && (
                               <>
@@ -1679,6 +1898,22 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
           onPublish={handleViberBatchPublish}
         />
       )}
+      {instagramPreview && (
+        <InstagramPublishDialog
+          data={instagramPreview}
+          busy={instagramBusy}
+          onCancel={() => { if (!instagramBusy) setInstagramPreview(null); }}
+          onConfirm={handleInstagramPublish}
+        />
+      )}
+      {instagramBatchIds && (
+        <InstagramBatchDraftDialog
+          productIds={instagramBatchIds}
+          busy={instagramBusy}
+          onCancel={() => { if (!instagramBusy) setInstagramBatchIds(null); }}
+          onPublish={handleInstagramBatchPublish}
+        />
+      )}
 
       {/* Панель «Інтеграції» — керування каналами в одному місці */}
       {integrationsOpen && (
@@ -1690,7 +1925,7 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
               <h3 className="text-lg font-semibold">⚙ Інтеграції</h3>
               <button onClick={() => setIntegrationsOpen(false)} className="text-gray-400 hover:text-gray-700 text-xl">✕</button>
             </div>
-            <p className="text-xs text-gray-500 mb-4">Синхронізація й так відбувається автоматично: Telegram/OLX — кожні 30 хв, Prom — кожні ~10 хв, а наявність на Prom оновлюється сама після кожного оновлення BMS. Viber-розклад виконуватиме окремий захищений хмарний диспетчер.</p>
+            <p className="text-xs text-gray-500 mb-4">Синхронізація й так відбувається автоматично: Telegram/OLX — кожні 30 хв, Prom — кожні ~10 хв. Viber та Instagram працюють через окремі захищені хмарні диспетчери з чергами й розкладом.</p>
             {syncAllMsg && (
               <div className="mb-4 p-2 text-sm bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-700 rounded">{syncAllMsg}</div>
             )}
@@ -1731,6 +1966,31 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
                         className="mt-auto rounded bg-violet-50 px-3 py-1.5 text-xs text-violet-700 hover:bg-violet-100 dark:bg-violet-900/25 dark:text-violet-300 dark:hover:bg-violet-900/40">
                   {viberSyncing ? 'Оновлюю…' : viberStatus?.configured ? 'Оновити стани публікацій' : 'Перевірити стан'}
                 </button>
+              </div>
+              {/* Instagram Platform */}
+              <div className="flex flex-col gap-2 rounded-lg border border-gray-200 p-3 dark:border-gray-700">
+                <div className="flex items-center gap-2 font-medium">
+                  <InstagramMark className="h-5 w-5 text-xs" /> Instagram
+                </div>
+                <span className={`text-xs ${instagramStatus?.live_publish_available ? 'text-green-600 dark:text-green-400' : 'text-amber-600 dark:text-amber-400'}`}>
+                  {instagramStatus?.live_publish_available ? '● OAuth, Worker і розклад активні' : instagramStatus?.oauth_connected ? '◐ OAuth підключено · живий режим Worker вимкнено' : '◐ редактор і renderer готові · очікується OAuth'}
+                </span>
+                <span className="text-[11px] leading-relaxed text-gray-500 dark:text-gray-400">
+                  Feed, каруселі до {instagramStatus?.limits?.carousel_media || 10} фото, Stories та Reels зі слайдів. Доступні crop/zoom, власний текст, пакетна перевірка й розклад.
+                </span>
+                <span className="text-[11px] leading-relaxed text-amber-600 dark:text-amber-400">
+                  {instagramStatus?.live_publish_available
+                    ? `Публікації йдуть у захищену щохвилинну чергу для @${String(instagramStatus?.account || 'brandxstoreua').replace(/^@/, '')}.`
+                    : `Жодна чернетка не може випадково піти в @${String(instagramStatus?.account || 'brandxstoreua').replace(/^@/, '')}.`}
+                </span>
+                <div className="mt-auto flex gap-2">
+                  {!instagramStatus?.oauth_connected && <button type="button" onClick={handleInstagramConnect}
+                          className="flex-1 rounded bg-pink-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-pink-700">Підключити OAuth</button>}
+                  <button type="button" onClick={handleInstagramStatusSync} disabled={instagramSyncing}
+                          className="flex-1 rounded bg-pink-50 px-3 py-1.5 text-xs text-pink-700 hover:bg-pink-100 dark:bg-pink-900/25 dark:text-pink-300 dark:hover:bg-pink-900/40">
+                    {instagramSyncing ? 'Оновлюю…' : instagramStatus?.oauth_connected ? 'Оновити стани публікацій' : 'Перевірити стан'}
+                  </button>
+                </div>
               </div>
               {/* OLX */}
               <div className="border border-gray-200 dark:border-gray-700 rounded-lg p-3 flex flex-col gap-2">

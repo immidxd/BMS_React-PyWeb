@@ -42,6 +42,8 @@ _CONTENT_TYPES = {
     ".avif": "image/avif",
     ".bmp": "image/bmp",
     ".heic": "image/heic",
+    ".mp4": "video/mp4",
+    ".mov": "video/quicktime",
 }
 # Фото не змінюється під своїм іменем → кешуємо назавжди (immutable).
 # Це різко знижує Class B операції (повторні покази йдуть з CDN-кешу).

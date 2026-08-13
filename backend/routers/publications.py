@@ -156,11 +156,11 @@ def get_publications_overview(
     only_rostovka: bool = Query(False, description="Only size runs / multi-unit products"),
     db: Session = Depends(get_db),
 ):
-    """Overview of all products + their publication status across channels.
+    """Overview of all products + their Telegram/Viber/Instagram status.
 
     Filter modes:
       - all: all products
-      - published: products with at least 1 live Telegram or Viber post
+      - published: products with at least 1 live Telegram, Viber or Instagram post
       - problematic: SOLD products that still have live posts
       - unpublished: products NOT in any channel
       - unlinked: telegram_posts with no matching product (separate query)
@@ -275,6 +275,7 @@ def get_publications_overview(
                 (
                     EXISTS (SELECT 1 FROM telegram_posts tp WHERE tp.product_id = p.id AND tp.tg_status = 'published')
                     OR EXISTS (SELECT 1 FROM viber_publications vp WHERE vp.product_id = p.id AND vp.status = 'published')
+                    OR EXISTS (SELECT 1 FROM instagram_publications ip WHERE ip.product_id = p.id AND ip.status = 'published')
                 )
             """)
         elif filter_mode in ("problematic", "sold_live"):
@@ -316,6 +317,11 @@ def get_publications_overview(
                     WHERE vp.product_id = p.id
                       AND vp.status IN ('queued', 'scheduled', 'processing', 'retrying', 'published')
                 )
+                AND NOT EXISTS (
+                    SELECT 1 FROM instagram_publications ip
+                    WHERE ip.product_id = p.id
+                      AND ip.status IN ('queued', 'scheduled', 'processing', 'retrying', 'published')
+                )
                 AND p.statusid NOT IN (SELECT id FROM statuses WHERE statusname = 'Продано')
             """)
 
@@ -354,6 +360,8 @@ def get_publications_overview(
                     COALESCE(pubs.telegram_count, 0) AS telegram_count,
                     COALESCE(pubs.viber_count, 0) AS viber_count,
                     COALESCE(pubs.viber_pending_count, 0) AS viber_pending_count,
+                    COALESCE(pubs.instagram_count, 0) AS instagram_count,
+                    COALESCE(pubs.instagram_pending_count, 0) AS instagram_pending_count,
                     b.brandname AS brand_name,
                     t.typename  AS type_name,
                     st.subtypename AS subtype_name,
@@ -372,7 +380,9 @@ def get_publications_overview(
                         BOOL_OR(COALESCE(needs_manual_edit, false)) AS needs_manual_edit,
                         COUNT(*) FILTER (WHERE platform = 'telegram') AS telegram_count,
                         COUNT(*) FILTER (WHERE platform = 'viber' AND publication_status = 'published') AS viber_count,
-                        COUNT(*) FILTER (WHERE platform = 'viber' AND publication_status <> 'published') AS viber_pending_count
+                        COUNT(*) FILTER (WHERE platform = 'viber' AND publication_status <> 'published') AS viber_pending_count,
+                        COUNT(*) FILTER (WHERE platform = 'instagram' AND publication_status = 'published') AS instagram_count,
+                        COUNT(*) FILTER (WHERE platform = 'instagram' AND publication_status <> 'published') AS instagram_pending_count
                     FROM (
                         SELECT tp.chat_title, tp.thread_title, tp.needs_manual_edit,
                                'telegram' AS platform, tp.tg_status AS publication_status
@@ -395,6 +405,23 @@ def get_publications_overview(
                         FROM viber_publications vp
                         WHERE vp.product_id = p.id
                           AND vp.status IN ('queued', 'scheduled', 'processing', 'retrying', 'published')
+                        UNION ALL
+                        SELECT
+                            'Instagram' ||
+                                CASE ip.status
+                                    WHEN 'scheduled' THEN ' · заплановано'
+                                    WHEN 'queued' THEN ' · у черзі'
+                                    WHEN 'processing' THEN ' · публікується'
+                                    WHEN 'retrying' THEN ' · повторна спроба'
+                                    ELSE ''
+                                END AS chat_title,
+                            '' AS thread_title,
+                            false AS needs_manual_edit,
+                            'instagram' AS platform,
+                            ip.status AS publication_status
+                        FROM instagram_publications ip
+                        WHERE ip.product_id = p.id
+                          AND ip.status IN ('queued', 'scheduled', 'processing', 'retrying', 'published')
                     ) social_posts
                 ) pubs ON true
                 WHERE {where_clause}
@@ -421,12 +448,14 @@ def get_publications_overview(
                 "telegram_publication_count": int(row[9] or 0),
                 "viber_publication_count": int(row[10] or 0),
                 "viber_pending_count": int(row[11] or 0),
-                "brand_name":   row[12],
-                "type_name":    row[13],
-                "subtype_name": row[14],
-                "sizeeu":       row[15],
-                "marking":      row[16],
-                "year":         row[17],
+                "instagram_publication_count": int(row[12] or 0),
+                "instagram_pending_count": int(row[13] or 0),
+                "brand_name":   row[14],
+                "type_name":    row[15],
+                "subtype_name": row[16],
+                "sizeeu":       row[17],
+                "marking":      row[18],
+                "year":         row[19],
             })
 
         return {
@@ -509,6 +538,41 @@ def get_product_publications(
                 "is_multi_size": False,
                 "sizes_in_post": None,
                 "collage_url": row["collage_url"],
+                "error": row["error"],
+            })
+
+        instagram_rows = db.execute(text("""
+            SELECT id, status, media_type, caption, scheduled_at, published_at,
+                   created_at, media_urls, error, payload_json->>'permalink' AS permalink
+            FROM instagram_publications
+            WHERE product_id = :pid
+               OR product_number = (SELECT productnumber FROM products WHERE id = :pid)
+            ORDER BY COALESCE(published_at, scheduled_at, created_at) DESC
+        """), {"pid": product_id}).mappings().all()
+        for row in instagram_rows:
+            media_urls = row["media_urls"] if isinstance(row["media_urls"], list) else []
+            first_media = media_urls[0].get("url") if media_urls and isinstance(media_urls[0], dict) else None
+            publications.append({
+                "id": f"instagram-{row['id']}",
+                "local_publication_id": row["id"],
+                "platform": "instagram",
+                "chat_id": 0,
+                "chat_title": f"Instagram · {row['media_type']}",
+                "chat_type": "instagram",
+                "thread_id": None,
+                "thread_title": None,
+                "message_id": 0,
+                "message_text": row["caption"],
+                "message_date": (
+                    row["published_at"] or row["scheduled_at"] or row["created_at"]
+                ).isoformat() if (row["published_at"] or row["scheduled_at"] or row["created_at"]) else None,
+                "scheduled_at": row["scheduled_at"].isoformat() if row["scheduled_at"] else None,
+                "is_master": True,
+                "tg_status": row["status"],
+                "is_multi_size": False,
+                "sizes_in_post": None,
+                "collage_url": first_media,
+                "permalink": row["permalink"],
                 "error": row["error"],
             })
 
@@ -670,6 +734,14 @@ def get_publications_stats(db: Session = Depends(get_db)):
             FROM viber_publications
         """)).fetchone()
 
+        instagram = db.execute(text("""
+            SELECT
+                COUNT(*) FILTER (WHERE status = 'published') AS published_posts,
+                COUNT(DISTINCT product_id) FILTER (WHERE status = 'published') AS published_products,
+                COUNT(*) FILTER (WHERE status IN ('queued', 'scheduled', 'processing', 'retrying')) AS pending_posts
+            FROM instagram_publications
+        """)).fetchone()
+
         all_published_products = db.execute(text("""
             SELECT COUNT(DISTINCT product_id)
             FROM (
@@ -677,6 +749,9 @@ def get_publications_stats(db: Session = Depends(get_db)):
                 WHERE tg_status = 'published' AND product_id IS NOT NULL
                 UNION ALL
                 SELECT product_id FROM viber_publications
+                WHERE status = 'published' AND product_id IS NOT NULL
+                UNION ALL
+                SELECT product_id FROM instagram_publications
                 WHERE status = 'published' AND product_id IS NOT NULL
             ) social_products
         """)).scalar() or 0
@@ -715,8 +790,14 @@ def get_publications_stats(db: Session = Depends(get_db)):
                 FROM viber_publications
                 WHERE status = 'published'
                 GROUP BY channel_title
+                UNION ALL
+                SELECT 'Instagram', 'instagram', COUNT(*),
+                       COUNT(DISTINCT product_id)
+                FROM instagram_publications
+                WHERE status = 'published'
             ) social_channels
             GROUP BY chat_title, chat_type
+            HAVING SUM(post_count) > 0
             ORDER BY post_count DESC
         """)).fetchall()
 
@@ -724,11 +805,15 @@ def get_publications_stats(db: Session = Depends(get_db)):
         viber_products = int(viber[1] or 0) if viber else 0
         viber_pending = int(viber[2] or 0) if viber else 0
         viber_channels = int(viber[3] or 0) if viber else 0
+        instagram_posts = int(instagram[0] or 0) if instagram else 0
+        instagram_products = int(instagram[1] or 0) if instagram else 0
+        instagram_pending = int(instagram[2] or 0) if instagram else 0
+        instagram_channels = 1 if instagram_posts else 0
 
         return {
-            "total_chats": (stats[0] if stats else 0) + viber_channels,
+            "total_chats": (stats[0] if stats else 0) + viber_channels + instagram_channels,
             "published_products": int(all_published_products),
-            "total_posts": (stats[2] if stats else 0) + viber_posts,
+            "total_posts": (stats[2] if stats else 0) + viber_posts + instagram_posts,
             "channel_posts": stats[3] if stats else 0,
             "forum_posts": stats[4] if stats else 0,
             "archive_posts": stats[5] if stats else 0,
@@ -737,6 +822,9 @@ def get_publications_stats(db: Session = Depends(get_db)):
             "viber_posts": viber_posts,
             "viber_products": viber_products,
             "viber_pending": viber_pending,
+            "instagram_posts": instagram_posts,
+            "instagram_products": instagram_products,
+            "instagram_pending": instagram_pending,
             "sold_but_live_count": sold_live[0] if sold_live else 0,
             "unlinked_count": unlinked[0] if unlinked else 0,
             "channels": [
@@ -1344,17 +1432,33 @@ async def viber_sync_status(body: Dict[str, Any] = Body(default={}), db: Session
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Instagram Platform — етап 1: preview/dry-run only. Тут навмисно немає
-# create/publish endpoint, тому навіть помилковий клік не може звернутися до Meta.
+# Instagram Platform — офіційний Graph API через захищений Cloudflare Worker.
+# Секрети й access token ніколи не проходять через frontend або PostgreSQL.
 # ─────────────────────────────────────────────────────────────────────────────
 
 @router.get("/api/publications/instagram/status")
-def instagram_connection_status():
-    return _instagram_pub().connection_status()
+async def instagram_connection_status():
+    return await _instagram_pub().dispatcher_status()
+
+
+@router.post("/api/publications/instagram/oauth/start")
+async def instagram_oauth_start():
+    try:
+        return await _instagram_pub().oauth_start()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.get("/api/publications/instagram/account-check")
+async def instagram_account_check():
+    try:
+        return await _instagram_pub().account_check()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 @router.post("/api/publications/instagram/preview-post")
-def instagram_preview_post(body: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
+async def instagram_preview_post(body: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
     product_id = body.get("product_id")
     if not product_id:
         raise HTTPException(status_code=400, detail="Немає product_id")
@@ -1364,11 +1468,12 @@ def instagram_preview_post(body: Dict[str, Any] = Body(...), db: Session = Depen
             status_code=404,
             detail=result.get("error", "Не вдалося зібрати Instagram-прев'ю"),
         )
+    result["connection"] = await _instagram_pub().dispatcher_status()
     return result
 
 
 @router.post("/api/publications/instagram/preview-posts-batch")
-def instagram_preview_posts_batch(
+async def instagram_preview_posts_batch(
     body: Dict[str, Any] = Body(...), db: Session = Depends(get_db),
 ):
     product_ids = body.get("product_ids")
@@ -1380,6 +1485,10 @@ def instagram_preview_posts_batch(
             status_code=400,
             detail=result.get("error", "Не вдалося зібрати пакет Instagram"),
         )
+    connection = await _instagram_pub().dispatcher_status()
+    for item in result.get("items", []):
+        if item.get("preview"):
+            item["preview"]["connection"] = connection
     return result
 
 
@@ -1394,6 +1503,92 @@ def instagram_dry_run(body: Dict[str, Any] = Body(...), db: Session = Depends(ge
             status_code=400,
             detail=result.get("error", "Instagram dry-run не пройдено"),
         )
+    return result
+
+
+@router.post("/api/publications/instagram/dry-run-batch")
+def instagram_dry_run_batch(
+    body: Dict[str, Any] = Body(...), db: Session = Depends(get_db),
+):
+    items = body.get("items")
+    if not isinstance(items, list) or not items:
+        raise HTTPException(status_code=400, detail="Не вибрано Instagram-чернетки")
+    result = _instagram_pub().dry_run_batch(db, items)
+    if result.get("error"):
+        raise HTTPException(status_code=400, detail=result["error"])
+    return result
+
+
+@router.post("/api/publications/instagram/render-preview")
+def instagram_render_preview(body: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
+    product_id = body.get("product_id")
+    if not product_id:
+        raise HTTPException(status_code=400, detail="Немає product_id")
+    try:
+        image = _instagram_pub().render_preview_jpeg(db, int(product_id), body)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return Response(
+        content=image,
+        media_type="image/jpeg",
+        headers={"Cache-Control": "no-store", "Content-Disposition": 'inline; filename="bms-instagram-preview.jpeg"'},
+    )
+
+
+@router.post("/api/publications/instagram/create-post")
+async def instagram_create_post(body: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
+    product_id = body.get("product_id")
+    if not product_id:
+        raise HTTPException(status_code=400, detail="Немає product_id")
+    result = await _instagram_pub().create_post(db, int(product_id), body)
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("error", "Instagram-публікація не вдалася"))
+    return result
+
+
+@router.post("/api/publications/instagram/create-posts-batch")
+async def instagram_create_posts_batch(body: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
+    result = await _instagram_pub().create_posts_batch(
+        db, body.get("items"), body.get("batch_id"), dry_run_only=body.get("dry_run") is True,
+    )
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("error", "Instagram-пакет не виконано"))
+    return result
+
+
+@router.get("/api/publications/instagram/product-status/{product_id}")
+def instagram_product_status(product_id: int, db: Session = Depends(get_db)):
+    return _instagram_pub().product_status(db, product_id)
+
+
+@router.post("/api/publications/instagram/sync-status")
+async def instagram_sync_status(body: Dict[str, Any] = Body(default={}), db: Session = Depends(get_db)):
+    raw_product_id = body.get("product_id") if isinstance(body, dict) else None
+    result = await _instagram_pub().sync_statuses(
+        db, product_id=int(raw_product_id) if raw_product_id else None,
+    )
+    if not result.get("ok") and not result.get("errors"):
+        raise HTTPException(status_code=400, detail=result.get("error", "Не вдалося оновити Instagram-стан"))
+    return result
+
+
+@router.post("/api/publications/instagram/publications/{publication_id}/cancel")
+async def instagram_cancel_publication(publication_id: int, db: Session = Depends(get_db)):
+    result = await _instagram_pub().cancel_publication(db, publication_id)
+    if not result.get("ok"):
+        raise HTTPException(status_code=409, detail=result.get("error", "Не вдалося скасувати Instagram-публікацію"))
+    return result
+
+
+@router.post("/api/publications/instagram/publications/{publication_id}/reschedule")
+async def instagram_reschedule_publication(
+    publication_id: int,
+    body: Dict[str, Any] = Body(...),
+    db: Session = Depends(get_db),
+):
+    result = await _instagram_pub().reschedule_publication(db, publication_id, body.get("publish_at"))
+    if not result.get("ok"):
+        raise HTTPException(status_code=409, detail=result.get("error", "Не вдалося перенести Instagram-публікацію"))
     return result
 
 

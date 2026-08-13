@@ -34,6 +34,10 @@ import ViberPublishDialog, {
 import ViberBatchPublishDialog, {
   type ViberBatchRequest,
 } from '../components/products/ViberBatchPublishDialog';
+import InstagramPublishDialog, {
+  InstagramMark, type InstagramDraftPayload, type InstagramPreview,
+} from '../components/products/InstagramPublishDialog';
+import InstagramBatchDraftDialog, { type InstagramBatchRequest } from '../components/products/InstagramBatchDraftDialog';
 
 // Placeholder for actual filter components for Products
 
@@ -80,6 +84,9 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
   const [viberPreview, setViberPreview] = useState<ViberPreview | null>(null);
   const [viberBatchIds, setViberBatchIds] = useState<number[] | null>(null);
   const [viberBusy, setViberBusy] = useState(false);
+  const [instagramPreview, setInstagramPreview] = useState<InstagramPreview | null>(null);
+  const [instagramBatchIds, setInstagramBatchIds] = useState<number[] | null>(null);
+  const [instagramBusy, setInstagramBusy] = useState(false);
             
   // Effect to react to global search changes and fetch insights
   useEffect(() => {
@@ -726,6 +733,93 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
     });
   };
 
+  const openSelectedInstagram = async () => {
+    const ids = selection.ids.slice();
+    if (!ids.length || instagramBusy) return;
+    if (ids.length > 1) {
+      setInstagramBatchIds(ids);
+      return;
+    }
+    setInstagramBusy(true);
+    try {
+      const response = await fetch('/api/publications/instagram/preview-post', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ product_id: ids[0] }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.detail || 'Не вдалося підготувати Instagram-чернетку');
+      setInstagramPreview(data);
+    } catch (error: any) {
+      notify.error({ message: `Instagram: ${error.message || 'Не вдалося підготувати чернетку'}`, duration: 8 });
+    } finally {
+      setInstagramBusy(false);
+    }
+  };
+
+  const publishSingleInstagram = async (payload: InstagramDraftPayload) => {
+    if (!instagramPreview || instagramBusy) return;
+    const when = payload.publish_at ? `за розкладом на ${new Date(payload.publish_at).toLocaleString('uk-UA')}` : 'зараз';
+    const approved = await confirmDialog({
+      title: payload.publish_at ? 'Запланувати Instagram-публікацію?' : 'Опублікувати в Instagram зараз?',
+      body: `#${instagramPreview.productnumber} · ${payload.publish_type === 'feed' ? 'пост/карусель' : payload.publish_type === 'story' ? 'Story' : 'Reel'}\nАкаунт: ${instagramPreview.connection.account}\nЧас: ${when}`,
+      okText: payload.publish_at ? 'Запланувати' : 'Опублікувати', kind: 'warning',
+    });
+    if (!approved) return;
+    setInstagramBusy(true);
+    taskManager.run(
+      `Instagram #${instagramPreview.productnumber}`,
+      async () => {
+        const response = await fetch('/api/publications/instagram/create-post', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok || !result.ok) throw new Error(result.detail || result.error || 'Instagram-публікація не вдалася');
+        return result;
+      },
+      {
+        silentSuccess: true,
+        resultStatus: (result: any) => ({ status: 'success', detail: result.scheduled_at ? `Заплановано: ${new Date(result.scheduled_at).toLocaleString('uk-UA')}` : 'Передано у захищену чергу' }),
+        onSuccess: (result: any) => {
+          notify.success({ message: result.scheduled_at ? 'Instagram-публікацію заплановано' : 'Instagram-публікацію передано в чергу', duration: 7 });
+          setInstagramPreview(null); selection.clear(); setSelectionMode(false);
+        },
+      },
+    ).catch(() => undefined).finally(() => setInstagramBusy(false));
+  };
+
+  const publishInstagramBatch = async (request: InstagramBatchRequest) => {
+    if (instagramBusy) return;
+    const approved = await confirmDialog({
+      title: 'Передати пакет в Instagram?',
+      body: `${request.items.length} окремих публікацій буде передано у захищену чергу. Кожна картка збере власні медіа й текст.`,
+      okText: 'Передати пакет', kind: 'warning',
+    });
+    if (!approved) return;
+    setInstagramBusy(true);
+    taskManager.run(
+      `Пакет Instagram: ${request.items.length} публікацій`,
+      async () => {
+        const response = await fetch('/api/publications/instagram/create-posts-batch', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(request),
+        });
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok || !result.ok) throw new Error(result.detail || result.error || 'Instagram-пакет не виконано');
+        return result;
+      },
+      {
+        silentSuccess: true,
+        resultStatus: (result: any) => ({ status: result.status === 'success' ? 'success' : 'partial', detail: `${result.counts?.success || 0} прийнято · ${result.counts?.error || 0} помилок` }),
+        onSuccess: (result: any) => {
+          const counts = result.counts || {};
+          if (result.status === 'success') notify.success({ message: 'Instagram-пакет прийнято', description: `${counts.success || 0} публікацій`, duration: 7 });
+          else notify.warning({ message: 'Instagram-пакет прийнято частково', description: `${counts.success || 0} прийнято · ${counts.error || 0} помилок`, duration: 10 });
+          setInstagramBatchIds(null); selection.clear(); setSelectionMode(false);
+        },
+      },
+    ).catch(() => undefined).finally(() => setInstagramBusy(false));
+  };
+
   // Esc — зняти виділення (дія користувача). Скидання буфера ЛИШЕ явними діями:
   // Esc / кнопка «Зняти виділення» / вихід з режиму «Виділити».
   // isActivePage: при keep-alive «Товари» лишаються змонтованими на будь-якій
@@ -948,6 +1042,7 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
                     { key: 'olx', icon: <span className="inline-flex h-4 items-center justify-center rounded bg-[#002f34] px-1 text-[8px] leading-none text-[#a9e000] font-black">OLX</span>, label: 'Відправити на OLX' },
                     { key: 'telegram', icon: <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-[#229ED9] text-[9px] leading-none text-white">➤</span>, label: 'Відправити в Telegram' },
                     { key: 'viber', icon: <span className="inline-flex h-4 w-4 items-center justify-center rounded bg-[#7360F2] text-[9px] leading-none text-white font-black">V</span>, label: 'Відправити у Viber' },
+                    { key: 'instagram', icon: <InstagramMark className="h-4 w-4 text-[10px]" />, label: 'Підготувати для Instagram' },
                     { type: 'divider' as const },
                     { key: 'clear', label: 'Зняти виділення' },
                   ],
@@ -957,6 +1052,7 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
                     else if (key === 'olx') void sendSelectedToOlx();
                     else if (key === 'telegram') void openSelectedTelegram();
                     else if (key === 'viber') void openSelectedViber();
+                    else if (key === 'instagram') void openSelectedInstagram();
                     else if (key === 'clear') selection.clear();
                   },
                 }}
@@ -1084,6 +1180,22 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
           busy={viberBusy}
           onCancel={() => { if (!viberBusy) setViberBatchIds(null); }}
           onPublish={publishViberBatch}
+        />
+      )}
+      {instagramPreview && (
+        <InstagramPublishDialog
+          data={instagramPreview}
+          busy={instagramBusy}
+          onCancel={() => { if (!instagramBusy) setInstagramPreview(null); }}
+          onConfirm={publishSingleInstagram}
+        />
+      )}
+      {instagramBatchIds && (
+        <InstagramBatchDraftDialog
+          productIds={instagramBatchIds}
+          busy={instagramBusy}
+          onCancel={() => { if (!instagramBusy) setInstagramBatchIds(null); }}
+          onPublish={publishInstagramBatch}
         />
       )}
     </MainLayout>
