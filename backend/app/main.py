@@ -117,6 +117,16 @@ if not os.getenv('GOOGLE_SHEETS_CREDENTIALS_FILE'):
 # Database initialization moved to separate script for faster startup
 logger.info("Database connection ready")
 
+# ⚠️ ДО будь-яких мережевих операцій: якщо мережа рекламує IPv6, але не
+# маршрутизує його (класика — роздача з iPhone), кожне вихідне з'єднання
+# зависає в SYN_SENT назавжди і вішає ВЕСЬ бекенд, включно зі статикою.
+# Перевірено на інциденті 2026-08-14: 3 години простою. Деталі — у net_guard.py.
+try:
+    from app.net_guard import apply_network_guards
+except ImportError:
+    from backend.app.net_guard import apply_network_guards
+apply_network_guards()
+
 app = FastAPI()
 
 # Add CORS middleware with explicit origins

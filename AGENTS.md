@@ -79,6 +79,14 @@
 
 Ключові файли: `backend/services/instagram_publisher.py`, `backend/migrations/2026_08_11_003_create_instagram_publications.sql`, `backend/routers/publications.py`, `backend/tests/test_instagram_publisher.py`, `frontend/src/components/products/InstagramPublishDialog.tsx`, `frontend/src/components/products/InstagramBatchDraftDialog.tsx`, `frontend/src/pages/ProductsPage.tsx`, `frontend/src/pages/PublicationsPage.tsx`, `cloudflare/instagram-dispatcher/`.
 
+### Мережа: мертвий IPv6 вішає весь бекенд
+
+- Інцидент 2026-08-14, ~3 години простою. Ноутбук у роздачі з iPhone (`172.20.10.x`): хотспот рекламує IPv6 (у системи є глобальна `2a02:…`), але не маршрутизує його. Заміряно: IPv6 → `sheets.googleapis.com` таймаут, IPv4 → 0.8 с.
+- `socket.connect()` без таймауту не має дедлайну — сокети зависали в `SYN_SENT` назавжди (у процесі BMS їх було 4). Наслідок — не «повільна синхронізація», а смерть застосунку: не відповідали навіть `/` і `/docs`, парсинг-джоб застряг на `initializing` і три години висів у БД як `running`.
+- Симптом виглядає «плаваючим», але відтворюється детерміновано: на цій мережі — щоразу, на нормальному Wi-Fi — ніколи. Не списувати на «щось підвисло».
+- `backend/app/net_guard.py` викликається ДО створення `app`: коротка проба IPv6, і якщо він мертвий — AAAA прибирається з `getaddrinfo`, плюс ставиться дефолтний таймаут сокетів. Перевірка повторюється щостарту, тож робочий IPv6 повертається сам. Вимикач — `NET_GUARD=0`.
+- Діагностика зависання: `lsof -nP -a -p <pid> -iTCP | grep SYN_SENT` показує, до кого не достукується; `sample <pid> 3` покаже потоки в `sock_connect`. Якщо не відповідає навіть статика — це заблокований event loop, а не повільна БД.
+
 ### Контент-план (Obsidian TaskNotes)
 
 - Вкладка «Контент» показує план публікацій, який користувач веде в Obsidian (плагін TaskNotes 4.12.3, тека `Brandstore/Контент-план/Публікації`). Це ВЛАСНИЙ календар BMS над тими самими даними — вбудувати вікно Obsidian неможливо.
