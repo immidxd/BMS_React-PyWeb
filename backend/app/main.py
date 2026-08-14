@@ -54,6 +54,10 @@ try:
     from routers import merge_candidates  # optional — workspace merge UX
 except Exception:
     merge_candidates = None
+try:
+    from routers import content_plan  # optional — контент-план з Obsidian TaskNotes
+except Exception:
+    content_plan = None
 
 # НАЛАШТУВАННЯ ЛОГУВАННЯ
 # Використовуємо абсолютний шлях і гарантуємо наявність директорії,
@@ -203,6 +207,8 @@ if publications:
     app.include_router(publications.router, tags=["publications"])  # routes already prefixed with /api
 if merge_candidates:
     app.include_router(merge_candidates.router, tags=["merge-candidates"])  # routes already prefixed with /api
+if content_plan:
+    app.include_router(content_plan.router, tags=["content-plan"])  # routes already prefixed with /api
 
 # Mount product images directory (local + Google Drive overlay; abstraction in services/product_images.py)
 try:

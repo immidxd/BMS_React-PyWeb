@@ -29,6 +29,7 @@ const ShipmentsPage = lazyWithRetry(() => import('./pages/ShipmentsPage'));
 const StatisticsPage = lazyWithRetry(() => import('./pages/StatisticsPage'));
 const BrandsPage = lazyWithRetry(() => import('./pages/BrandsPage'));
 const PublicationsPage = lazyWithRetry(() => import('./pages/PublicationsPage'));
+const ContentPlanPage = lazyWithRetry(() => import('./pages/ContentPlanPage'));
 const WarehousePage = lazyWithRetry(() => import('./pages/WarehousePage'));
 const MergeQueuePage = lazyWithRetry(() => import('./pages/MergeQueuePage'));
 
@@ -78,7 +79,7 @@ const FilterToggleButton: React.FC = () => {
   );
 };
 
-type TabKey = 'products' | 'orders' | 'clients' | 'suppliers' | 'deliveries' | 'brands' | 'publications' | 'warehouse' | 'statistics' | 'merge';
+type TabKey = 'products' | 'orders' | 'clients' | 'suppliers' | 'deliveries' | 'brands' | 'publications' | 'content-plan' | 'warehouse' | 'statistics' | 'merge';
 
 interface TabConfig {
   key: TabKey;
@@ -94,6 +95,7 @@ const TABS: TabConfig[] = [
   { key: 'deliveries', label: 'Поставки', component: ShipmentsPage },
   { key: 'brands', label: 'Бренди', component: BrandsPage },
   { key: 'publications', label: 'Публікації', component: PublicationsPage },
+  { key: 'content-plan', label: 'Контент', component: ContentPlanPage },
   { key: 'warehouse', label: 'Склад', component: WarehousePage },
   { key: 'statistics', label: 'Статистика', component: StatisticsPage },
   { key: 'merge', label: 'Збіги', component: MergeQueuePage },

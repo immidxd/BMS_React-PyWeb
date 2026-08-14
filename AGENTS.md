@@ -79,6 +79,19 @@
 
 Ключові файли: `backend/services/instagram_publisher.py`, `backend/migrations/2026_08_11_003_create_instagram_publications.sql`, `backend/routers/publications.py`, `backend/tests/test_instagram_publisher.py`, `frontend/src/components/products/InstagramPublishDialog.tsx`, `frontend/src/components/products/InstagramBatchDraftDialog.tsx`, `frontend/src/pages/ProductsPage.tsx`, `frontend/src/pages/PublicationsPage.tsx`, `cloudflare/instagram-dispatcher/`.
 
+### Контент-план (Obsidian TaskNotes)
+
+- Вкладка «Контент» показує план публікацій, який користувач веде в Obsidian (плагін TaskNotes 4.12.3, тека `Brandstore/Контент-план/Публікації`). Це ВЛАСНИЙ календар BMS над тими самими даними — вбудувати вікно Obsidian неможливо.
+- Розподіл володіння: Obsidian володіє планом (`title`, `scheduled`, канал у `contexts`, `status`), BMS — виконанням (товари, `slot_state`, посилання на пост). Кожна сторона пише лише у свої поля, тому синхронізація не конфліктує.
+- План ІМПОРТУЄТЬСЯ у `content_plan_slots`, а не читається наживо: HTTP API TaskNotes працює лише поки відкритий Obsidian, інакше «запланував і закрив» = порожній календар.
+- Канал береться з `contexts` (`telegram`/`instagram`/`viber`), формат — другим контекстом (`stories`), кількість товарів — із заголовка («топ-5» → 5). Задача без каналу (`planning`) слотом не є.
+- API TaskNotes: лише `127.0.0.1`, Bearer-токен, `GET /api/tasks` — посторінковий список (фільтри він відхиляє з 400, для них є `POST /api/tasks/query`), задача адресується ШЛЯХОМ нотатки. Вебхуки підписані HMAC-SHA256 над сирим тілом, заголовки `X-TaskNotes-Event`/`X-TaskNotes-Signature`. `.env`: `TASKNOTES_API_URL`, `TASKNOTES_API_TOKEN`, `TASKNOTES_WEBHOOK_SECRET`.
+- Автодобір товарів: у наявності + ще не опубліковані в цьому каналі + мають фото. **Наявність фото не перевіряється в SQL**: `products.mainimage` порожній у всіх рядків, а таблиця `product_images` порожня — єдине джерело правди це файли на диску через `list_images()` (~80 мс на номер без кешу), тому кандидати відсіюються в Python із обмеженого пулу.
+- Належність до каналу звіряй за НОМЕРОМ, а не за `product_id`: пост прив'язаний до одного рядка ростовки, решта рядків того самого номера — той самий товар у профілі. Ростовка згортається в один пост.
+- Публікація навмисно ручна: слот віддає товари у наявний пакетний діалог каналу, і лише після успіху `mark-published` фіксує факт і дописує `status: done` назад у нотатку. Автопостинг за розкладом свідомо НЕ вмикали.
+
+Ключові файли: `backend/services/content_plan.py`, `backend/routers/content_plan.py`, `frontend/src/pages/ContentPlanPage.tsx`.
+
 ### Фото товарів
 
 - У картці товару є поворот ліворуч, на 180°, праворуч і горизонтальне віддзеркалення.
