@@ -31,10 +31,13 @@ const preview: InstagramPreview = {
   default_image_idx: [0, 1],
   carousel_limit: 10,
   batch_max_products: 10,
-  default_feed_preset: 'portrait',
+  default_feed_preset: 'square',
   feed_presets: {
     portrait: { label: 'Вертикальний 4:5', width: 1080, height: 1350 },
+    square: { label: 'Квадрат 1:1', width: 1080, height: 1080 },
   },
+  feed_zoom_defaults: { portrait: [0.9, 1], square: [0.9, 1] },
+  feed_edge_adjusted: { portrait: [false, true], square: [false, true] },
   story_preset: { label: 'Stories / Reels 9:16', width: 1080, height: 1920 },
   publish_types: {
     feed: { label: 'Пост / карусель', max_media: 10 },
@@ -81,6 +84,15 @@ describe('InstagramPublishDialog defaults', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Пост / карусель' }));
     expect(zoom().value).toBe('0.9');
     expect(screen.getByText('2/10')).toBeInTheDocument();
+  });
+
+  it('disables shrinking for a photo that touches the frame', () => {
+    render(<InstagramPublishDialog data={preview} onCancel={jest.fn()} onConfirm={jest.fn()} />);
+
+    fireEvent.click(screen.getAllByTitle('Налаштувати кадр')[1]);
+
+    expect((screen.getAllByRole('slider')[0] as HTMLInputElement).value).toBe('1');
+    expect(screen.getByText(/Автоматичне зменшення вимкнено/)).toBeInTheDocument();
   });
 
   it('reveals an editable date after selecting the schedule in desktop-compatible input flow', async () => {

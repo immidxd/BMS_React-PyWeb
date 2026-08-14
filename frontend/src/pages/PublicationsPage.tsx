@@ -34,6 +34,7 @@ interface PublicationItem {
   viber_pending_count?: number;
   instagram_publication_count?: number;
   instagram_pending_count?: number;
+  instagram_permalink?: string | null;
   // Розширені поля для column-selector
   brand_name?: string | null;
   type_name?: string | null;
@@ -104,6 +105,9 @@ interface PublicationStats {
   instagram_products: number;
   instagram_pending: number;
   sold_but_live_count: number;
+  sold_but_live_telegram_count: number;
+  sold_but_live_viber_count: number;
+  sold_but_live_instagram_count: number;
   unlinked_count: number;
   channels: Array<{
     chat_title: string;
@@ -117,7 +121,21 @@ interface PublicationsPageProps {
   currentSearchTerm: string;
 }
 
-type FilterMode = 'all' | 'published' | 'problematic' | 'unpublished' | 'unlinked';
+type FilterMode = 'all' | 'published' | 'pending' | 'problematic' | 'unpublished' | 'unlinked';
+type PublicationPlatform = 'all' | 'telegram' | 'viber' | 'instagram';
+
+const publicationStatusLabel = (status: string) => ({
+  published: 'Опубліковано',
+  queued: 'У черзі',
+  scheduled: 'Заплановано',
+  processing: 'Публікується',
+  retrying: 'Повторна спроба',
+  cancelled: 'Скасовано',
+  archived: 'В архіві',
+  removed_manual: 'Прибрано вручну',
+  failed: 'Помилка',
+  error: 'Помилка',
+}[status] || status);
 
 /* ── Filter Panel ──────────────────────────────────────────────────── */
 
@@ -157,15 +175,42 @@ type ModeOption = { key: FilterMode; label: string; icon: React.ReactNode; tone:
 const PublicationsFilterPanel: React.FC<{
   filterMode: FilterMode;
   onFilterChange: (m: FilterMode) => void;
+  platform: PublicationPlatform;
+  onPlatformChange: (platform: PublicationPlatform) => void;
   stats: PublicationStats | null;
-}> = ({ filterMode, onFilterChange, stats }) => {
+}> = ({ filterMode, onFilterChange, platform, onPlatformChange, stats }) => {
   const modes: ModeOption[] = [
     { key: 'published',   label: 'Опубліковані',        icon: <SendOutlined />,       tone: 'text-sky-500',     count: stats?.published_products },
-    { key: 'problematic', label: 'Продані, але висять', icon: <WarningOutlined />,    tone: 'text-rose-500',    count: stats?.sold_but_live_count },
+    { key: 'pending',     label: 'У черзі / заплановані', icon: <AppstoreOutlined />, tone: 'text-violet-500', count: (stats?.viber_pending || 0) + (stats?.instagram_pending || 0) },
+    { key: 'problematic', label: 'Продані, але висять', icon: <WarningOutlined />,    tone: 'text-rose-500',    count:
+      (stats?.sold_but_live_telegram_count || 0) + (stats?.sold_but_live_viber_count || 0) + (stats?.sold_but_live_instagram_count || 0) },
     { key: 'unpublished', label: 'Не опубліковані',     icon: <MinusCircleOutlined />, tone: 'text-gray-400' },
     { key: 'unlinked',    label: 'Незвʼязані пости',    icon: <DisconnectOutlined />, tone: 'text-amber-500',   count: stats?.unlinked_count },
     { key: 'all',         label: 'Всі товари',          icon: <AppstoreOutlined />,   tone: 'text-gray-400' },
   ];
+
+  const platforms: Array<{ key: PublicationPlatform; label: string; short: string; count?: number }> = filterMode === 'problematic'
+    ? [
+        { key: 'telegram', label: 'Telegram', short: 'TG', count: stats?.sold_but_live_telegram_count },
+        { key: 'instagram', label: 'Instagram', short: 'IG', count: stats?.sold_but_live_instagram_count },
+        { key: 'viber', label: 'Viber', short: 'V', count: stats?.sold_but_live_viber_count },
+      ]
+    : filterMode === 'unlinked'
+      ? [{ key: 'telegram', label: 'Telegram', short: 'TG', count: stats?.unlinked_count }]
+      : filterMode === 'pending'
+        ? [
+            { key: 'all', label: 'Усі', short: 'Усі', count: (stats?.viber_pending || 0) + (stats?.instagram_pending || 0) },
+            { key: 'instagram', label: 'Instagram', short: 'IG', count: stats?.instagram_pending },
+            { key: 'viber', label: 'Viber', short: 'V', count: stats?.viber_pending },
+          ]
+        : filterMode === 'all'
+          ? [{ key: 'all', label: 'Усі майданчики', short: 'Усі' }]
+          : [
+            { key: 'all', label: 'Усі майданчики', short: 'Усі' },
+            { key: 'telegram', label: 'Telegram', short: 'TG' },
+            { key: 'instagram', label: 'Instagram', short: 'IG' },
+            { key: 'viber', label: 'Viber', short: 'V' },
+            ];
 
   return (
     <div>
@@ -200,6 +245,34 @@ const PublicationsFilterPanel: React.FC<{
           })}
         </div>
       </FilterSection>
+
+      {filterMode !== 'all' && <FilterSection title="Майданчик" defaultOpen>
+        <div className="grid grid-cols-2 gap-1.5">
+          {platforms.map(opt => {
+            const active = platform === opt.key;
+            return (
+              <button key={opt.key} type="button" onClick={() => onPlatformChange(opt.key)}
+                title={opt.label}
+                className={`flex min-w-0 items-center gap-1.5 rounded-lg border px-2 py-2 text-left text-xs transition-colors ${active
+                  ? 'border-gray-800 bg-gray-100 font-semibold text-gray-900 ring-1 ring-gray-300 dark:border-gray-300 dark:bg-gray-600/40 dark:text-gray-100'
+                  : 'border-gray-200 bg-white text-gray-600 hover:border-gray-400 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-300'}`}>
+                <span className="font-bold">{opt.short}</span>
+                <span className="min-w-0 flex-1 truncate">{opt.label}</span>
+                {opt.count != null && opt.count > 0 && <span className="rounded-full bg-rose-100 px-1.5 py-0.5 text-[10px] font-bold text-rose-700 dark:bg-rose-900/40 dark:text-rose-300">{opt.count}</span>}
+              </button>
+            );
+          })}
+        </div>
+        {filterMode === 'problematic' && (
+          <p className="mt-2 text-[11px] leading-relaxed text-gray-500 dark:text-gray-400">
+            {platform === 'telegram'
+              ? 'BMS може зняти ці пости автоматично.'
+              : platform === 'instagram'
+                ? 'Видаліть пости в Instagram і підтвердьте це галочкою в BMS.'
+                : 'Приберіть пост у Viber вручну й підтвердьте це в BMS.'}
+          </p>
+        )}
+      </FilterSection>}
 
       {stats && (
         <>
@@ -367,7 +440,8 @@ const SyncModal: React.FC<{
 const DetailModal: React.FC<{
   productId: number | null;
   onClose: () => void;
-}> = ({ productId, onClose }) => {
+  onChanged?: () => void;
+}> = ({ productId, onClose, onChanged }) => {
   const [details, setDetails] = useState<PublicationDetail[]>([]);
   const [loading, setLoading] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
@@ -424,6 +498,25 @@ const DetailModal: React.FC<{
     }
   };
 
+  const restoreManualCleanup = async (detail: PublicationDetail) => {
+    if (!productId || (detail.platform !== 'instagram' && detail.platform !== 'viber') || managingId !== null) return;
+    const approved = await confirmDialog('Повернути цю публікацію до активних? Вона знову враховуватиметься у фільтрах BMS.');
+    if (!approved) return;
+    setManagingId(typeof detail.local_publication_id === 'number' ? detail.local_publication_id : productId);
+    try {
+      const response = await fetch(`/api/publications/manual-cleanup/${detail.platform}/${productId}/restore`, { method: 'POST' });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok || !result.ok) throw new Error(result.detail || 'Не вдалося відновити стан');
+      notify.success({ message: 'Публікацію повернуто до активних у BMS', duration: 6 });
+      setRefreshKey(value => value + 1);
+      onChanged?.();
+    } catch (error: any) {
+      notify.error(error.message || 'Не вдалося відновити стан');
+    } finally {
+      setManagingId(null);
+    }
+  };
+
   if (productId === null) return null;
 
   return (
@@ -469,10 +562,10 @@ const DetailModal: React.FC<{
                   <span className={`text-xs px-2 py-0.5 rounded ${
                     d.tg_status === 'published' ? 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300' :
                     ['scheduled', 'queued', 'processing', 'retrying'].includes(d.tg_status) ? 'bg-violet-100 dark:bg-violet-900/30 text-violet-700 dark:text-violet-300' :
-                    d.tg_status === 'archived' ? 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300' :
+                    ['archived', 'removed_manual'].includes(d.tg_status) ? 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300' :
                     'bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300'
                   }`}>
-                    {d.tg_status}
+                    {publicationStatusLabel(d.tg_status)}
                   </span>
                 </div>
                 {d.message_text && (
@@ -504,6 +597,12 @@ const DetailModal: React.FC<{
                       className="rounded border border-rose-300 px-2.5 py-1.5 text-xs font-medium text-rose-600 disabled:opacity-50">Скасувати</button>
                   </div>
                 )}
+                {(d.platform === 'instagram' || d.platform === 'viber') && d.tg_status === 'removed_manual' && (
+                  <button type="button" onClick={() => restoreManualCleanup(d)} disabled={managingId !== null}
+                    className="mt-2 rounded border border-gray-300 px-2.5 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700">
+                    Повернути до активних
+                  </button>
+                )}
               </div>
             ))}
           </div>
@@ -533,6 +632,7 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
   const [error, setError] = useState<string | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [filterMode, setFilterMode] = useState<FilterMode>('published');
+  const [platform, setPlatform] = useState<PublicationPlatform>('all');
   // Базовий безпечний режим — не пропонувати публікацію товару без залишку.
   // Значення й вигляд відповідають однойменним перемикачам у «Товарах».
   const [onlyUnsold, setOnlyUnsold] = useState(true);
@@ -544,6 +644,8 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [unpublishing, setUnpublishing] = useState<number | null>(null);
   const [bulkUnpublishing, setBulkUnpublishing] = useState(false);
+  const [manualCleanupBusy, setManualCleanupBusy] = useState<number | null>(null);
+  const [bulkManualCleanupBusy, setBulkManualCleanupBusy] = useState(false);
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [expandedDetail, setExpandedDetail] = useState<any>(null);
   const [expandedLoading, setExpandedLoading] = useState(false);
@@ -789,6 +891,7 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
       });
       if (currentSearchTerm) params.set('search', currentSearchTerm);
       if (filterMode !== 'all') params.set('filter_mode', filterMode);
+      params.set('platform', platform);
       // Режим «Продані, але висять» — окремий cleanup-сценарій; у ньому
       // «Тільки непродані» тимчасово не діє і відновлюється після виходу.
       params.set('only_unsold', String(onlyUnsold && filterMode !== 'problematic'));
@@ -806,7 +909,7 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
       setLoading(false);
       setIsRefreshing(false);
     }
-  }, [page, perPage, currentSearchTerm, filterMode, onlyUnsold, onlyRostovka]);
+  }, [page, perPage, currentSearchTerm, filterMode, platform, onlyUnsold, onlyRostovka]);
 
   useEffect(() => { fetchItems(); }, [fetchItems]);
   useEffect(() => { fetchStats(); }, [fetchStats]);
@@ -820,6 +923,7 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
   const handleResetFilters = () => {
     setPage(1);
     setFilterMode('published');
+    setPlatform('all');
     // Як у «Товарах»: базовий «Тільки непродані» не скидаємо.
     setOnlyRostovka(false);
   };
@@ -1316,6 +1420,58 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
     }
   };
 
+  const handleManualCleanup = async (productId: number, targetPlatform: 'instagram' | 'viber') => {
+    const platformLabel = targetPlatform === 'instagram' ? 'Instagram' : 'Viber';
+    const approved = await confirmDialog(
+      `Підтвердити, що всі публікації цього проданого товару вже прибрані з ${platformLabel}? BMS збереже їх в історії, але більше не показуватиме як активні.`,
+    );
+    if (!approved) return;
+    setManualCleanupBusy(productId);
+    try {
+      const response = await fetch(`/api/publications/manual-cleanup/${targetPlatform}/${productId}/confirm`, { method: 'POST' });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok || !result.ok) throw new Error(result.detail || 'Не вдалося підтвердити прибирання');
+      notify.success({ message: `Прибрано з обліку ${platformLabel}`, description: `${result.changed} публікацій збережено в історії`, duration: 6 });
+      setSelectedIds(current => { const next = new Set(current); next.delete(productId); return next; });
+      fetchItems();
+      fetchStats();
+    } catch (error: any) {
+      notify.error(error.message || 'Не вдалося оновити стан публікації');
+    } finally {
+      setManualCleanupBusy(null);
+    }
+  };
+
+  const handleBulkManualCleanup = async () => {
+    if (platform !== 'instagram' && platform !== 'viber') return;
+    const ids = Array.from(selectedIds);
+    if (!ids.length) return;
+    const platformLabel = platform === 'instagram' ? 'Instagram' : 'Viber';
+    const approved = await confirmDialog(
+      `Підтвердити ручне прибирання ${ids.length} товарів із ${platformLabel}? Робіть це лише після фактичного видалення постів на майданчику.`,
+    );
+    if (!approved) return;
+    setBulkManualCleanupBusy(true);
+    let success = 0;
+    const errors: string[] = [];
+    for (const productId of ids) {
+      try {
+        const response = await fetch(`/api/publications/manual-cleanup/${platform}/${productId}/confirm`, { method: 'POST' });
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok || !result.ok) throw new Error(result.detail || `#${productId}: помилка`);
+        success += 1;
+      } catch (error: any) {
+        errors.push(error.message || `#${productId}: помилка`);
+      }
+    }
+    setBulkManualCleanupBusy(false);
+    setSelectedIds(new Set());
+    fetchItems();
+    fetchStats();
+    if (errors.length) notify.warning({ message: 'Оброблено частково', description: `${success} підтверджено · ${errors.length} помилок`, duration: 9 });
+    else notify.success({ message: `Публікації ${platformLabel} підтверджено прибраними`, description: `${success} товарів`, duration: 7 });
+  };
+
   const handleRowClick = async (productId: number | null) => {
     if (!productId) return;
     if (expandedId === productId) {
@@ -1354,7 +1510,14 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
       filterPanelContent={
         <PublicationsFilterPanel
           filterMode={filterMode}
-          onFilterChange={(m) => { setFilterMode(m); setPage(1); }}
+          onFilterChange={(m) => {
+            setFilterMode(m);
+            setPlatform(m === 'problematic' || m === 'unlinked' ? 'telegram' : 'all');
+            setSelectedIds(new Set());
+            setPage(1);
+          }}
+          platform={platform}
+          onPlatformChange={(nextPlatform) => { setPlatform(nextPlatform); setSelectedIds(new Set()); setPage(1); }}
           stats={stats}
         />
       }
@@ -1376,7 +1539,7 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
             <button
               onClick={() => setIntegrationsOpen(true)}
               className="px-3 py-1.5 text-sm bg-gray-800 hover:bg-gray-900 dark:bg-gray-200 dark:hover:bg-white text-white dark:text-gray-900 rounded transition-colors flex items-center gap-1.5"
-              title="Синхронізація та керування каналами: Telegram, Viber, OLX, Prom"
+              title="Синхронізація та керування каналами: Telegram, Instagram, Viber, OLX, Prom"
             >
               ⚙ Інтеграції
               {promStatus?.token_expiring_soon && <span className="w-2 h-2 rounded-full bg-amber-400" title="Токен Prom спливає" />}
@@ -1418,12 +1581,17 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
         ) : items.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-64 gap-2 text-gray-400">
             <div className="text-sm text-gray-600 dark:text-gray-300">
-              {filterMode === 'unpublished' ? 'Усі товари вже опубліковані' : 'Публікацій ще немає'}
+              {filterMode === 'unpublished' ? 'Усі товари вже опубліковані'
+                : filterMode === 'problematic' ? 'Проданих публікацій для прибирання немає'
+                : filterMode === 'pending' ? 'Черга порожня'
+                : 'Публікацій ще немає'}
             </div>
             <div className="text-xs">
               {filterMode === 'unpublished'
                 ? 'Змініть фільтр зліва, щоб побачити інші товари.'
-                : 'Відкрийте «Інтеграції» → «Синхронізувати все», щоб підтягнути пости з Telegram.'}
+                : filterMode === 'problematic'
+                  ? 'На обраному майданчику все прибрано.'
+                  : 'Відкрийте «Інтеграції» → «Синхронізувати все», щоб оновити стани.'}
             </div>
           </div>
         ) : (
@@ -1435,26 +1603,33 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
                 Обрано: {selectedIds.size} товарів
               </span>
               <div className="flex flex-wrap items-center justify-end gap-2">
-                <button type="button" onClick={() => setTgBatchIds(Array.from(selectedIds))} disabled={tgBusy}
+                {filterMode !== 'problematic' && <button type="button" onClick={() => setTgBatchIds(Array.from(selectedIds))} disabled={tgBusy}
                         className="flex items-center gap-1.5 rounded bg-[#229ED9] px-4 py-2 text-sm font-medium text-white transition hover:brightness-110 disabled:opacity-50">
                   <SendOutlined /> Опублікувати у Telegram
-                </button>
-                <button type="button" onClick={() => setViberBatchIds(Array.from(selectedIds))} disabled={viberBusy}
+                </button>}
+                {filterMode !== 'problematic' && <button type="button" onClick={() => setViberBatchIds(Array.from(selectedIds))} disabled={viberBusy}
                         className="flex items-center gap-1.5 rounded bg-[#7360F2] px-4 py-2 text-sm font-medium text-white transition hover:brightness-110 disabled:opacity-50">
                   <span className="font-black">V</span> Опублікувати у Viber
-                </button>
-                <button type="button" onClick={() => setInstagramBatchIds(Array.from(selectedIds))}
+                </button>}
+                {filterMode !== 'problematic' && <button type="button" onClick={() => setInstagramBatchIds(Array.from(selectedIds))}
                         className="flex items-center gap-1.5 rounded bg-gradient-to-r from-[#833AB4] to-[#E1306C] px-4 py-2 text-sm font-medium text-white transition hover:brightness-110">
                   <InstagramMark className="h-4 w-4 text-[10px]" /> Підготувати для Instagram
-                </button>
-                <button
+                </button>}
+                {(filterMode !== 'problematic' || platform === 'telegram') && <button
                   onClick={handleBulkUnpublish}
                   disabled={bulkUnpublishing || !items.some(item => item.product_id !== null && selectedIds.has(item.product_id) && (item.telegram_publication_count ?? item.publication_count) > 0)}
                   title="Стосується лише Telegram: Viber Channels API не має безпечної дії видалення поста"
                   className="rounded bg-red-600 px-4 py-2 text-sm text-white transition-colors hover:bg-red-700 disabled:opacity-50"
                 >
                   {bulkUnpublishing ? 'Знімаю...' : `🗑 Зняти з Telegram`}
-                </button>
+                </button>}
+                {filterMode === 'problematic' && (platform === 'instagram' || platform === 'viber') && (
+                  <button type="button" onClick={handleBulkManualCleanup} disabled={bulkManualCleanupBusy}
+                    className="inline-flex items-center gap-1.5 rounded bg-emerald-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-emerald-700 disabled:opacity-50"
+                    title="Лише підтверджує фактичне ручне видалення; BMS не видаляє пост на майданчику">
+                    {bulkManualCleanupBusy ? 'Підтверджую…' : '✓ Позначити прибраними'}
+                  </button>
+                )}
               </div>
             </div>
           )}
@@ -1483,10 +1658,24 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
               </thead>
               <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
                 {items.map((item, idx) => {
-                  const isProblematic = item.status?.toLowerCase() === 'продано' && item.publication_count > 0;
+                  const isProblematic = filterMode === 'problematic';
                   const isUnlinked = item.is_unlinked === true;
                   const needsManualEdit = item.needs_manual_edit === true;
                   const isExpanded = expandedId === item.product_id && item.product_id !== null;
+                  const visiblePublicationCount = platform === 'telegram'
+                    ? (item.telegram_publication_count ?? item.publication_count)
+                    : platform === 'instagram'
+                      ? (filterMode === 'pending' ? (item.instagram_pending_count || 0) : (item.instagram_publication_count || 0))
+                      : platform === 'viber'
+                        ? (filterMode === 'pending' ? (item.viber_pending_count || 0) : (item.viber_publication_count || 0))
+                        : item.publication_count;
+                  const platformSummary = platform === 'telegram'
+                    ? `Telegram · ${visiblePublicationCount}`
+                    : platform === 'instagram'
+                      ? `Instagram · ${visiblePublicationCount}${item.instagram_pending_count ? ` · у черзі ${item.instagram_pending_count}` : ''}`
+                      : platform === 'viber'
+                        ? `Viber · ${visiblePublicationCount}${item.viber_pending_count ? ` · у черзі ${item.viber_pending_count}` : ''}`
+                        : null;
                   return (
                     <React.Fragment key={isUnlinked ? `unlinked-${idx}` : item.product_id}>
                     <tr
@@ -1605,15 +1794,15 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
                       )}
                       {isPubColVisible('publication_count') && (
                       <td className="px-3 py-2 text-center">
-                        <span className={`font-medium ${item.publication_count > 0 ? 'text-blue-600 dark:text-blue-400' : 'text-gray-400'}`}>
-                          {item.publication_count}
+                        <span className={`font-medium ${visiblePublicationCount > 0 ? 'text-blue-600 dark:text-blue-400' : 'text-gray-400'}`}>
+                          {visiblePublicationCount}
                         </span>
                       </td>
                       )}
                       {isPubColVisible('channels') && (
                       <td className="px-3 py-2 text-xs text-gray-600 dark:text-gray-400 truncate max-w-md" title={`${item.channels}\n${item.threads}`}>
-                        {item.channels || '—'}
-                        {item.threads && item.threads !== '—' && (
+                        {platformSummary || item.channels || '—'}
+                        {!platformSummary && item.threads && item.threads !== '—' && (
                           <span className="text-gray-400 ml-1">/ {item.threads}</span>
                         )}
                       </td>
@@ -1625,7 +1814,7 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
                             {/* Опублікувати — головна дія для товару без постів;
                                 для вже опублікованого лишається доступною
                                 (наприклад, після зняття з продажу), але тьмяна. */}
-                            <button
+                            {filterMode !== 'problematic' && <button
                               onClick={() => openPublishDialog(item.product_id as number)}
                               disabled={tgPreviewing === item.product_id}
                               title={item.publication_count > 0
@@ -1639,23 +1828,23 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
                             >
                               <SendOutlined style={{ fontSize: 11 }} />
                               {tgPreviewing === item.product_id ? '…' : 'Опублікувати'}
-                            </button>
-                            <button
+                            </button>}
+                            {filterMode !== 'problematic' && <button
                               onClick={() => openViberDialog(item.product_id as number)}
                               disabled={viberPreviewing === item.product_id}
                               title="Створити колаж і пост у Viber"
                               className="inline-flex items-center gap-1 rounded-md border border-violet-300 bg-violet-50/60 px-2 py-1 text-xs font-medium text-violet-600 transition-colors hover:bg-violet-100 disabled:opacity-50 dark:border-violet-700 dark:bg-violet-900/20 dark:text-violet-300 dark:hover:bg-violet-900/40"
                             >
                               <span className="font-black">V</span>{viberPreviewing === item.product_id ? '…' : 'Viber'}
-                            </button>
-                            <button
+                            </button>}
+                            {filterMode !== 'problematic' && <button
                               onClick={() => openInstagramDialog(item.product_id as number)}
                               disabled={instagramPreviewing === item.product_id}
                               title="Підготувати й перевірити Instagram-чернетку без надсилання"
                               className="inline-flex items-center gap-1 rounded-md border border-pink-300 bg-pink-50/60 px-2 py-1 text-xs font-medium text-pink-600 transition-colors hover:bg-pink-100 disabled:opacity-50 dark:border-pink-800 dark:bg-pink-900/20 dark:text-pink-300 dark:hover:bg-pink-900/40"
                             >
                               <InstagramMark className="h-4 w-4 text-[9px]" />{instagramPreviewing === item.product_id ? '…' : 'Instagram'}
-                            </button>
+                            </button>}
                             {item.publication_count > 0 && (
                               <>
                                 <button
@@ -1665,7 +1854,7 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
                                 >
                                   <EyeOutlined style={{ fontSize: 13 }} />
                                 </button>
-                                {(item.telegram_publication_count ?? item.publication_count) > 0 && (
+                                {(item.telegram_publication_count ?? item.publication_count) > 0 && (filterMode !== 'problematic' || platform === 'telegram') && (
                                   <button
                                     onClick={() => handleUnpublish(item.product_id as number)}
                                     disabled={unpublishing === item.product_id}
@@ -1678,6 +1867,31 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
                                   </button>
                                 )}
                               </>
+                            )}
+                            {filterMode === 'problematic' && platform === 'instagram' && (
+                              <>
+                                {item.instagram_permalink && (
+                                  <a href={item.instagram_permalink} target="_blank" rel="noreferrer"
+                                    className="inline-flex items-center gap-1 rounded-md border border-pink-300 bg-pink-50 px-2 py-1 text-xs font-medium text-pink-600 hover:bg-pink-100 dark:border-pink-800 dark:bg-pink-950/20 dark:text-pink-300"
+                                    title="Відкрити опублікований пост в Instagram">
+                                    <InstagramMark className="h-4 w-4 text-[9px]" /> Відкрити пост ↗
+                                  </a>
+                                )}
+                                <button type="button" onClick={() => handleManualCleanup(item.product_id as number, 'instagram')}
+                                  disabled={manualCleanupBusy === item.product_id}
+                                  className="inline-flex items-center gap-1 rounded-md border border-emerald-300 bg-emerald-50 px-2 py-1 text-xs font-medium text-emerald-700 hover:bg-emerald-100 disabled:opacity-50 dark:border-emerald-800 dark:bg-emerald-950/20 dark:text-emerald-300"
+                                  title="Натисніть тільки після фактичного видалення поста в Instagram">
+                                  {manualCleanupBusy === item.product_id ? '…' : '✓ Видалено вручну'}
+                                </button>
+                              </>
+                            )}
+                            {filterMode === 'problematic' && platform === 'viber' && (
+                              <button type="button" onClick={() => handleManualCleanup(item.product_id as number, 'viber')}
+                                disabled={manualCleanupBusy === item.product_id}
+                                className="inline-flex items-center gap-1 rounded-md border border-emerald-300 bg-emerald-50 px-2 py-1 text-xs font-medium text-emerald-700 hover:bg-emerald-100 disabled:opacity-50 dark:border-emerald-800 dark:bg-emerald-950/20 dark:text-emerald-300"
+                                title="Натисніть тільки після фактичного прибирання поста у Viber">
+                                {manualCleanupBusy === item.product_id ? '…' : '✓ Прибрано вручну'}
+                              </button>
                             )}
                           </div>
                         )}
@@ -1819,7 +2033,7 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
                 checked={onlyUnsold && filterMode !== 'problematic'}
                 disabled={filterMode === 'problematic'}
                 onChange={(e) => { setOnlyUnsold(e.target.checked); setPage(1); }}
-                title={filterMode === 'problematic' ? 'У цьому режимі треба бачити продані товари, які ще висять у Telegram' : undefined}
+                title={filterMode === 'problematic' ? 'У цьому режимі треба бачити продані товари, які ще висять на обраному майданчику' : undefined}
                 className="h-4 w-4 text-primary-600 border-gray-300 rounded focus:ring-primary-500 dark:focus:ring-primary-400 dark:bg-gray-700 dark:border-gray-600 disabled:opacity-50"
               />
               <span className="ml-2">Тільки непродані</span>
@@ -1856,6 +2070,7 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
       <DetailModal
         productId={detailProductId}
         onClose={() => setDetailProductId(null)}
+        onChanged={() => { fetchItems(); fetchStats(); }}
       />
       <ProductDetailsModal
         productId={cardProductId}

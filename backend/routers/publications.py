@@ -85,6 +85,135 @@ def _sold_units_join(pid_ref: str) -> str:
     ) sold_filter ON true"""
 
 
+def _available_product_in_number_group(product_alias: str = "p") -> str:
+    """SQL ``EXISTS`` body for physical stock in the whole product-number group.
+
+    Instagram/Viber posts represent the complete card/size run, not one DB row.
+    A manual cleanup task therefore appears only after *every* row with the same
+    normalized product number has no physical stock.  The stock formula mirrors
+    the regular ``only_unsold`` filter, including paid sales, gifts and returns.
+    """
+    available_sold_join = _sold_units_join("available_p.id").replace(
+        "sold_filter ON true", "available_sold ON true"
+    ).replace("sold_filter.sold_count", "available_sold.sold_count")
+    return f"""
+        SELECT 1
+        FROM products available_p
+        LEFT JOIN statuses available_s ON available_s.id = available_p.statusid
+        {available_sold_join}
+        WHERE available_p.productnumber = {product_alias}.productnumber
+          AND GREATEST(
+                COALESCE(available_p.quantity, 0) - COALESCE(available_sold.sold_count, 0),
+                0
+              ) > 0
+          AND (
+                available_s.statusname IS NULL
+                OR available_s.statusname NOT IN ('Продано', 'Подаровано', 'Повернуто')
+                OR (
+                    available_s.statusname IN ('Продано', 'Подаровано')
+                    AND COALESCE(available_sold.sold_count, 0) < COALESCE(NULLIF(available_p.quantity, 0), 1)
+                    AND EXISTS (
+                        SELECT 1 FROM order_items available_oi
+                        WHERE available_oi.product_id = available_p.id
+                    )
+                )
+          )
+    """
+
+
+def _manual_cleanup_condition(
+    platform: str,
+    product_alias: str = "p",
+    *,
+    include_live_publication: bool = True,
+) -> str:
+    """Build the sold-out + live-publication predicate for manual platforms."""
+    if platform == "instagram":
+        live_publication = f"""EXISTS (
+            SELECT 1 FROM instagram_publications cleanup_ip
+            WHERE cleanup_ip.status = 'published'
+              AND cleanup_ip.media_type = 'feed'
+              AND (
+                    cleanup_ip.product_id = {product_alias}.id
+                    OR cleanup_ip.product_number = {product_alias}.productnumber
+              )
+        )"""
+    elif platform == "viber":
+        live_publication = f"""EXISTS (
+            SELECT 1 FROM viber_publications cleanup_vp
+            WHERE cleanup_vp.status = 'published'
+              AND (
+                    cleanup_vp.product_id = {product_alias}.id
+                    OR cleanup_vp.product_number = {product_alias}.productnumber
+              )
+        )"""
+    else:
+        raise ValueError(f"Unsupported manual-cleanup platform: {platform}")
+
+    live_guard = f"AND {live_publication}" if include_live_publication else ""
+    return f"""(
+        NOT EXISTS ({_available_product_in_number_group(product_alias)})
+        {live_guard}
+    )"""
+
+
+def _telegram_cleanup_condition(
+    product_alias: str = "p",
+    *,
+    include_live_publication: bool = True,
+) -> str:
+    """The established Telegram sold-post predicate, shared by list and stats."""
+    live_guard = f"""AND EXISTS (
+            SELECT 1 FROM telegram_posts cleanup_tp
+            WHERE cleanup_tp.product_id = {product_alias}.id
+              AND cleanup_tp.tg_status = 'published'
+        )""" if include_live_publication else ""
+    return f"""(
+        (
+            {product_alias}.statusid IN (SELECT id FROM statuses WHERE statusname = 'Продано')
+            OR {_product_fully_consumed(f'{product_alias}.id')}
+        )
+        AND NOT EXISTS (
+            SELECT 1 FROM products cleanup_p2
+            LEFT JOIN statuses cleanup_s2 ON cleanup_s2.id = cleanup_p2.statusid
+            WHERE cleanup_p2.id != {product_alias}.id
+              AND TRIM(LEADING '#' FROM cleanup_p2.productnumber) =
+                  TRIM(LEADING '#' FROM {product_alias}.productnumber)
+              AND COALESCE(cleanup_p2.sizeeu, '') = COALESCE({product_alias}.sizeeu, '')
+              AND COALESCE(cleanup_s2.statusname, '') != 'Продано'
+              AND NOT {_product_fully_consumed('cleanup_p2.id')}
+        )
+        {live_guard}
+    )"""
+
+
+def _cleanup_candidate_join(platform: str) -> str:
+    """Pre-filter products to the small set with a live post on one platform."""
+    if platform == "telegram":
+        return """JOIN (
+            SELECT DISTINCT product_id
+            FROM telegram_posts
+            WHERE tg_status = 'published' AND product_id IS NOT NULL
+        ) cleanup_live ON cleanup_live.product_id = p.id"""
+    if platform == "instagram":
+        return """JOIN (
+            SELECT DISTINCT ON (product_number) product_id
+            FROM instagram_publications
+            WHERE status = 'published' AND media_type = 'feed'
+              AND product_id IS NOT NULL
+            ORDER BY product_number, published_at DESC NULLS LAST, id DESC
+        ) cleanup_live ON cleanup_live.product_id = p.id"""
+    if platform == "viber":
+        return """JOIN (
+            SELECT DISTINCT ON (product_number) product_id
+            FROM viber_publications
+            WHERE status = 'published'
+              AND product_id IS NOT NULL
+            ORDER BY product_number, published_at DESC NULLS LAST, id DESC
+        ) cleanup_live ON cleanup_live.product_id = p.id"""
+    raise ValueError(f"Unsupported cleanup platform: {platform}")
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Auto-relink SQL — used by /sync, /sync-all, /relink, and startup auto-refresh.
 #
@@ -150,7 +279,8 @@ WHERE tp.id = best.tp_id
 def get_publications_overview(
     page: int = Query(1, ge=1),
     per_page: int = Query(50, ge=1, le=200),
-    filter_mode: Optional[str] = Query(None, description="all|published|problematic|unpublished|unlinked"),
+    filter_mode: Optional[str] = Query(None, description="all|published|pending|problematic|unpublished|unlinked"),
+    platform: str = Query("all", description="all|telegram|viber|instagram"),
     search: Optional[str] = Query(None),
     only_unsold: bool = Query(True, description="Only products with physical stock remaining"),
     only_rostovka: bool = Query(False, description="Only size runs / multi-unit products"),
@@ -161,11 +291,15 @@ def get_publications_overview(
     Filter modes:
       - all: all products
       - published: products with at least 1 live Telegram, Viber or Instagram post
-      - problematic: SOLD products that still have live posts
+      - pending: products with queued/scheduled Viber or Instagram publications
+      - problematic: SOLD products that still have live posts on one platform
       - unpublished: products NOT in any channel
       - unlinked: telegram_posts with no matching product (separate query)
     """
     try:
+        platform = (platform or "all").strip().lower()
+        if platform not in {"all", "telegram", "viber", "instagram"}:
+            raise HTTPException(status_code=400, detail="Невідомий майданчик публікації")
         offset = (page - 1) * per_page
 
         # Special mode: unlinked posts (no product_id)
@@ -230,6 +364,7 @@ def get_publications_overview(
         # Normal product-centric mode
         where_parts = []
         params = {"limit": per_page, "offset": offset}
+        candidate_join = ""
         # «Продані, але висять» навмисно показує продані товари для очищення
         # Telegram. У цьому єдиному режимі базовий фільтр наявності не діє.
         apply_only_unsold = only_unsold and filter_mode not in ("problematic", "sold_live")
@@ -271,13 +406,26 @@ def get_publications_overview(
             )""")
 
         if filter_mode == "published":
-            where_parts.append("""
-                (
-                    EXISTS (SELECT 1 FROM telegram_posts tp WHERE tp.product_id = p.id AND tp.tg_status = 'published')
-                    OR EXISTS (SELECT 1 FROM viber_publications vp WHERE vp.product_id = p.id AND vp.status = 'published')
-                    OR EXISTS (SELECT 1 FROM instagram_publications ip WHERE ip.product_id = p.id AND ip.status = 'published')
-                )
-            """)
+            published_by_platform = {
+                "telegram": "EXISTS (SELECT 1 FROM telegram_posts tp WHERE tp.product_id = p.id AND tp.tg_status = 'published')",
+                "viber": "EXISTS (SELECT 1 FROM viber_publications vp WHERE TRIM(LEADING '#' FROM BTRIM(vp.product_number)) = TRIM(LEADING '#' FROM BTRIM(p.productnumber)) AND vp.status = 'published')",
+                "instagram": "EXISTS (SELECT 1 FROM instagram_publications ip WHERE TRIM(LEADING '#' FROM BTRIM(ip.product_number)) = TRIM(LEADING '#' FROM BTRIM(p.productnumber)) AND ip.status = 'published')",
+            }
+            if platform == "all":
+                where_parts.append("(" + " OR ".join(published_by_platform.values()) + ")")
+            else:
+                where_parts.append(published_by_platform[platform])
+        elif filter_mode == "pending":
+            pending_by_platform = {
+                "viber": "EXISTS (SELECT 1 FROM viber_publications vp WHERE TRIM(LEADING '#' FROM BTRIM(vp.product_number)) = TRIM(LEADING '#' FROM BTRIM(p.productnumber)) AND vp.status IN ('queued', 'scheduled', 'processing', 'retrying'))",
+                "instagram": "EXISTS (SELECT 1 FROM instagram_publications ip WHERE TRIM(LEADING '#' FROM BTRIM(ip.product_number)) = TRIM(LEADING '#' FROM BTRIM(p.productnumber)) AND ip.status IN ('queued', 'scheduled', 'processing', 'retrying'))",
+            }
+            if platform == "telegram":
+                where_parts.append("false")
+            elif platform == "all":
+                where_parts.append("(" + " OR ".join(pending_by_platform.values()) + ")")
+            else:
+                where_parts.append(pending_by_platform[platform])
         elif filter_mode in ("problematic", "sold_live"):
             # Product row is problematic when:
             # 1. p is sold (status='Продано' OR latest order is in active/confirmed state)
@@ -290,40 +438,25 @@ def get_publications_overview(
             # to p directly, so if p is sold and the post is live → it IS problematic
             # regardless of which sizes the post text mentions. Unlinked posts are
             # handled separately by filter_mode='unlinked'.
-            where_parts.append(f"""
-                (
-                    p.statusid IN (SELECT id FROM statuses WHERE statusname = 'Продано')
-                    OR {_product_fully_consumed('p.id')}
-                )
-                AND NOT EXISTS (
-                    SELECT 1 FROM products p2
-                    LEFT JOIN statuses s2 ON s2.id = p2.statusid
-                    WHERE p2.id != p.id
-                      AND TRIM(LEADING '#' FROM p2.productnumber) = TRIM(LEADING '#' FROM p.productnumber)
-                      AND COALESCE(p2.sizeeu, '') = COALESCE(p.sizeeu, '')
-                      AND COALESCE(s2.statusname, '') != 'Продано'
-                      AND NOT {_product_fully_consumed('p2.id')}
-                )
-                AND EXISTS (
-                    SELECT 1 FROM telegram_posts tp
-                    WHERE tp.product_id = p.id AND tp.tg_status = 'published'
-                )
-            """)
+            # Backwards compatibility: older clients did not send platform and
+            # expected the proven Telegram cleanup workflow.
+            cleanup_platform = "telegram" if platform == "all" else platform
+            candidate_join = _cleanup_candidate_join(cleanup_platform)
+            if cleanup_platform == "telegram":
+                where_parts.append(_telegram_cleanup_condition(include_live_publication=False))
+            else:
+                where_parts.append(_manual_cleanup_condition(cleanup_platform, include_live_publication=False))
         elif filter_mode == "unpublished":
-            where_parts.append("""
-                NOT EXISTS (SELECT 1 FROM telegram_posts tp WHERE tp.product_id = p.id AND tp.tg_status = 'published')
-                AND NOT EXISTS (
-                    SELECT 1 FROM viber_publications vp
-                    WHERE vp.product_id = p.id
-                      AND vp.status IN ('queued', 'scheduled', 'processing', 'retrying', 'published')
-                )
-                AND NOT EXISTS (
-                    SELECT 1 FROM instagram_publications ip
-                    WHERE ip.product_id = p.id
-                      AND ip.status IN ('queued', 'scheduled', 'processing', 'retrying', 'published')
-                )
-                AND p.statusid NOT IN (SELECT id FROM statuses WHERE statusname = 'Продано')
-            """)
+            unpublished_by_platform = {
+                "telegram": "NOT EXISTS (SELECT 1 FROM telegram_posts tp WHERE tp.product_id = p.id AND tp.tg_status = 'published')",
+                "viber": "NOT EXISTS (SELECT 1 FROM viber_publications vp WHERE TRIM(LEADING '#' FROM BTRIM(vp.product_number)) = TRIM(LEADING '#' FROM BTRIM(p.productnumber)) AND vp.status IN ('queued', 'scheduled', 'processing', 'retrying', 'published'))",
+                "instagram": "NOT EXISTS (SELECT 1 FROM instagram_publications ip WHERE TRIM(LEADING '#' FROM BTRIM(ip.product_number)) = TRIM(LEADING '#' FROM BTRIM(p.productnumber)) AND ip.status IN ('queued', 'scheduled', 'processing', 'retrying', 'published'))",
+            }
+            if platform == "all":
+                where_parts.extend(unpublished_by_platform.values())
+            else:
+                where_parts.append(unpublished_by_platform[platform])
+            where_parts.append("p.statusid NOT IN (SELECT id FROM statuses WHERE statusname = 'Продано')")
 
         where_clause = " AND ".join(where_parts) if where_parts else "1=1"
 
@@ -331,6 +464,7 @@ def get_publications_overview(
             text(f"""
                 SELECT COUNT(*)
                 FROM products p
+                {candidate_join}
                 LEFT JOIN statuses s ON s.id = p.statusid
                 {sold_filter_count_join}
                 WHERE {where_clause}
@@ -365,8 +499,19 @@ def get_publications_overview(
                     b.brandname AS brand_name,
                     t.typename  AS type_name,
                     st.subtypename AS subtype_name,
-                    p.sizeeu, p.marking, p.year
+                    p.sizeeu, p.marking, p.year,
+                    (
+                        SELECT cleanup_ip.payload_json->>'permalink'
+                        FROM instagram_publications cleanup_ip
+                        WHERE cleanup_ip.status = 'published'
+                          AND cleanup_ip.media_type = 'feed'
+                          AND TRIM(LEADING '#' FROM BTRIM(cleanup_ip.product_number)) =
+                              TRIM(LEADING '#' FROM BTRIM(p.productnumber))
+                        ORDER BY cleanup_ip.published_at DESC NULLS LAST, cleanup_ip.id DESC
+                        LIMIT 1
+                    ) AS instagram_permalink
                 FROM products p
+                {candidate_join}
                 LEFT JOIN statuses s ON s.id = p.statusid
                 {sold_filter_join}
                 LEFT JOIN brands   b ON b.id = p.brandid
@@ -403,7 +548,8 @@ def get_publications_overview(
                             'viber' AS platform,
                             vp.status AS publication_status
                         FROM viber_publications vp
-                        WHERE vp.product_id = p.id
+                        WHERE TRIM(LEADING '#' FROM BTRIM(vp.product_number)) =
+                              TRIM(LEADING '#' FROM BTRIM(p.productnumber))
                           AND vp.status IN ('queued', 'scheduled', 'processing', 'retrying', 'published')
                         UNION ALL
                         SELECT
@@ -420,7 +566,8 @@ def get_publications_overview(
                             'instagram' AS platform,
                             ip.status AS publication_status
                         FROM instagram_publications ip
-                        WHERE ip.product_id = p.id
+                        WHERE TRIM(LEADING '#' FROM BTRIM(ip.product_number)) =
+                              TRIM(LEADING '#' FROM BTRIM(p.productnumber))
                           AND ip.status IN ('queued', 'scheduled', 'processing', 'retrying', 'published')
                     ) social_posts
                 ) pubs ON true
@@ -456,6 +603,7 @@ def get_publications_overview(
                 "sizeeu":       row[17],
                 "marking":      row[18],
                 "year":         row[19],
+                "instagram_permalink": row[20],
             })
 
         return {
@@ -522,6 +670,7 @@ def get_product_publications(
         for row in viber_rows:
             publications.append({
                 "id": f"viber-{row['id']}",
+                "local_publication_id": row["id"],
                 "platform": "viber",
                 "chat_id": 0,
                 "chat_title": row["channel_title"] or "Viber",
@@ -756,15 +905,23 @@ def get_publications_stats(db: Session = Depends(get_db)):
             ) social_products
         """)).scalar() or 0
 
-        # Sold-but-live count is currently the actionable Telegram cleanup
-        # queue. Viber Channels API has no delete endpoint; do not imply that
-        # the existing cleanup button can remove a Viber post.
-        sold_live = db.execute(text("""
+        sold_live_telegram = db.execute(text(f"""
             SELECT COUNT(DISTINCT p.id)
             FROM products p
-            JOIN telegram_posts tp ON tp.product_id = p.id
-            WHERE p.statusid IN (SELECT id FROM statuses WHERE statusname = 'Продано')
-              AND tp.tg_status = 'published'
+            {_cleanup_candidate_join('telegram')}
+            WHERE {_telegram_cleanup_condition(include_live_publication=False)}
+        """)).fetchone()
+
+        sold_live_viber = db.execute(text(f"""
+            SELECT COUNT(*) FROM products p
+            {_cleanup_candidate_join('viber')}
+            WHERE {_manual_cleanup_condition('viber', include_live_publication=False)}
+        """)).fetchone()
+
+        sold_live_instagram = db.execute(text(f"""
+            SELECT COUNT(*) FROM products p
+            {_cleanup_candidate_join('instagram')}
+            WHERE {_manual_cleanup_condition('instagram', include_live_publication=False)}
         """)).fetchone()
 
         # Unlinked posts count (no matching product, only published)
@@ -825,7 +982,11 @@ def get_publications_stats(db: Session = Depends(get_db)):
             "instagram_posts": instagram_posts,
             "instagram_products": instagram_products,
             "instagram_pending": instagram_pending,
-            "sold_but_live_count": sold_live[0] if sold_live else 0,
+            # Legacy clients read this field as the Telegram cleanup count.
+            "sold_but_live_count": sold_live_telegram[0] if sold_live_telegram else 0,
+            "sold_but_live_telegram_count": sold_live_telegram[0] if sold_live_telegram else 0,
+            "sold_but_live_viber_count": sold_live_viber[0] if sold_live_viber else 0,
+            "sold_but_live_instagram_count": sold_live_instagram[0] if sold_live_instagram else 0,
             "unlinked_count": unlinked[0] if unlinked else 0,
             "channels": [
                 {
@@ -840,6 +1001,87 @@ def get_publications_stats(db: Session = Depends(get_db)):
     except Exception as e:
         logger.error(f"Error fetching stats: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/api/publications/manual-cleanup/{platform}/{product_id}/{action}")
+def set_manual_publication_cleanup(
+    platform: str,
+    product_id: int,
+    action: str,
+    db: Session = Depends(get_db),
+):
+    """Confirm or undo manual removal of a sold Instagram/Viber post."""
+    platform = (platform or "").strip().lower()
+    action = (action or "").strip().lower()
+    if platform not in {"instagram", "viber"}:
+        raise HTTPException(status_code=400, detail="Ручне підтвердження доступне лише для Instagram і Viber")
+    if action not in {"confirm", "restore"}:
+        raise HTTPException(status_code=400, detail="Невідома дія модерації")
+
+    product = db.execute(text("""
+        SELECT productnumber FROM products WHERE id = :pid
+    """), {"pid": int(product_id)}).fetchone()
+    if not product or not product[0]:
+        raise HTTPException(status_code=404, detail="Товар не знайдено")
+
+    if action == "confirm":
+        eligible = db.execute(text(f"""
+            SELECT EXISTS (
+                SELECT 1 FROM products p
+                WHERE p.id = :pid AND {_manual_cleanup_condition(platform)}
+            )
+        """), {"pid": int(product_id)}).scalar()
+        if not eligible:
+            raise HTTPException(
+                status_code=409,
+                detail="Публікація вже не активна або в цій ростовці ще є товар у наявності",
+            )
+
+    table_name = "instagram_publications" if platform == "instagram" else "viber_publications"
+    media_clause = "AND media_type = 'feed'" if platform == "instagram" else ""
+    current_status = "published" if action == "confirm" else "removed_manual"
+    next_status = "removed_manual" if action == "confirm" else "published"
+    cleanup_time = "now()" if action == "confirm" else "NULL"
+    restore_clause = ""
+    if action == "restore":
+        # Restore only the latest confirmation batch. Older publications of
+        # the same product may have been removed during a previous sales cycle.
+        restore_clause = f"""AND cleanup_confirmed_at = (
+            SELECT MAX(cleanup_latest.cleanup_confirmed_at)
+            FROM {table_name} cleanup_latest
+            WHERE cleanup_latest.status = 'removed_manual'
+              AND TRIM(LEADING '#' FROM BTRIM(cleanup_latest.product_number)) =
+                  TRIM(LEADING '#' FROM BTRIM(:product_number))
+        )"""
+    result = db.execute(text(f"""
+        UPDATE {table_name}
+           SET status = :next_status,
+               cleanup_confirmed_at = {cleanup_time},
+               payload_json = payload_json || CAST(:audit AS jsonb),
+               updated_at = now()
+         WHERE status = :current_status
+           {media_clause}
+           {restore_clause}
+           AND TRIM(LEADING '#' FROM BTRIM(product_number)) =
+               TRIM(LEADING '#' FROM BTRIM(:product_number))
+    """), {
+        "next_status": next_status,
+        "current_status": current_status,
+        "product_number": product[0],
+        "audit": '{"cleanup_source":"manual_sold"}' if action == "confirm" else '{"cleanup_source":"restored"}',
+    })
+    changed = int(result.rowcount or 0)
+    if changed == 0:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Немає публікацій, стан яких можна змінити")
+    db.commit()
+    return {
+        "ok": True,
+        "platform": platform,
+        "product_id": int(product_id),
+        "action": action,
+        "changed": changed,
+    }
 
 
 @router.get("/api/publications/threads")

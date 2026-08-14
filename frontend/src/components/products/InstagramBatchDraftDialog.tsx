@@ -5,7 +5,7 @@ import {
 } from '@ant-design/icons';
 import SmartImage from '../common/SmartImage';
 import {
-  InstagramMark, instagramDraftFromPreview,
+  InstagramMark, instagramDefaultZoom, instagramDraftFromPreview,
   type InstagramDraftPayload, type InstagramPreview,
 } from './InstagramPublishDialog';
 
@@ -84,7 +84,7 @@ const InstagramBatchDraftDialog: React.FC<Props> = ({ productIds, busy = false, 
       }
       const limit = card.preview.publish_types[card.draft.publish_type].max_media;
       if (current.length >= limit) return card;
-      const defaultZoom = card.draft.publish_type === 'feed' ? 0.9 : 0.6;
+      const defaultZoom = instagramDefaultZoom(card.preview, card.draft.publish_type, imageIndex, card.draft.feed_preset);
       return { ...card, draft: { ...card.draft, image_idx: [...current, imageIndex], frames: [...card.draft.frames, { image_idx: imageIndex, zoom: defaultZoom, x: 0, y: 0 }] } };
     });
   };
@@ -186,13 +186,28 @@ const InstagramBatchDraftDialog: React.FC<Props> = ({ productIds, busy = false, 
                             const image_idx = publish_type !== 'story' && current.draft.publish_type === 'story'
                               ? preview.default_image_idx.slice(0, limit)
                               : current.draft.image_idx.slice(0, limit);
-                            const defaultZoom = publish_type === 'feed' ? 0.9 : 0.6;
                             const framesByImage = new Map(current.draft.frames.map(frame => [frame.image_idx, frame]));
-                            return { ...current, draft: { ...current.draft, publish_type, image_idx, frames: image_idx.map(image_idx => ({ ...(framesByImage.get(image_idx) || { image_idx, x: 0, y: 0 }), zoom: defaultZoom })) } };
+                            return { ...current, draft: { ...current.draft, publish_type, image_idx, frames: image_idx.map(image_idx => ({
+                              ...(framesByImage.get(image_idx) || { image_idx, x: 0, y: 0 }),
+                              zoom: instagramDefaultZoom(preview, publish_type, image_idx, current.draft.feed_preset),
+                            })) } };
                           })} className="rounded-lg border border-gray-200 bg-white px-2 py-1.5 text-xs text-gray-700 disabled:opacity-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-200">
                             {Object.entries(preview.publish_types).map(([key, value]) => <option key={key} value={key}>{value.label}</option>)}
                           </select>
-                          {card.draft.publish_type === 'feed' && <select value={card.draft.feed_preset} disabled={!card.enabled} onChange={event => updateCard(preview.product_id, current => ({ ...current, draft: { ...current.draft, feed_preset: event.target.value } }))}
+                          {card.draft.publish_type === 'feed' && <select value={card.draft.feed_preset} disabled={!card.enabled} onChange={event => updateCard(preview.product_id, current => {
+                            const feed_preset = event.target.value;
+                            const previousPreset = current.draft.feed_preset;
+                            return { ...current, draft: {
+                              ...current.draft,
+                              feed_preset,
+                              frames: current.draft.frames.map(frame => {
+                                const previousDefault = instagramDefaultZoom(preview, 'feed', frame.image_idx, previousPreset);
+                                return Math.abs(frame.zoom - previousDefault) > 0.0001
+                                  ? frame
+                                  : { ...frame, zoom: instagramDefaultZoom(preview, 'feed', frame.image_idx, feed_preset) };
+                              }),
+                            } };
+                          })}
                             className="rounded-lg border border-gray-200 bg-white px-2 py-1.5 text-xs text-gray-700 disabled:opacity-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-200">
                             {Object.entries(preview.feed_presets).map(([key, value]) => <option key={key} value={key}>{value.label}</option>)}
                           </select>}

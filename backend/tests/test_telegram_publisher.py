@@ -183,6 +183,24 @@ def test_technology_abbreviations_are_uppercase_in_default_and_edited_features()
     assert "▪️ амортизація ABZORB" in caption
 
 
+def test_extended_technology_abbreviations_are_always_uppercase():
+    assert tp.normalize_technology_abbreviations(
+        "cmeva, cvema, svs, sps, absorb, eva, pu і tpu"
+    ) == "CMEVA, CVEMA, SVS, SPS, ABSORB, EVA, PU і TPU"
+
+
+def test_upper_leather_suede_and_nubuck_are_marked_natural_without_touching_synthetics():
+    assert tp.normalize_upper_material("шкіра") == "Натуральна шкіра"
+    assert tp.normalize_upper_material("замша") == "Натуральна замша"
+    assert tp.normalize_upper_material("нубук") == "Натуральний нубук"
+    assert tp.normalize_upper_material("нубукова шкіра") == "Натуральна нубукова шкіра"
+    assert tp.normalize_upper_material("шкіра-замша") == "Натуральна шкіра замша"
+    assert tp.normalize_upper_material("гладка шкіра") == "Натуральна гладка шкіра"
+    assert tp.normalize_upper_material("зерниста шкіра") == "Натуральна зерниста шкіра"
+    assert tp.normalize_upper_material("еко-шкіра") == "Еко-шкіра"
+    assert tp.normalize_upper_material("Штучна замша") == "Штучна замша"
+
+
 def test_caption_uses_condition_specific_icon():
     caption = _sample_caption(condition="Стан нових (Сток)", condition_icon="🆕")
     assert "🆕 Стан нових (Сток)" in caption

@@ -481,14 +481,16 @@ def build_caption(bms: dict, sizes: Sequence[dict], *, features: Optional[Iterab
         feature_lines.pop()
         caption = compose()
     if len(caption) <= CAPTION_LIMIT:
-        return caption
+        return tg.normalize_technology_abbreviations(caption)
 
     suffix = "\n\n".join(protected).strip()
     available = max(0, CAPTION_LIMIT - len(suffix) - 2)
     prefix = "\n\n".join([*leading, *([condition_line] if condition_line else [])]).strip()
     if len(prefix) > available:
         prefix = (prefix[:max(0, available - 1)].rstrip() + "…") if available else ""
-    return "\n\n".join(value for value in (prefix, suffix) if value).strip()
+    return tg.normalize_technology_abbreviations(
+        "\n\n".join(value for value in (prefix, suffix) if value).strip()
+    )
 
 
 def validate_caption(caption: str) -> Optional[str]:

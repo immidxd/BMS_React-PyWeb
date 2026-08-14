@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import io
 
 from backend.services import instagram_publisher as ip
 
@@ -74,6 +75,12 @@ def test_feed_presets_stay_inside_official_aspect_ratio_range():
     for preset in ip.FEED_PRESETS.values():
         ratio = preset["width"] / preset["height"]
         assert 4 / 5 <= ratio <= 1.91
+
+
+def test_feed_defaults_to_square_format():
+    spec = ip.normalize_media_spec({"publish_type": "feed", "image_idx": [0]}, 1)
+
+    assert spec["feed_preset"] == "square"
 
 
 def test_dry_run_validates_contract_without_external_calls(monkeypatch):
@@ -162,6 +169,30 @@ def test_default_zoom_matches_feed_and_vertical_formats():
     assert [frame["zoom"] for frame in reel["frames"]] == [0.6, 0.6]
 
 
+def test_feed_auto_zoom_keeps_studio_default_when_subject_has_safe_margins():
+    source = ip.Image.new("RGB", (800, 800), (255, 255, 255))
+    ip.ImageDraw.Draw(source).rounded_rectangle((100, 145, 700, 655), radius=35, fill=(70, 90, 120))
+    buffer = io.BytesIO()
+    source.save(buffer, "PNG")
+
+    zoom, adjusted = ip._recommended_feed_zoom(buffer.getvalue(), ip.FEED_PRESETS["portrait"])
+
+    assert zoom == 0.9
+    assert adjusted is False
+
+
+def test_feed_auto_zoom_disables_shrinking_when_subject_touches_edges():
+    source = ip.Image.new("RGB", (800, 800), (255, 255, 255))
+    ip.ImageDraw.Draw(source).rectangle((260, 0, 799, 799), fill=(70, 90, 120))
+    buffer = io.BytesIO()
+    source.save(buffer, "PNG")
+
+    zoom, adjusted = ip._recommended_feed_zoom(buffer.getvalue(), ip.FEED_PRESETS["portrait"])
+
+    assert zoom == 1.0
+    assert adjusted is True
+
+
 def test_renderer_outputs_official_feed_jpeg(monkeypatch):
     class _TgPhotos:
         @staticmethod
@@ -172,7 +203,7 @@ def test_renderer_outputs_official_feed_jpeg(monkeypatch):
     buffer = ip.io.BytesIO()
     source.save(buffer, "PNG")
     monkeypatch.setattr(ip, "_tg", lambda: _TgPhotos)
-    import backend.services.product_images as product_images
+    import services.product_images as product_images
     monkeypatch.setattr(product_images, "read_image_bytes", lambda _entry: buffer.getvalue())
 
     rendered = ip.render_media_for_product(None, 42, {
@@ -180,10 +211,32 @@ def test_renderer_outputs_official_feed_jpeg(monkeypatch):
     })
 
     assert rendered["output"] == ip.FEED_PRESETS["portrait"]
+    assert rendered["spec"]["frames"][0]["zoom"] == 1.0
     assert rendered["assets"][0]["type"] == "IMAGE"
     assert len(rendered["assets"][0]["bytes"]) < ip.JPEG_MAX_BYTES
     with ip.Image.open(ip.io.BytesIO(rendered["assets"][0]["bytes"])) as result:
         assert result.size == (1080, 1350)
+
+
+def test_renderer_respects_explicit_manual_feed_zoom(monkeypatch):
+    class _TgPhotos:
+        @staticmethod
+        def _load_product(_db, _product_id): return {"productnumber": "Ф42"}
+        @staticmethod
+        def _photo_entries(_bms): return ([object()], "real")
+    source = ip.Image.new("RGB", (800, 600), (230, 20, 30))
+    buffer = ip.io.BytesIO()
+    source.save(buffer, "PNG")
+    monkeypatch.setattr(ip, "_tg", lambda: _TgPhotos)
+    import services.product_images as product_images
+    monkeypatch.setattr(product_images, "read_image_bytes", lambda _entry: buffer.getvalue())
+
+    rendered = ip.render_media_for_product(None, 42, {
+        "publish_type": "feed", "feed_preset": "portrait", "image_idx": [0],
+        "frames": [{"image_idx": 0, "zoom": 0.9, "x": 0, "y": 0}],
+    })
+
+    assert rendered["spec"]["frames"][0]["zoom"] == 0.9
 
 
 def test_story_renderer_bakes_editable_text_into_jpeg(monkeypatch):
@@ -196,7 +249,7 @@ def test_story_renderer_bakes_editable_text_into_jpeg(monkeypatch):
     buffer = ip.io.BytesIO()
     source.save(buffer, "JPEG")
     monkeypatch.setattr(ip, "_tg", lambda: _TgPhotos)
-    import backend.services.product_images as product_images
+    import services.product_images as product_images
     monkeypatch.setattr(product_images, "read_image_bytes", lambda _entry: buffer.getvalue())
 
     plain = ip.render_media_for_product(None, 42, {
@@ -230,12 +283,13 @@ def test_story_frame_places_trimmed_studio_subject_only_in_product_zone():
 
     assert result.size == (1080, 1920)
     assert result.getpixel((540, 300)) == (255, 255, 255)
-    assert result.getpixel((540, 1510)) == (255, 255, 255)
+    assert result.getpixel((540, 1550)) == (255, 255, 255)
     assert any(
         pixel != (255, 255, 255)
         for pixel in result.crop((left, top, right, bottom)).get_flattened_data()
     )
-    assert bottom <= 1475
+    assert top >= 650
+    assert bottom <= 1520
 
 
 def test_story_detail_summary_compacts_size_run_without_dangling_bullets():
@@ -286,6 +340,36 @@ def test_story_renderer_parses_emoji_price_and_keeps_number_out_of_details(monke
     assert ip.STORY_PRICE_RE.search("🛒 Ціна: 2100 грн")
     assert ip.STORY_CTA_RE.search("Пиши #Ф4329 нам в приватні")
     assert captured["values"] == ["GUESS Shaida", "📐 Заміри: 28 × 16 × 12"]
+
+
+def test_story_article_label_is_right_aligned(monkeypatch):
+    positions = {}
+    original_draw = ip.ImageDraw.Draw
+
+    class _RecordingDraw:
+        def __init__(self, delegate):
+            self._delegate = delegate
+
+        def __getattr__(self, name):
+            return getattr(self._delegate, name)
+
+        def text(self, xy, value, *args, **kwargs):
+            if value == "АРТИКУЛ":
+                positions["label_x"] = xy[0]
+                positions["label_width"] = self._delegate.textlength(
+                    value, font=kwargs.get("font"),
+                )
+            return self._delegate.text(xy, value, *args, **kwargs)
+
+    monkeypatch.setattr(
+        ip.ImageDraw, "Draw",
+        lambda image, *args, **kwargs: _RecordingDraw(original_draw(image, *args, **kwargs)),
+    )
+    source = ip.Image.new("RGB", (1080, 1920), (255, 255, 255))
+
+    ip._render_story_text(source, "GUESS Shaida\nЦіна: 2100 грн\n#Ф4329")
+
+    assert round(positions["label_x"] + positions["label_width"]) == 1002
 
 
 def test_batch_dry_run_deduplicates_productnumber_and_never_calls_external(monkeypatch):

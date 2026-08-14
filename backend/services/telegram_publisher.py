@@ -338,7 +338,7 @@ _POSITION_PREFIX: Dict[str, str] = {
 # Технічні скорочення, для яких регістр є частиною коректної назви. Не робимо
 # generic upper() для всіх коротких слів, бо це зіпсувало б українські «на», «із».
 _TECH_ABBREVIATIONS = re.compile(
-    r"(?<![\w-])(eva|tpu|pu|tpr|pvc|abs|pe|pp|pet|sbs|ykk|abzorb|encap|gtx)(?![\w-])",
+    r"(?<![\w-])(cmeva|cvema|eva|tpu|pu|tpr|pvc|abs|pe|pp|pet|sbs|svs|sps|ykk|abzorb|absorb|encap|gtx)(?![\w-])",
     re.IGNORECASE,
 )
 _TECH_STYLED = (
@@ -355,6 +355,36 @@ def normalize_technology_abbreviations(value: Any) -> str:
     for pattern, replacement in _TECH_STYLED:
         text_value = pattern.sub(replacement, text_value)
     return text_value
+
+
+_NON_NATURAL_UPPER_RE = re.compile(
+    r"(?:штучн|синтет|еко|pu|pu[-\s]?шкір|\bпу\b|pvc|\bпвх\b)",
+    re.IGNORECASE,
+)
+_NATURAL_UPPER_RE = re.compile(r"\b(шкір\w*|замш\w*|нубук\w*)\b", re.IGNORECASE)
+
+
+def normalize_upper_material(value: Any) -> str:
+    """Маркетингова назва матеріалу верху для товарних постів.
+
+    Шкіра/замша/нубук у позиції `upper` в BMS означають натуральний
+    матеріал. Явні штучні/синтетичні варіанти ніколи не перейменовуємо.
+    """
+    text_value = str(value or "").strip()
+    text_value = re.sub(r"(шкір\w*)\s*-\s*(замш\w*)", r"\1 \2", text_value,
+                        flags=re.IGNORECASE)
+    text_value = re.sub(r"\s+", " ", text_value)
+    if not text_value:
+        return ""
+    lowered = text_value.casefold()
+    if "натурал" not in lowered and not _NON_NATURAL_UPPER_RE.search(text_value):
+        match = _NATURAL_UPPER_RE.search(text_value)
+        if match:
+            has_feminine_material = bool(re.search(r"\b(?:шкір|замш)\w*\b", text_value,
+                                                  flags=re.IGNORECASE))
+            adjective = "натуральна" if has_feminine_material else "натуральний"
+            text_value = f"{adjective} {text_value}"
+    return _cap(text_value)
 
 
 def _fmt_cm(lo: Any, hi: Any) -> Optional[str]:
@@ -382,7 +412,7 @@ def default_features(bms: dict) -> List[str]:
 
     upper = (mats.get("upper") or "").strip()
     if upper:
-        out.append(_cap(upper))
+        out.append(normalize_upper_material(upper))
     for pos in ("membrane", "midsole", "sole", "insole"):
         val = (mats.get(pos) or "").strip()
         if val:
@@ -580,7 +610,7 @@ def build_caption(
     pnum = productnumber if productnumber.startswith("#") else f"#{productnumber}"
     blocks.append(f"📲 Пиши `{pnum}` менеджеру 👉 {MANAGER_HANDLE}")
     blocks.append(f"[КАТАЛОГ ТОВАРІВ]({CATALOG_URL}) | [ВІДГУКИ]({REVIEWS_URL})")
-    return "\n\n".join(blocks)
+    return normalize_technology_abbreviations("\n\n".join(blocks))
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -36,6 +36,8 @@ export interface InstagramPreview {
   batch_max_products: number;
   default_feed_preset: string;
   feed_presets: Record<string, InstagramFeedPreset>;
+  feed_zoom_defaults?: Record<string, number[]>;
+  feed_edge_adjusted?: Record<string, boolean[]>;
   story_preset: InstagramFeedPreset;
   publish_types: Record<'feed' | 'story' | 'reel', { label: string; max_media: number }>;
   default_publish_at: string;
@@ -86,6 +88,16 @@ export const InstagramMark: React.FC<{ className?: string }> = ({ className = ''
   </span>
 );
 
+export function instagramDefaultZoom(
+  preview: InstagramPreview,
+  publishType: InstagramDraftPayload['publish_type'],
+  imageIndex: number,
+  feedPreset = preview.default_feed_preset,
+): number {
+  if (publishType !== 'feed') return 0.6;
+  return preview.feed_zoom_defaults?.[feedPreset]?.[imageIndex] ?? 0.9;
+}
+
 export function instagramDraftFromPreview(preview: InstagramPreview): InstagramDraftPayload {
   return {
     product_id: preview.product_id,
@@ -94,7 +106,12 @@ export function instagramDraftFromPreview(preview: InstagramPreview): InstagramD
     feed_preset: preview.default_feed_preset,
     publish_type: 'feed',
     background: 'white',
-    frames: preview.default_image_idx.slice(0, preview.carousel_limit).map(image_idx => ({ image_idx, zoom: 0.9, x: 0, y: 0 })),
+    frames: preview.default_image_idx.slice(0, preview.carousel_limit).map(image_idx => ({
+      image_idx,
+      zoom: instagramDefaultZoom(preview, 'feed', image_idx),
+      x: 0,
+      y: 0,
+    })),
     story_text: preview.story_text || '',
     publish_at: null,
     collaborators: [],
@@ -147,7 +164,7 @@ const InstagramPublishDialog: React.FC<Props> = ({ data, busy = false, onCancel,
         return { ...current, image_idx: current.image_idx.filter(value => value !== index), frames: current.frames.filter(frame => frame.image_idx !== index) };
       }
       if (current.image_idx.length >= maxMedia) return current;
-      const defaultZoom = current.publish_type === 'feed' ? 0.9 : 0.6;
+      const defaultZoom = instagramDefaultZoom(data, current.publish_type, index, current.feed_preset);
       return { ...current, image_idx: [...current.image_idx, index], frames: [...current.frames, { image_idx: index, zoom: defaultZoom, x: 0, y: 0 }] };
     });
   };
@@ -159,7 +176,6 @@ const InstagramPublishDialog: React.FC<Props> = ({ data, busy = false, onCancel,
       const image_idx = publish_type !== 'story' && current.publish_type === 'story'
         ? data.default_image_idx.slice(0, limit)
         : current.image_idx.slice(0, limit);
-      const defaultZoom = publish_type === 'feed' ? 0.9 : 0.6;
       const framesByImage = new Map(current.frames.map(frame => [frame.image_idx, frame]));
       return {
         ...current,
@@ -167,10 +183,23 @@ const InstagramPublishDialog: React.FC<Props> = ({ data, busy = false, onCancel,
         image_idx,
         frames: image_idx.map(image_idx => ({
           ...(framesByImage.get(image_idx) || { image_idx, x: 0, y: 0 }),
-          zoom: defaultZoom,
+          zoom: instagramDefaultZoom(data, publish_type, image_idx, current.feed_preset),
         })),
       };
     });
+  };
+
+  const setFeedPreset = (feed_preset: string) => {
+    setValidation(null);
+    setDraft(current => ({
+      ...current,
+      feed_preset,
+      frames: current.frames.map(frame => {
+        const previousDefault = instagramDefaultZoom(data, 'feed', frame.image_idx, current.feed_preset);
+        if (Math.abs(frame.zoom - previousDefault) > 0.0001) return frame;
+        return { ...frame, zoom: instagramDefaultZoom(data, 'feed', frame.image_idx, feed_preset) };
+      }),
+    }));
   };
 
   const setScheduleMode = (value: string) => {
@@ -304,7 +333,7 @@ const InstagramPublishDialog: React.FC<Props> = ({ data, busy = false, onCancel,
               {draft.publish_type === 'feed' && <><label className="mt-4 block text-xs font-semibold text-gray-700 dark:text-gray-200">Формат кадру</label>
               <div className="mt-2 grid grid-cols-3 gap-2">
                 {Object.entries(data.feed_presets).map(([key, value]) => (
-                  <button key={key} type="button" onClick={() => { setDraft(current => ({ ...current, feed_preset: key })); setValidation(null); }}
+                  <button key={key} type="button" onClick={() => setFeedPreset(key)}
                     className={`rounded-lg border px-2 py-2 text-xs transition ${draft.feed_preset === key ? 'border-pink-400 bg-pink-50 font-semibold text-pink-700 dark:bg-pink-900/20 dark:text-pink-300' : 'border-gray-200 text-gray-600 hover:border-pink-300 dark:border-gray-700 dark:text-gray-300'}`}>
                     {value.label}
                   </button>
@@ -328,6 +357,11 @@ const InstagramPublishDialog: React.FC<Props> = ({ data, busy = false, onCancel,
                     <span className="text-right tabular-nums">{focusedFrame[key].toFixed(2)}</span>
                   </label>
                 ))}
+                {draft.publish_type === 'feed' && data.feed_edge_adjusted?.[draft.feed_preset]?.[focusedFrame.image_idx] && (
+                  <p className="rounded-lg bg-blue-50 px-2.5 py-2 text-[11px] leading-relaxed text-blue-700 dark:bg-blue-900/20 dark:text-blue-300">
+                    Фото вже доходить до краю. Автоматичне зменшення вимкнено — масштаб {instagramDefaultZoom(data, 'feed', focusedFrame.image_idx, draft.feed_preset).toFixed(2)}. Його можна змінити вручну.
+                  </p>
+                )}
               </div>}
               <p className="mt-2 text-[11px] leading-relaxed text-gray-400">Crop/zoom змінюють лише окрему публікаційну похідну. Оригінал товару лишається без змін.</p>
             </section>

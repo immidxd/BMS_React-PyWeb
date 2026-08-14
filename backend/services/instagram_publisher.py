@@ -58,7 +58,11 @@ FEED_PRESETS = {
 }
 
 STORY_PRESET = {"label": "Stories / Reels 9:16", "width": 1080, "height": 1920}
-STORY_PRODUCT_BOX = (54, 620, 1026, 1475)
+# Верхній інформаційний блок і товар утворюють одну композицію, делікатно
+# зміщену вниз від службової панелі Instagram. Нижня межа лишає великий запас
+# до reply/share UI, який відрізняється між телефонами.
+STORY_CONTENT_OFFSET_Y = 42
+STORY_PRODUCT_BOX = (54, 662, 1026, 1517)
 PUBLISH_TYPES = {
     "feed": {"label": "Пост / карусель", "max_media": MAX_MEDIA},
     "story": {"label": "Story", "max_media": 1},
@@ -205,14 +209,16 @@ def build_caption(
         feature_lines.pop()
         caption = compose()
     if len(caption) <= CAPTION_LIMIT:
-        return caption
+        return tg.normalize_technology_abbreviations(caption)
 
     suffix = "\n\n".join(protected)
     available = max(0, CAPTION_LIMIT - len(suffix) - 2)
     prefix = "\n\n".join([*leading, *([condition_line] if condition_line else [])])
     if len(prefix) > available:
         prefix = prefix[: max(0, available - 1)].rstrip() + ("…" if available else "")
-    return "\n\n".join(value for value in (prefix, suffix) if value).strip()
+    return tg.normalize_technology_abbreviations(
+        "\n\n".join(value for value in (prefix, suffix) if value).strip()
+    )
 
 
 def build_story_text(bms: dict, sizes: Sequence[dict]) -> str:
@@ -281,9 +287,9 @@ def normalize_media_spec(payload: dict, image_count: int) -> dict:
     selected = _unique_ints(payload.get("image_idx"), maximum=image_count, limit=max_media)
     if not selected:
         selected = list(range(min(image_count, max_media)))
-    feed_preset = str(payload.get("feed_preset") or "portrait")
+    feed_preset = str(payload.get("feed_preset") or "square")
     if feed_preset not in FEED_PRESETS:
-        feed_preset = "portrait"
+        feed_preset = "square"
     default_zoom = 0.9 if publish_type == "feed" else 0.6
     raw_frames = payload.get("frames") if isinstance(payload.get("frames"), list) else []
     by_index: Dict[int, dict] = {}
@@ -324,6 +330,88 @@ def _background_rgb(value: str) -> Tuple[int, int, int]:
         "soft": (244, 246, 248),
         "dark": (24, 27, 32),
     }.get(value, (255, 255, 255))
+
+
+def _feed_subject_margins(raw: bytes) -> Tuple[int, int, Optional[Tuple[float, float, float, float]]]:
+    """Вимірює вільні поля навколо товару на студійному фото.
+
+    Якщо край неоднорідний, безпечно вважаємо, що значущий вміст може доходити
+    до всіх меж. Це краще за помилкове обрізання живого або detail-кадру.
+    """
+    with Image.open(io.BytesIO(raw)) as opened:
+        image = ImageOps.exif_transpose(opened).convert("RGB")
+    image.thumbnail((512, 512), Image.Resampling.LANCZOS)
+    if image.width < 40 or image.height < 40:
+        return image.width, image.height, (0.0, 0.0, 0.0, 0.0)
+
+    pixels = image.load()
+    edge_points: List[Tuple[int, int, int]] = []
+    step_x = max(1, image.width // 40)
+    step_y = max(1, image.height // 40)
+    for x in range(0, image.width, step_x):
+        edge_points.extend((pixels[x, 0], pixels[x, image.height - 1]))
+    for y in range(0, image.height, step_y):
+        edge_points.extend((pixels[0, y], pixels[image.width - 1, y]))
+    channels = [sorted(point[channel] for point in edge_points) for channel in range(3)]
+    background = tuple(values[len(values) // 2] for values in channels)
+    uniformity = sum(
+        1 for point in edge_points
+        if max(abs(point[channel] - background[channel]) for channel in range(3)) <= 16
+    ) / max(1, len(edge_points))
+    if uniformity < 0.82:
+        return image.width, image.height, (0.0, 0.0, 0.0, 0.0)
+
+    difference = ImageChops.difference(image, Image.new("RGB", image.size, background))
+    mask = ImageChops.lighter(
+        ImageChops.lighter(difference.getchannel("R"), difference.getchannel("G")),
+        difference.getchannel("B"),
+    ).point(lambda value: 255 if value > 18 else 0)
+    bbox = mask.getbbox()
+    if not bbox:
+        return image.width, image.height, (0.0, 0.0, 0.0, 0.0)
+    left, top, right, bottom = bbox
+    if right - left < image.width * 0.08 or bottom - top < image.height * 0.08:
+        return image.width, image.height, (0.0, 0.0, 0.0, 0.0)
+    return image.width, image.height, (
+        left / image.width,
+        top / image.height,
+        (image.width - right) / image.width,
+        (image.height - bottom) / image.height,
+    )
+
+
+def _recommended_feed_zoom(raw: bytes, preset: dict) -> Tuple[float, bool]:
+    """Лишає 0.90 тільки для фото з вже наявними вільними полями.
+
+    Detail/full-bleed фото, де значущий вміст доходить хоча б до однієї
+    межі, має залишатися на 1.00. Це не додає штучних білих полів.
+    ``preset`` лишається в сигнатурі, бо default-мапа зберігається окремо
+    для кожного Feed-формату.
+    """
+    _width, _height, margins = _feed_subject_margins(raw)
+    if not margins:
+        return 0.9, False
+    touches_edge = min(margins) <= 0.018
+    return (1.0, True) if touches_edge else (0.9, False)
+
+
+def _feed_zoom_defaults(photos: Sequence[Any]) -> Tuple[Dict[str, List[float]], Dict[str, List[bool]]]:
+    try:
+        from services.product_images import read_image_bytes
+    except ImportError:
+        from backend.services.product_images import read_image_bytes
+    defaults = {key: [] for key in FEED_PRESETS}
+    adjusted = {key: [] for key in FEED_PRESETS}
+    for photo in photos[:MAX_MEDIA]:
+        try:
+            raw = read_image_bytes(photo)
+        except Exception:
+            raw = None
+        for key, preset in FEED_PRESETS.items():
+            zoom, is_adjusted = _recommended_feed_zoom(raw, preset) if raw else (0.9, False)
+            defaults[key].append(zoom)
+            adjusted[key].append(is_adjusted)
+    return defaults, adjusted
 
 
 def _render_frame(raw: bytes, width: int, height: int, frame: dict,
@@ -579,7 +667,7 @@ def _render_story_text(image: Image.Image, raw_text: Any) -> Image.Image:
         _story_line_height(draw, line, title_font, title_size + 5)
         for line in title_lines
     ]
-    cursor_y = 190
+    cursor_y = 190 + STORY_CONTENT_OFFSET_Y
     for line, line_height in zip(title_lines, title_heights):
         draw.text((content_x, cursor_y), line, font=title_font, fill=(21, 20, 23, 255))
         cursor_y += line_height + 2
@@ -616,22 +704,27 @@ def _render_story_text(image: Image.Image, raw_text: Any) -> Image.Image:
     # Удалий комерційний рядок із попередньої версії: велика акцентна ціна
     # зліва й окремий артикул у легкій контурній капсулі справа. Позиція
     # адаптується до довгого підзаголовка, але не заходить у зону товару.
-    commerce_y = min(515, max(440, detail_bottom + 14))
+    commerce_y = min(
+        515 + STORY_CONTENT_OFFSET_Y,
+        max(440 + STORY_CONTENT_OFFSET_Y, detail_bottom + 14),
+    )
     label_font = _story_display_font(21, bold=True)
     price_font = _story_display_font(72, bold=True)
     number_font = _story_display_font(49, bold=True)
     number = number_match.group(0) if number_match else ""
     if price_value:
         draw.text((content_x, commerce_y), "ЦІНА", font=label_font,
-                  fill=(126, 120, 130, 255))
+                  fill=(111, 105, 115, 255))
         draw.text((content_x, commerce_y + 24), price_value, font=price_font,
                   fill=(78, 35, 88, 255))
     if number:
         number_width = draw.textlength(number, font=number_font)
         pill_width = max(205, number_width + 54)
         pill_left = content_x + content_width - pill_width
-        draw.text((pill_left, commerce_y), "АРТИКУЛ", font=label_font,
-                  fill=(126, 120, 130, 255))
+        label_width = draw.textlength("АРТИКУЛ", font=label_font)
+        label_x = content_x + content_width - label_width
+        draw.text((label_x, commerce_y), "АРТИКУЛ", font=label_font,
+                  fill=(111, 105, 115, 255))
         pill_top = commerce_y + 30
         pill_bottom = pill_top + 70
         draw.rounded_rectangle(
@@ -713,6 +806,15 @@ def render_media_for_product(db: Session, product_id: int, payload: dict) -> dic
     spec = normalize_media_spec(payload, len(photos))
     values = _read_photo_bytes(bms, spec)
     preset = STORY_PRESET if spec["publish_type"] in {"story", "reel"} else FEED_PRESETS[spec["feed_preset"]]
+    explicit_frames = {
+        int(frame.get("image_idx"))
+        for frame in (payload.get("frames") if isinstance(payload.get("frames"), list) else [])
+        if isinstance(frame, dict) and str(frame.get("image_idx", "")).isdigit()
+    }
+    if spec["publish_type"] == "feed":
+        for raw, frame in zip(values, spec["frames"]):
+            if int(frame["image_idx"]) not in explicit_frames:
+                frame["zoom"] = _recommended_feed_zoom(raw, preset)[0]
     background = _background_rgb(spec["background"])
     if spec["publish_type"] == "story":
         frames = [
@@ -787,6 +889,7 @@ def preview_post(db: Session, product_id: int) -> dict:
     product_number = str(bms.get("productnumber") or "")
     sizes = tg._available_sizes(db, product_number)
     photos, image_kind = tg._photo_entries(bms)
+    feed_zoom_defaults, feed_edge_adjusted = _feed_zoom_defaults(photos)
     caption = build_caption(bms, sizes)
     story_text = build_story_text(bms, sizes)
     warnings: List[str] = []
@@ -804,6 +907,13 @@ def preview_post(db: Session, product_id: int) -> dict:
     status = connection_status()
     if not status["configured"]:
         warnings.append("Жива публікація стане доступною після підключення Worker і публічного R2.")
+
+    media_spec = normalize_media_spec({}, len(photos))
+    square_defaults = feed_zoom_defaults.get("square", [])
+    for frame in media_spec["frames"]:
+        image_idx = int(frame["image_idx"])
+        if image_idx < len(square_defaults):
+            frame["zoom"] = square_defaults[image_idx]
 
     return {
         "ok": True,
@@ -829,11 +939,13 @@ def preview_post(db: Session, product_id: int) -> dict:
         "default_image_idx": list(range(min(len(photos), MAX_MEDIA))),
         "carousel_limit": MAX_MEDIA,
         "batch_max_products": BATCH_MAX_PRODUCTS,
-        "default_feed_preset": "portrait",
+        "default_feed_preset": "square",
         "feed_presets": FEED_PRESETS,
+        "feed_zoom_defaults": feed_zoom_defaults,
+        "feed_edge_adjusted": feed_edge_adjusted,
         "story_preset": STORY_PRESET,
         "publish_types": PUBLISH_TYPES,
-        "media_spec": normalize_media_spec({}, len(photos)),
+        "media_spec": media_spec,
         "default_publish_at": _next_morning(),
         "connection": status,
         "warnings": warnings,
@@ -1189,7 +1301,11 @@ def _record(db: Session, *, product_id: int, prepared: dict, uploaded: dict,
         "media": json.dumps(uploaded["media"], ensure_ascii=False),
         "scheduled": prepared["scheduled_at"],
         "published": datetime.now(timezone.utc) if dispatch.get("status") == "published" else None,
-        "payload": json.dumps(request_payload, ensure_ascii=False),
+        "payload": json.dumps({
+            **request_payload,
+            "permalink": dispatch.get("permalink"),
+            "phase": dispatch.get("phase"),
+        }, ensure_ascii=False),
         "error": dispatch.get("error"),
     })
     db.commit()
@@ -1321,7 +1437,10 @@ async def sync_statuses(db: Session, *, product_id: Optional[int] = None) -> dic
     rows = db.execute(text(f"""
         SELECT id, dispatcher_job_id FROM instagram_publications
         WHERE dispatcher_job_id IS NOT NULL
-          AND status IN ('queued', 'scheduled', 'processing', 'retrying')
+          AND (
+                status IN ('queued', 'scheduled', 'processing', 'retrying')
+                OR (status = 'published' AND COALESCE(payload_json->>'permalink', '') = '')
+          )
           {clause}
         ORDER BY updated_at LIMIT 100
     """), params).mappings().all()
