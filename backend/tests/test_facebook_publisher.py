@@ -45,9 +45,10 @@ BMS = {"brandname": "HOKA", "model": "Kawana Mid", "price": 3500, "productnumber
 SIZES = [{"size": "44.6", "measurementscm": "28.5"}]
 
 
-def test_caption_is_byte_for_byte_the_instagram_one(monkeypatch):
-    """Одна крамниця — один голос. Якщо тексти розійдуться, це має бути
-    свідомим рішенням, а не непоміченим дрейфом однієї з копій.
+def test_caption_differs_from_instagram_only_in_the_call_to_action(monkeypatch):
+    """Одна крамниця — один голос. Розходитись дозволено РІВНО в одному рядку:
+    «в приватні» — інстаграмівське слово (Direct), у Facebook пишуть у Messenger.
+    Будь-яка інша різниця = непомічений дрейф однієї з копій.
 
     ``_ig`` прибиваємо явно: подвійний імпорт (`services.` і `backend.services.`)
     дає ДВА різні обʼєкти модуля, і без цього патч ``ip._tg`` не дійшов би до тієї
@@ -56,8 +57,102 @@ def test_caption_is_byte_for_byte_the_instagram_one(monkeypatch):
     monkeypatch.setattr(fb, "_ig", lambda: ip)
     monkeypatch.setattr(ip, "_tg", lambda: _TgCaption)
 
-    assert fb.build_caption(BMS, SIZES) == ip.build_caption(BMS, SIZES)
+    facebook = fb.build_caption(BMS, SIZES).splitlines()
+    instagram = ip.build_caption(BMS, SIZES).splitlines()
+
+    assert len(facebook) == len(instagram)
+    differing = [i for i, (a, b) in enumerate(zip(facebook, instagram)) if a != b]
+    assert len(differing) == 1, f"розійшлось більше ніж один рядок: {differing}"
+    assert facebook[differing[0]] == "📲 Пиши #Ф3914 нам у повідомлення"
+    assert instagram[differing[0]] == "📲 Пиши #Ф3914 нам в приватні"
+    # Артикул лишається з «#» — користувач попросив не чіпати.
+    assert "#Ф3914" in facebook[differing[0]]
+    # Текст Story нанесений на кадр і CTA не містить — має лишатись спільним.
     assert fb.build_story_text(BMS, SIZES) == ip.build_story_text(BMS, SIZES)
+
+
+def test_reel_slide_fits_the_whole_photo_at_the_default_zoom():
+    """Головний баг живого Reel: кадр 9:16 різав фото по боках.
+
+    `_render_frame` масштабує за max() («cover»): у 9:16 квадратне фото стає
+    ширшим за кадр, і краї зникають. Слайд Reel на типовому значенні повзунка
+    мусить показувати фото ЦІЛКОМ.
+    """
+    from PIL import Image
+    import io as _io
+
+    # Мітки біля самих країв фото — саме вони й зникали.
+    source = Image.new("RGB", (1000, 1000), (255, 255, 255))
+    for x in list(range(0, 20)) + list(range(980, 1000)):
+        for y in range(400, 600):
+            source.putpixel((x, y), (0, 0, 0))
+    buffer = _io.BytesIO()
+    source.save(buffer, "JPEG", quality=95)
+    raw = buffer.getvalue()
+
+    def has_black(image):
+        pixels = image.load()
+        return {x for x in range(image.width)
+                for y in range(0, image.height, 4)
+                if sum(pixels[x, y]) < 150}
+
+    default = {"image_idx": 0, "zoom": 0.6, "x": 0.0, "y": 0.0}
+    reel = ip._render_reel_frame(raw, default, (255, 255, 255))
+    cover = ip._render_frame(raw, 1080, 1920, default, (255, 255, 255))
+
+    assert reel.size == (1080, 1920)
+
+    reel_marks = has_black(reel)
+    # Обидві крайні мітки лишились → фото поміщається повністю.
+    assert reel_marks, "фото зникло з кадру"
+    assert min(reel_marks) > 0 and max(reel_marks) < 1079, "товар торкається країв"
+    left = [x for x in reel_marks if x < 540]
+    right = [x for x in reel_marks if x >= 540]
+    assert left and right, "одну з країв фото втрачено"
+
+    # Старий «cover» на тому самому типовому zoom обидві мітки зрізав.
+    assert not has_black(cover), "cover мав відрізати краї фото — тест втратив сенс"
+
+
+def test_reel_zoom_above_default_crops_on_purpose():
+    """Збільшення понад «вміститись» ріже — і має різати.
+
+    Це не той баг, що вище: повзунок навмисно дозволяє наблизити кадр, рівно
+    як у Story. Тест фіксує, що поведінка усвідомлена, а не випадкова."""
+    from PIL import Image
+    import io as _io
+
+    source = Image.new("RGB", (1000, 1000), (255, 255, 255))
+    for x in range(0, 1000):
+        for y in range(400, 600):
+            source.putpixel((x, y), (0, 0, 0))
+    buffer = _io.BytesIO()
+    source.save(buffer, "JPEG", quality=95)
+    raw = buffer.getvalue()
+
+    zoomed = ip._render_reel_frame(raw, {"image_idx": 0, "zoom": 1.2, "x": 0.0, "y": 0.0},
+                                   (255, 255, 255))
+    pixels = zoomed.load()
+    touches_edge = any(sum(pixels[0, y]) < 150 for y in range(0, 1920, 4))
+    assert touches_edge
+
+
+def test_reel_preview_renders_the_reel_slide_not_the_story_layout(monkeypatch):
+    """Прев'ю мусить показувати ТОЙ кадр, що піде у відео.
+
+    Раніше прев'ю Reel підмінялося на Story, щоб не ганяти FFmpeg. Відколи
+    слайд Reel рендериться інакше, така підміна показувала б не те."""
+    captured = {}
+
+    def fake_render(_db, _pid, payload):
+        captured.update(payload)
+        return {"assets": [{"bytes": b"jpeg"}]}
+
+    monkeypatch.setattr(ip, "render_media_for_product", fake_render)
+    ip.render_preview_jpeg(None, 42, {"publish_type": "reel", "image_idx": [0, 1]})
+
+    assert captured["publish_type"] == "reel"
+    assert captured["_frames_only"] is True
 
 
 def test_page_message_limit_is_facebook_own_not_instagram_2200():

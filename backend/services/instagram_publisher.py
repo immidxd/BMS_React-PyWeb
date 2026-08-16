@@ -50,6 +50,9 @@ FRAME_ZOOM_MIN = 0.5
 FRAME_ZOOM_MAX = 3.0
 KYIV_TZ = ZoneInfo("Europe/Kyiv")
 DELIVERY_LINE = os.getenv("INSTAGRAM_DELIVERY_LINE", "1–2 дні").strip()
+# Заклик у кінці підпису. «Приватні» — інстаграмівське слово (Direct); інші
+# майданчики передають своє, бо там так не кажуть.
+DIRECT_CTA = "нам в приватні"
 
 FEED_PRESETS = {
     "portrait": {"label": "Вертикальний 4:5", "width": 1080, "height": 1350},
@@ -63,6 +66,8 @@ STORY_PRESET = {"label": "Stories / Reels 9:16", "width": 1080, "height": 1920}
 # до reply/share UI, який відрізняється між телефонами.
 STORY_CONTENT_OFFSET_Y = 42
 STORY_PRODUCT_BOX = (54, 662, 1026, 1517)
+# Поля навколо товару у слайді Reel — щоб кадр не виглядав «впритул».
+REEL_MARGIN_RATIO = 0.06
 PUBLISH_TYPES = {
     "feed": {"label": "Пост / карусель", "max_media": MAX_MEDIA},
     "story": {"label": "Story", "max_media": 1},
@@ -158,6 +163,7 @@ def build_caption(
     sizes: Sequence[dict],
     *,
     features: Optional[Iterable[str]] = None,
+    cta: Optional[str] = None,
 ) -> str:
     """Типовий plain-text підпис у стилі чинних товарних Instagram-постів."""
     tg = _tg()
@@ -194,7 +200,7 @@ def build_caption(
     if DELIVERY_LINE:
         protected.append(f"🚚 Доставка: {DELIVERY_LINE}")
     product_number = str(bms.get("productnumber") or "").lstrip("#")
-    protected.append(f"📲 Пиши #{product_number} нам в приватні")
+    protected.append(f"📲 Пиши #{product_number} {cta or DIRECT_CTA}")
 
     def compose() -> str:
         sections = [*leading]
@@ -504,6 +510,41 @@ def _render_story_frame(raw: bytes, frame: dict,
     y = round(free_y / 2 + float(frame.get("y") or 0.0) * abs(free_y) / 2)
     tile.paste(resized, (x, y))
     canvas.paste(tile, (left, top))
+    return canvas
+
+
+def _render_reel_frame(raw: bytes, frame: dict,
+                       background: Tuple[int, int, int]) -> Image.Image:
+    """Слайд Reel: товар МУСИТЬ поміститися в кадр цілком.
+
+    ``_render_frame`` масштабує за ``max()`` — це «cover»: кадр заповнюється,
+    а зайве відрізається. Для 1:1 і 4:5 це майже непомітно, бо товарні фото
+    близькі до квадрата. Але у 9:16 квадратне фото втрачає ~44% ширини, і
+    товар буквально не влазить у кадр — знайдено на живому Reel 2026-08-16.
+    Тут масштабуємо за ``min()`` («contain») і лишаємо поля.
+    """
+    with Image.open(io.BytesIO(raw)) as opened:
+        image = ImageOps.exif_transpose(opened).convert("RGB")
+    image = _trim_uniform_story_background(image)
+    width, height = STORY_PRESET["width"], STORY_PRESET["height"]
+    canvas = Image.new("RGB", (width, height), background)
+    usable_width = width * (1 - 2 * REEL_MARGIN_RATIO)
+    usable_height = height * (1 - 2 * REEL_MARGIN_RATIO)
+    fit = min(usable_width / max(1, image.width), usable_height / max(1, image.height))
+    # 0.60 — те саме стандартне значення повзунка, що й у Story: «товар повністю
+    # у кадрі». Інші значення масштабуються відносно нього, тож UI поводиться
+    # однаково для обох вертикальних форматів.
+    relative_zoom = float(frame.get("zoom") or 0.6) / 0.6
+    scale = fit * relative_zoom
+    resized = image.resize(
+        (max(1, round(image.width * scale)), max(1, round(image.height * scale))),
+        Image.Resampling.LANCZOS,
+    )
+    free_x = width - resized.width
+    free_y = height - resized.height
+    x = round(free_x / 2 + float(frame.get("x") or 0.0) * abs(free_x) / 2)
+    y = round(free_y / 2 + float(frame.get("y") or 0.0) * abs(free_y) / 2)
+    canvas.paste(resized, (x, y))
     return canvas
 
 
@@ -821,6 +862,11 @@ def render_media_for_product(db: Session, product_id: int, payload: dict) -> dic
             _render_story_frame(raw, frame, background)
             for raw, frame in zip(values, spec["frames"])
         ]
+    elif spec["publish_type"] == "reel":
+        frames = [
+            _render_reel_frame(raw, frame, background)
+            for raw, frame in zip(values, spec["frames"])
+        ]
     else:
         frames = [
             _render_frame(raw, preset["width"], preset["height"], frame, background)
@@ -828,6 +874,19 @@ def render_media_for_product(db: Session, product_id: int, payload: dict) -> dic
         ]
     if spec["publish_type"] == "story":
         frames[0] = _render_story_text(frames[0], payload.get("story_text"))
+    if spec["publish_type"] == "reel" and payload.get("_frames_only") is True:
+        # Прев'ю: той самий кадр, що піде у відео, але без запуску FFmpeg на
+        # кожен рух повзунка.
+        return {
+            "spec": spec,
+            "assets": [{
+                "type": "IMAGE", "extension": "jpeg", "content_type": "image/jpeg",
+                "bytes": _jpeg_bytes(frames[0]), "width": preset["width"],
+                "height": preset["height"], "alt_text": "",
+            }],
+            "cover": None,
+            "output": preset,
+        }
     if spec["publish_type"] == "reel":
         return {
             "spec": spec,
@@ -1130,8 +1189,9 @@ def render_preview_jpeg(db: Session, product_id: int, payload: dict) -> bytes:
     selected = payload.get("image_idx") if isinstance(payload.get("image_idx"), list) else []
     preview_payload["image_idx"] = selected[:1]
     if str(payload.get("publish_type") or "feed").lower() == "reel":
-        preview_payload["publish_type"] = "story"
-        preview_payload["story_text"] = ""
+        # Раніше прев'ю Reel підмінялося на Story — а відтоді як слайд Reel
+        # рендериться інакше, це показувало б людині НЕ той кадр.
+        preview_payload["_frames_only"] = True
     rendered = render_media_for_product(db, product_id, preview_payload)
     return rendered["assets"][0]["bytes"]
 

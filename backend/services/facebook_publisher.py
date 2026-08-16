@@ -34,6 +34,9 @@ from sqlalchemy.orm import Session
 MESSAGE_LIMIT = 63_206
 REEL_DESCRIPTION_LIMIT = 2_200
 BATCH_MAX_PRODUCTS = int(os.getenv("FACEBOOK_BATCH_MAX_PRODUCTS", "10"))
+# «В приватні» — інстаграмівське слово (Direct). У Facebook пишуть у Messenger,
+# тому заклик той самий за змістом, але звучить по-місцевому.
+FACEBOOK_CTA = os.getenv("FACEBOOK_CTA", "нам у повідомлення").strip()
 
 PUBLISH_TYPES = {
     "feed": {"label": "Пост / альбом", "max_media": 10},
@@ -117,8 +120,12 @@ def connection_status() -> dict:
 
 
 def build_caption(bms: dict, sizes, *, features=None) -> str:
-    """Той самий товарний підпис, що й в Instagram — одна крамниця, один голос."""
-    return _ig().build_caption(bms, sizes, features=features)
+    """Той самий товарний підпис, що й в Instagram — одна крамниця, один голос.
+
+    Єдина свідома відмінність — заклик у кінці: у Facebook пишуть у Messenger,
+    а не «в приватні». Решта тексту мусить лишатися спільною.
+    """
+    return _ig().build_caption(bms, sizes, features=features, cta=FACEBOOK_CTA)
 
 
 def build_story_text(bms: dict, sizes) -> str:
