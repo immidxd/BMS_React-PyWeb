@@ -12,7 +12,7 @@ import ViberPublishDialog, { type ViberPreview, type ViberPublishPayload } from 
 import ViberBatchPublishDialog, { type ViberBatchRequest } from '../components/products/ViberBatchPublishDialog';
 import InstagramPublishDialog, { InstagramMark, type InstagramDraftPayload, type InstagramPreview } from '../components/products/InstagramPublishDialog';
 import InstagramBatchDraftDialog, { type InstagramBatchRequest } from '../components/products/InstagramBatchDraftDialog';
-import { FacebookMark } from '../components/products/FacebookPublishDialog';
+import FacebookPublishDialog, { FacebookMark, type FacebookDraftPayload, type FacebookPreview } from '../components/products/FacebookPublishDialog';
 import { confirmDialog, alertDialog, notify } from '../ui/feedback';
 import LoadingSpinner from '../components/common/LoadingSpinner';
 import { taskManager } from '../services/taskManager';
@@ -683,6 +683,9 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
   const [viberBusy, setViberBusy] = useState(false);
   const [instagramPreview, setInstagramPreview] = useState<InstagramPreview | null>(null);
   const [instagramPreviewing, setInstagramPreviewing] = useState<number | null>(null);
+  const [facebookPreview, setFacebookPreview] = useState<FacebookPreview | null>(null);
+  const [facebookPreviewing, setFacebookPreviewing] = useState<number | null>(null);
+  const [facebookBusy, setFacebookBusy] = useState(false);
   const [instagramBatchIds, setInstagramBatchIds] = useState<number[] | null>(null);
   const [instagramBusy, setInstagramBusy] = useState(false);
 
@@ -1307,6 +1310,65 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
     });
   };
 
+  const openFacebookDialog = async (productId: number) => {
+    if (facebookPreviewing !== null) return;
+    setFacebookPreviewing(productId);
+    try {
+      const response = await fetch('/api/publications/facebook/preview-post', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ product_id: productId }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.detail || 'Не вдалося зібрати Facebook-чернетку');
+      setFacebookPreview(data);
+      setFacebookStatus(data.connection || facebookStatus);
+    } catch (reason: any) {
+      notify.error({ message: `Facebook: ${reason.message || 'Помилка зв’язку'}`, duration: 8 });
+    } finally {
+      setFacebookPreviewing(null);
+    }
+  };
+
+  const handleFacebookPublish = async (payload: FacebookDraftPayload) => {
+    if (!facebookPreview || facebookBusy) return;
+    const pages = (facebookPreview.connection.pages || [])
+      .filter(page => payload.page_ids.includes(page.id))
+      .map(page => page.name);
+    const approved = await confirmDialog({
+      title: payload.publish_at ? 'Запланувати Facebook-публікацію?' : 'Опублікувати у Facebook зараз?',
+      body: `#${facebookPreview.productnumber} · ${payload.publish_type === 'feed' ? 'пост/альбом' : payload.publish_type === 'story' ? 'Story' : 'Reel'}\nСторінки: ${pages.join(', ') || facebookPreview.connection.account}${payload.publish_at ? `\nЧас: ${new Date(payload.publish_at).toLocaleString('uk-UA')}` : ''}`,
+      okText: payload.publish_at ? 'Запланувати' : 'Опублікувати', kind: 'warning',
+    });
+    if (!approved) return;
+    setFacebookBusy(true);
+    taskManager.run(
+      `Facebook #${facebookPreview.productnumber}`,
+      async () => {
+        const response = await fetch('/api/publications/facebook/create-post', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+        });
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok || !result.ok) throw new Error(result.detail || result.error || 'Facebook-публікація не вдалася');
+        return result;
+      },
+      {
+        silentSuccess: true,
+        resultStatus: (result: any) => ({
+          status: 'success',
+          detail: result.scheduled_at
+            ? `Заплановано: ${new Date(result.scheduled_at).toLocaleString('uk-UA')}`
+            : `Передано у чергу · Сторінок: ${(result.pages || []).length}`,
+        }),
+        onSuccess: () => {
+          notify.success({ message: 'Facebook-публікацію передано в чергу', duration: 7 });
+          setFacebookPreview(null);
+          fetchItems();
+          fetchStats();
+        },
+      },
+    ).catch(() => undefined).finally(() => setFacebookBusy(false));
+  };
+
   const openInstagramDialog = async (productId: number) => {
     if (instagramPreviewing !== null) return;
     setInstagramPreviewing(productId);
@@ -1913,6 +1975,14 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
                               <span className="font-black">V</span>{viberPreviewing === item.product_id ? '…' : 'Viber'}
                             </button>}
                             {filterMode !== 'problematic' && <button
+                              onClick={() => openFacebookDialog(item.product_id as number)}
+                              disabled={facebookPreviewing === item.product_id}
+                              title="Підготувати й перевірити Facebook-чернетку без надсилання"
+                              className="inline-flex items-center gap-1 rounded-md border border-blue-300 bg-blue-50/60 px-2 py-1 text-xs font-medium text-[#1877F2] transition-colors hover:bg-blue-100 disabled:opacity-50 dark:border-blue-800 dark:bg-blue-900/20 dark:text-blue-300 dark:hover:bg-blue-900/40"
+                            >
+                              <FacebookMark className="h-4 w-4 text-[9px]" />{facebookPreviewing === item.product_id ? '…' : 'Facebook'}
+                            </button>}
+                            {filterMode !== 'problematic' && <button
                               onClick={() => openInstagramDialog(item.product_id as number)}
                               disabled={instagramPreviewing === item.product_id}
                               title="Підготувати й перевірити Instagram-чернетку без надсилання"
@@ -2211,6 +2281,14 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
           busy={instagramBusy}
           onCancel={() => { if (!instagramBusy) setInstagramPreview(null); }}
           onConfirm={handleInstagramPublish}
+        />
+      )}
+      {facebookPreview && (
+        <FacebookPublishDialog
+          data={facebookPreview}
+          busy={facebookBusy}
+          onCancel={() => { if (!facebookBusy) setFacebookPreview(null); }}
+          onConfirm={handleFacebookPublish}
         />
       )}
       {instagramBatchIds && (

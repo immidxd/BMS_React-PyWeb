@@ -95,6 +95,33 @@ const CatalogFilterGlyph: React.FC = () => (
   </svg>
 );
 
+// Instagram і Facebook малюємо гліфами, а не файлами: логотипи Meta —
+// торгові марки, і тримати їх копії в репозиторії зайве. Гліф читається так
+// само, а бренд упізнається за кольором.
+const InstagramFilterGlyph: React.FC = () => (
+  <svg viewBox="0 0 18 18" width={18} height={18} aria-hidden focusable="false">
+    <defs>
+      <linearGradient id="bms-ig-chip" x1="0" y1="1" x2="1" y2="0">
+        <stop offset="0%" stopColor="#FCAF45" />
+        <stop offset="50%" stopColor="#E1306C" />
+        <stop offset="100%" stopColor="#833AB4" />
+      </linearGradient>
+    </defs>
+    <rect width="18" height="18" rx="5" fill="url(#bms-ig-chip)" />
+    <rect x="4.4" y="4.4" width="9.2" height="9.2" rx="3" fill="none" stroke="white" strokeWidth="1.3" />
+    <circle cx="9" cy="9" r="2.1" fill="none" stroke="white" strokeWidth="1.3" />
+    <circle cx="12.4" cy="5.6" r="0.85" fill="white" />
+  </svg>
+);
+
+const FacebookFilterGlyph: React.FC = () => (
+  <svg viewBox="0 0 18 18" width={18} height={18} aria-hidden focusable="false">
+    <rect width="18" height="18" rx="5" fill="#1877F2" />
+    <text x="9" y="13" textAnchor="middle" fontSize="12" fontWeight="900"
+          fontFamily="Georgia, serif" fill="white">f</text>
+  </svg>
+);
+
 const ShafaFilterGlyph: React.FC = () => (
   <svg viewBox="0 0 18 18" width={18} height={18} aria-hidden focusable="false">
     <rect width="18" height="18" rx="5" fill="#000000" />
@@ -110,7 +137,8 @@ const PUBLICATION_PLATFORMS: PublicationPlatform[] = [
   { key: 'prom',     label: 'Prom',     icon: '/media-logos/prom-logo.png' },
   { key: 'shafa',    label: 'Shafa',    svg: <ShafaFilterGlyph />, tone: 'black' },
   { key: 'catalog',  label: 'Каталог',  svg: <CatalogFilterGlyph />, tone: 'emerald' },
-  // { key: 'instagram', label: 'Instagram', icon: '/media-logos/instagram.png' },
+  { key: 'instagram', label: 'Instagram', svg: <InstagramFilterGlyph />, tone: 'black' },
+  { key: 'facebook',  label: 'Facebook',  svg: <FacebookFilterGlyph />, tone: 'black' },
 ];
 
 // Стан чіпа майданчика: 'off' — не задіяно; 'on' — позитивний (показати ті, що

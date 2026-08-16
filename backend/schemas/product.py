@@ -431,6 +431,8 @@ class ProductList(BaseModel):
     is_rostovka: bool = False          # набір розмірів (маркер у списку)
     published_tg: bool = False         # є published-пост у Telegram
     published_viber: bool = False      # є фактично опублікований Viber-пост
+    published_instagram: bool = False  # є опублікований матеріал в Instagram
+    published_facebook: bool = False   # є опублікований допис у Сторінці Facebook
     published_olx: bool = False        # є ПУБЛІЧНЕ (active) оголошення на OLX
     olx_status: Optional[str] = None   # active (публічне) | limited (потрібен пакет)
     published_prom: bool = False       # є товар on_display на Prom

@@ -209,6 +209,26 @@ _PRODUCT_FROM_SQL = """
               AND COALESCE(NULLIF(BTRIM(p2.productnumber), ''), NULLIF(BTRIM(vp.product_number), '')) IS NOT NULL
         ) viberpub ON viberpub.pnum = TRIM(LEADING '#' FROM BTRIM(p.productnumber))
         LEFT JOIN (
+            -- Instagram: лише опубліковане (черга/розклад ще не «опубліковано»).
+            SELECT DISTINCT TRIM(LEADING '#' FROM BTRIM(
+                       COALESCE(NULLIF(BTRIM(p2.productnumber), ''), ip.product_number)
+                   )) AS pnum
+            FROM instagram_publications ip
+            LEFT JOIN products p2 ON p2.id = ip.product_id
+            WHERE ip.status = 'published'
+              AND COALESCE(NULLIF(BTRIM(p2.productnumber), ''), NULLIF(BTRIM(ip.product_number), '')) IS NOT NULL
+        ) igpub ON igpub.pnum = TRIM(LEADING '#' FROM BTRIM(p.productnumber))
+        LEFT JOIN (
+            -- Facebook: те саме правило, окрема таблиця.
+            SELECT DISTINCT TRIM(LEADING '#' FROM BTRIM(
+                       COALESCE(NULLIF(BTRIM(p2.productnumber), ''), fp.product_number)
+                   )) AS pnum
+            FROM facebook_publications fp
+            LEFT JOIN products p2 ON p2.id = fp.product_id
+            WHERE fp.status = 'published'
+              AND COALESCE(NULLIF(BTRIM(p2.productnumber), ''), NULLIF(BTRIM(fp.product_number), '')) IS NOT NULL
+        ) fbpub ON fbpub.pnum = TRIM(LEADING '#' FROM BTRIM(p.productnumber))
+        LEFT JOIN (
             -- Найкращий OLX-стан за номером: 'active' = повністю ПУБЛІЧНЕ,
             -- 'limited' = створене, але з обмеженою видимістю (потрібен пакет).
             SELECT TRIM(LEADING '#' FROM p2.productnumber) AS pnum,
@@ -426,6 +446,8 @@ def _build_product_where(filters: Optional["schemas.ProductFilter"]) -> tuple:
             # лише за реального URL/ID.
             'shafa':    "shafapub.shafa_status IN ('waiting_prom','bridge_ready','confirmed','manual_existing')",
             'catalog':  "catpub.pnum IS NOT NULL",
+            'instagram': "igpub.pnum IS NOT NULL",
+            'facebook':  "fbpub.pnum IS NOT NULL",
         }
         if getattr(filters, 'published_on', None):
             _pub = [_PUB_EXPR[k] for k in filters.published_on if k in _PUB_EXPR]
@@ -695,7 +717,9 @@ def get_products(
                (shafapub.shafa_status IN ('confirmed','manual_existing')) AS published_shafa,
                shafapub.shafa_status,
                -- У публічному інтернет-каталозі (catalog_listings) — «за номером».
-               (catpub.pnum IS NOT NULL) AS published_catalog
+               (catpub.pnum IS NOT NULL) AS published_catalog,
+               (igpub.pnum IS NOT NULL) AS published_instagram,
+               (fbpub.pnum IS NOT NULL) AS published_facebook
         FROM products p
         LEFT JOIN types t ON p.typeid = t.id
         LEFT JOIN brands b ON p.brandid = b.id  
@@ -790,6 +814,26 @@ def get_products(
             WHERE vp.status = 'published'
               AND COALESCE(NULLIF(BTRIM(p2.productnumber), ''), NULLIF(BTRIM(vp.product_number), '')) IS NOT NULL
         ) viberpub ON viberpub.pnum = TRIM(LEADING '#' FROM BTRIM(p.productnumber))
+        LEFT JOIN (
+            -- Instagram: лише опубліковане (черга/розклад ще не «опубліковано»).
+            SELECT DISTINCT TRIM(LEADING '#' FROM BTRIM(
+                       COALESCE(NULLIF(BTRIM(p2.productnumber), ''), ip.product_number)
+                   )) AS pnum
+            FROM instagram_publications ip
+            LEFT JOIN products p2 ON p2.id = ip.product_id
+            WHERE ip.status = 'published'
+              AND COALESCE(NULLIF(BTRIM(p2.productnumber), ''), NULLIF(BTRIM(ip.product_number), '')) IS NOT NULL
+        ) igpub ON igpub.pnum = TRIM(LEADING '#' FROM BTRIM(p.productnumber))
+        LEFT JOIN (
+            -- Facebook: те саме правило, окрема таблиця.
+            SELECT DISTINCT TRIM(LEADING '#' FROM BTRIM(
+                       COALESCE(NULLIF(BTRIM(p2.productnumber), ''), fp.product_number)
+                   )) AS pnum
+            FROM facebook_publications fp
+            LEFT JOIN products p2 ON p2.id = fp.product_id
+            WHERE fp.status = 'published'
+              AND COALESCE(NULLIF(BTRIM(p2.productnumber), ''), NULLIF(BTRIM(fp.product_number), '')) IS NOT NULL
+        ) fbpub ON fbpub.pnum = TRIM(LEADING '#' FROM BTRIM(p.productnumber))
         LEFT JOIN (
             -- Найкращий OLX-стан за номером: active (публічне) / limited (обмежене).
             SELECT TRIM(LEADING '#' FROM p2.productnumber) AS pnum,
@@ -999,6 +1043,8 @@ def get_products(
                 'is_rostovka': bool(m.get('is_rostovka', False)),
                 'published_tg': bool(m.get('published_tg', False)),
                 'published_viber': bool(m.get('published_viber', False)),
+                'published_instagram': bool(m.get('published_instagram', False)),
+                'published_facebook': bool(m.get('published_facebook', False)),
                 'published_olx': bool(m.get('published_olx', False)),
                 'olx_status': m.get('olx_status'),
                 'published_prom': bool(m.get('published_prom', False)),
