@@ -26,6 +26,10 @@ const MAX_BATCH_PER_TICK = 5;
 // спільний консервативний ліміт по найсуворішому типу, а не по стрічці.
 const LOCAL_PUBLISHING_LIMIT = 30;
 const VIDEO_POLL_MS = 45 * 1000;
+// Стеля очікування Meta на фазі відео. Без неї job із «застряглим» відео
+// опитував би Meta ВІЧНО: setJobPending не рахує спроб, тож ані retry-ліміт,
+// ані failed його не зупиняли. Знайдено на першому живому Reel.
+const VIDEO_STALL_MS = 20 * 60 * 1000;
 const RETRY_MINUTES = [1, 5, 15, 60, 180];
 // Рівно ті три дозволи, що їх вимагає документація Pages/Reels Publishing API.
 // `publish_video` сюди НЕ входить (перевірено в docs 2026-08-16): застосунок
@@ -690,18 +694,30 @@ async function startReelUpload(env, row, account, token) {
   `).bind(videoId, new Date(Date.now() + 5000).toISOString(), new Date().toISOString(), row.id).run();
 }
 
-/** REEL, крок 2: Meta кодує відео асинхронно; публікувати можна лише коли
- *  `status.video_status` = ready. */
-async function reelReady(env, token, videoId) {
+async function videoStatus(env, token, videoId) {
   const result = await graphRequest(env, token, videoId, { query: { fields: 'status' } });
-  const state = String(result?.status?.video_status || '').toLowerCase();
-  if (state === 'error') {
+  return result?.status || {};
+}
+
+/** REEL, крок 2: чекаємо, доки Meta ЗАБЕРЕ файл — не доки «обробить».
+ *
+ *  ⚠️ Тут була пастка, знайдена на живій публікації: `video_status` стає
+ *  `ready` лише ПІСЛЯ виклику finish, бо обробка не починається, доки не
+ *  попросиш публікацію. Гейт «чекати на ready» = вічний цикл: воркер опитує,
+ *  Meta чекає finish, і job назавжди лишається в `retrying`. Правильна ознака
+ *  готовності до finish — `uploading_phase.status = complete`. */
+async function reelReady(env, token, videoId) {
+  const status = await videoStatus(env, token, videoId);
+  const uploading = String(status?.uploading_phase?.status || '').toLowerCase();
+  const state = String(status?.video_status || '').toLowerCase();
+  const failure = status?.uploading_phase?.error || status?.processing_phase?.error;
+  if (state === 'error' || uploading === 'error' || failure) {
     throw new MetaRequestError(
-      result?.status?.processing_phase?.error?.message || 'Meta не змогла обробити відео Reel',
+      failure?.message || 'Meta не змогла обробити відео Reel',
       { mediaInvalid: true },
     );
   }
-  return state === 'ready';
+  return uploading === 'complete' || state === 'ready';
 }
 
 /** REEL, крок 3: фінальна публікація. */
@@ -780,6 +796,12 @@ async function processJob(env, id) {
           continue;
         }
         if (row.phase === 'video_uploaded') {
+          if (Date.now() - new Date(row.created_at).getTime() > VIDEO_STALL_MS) {
+            throw new MetaRequestError(
+              `Meta не завершила приймання відео за ${VIDEO_STALL_MS / 60000} хв`,
+              { retriable: false },
+            );
+          }
           if (!await reelReady(env, token, row.video_id)) {
             await setJobPending(env, id, 'video_uploaded', VIDEO_POLL_MS);
             break;
@@ -1024,6 +1046,20 @@ export default {
     }
     if (jobMatch && request.method === 'DELETE') {
       return cancelJob(env, decodeURIComponent(jobMatch[1]));
+    }
+    const videoMatch = url.pathname.match(/^\/v1\/jobs\/([^/]+)\/video-status$/);
+    if (videoMatch && request.method === 'GET') {
+      const row = await readJob(env, decodeURIComponent(videoMatch[1]));
+      if (!row) return error('Job не знайдено', 404);
+      if (!row.video_id) return error('У job немає video_id', 400);
+      const account = await accountFor(env, row.facebook_page_id);
+      if (!account) return error('Сторінку не підключено', 503);
+      try {
+        const status = await videoStatus(env, await pageToken(env, account), row.video_id);
+        return json({ ok: true, video_id: row.video_id, phase: row.phase, status });
+      } catch (reason) {
+        return error(String(reason?.message || reason), 502);
+      }
     }
     if (jobMatch && request.method === 'PATCH') {
       return rescheduleJob(request, env, decodeURIComponent(jobMatch[1]));
