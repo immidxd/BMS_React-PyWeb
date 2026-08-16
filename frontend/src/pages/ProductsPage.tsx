@@ -38,6 +38,10 @@ import InstagramPublishDialog, {
   InstagramMark, type InstagramDraftPayload, type InstagramPreview,
 } from '../components/products/InstagramPublishDialog';
 import InstagramBatchDraftDialog, { type InstagramBatchRequest } from '../components/products/InstagramBatchDraftDialog';
+import FacebookPublishDialog, {
+  FacebookMark, type FacebookDraftPayload, type FacebookPreview,
+} from '../components/products/FacebookPublishDialog';
+import FacebookBatchDraftDialog, { type FacebookBatchRequest } from '../components/products/FacebookBatchDraftDialog';
 
 // Placeholder for actual filter components for Products
 
@@ -87,6 +91,9 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
   const [instagramPreview, setInstagramPreview] = useState<InstagramPreview | null>(null);
   const [instagramBatchIds, setInstagramBatchIds] = useState<number[] | null>(null);
   const [instagramBusy, setInstagramBusy] = useState(false);
+  const [facebookPreview, setFacebookPreview] = useState<FacebookPreview | null>(null);
+  const [facebookBatchIds, setFacebookBatchIds] = useState<number[] | null>(null);
+  const [facebookBusy, setFacebookBusy] = useState(false);
             
   // Effect to react to global search changes and fetch insights
   useEffect(() => {
@@ -820,6 +827,93 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
     ).catch(() => undefined).finally(() => setInstagramBusy(false));
   };
 
+  const openSelectedFacebook = async () => {
+    const ids = selection.ids.slice();
+    if (!ids.length || facebookBusy) return;
+    if (ids.length > 1) {
+      setFacebookBatchIds(ids);
+      return;
+    }
+    setFacebookBusy(true);
+    try {
+      const response = await fetch('/api/publications/facebook/preview-post', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ product_id: ids[0] }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.detail || 'Не вдалося підготувати Facebook-чернетку');
+      setFacebookPreview(data);
+    } catch (error: any) {
+      notify.error({ message: `Facebook: ${error.message || 'Не вдалося підготувати чернетку'}`, duration: 8 });
+    } finally {
+      setFacebookBusy(false);
+    }
+  };
+
+  const publishSingleFacebook = async (payload: FacebookDraftPayload) => {
+    if (!facebookPreview || facebookBusy) return;
+    const when = payload.publish_at ? `за розкладом на ${new Date(payload.publish_at).toLocaleString('uk-UA')}` : 'зараз';
+    const approved = await confirmDialog({
+      title: payload.publish_at ? 'Запланувати Facebook-публікацію?' : 'Опублікувати у Facebook зараз?',
+      body: `#${facebookPreview.productnumber} · ${payload.publish_type === 'feed' ? 'пост/альбом' : payload.publish_type === 'story' ? 'Story' : 'Reel'}\nСторінка: ${facebookPreview.connection.account}\nЧас: ${when}`,
+      okText: payload.publish_at ? 'Запланувати' : 'Опублікувати', kind: 'warning',
+    });
+    if (!approved) return;
+    setFacebookBusy(true);
+    taskManager.run(
+      `Facebook #${facebookPreview.productnumber}`,
+      async () => {
+        const response = await fetch('/api/publications/facebook/create-post', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok || !result.ok) throw new Error(result.detail || result.error || 'Facebook-публікація не вдалася');
+        return result;
+      },
+      {
+        silentSuccess: true,
+        resultStatus: (result: any) => ({ status: 'success', detail: result.scheduled_at ? `Заплановано: ${new Date(result.scheduled_at).toLocaleString('uk-UA')}` : 'Передано у захищену чергу' }),
+        onSuccess: (result: any) => {
+          notify.success({ message: result.scheduled_at ? 'Facebook-публікацію заплановано' : 'Facebook-публікацію передано в чергу', duration: 7 });
+          setFacebookPreview(null); selection.clear(); setSelectionMode(false);
+        },
+      },
+    ).catch(() => undefined).finally(() => setFacebookBusy(false));
+  };
+
+  const publishFacebookBatch = async (request: FacebookBatchRequest) => {
+    if (facebookBusy) return;
+    const approved = await confirmDialog({
+      title: 'Передати пакет у Facebook?',
+      body: `${request.items.length} окремих публікацій буде передано у захищену чергу. Кожна картка збере власні медіа й текст.`,
+      okText: 'Передати пакет', kind: 'warning',
+    });
+    if (!approved) return;
+    setFacebookBusy(true);
+    taskManager.run(
+      `Пакет Facebook: ${request.items.length} публікацій`,
+      async () => {
+        const response = await fetch('/api/publications/facebook/create-posts-batch', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(request),
+        });
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok || !result.ok) throw new Error(result.detail || result.error || 'Facebook-пакет не виконано');
+        return result;
+      },
+      {
+        silentSuccess: true,
+        resultStatus: (result: any) => ({ status: result.status === 'success' ? 'success' : 'partial', detail: `${result.counts?.success || 0} прийнято · ${result.counts?.error || 0} помилок` }),
+        onSuccess: (result: any) => {
+          const counts = result.counts || {};
+          if (result.status === 'success') notify.success({ message: 'Facebook-пакет прийнято', description: `${counts.success || 0} публікацій`, duration: 7 });
+          else notify.warning({ message: 'Facebook-пакет прийнято частково', description: `${counts.success || 0} прийнято · ${counts.error || 0} помилок`, duration: 10 });
+          setFacebookBatchIds(null); selection.clear(); setSelectionMode(false);
+        },
+      },
+    ).catch(() => undefined).finally(() => setFacebookBusy(false));
+  };
+
   // Esc — зняти виділення (дія користувача). Скидання буфера ЛИШЕ явними діями:
   // Esc / кнопка «Зняти виділення» / вихід з режиму «Виділити».
   // isActivePage: при keep-alive «Товари» лишаються змонтованими на будь-якій
@@ -1043,6 +1137,7 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
                     { key: 'telegram', icon: <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-[#229ED9] text-[9px] leading-none text-white">➤</span>, label: 'Відправити в Telegram' },
                     { key: 'viber', icon: <span className="inline-flex h-4 w-4 items-center justify-center rounded bg-[#7360F2] text-[9px] leading-none text-white font-black">V</span>, label: 'Відправити у Viber' },
                     { key: 'instagram', icon: <InstagramMark className="h-4 w-4 text-[10px]" />, label: 'Підготувати для Instagram' },
+                    { key: 'facebook', icon: <FacebookMark className="h-4 w-4 text-[10px]" />, label: 'Підготувати для Facebook' },
                     { type: 'divider' as const },
                     { key: 'clear', label: 'Зняти виділення' },
                   ],
@@ -1053,6 +1148,7 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
                     else if (key === 'telegram') void openSelectedTelegram();
                     else if (key === 'viber') void openSelectedViber();
                     else if (key === 'instagram') void openSelectedInstagram();
+                    else if (key === 'facebook') void openSelectedFacebook();
                     else if (key === 'clear') selection.clear();
                   },
                 }}
@@ -1196,6 +1292,22 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
           busy={instagramBusy}
           onCancel={() => { if (!instagramBusy) setInstagramBatchIds(null); }}
           onPublish={publishInstagramBatch}
+        />
+      )}
+      {facebookPreview && (
+        <FacebookPublishDialog
+          data={facebookPreview}
+          busy={facebookBusy}
+          onCancel={() => { if (!facebookBusy) setFacebookPreview(null); }}
+          onConfirm={publishSingleFacebook}
+        />
+      )}
+      {facebookBatchIds && (
+        <FacebookBatchDraftDialog
+          productIds={facebookBatchIds}
+          busy={facebookBusy}
+          onCancel={() => { if (!facebookBusy) setFacebookBatchIds(null); }}
+          onPublish={publishFacebookBatch}
         />
       )}
     </MainLayout>

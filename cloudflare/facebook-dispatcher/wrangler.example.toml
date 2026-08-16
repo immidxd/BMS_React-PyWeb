@@ -1,0 +1,28 @@
+name = "bms-facebook-dispatcher"
+main = "src/index.js"
+compatibility_date = "2026-08-16"
+workers_dev = true
+
+[vars]
+FACEBOOK_APP_ID = "<facebook-app-id>"
+META_API_VERSION = "v23.0"
+FACEBOOK_REDIRECT_URI = "https://bms-facebook-dispatcher.<your-subdomain>.workers.dev/oauth/facebook/callback"
+# Точна назва або числовий id Сторінки. Порожнє значення дозволене лише коли
+# обліковий запис адмініструє РІВНО одну Сторінку.
+EXPECTED_FB_PAGE = "<page-name-or-id>"
+# Заповнювати лише якщо застосунок Meta користується Facebook Login for Business
+# зі збереженою конфігурацією. Інакше Worker сам просить потрібні scope.
+FACEBOOK_CONFIG_ID = ""
+FACEBOOK_LIVE_ENABLED = "false"
+
+[triggers]
+crons = ["* * * * *"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "bms-facebook-dispatcher"
+database_id = "<create-with-wrangler>"
+
+# Secrets are added only through `wrangler secret put` and never committed:
+# BMS_DISPATCHER_KEY, FACEBOOK_APP_SECRET, TOKEN_ENCRYPTION_KEY,
+# META_WEBHOOK_VERIFY_TOKEN.

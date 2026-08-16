@@ -7,13 +7,14 @@ import MainLayout from '../layouts/MainLayout';
 import TelegramBatchPublishDialog, { type TelegramBatchRequest } from '../components/products/TelegramBatchPublishDialog';
 import ViberBatchPublishDialog, { type ViberBatchRequest } from '../components/products/ViberBatchPublishDialog';
 import InstagramBatchDraftDialog, { type InstagramBatchRequest } from '../components/products/InstagramBatchDraftDialog';
+import FacebookBatchDraftDialog, { type FacebookBatchRequest } from '../components/products/FacebookBatchDraftDialog';
 import { confirmDialog, notify } from '../ui/feedback';
 import LoadingSpinner from '../components/common/LoadingSpinner';
 import { taskManager } from '../services/taskManager';
 
 /* ── Типи ──────────────────────────────────────────────────────────── */
 
-type Channel = 'telegram' | 'instagram' | 'viber';
+type Channel = 'telegram' | 'instagram' | 'viber' | 'facebook';
 
 interface Slot {
   id: number;
@@ -44,12 +45,14 @@ interface PlanStatus {
 const CHANNEL_LABEL: Record<Channel, string> = {
   telegram: 'Telegram',
   instagram: 'Instagram',
+  facebook: 'Facebook',
   viber: 'Viber',
 };
 
 const CHANNEL_COLOR: Record<Channel, string> = {
   telegram: '#229ED9',
   instagram: '#C13584',
+  facebook: '#1877F2',
   viber: '#7360F2',
 };
 
@@ -172,6 +175,14 @@ const ContentPlanPage: React.FC = () => {
       });
       if (!ok) return;
     }
+    if (slot.channel === 'facebook') {
+      const ok = await confirmDialog({
+        title: 'Публікація у Facebook',
+        body: 'Опублікований допис BMS не прибирає — видаляти доведеться вручну у Сторінці. Продовжити?',
+        kind: 'warning',
+      });
+      if (!ok) return;
+    }
     setPublishDialog({ slot, productIds: ids });
   };
 
@@ -191,9 +202,10 @@ const ContentPlanPage: React.FC = () => {
     telegram: '/api/publications/telegram/create-posts-batch',
     viber: '/api/publications/viber/create-posts-batch',
     instagram: '/api/publications/instagram/create-posts-batch',
+    facebook: '/api/publications/facebook/create-posts-batch',
   };
 
-  const handleBatchPublish = (request: TelegramBatchRequest | ViberBatchRequest | InstagramBatchRequest) => {
+  const handleBatchPublish = (request: TelegramBatchRequest | ViberBatchRequest | InstagramBatchRequest | FacebookBatchRequest) => {
     if (!publishDialog) return;
     const { slot, productIds } = publishDialog;
     setPublishBusy(true);
@@ -248,7 +260,7 @@ const ContentPlanPage: React.FC = () => {
   const filterPanel = (
     <div style={{ padding: 16 }}>
       <div style={{ fontWeight: 600, marginBottom: 12 }}>Майданчик</div>
-      {(['all', 'telegram', 'instagram', 'viber'] as const).map(value => (
+      {(['all', 'telegram', 'instagram', 'facebook', 'viber'] as const).map(value => (
         <label key={value} style={{ display: 'block', marginBottom: 8, cursor: 'pointer' }}>
           <input
             type="radio"
@@ -391,6 +403,14 @@ const ContentPlanPage: React.FC = () => {
       )}
       {publishDialog?.slot.channel === 'instagram' && (
         <InstagramBatchDraftDialog
+          productIds={publishDialog.productIds}
+          busy={publishBusy}
+          onCancel={() => setPublishDialog(null)}
+          onPublish={handleBatchPublish}
+        />
+      )}
+      {publishDialog?.slot.channel === 'facebook' && (
+        <FacebookBatchDraftDialog
           productIds={publishDialog.productIds}
           busy={publishBusy}
           onCancel={() => setPublishDialog(null)}

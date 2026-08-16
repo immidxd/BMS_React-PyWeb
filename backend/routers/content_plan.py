@@ -59,6 +59,11 @@ _ALREADY_IN_CHANNEL = {
         WHERE TRIM(LEADING '#' FROM BTRIM(ip.product_number)) = TRIM(LEADING '#' FROM BTRIM(p.productnumber))
           AND ip.status IN ('queued', 'scheduled', 'processing', 'retrying', 'published')
     )""",
+    "facebook": """NOT EXISTS (
+        SELECT 1 FROM facebook_publications fp
+        WHERE TRIM(LEADING '#' FROM BTRIM(fp.product_number)) = TRIM(LEADING '#' FROM BTRIM(p.productnumber))
+          AND fp.status IN ('queued', 'scheduled', 'processing', 'retrying', 'published')
+    )""",
 }
 
 # Порядок добору залежить від рубрики слота: «топ» — дорожче спершу,
@@ -276,12 +281,12 @@ def _apply_webhook_task(db: Session, event: str, task: Dict[str, Any]) -> Dict[s
 def list_slots(
     days_back: int = Query(7, ge=0, le=90),
     days_ahead: int = Query(30, ge=1, le=365),
-    channel: str = Query("all", description="all|telegram|instagram|viber"),
+    channel: str = Query("all", description="all|telegram|instagram|viber|facebook"),
     db: Session = Depends(get_db),
 ):
     """Слоти для календаря — з БД, тому працює й при закритому Obsidian."""
     channel = (channel or "all").strip().lower()
-    if channel not in {"all", "telegram", "instagram", "viber"}:
+    if channel not in {"all", "telegram", "instagram", "viber", "facebook"}:
         raise HTTPException(status_code=400, detail="Невідомий майданчик публікації")
 
     params: Dict[str, Any] = {

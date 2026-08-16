@@ -50,6 +50,9 @@ CHANNEL_CONTEXTS = {
     "ig": "instagram",
     "viber": "viber",
     "вайбер": "viber",
+    "facebook": "facebook",
+    "фейсбук": "facebook",
+    "fb": "facebook",
 }
 
 # Формат — другим контекстом (`stories`) або зі змісту заголовка.
@@ -66,6 +69,7 @@ FORMAT_CONTEXTS = {
 
 DEFAULT_FORMAT = {
     "instagram": "feed",
+    "facebook": "feed",
     "telegram": "post",
     "viber": "collage",
 }
@@ -77,6 +81,9 @@ DEFAULT_PRODUCT_COUNT = {
     ("instagram", "feed"): 1,
     ("instagram", "stories"): 1,
     ("instagram", "reels"): 1,
+    ("facebook", "feed"): 1,
+    ("facebook", "stories"): 1,
+    ("facebook", "reels"): 1,
 }
 
 _COMPLETED_PLAN_STATUSES = {"done", "completed", "published"}
