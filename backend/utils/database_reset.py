@@ -7,7 +7,7 @@ import argparse
 # Додаємо батьківську директорію до шляху імпорту
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from models.database import db_session
+from models.database import SessionLocal
 from models.seed_data import reset_database
 
 logging.basicConfig(
@@ -29,8 +29,8 @@ def main():
             logger.info("Операцію скасовано користувачем")
             return
     
+    session = SessionLocal()
     try:
-        session = db_session()
         reset_database(session)
         logger.info("Базу даних успішно скинуто і заповнено тестовими даними")
     except Exception as e:

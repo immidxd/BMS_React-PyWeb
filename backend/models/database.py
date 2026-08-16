@@ -2,7 +2,7 @@ import os
 import logging
 from sqlalchemy import create_engine
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, scoped_session
+from sqlalchemy.orm import sessionmaker
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -60,16 +60,27 @@ engine = create_engine(
 # Create session factory
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
-# Create scoped session for thread safety
-db_session = scoped_session(SessionLocal)
+# ⚠️ scoped_session тут БУТИ НЕ МАЄ (і немає — свідомо).
+# Раніше get_db() віддавав `scoped_session(SessionLocal)`, прив'язану до
+# ПОТОКУ. Але FastAPI виконує синхронну generator-залежність у пулі потоків
+# AnyIO: вхід (`db_session()`) і вихід (`db.close()`) можуть потрапити в РІЗНІ
+# воркери, а один воркер обслуговує послідовно різні запити. Через це та сама
+# Session видавалась одночасно кільком запитам «у польоті» (виміряно: ~24%
+# запитів на старті), і db.close() одного запиту накладався на запит іншого:
+#   IllegalStateChangeError: Method 'close()' can't be called here;
+#   method '_connection_for_bind()' is already in progress
+# Симптом — перші секунди після старту частина запитів (напр. /api/products/filters)
+# падала в 500, далі «саме собою» стабілізувалось.
+# Правило: кожен запит і кожен фоновий джоб створює ВЛАСНУ Session через
+# SessionLocal() і гарантовано її закриває.
 
 # Create base class for models
 Base = declarative_base()
-Base.query = db_session.query_property()
 
 def get_db():
-    """Get database session"""
-    db = db_session()
+    """Session на ОДИН запит. Новий об'єкт щоразу — жодного спільного стану
+    між паралельними запитами (див. коментар про scoped_session вище)."""
+    db = SessionLocal()
     try:
         yield db
     finally:
@@ -632,9 +643,14 @@ def init_db():
 
         # Populate initial reference data (only adds basic reference data, no test data)
         from .seed_data import populate_initial_data
-        db = next(get_db())
-        populate_initial_data(db)
-        
+        # Власна сесія з гарантованим close: `next(get_db())` лишав генератор
+        # незакритим, тож Session (і з'єднання з пулу) висіли до GC.
+        db = SessionLocal()
+        try:
+            populate_initial_data(db)
+        finally:
+            db.close()
+
         logger.info("Database initialized successfully")
     except Exception as e:
         logger.error(f"Error initializing database: {e}")

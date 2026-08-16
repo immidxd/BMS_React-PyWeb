@@ -8,7 +8,7 @@ from contextlib import contextmanager
 import datetime
 
 from models import models
-from models.database import db_session
+from models.database import SessionLocal
 from schemas import product as schemas
 from models.models import ParsingLog, Product, ParsingSource, ParsingStyle, ParsingJob
 
@@ -79,8 +79,13 @@ async def fetch_items_from_source(
     return items
 
 def get_db_session():
-    """Get a new database session"""
-    return db_session()
+    """Get a new database session.
+
+    Саме НОВУ: parsing_task крутиться у власному потоці/евент-лупі, а
+    session_scope викликається і з запитів. Спільна thread-scoped сесія тут
+    накладала close() одного користувача на запит іншого (див. коментар у
+    models/database.py)."""
+    return SessionLocal()
 
 @contextmanager
 def session_scope():
