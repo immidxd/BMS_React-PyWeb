@@ -429,6 +429,34 @@ async function status(env) {
   });
 }
 
+/** Перевіряє App Secret, не проходячи весь OAuth і не розкриваючи значення.
+ *
+ *  `client_credentials` — єдиний спосіб спитати Meta «цей секрет чинний?» одним
+ *  запитом. ⚠️ Токен, який вона повертає, має вигляд `{app_id}|{app_secret}`,
+ *  тож повертати його НАЗОВНІ не можна за жодних обставин — лише прапорець.
+ *  Без цієї перевірки помилковий секрет виявлявся аж на callback, після
+ *  згорілого state і кількох кліків користувача. */
+async function appSecretCheck(env) {
+  if (!env.FACEBOOK_APP_ID || !env.FACEBOOK_APP_SECRET) {
+    return json({ ok: false, app_secret_valid: false, error: 'App ID або App Secret не налаштовані' }, 503);
+  }
+  const url = graphUrl(env, 'oauth/access_token');
+  url.searchParams.set('client_id', String(env.FACEBOOK_APP_ID));
+  url.searchParams.set('client_secret', String(env.FACEBOOK_APP_SECRET));
+  url.searchParams.set('grant_type', 'client_credentials');
+  const response = await fetch(url, { headers: { accept: 'application/json' } });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || !data.access_token) {
+    return json({
+      ok: false,
+      app_secret_valid: false,
+      app_id: String(env.FACEBOOK_APP_ID),
+      error: data?.error?.message || `Meta HTTP ${response.status}`,
+    }, 200);
+  }
+  return json({ ok: true, app_secret_valid: true, app_id: String(env.FACEBOOK_APP_ID) });
+}
+
 class MetaRequestError extends Error {
   constructor(message, { retriable = false, code = null, subcode = null, mediaInvalid = false } = {}) {
     super(message);
@@ -981,6 +1009,7 @@ export default {
     if (url.pathname === '/v1/status' && request.method === 'GET') return status(env);
     if (url.pathname === '/v1/oauth/start' && request.method === 'POST') return createOauthStart(env);
     if (url.pathname === '/v1/account-check' && request.method === 'GET') return accountCheck(env);
+    if (url.pathname === '/v1/app-check' && request.method === 'GET') return appSecretCheck(env);
     if (url.pathname === '/v1/validate-draft' && request.method === 'POST') {
       let body;
       try { body = await request.json(); } catch { return error('Очікується JSON'); }
