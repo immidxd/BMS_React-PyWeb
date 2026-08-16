@@ -112,6 +112,7 @@ def connection_status() -> dict:
             "reel_bytes": ig.REEL_MAX_BYTES,
         },
         "publish_types": PUBLISH_TYPES,
+        "pages": [],
     }
 
 
@@ -518,11 +519,15 @@ async def dispatcher_status() -> dict:
         accounts = remote.get("accounts") or []
         oauth_connected = bool(accounts)
         live_available = bool(status["configured"] and oauth_connected and remote.get("live_publish_enabled"))
-        page_name = str((accounts[0] or {}).get("page_name") or "").strip() if accounts else ""
+        pages = [
+            {"id": str(row.get("page_id") or ""), "name": str(row.get("page_name") or "").strip()}
+            for row in accounts if row.get("page_id")
+        ]
         return {
             **status,
             "configured": live_available,
-            "account": page_name or status["account"],
+            "account": ", ".join(page["name"] for page in pages) or status["account"],
+            "pages": pages,
             "live_publish_available": live_available,
             "schedule_available": live_available,
             "dispatcher": remote,
@@ -599,12 +604,33 @@ def _record(db: Session, *, product_id: int, prepared: dict, uploaded: dict,
     db.commit()
 
 
+def _target_pages(payload: dict, status: dict) -> List[dict]:
+    """Куди саме публікуємо. Порожній вибір = всі підключені Сторінки.
+
+    Явно вказані id звіряємо зі списком підключених: мовчки проковтнути
+    невідомий id означало б «нічого не опубліковано», і людина дізналася б про
+    це лише з порожньої стрічки.
+    """
+    available = status.get("pages") or []
+    requested = payload.get("page_ids")
+    if not isinstance(requested, list) or not requested:
+        return available
+    wanted = [str(value).strip() for value in requested if str(value).strip()]
+    by_id = {page["id"]: page for page in available}
+    unknown = [value for value in wanted if value not in by_id]
+    if unknown:
+        raise ValueError(f"Ці Сторінки не підключені: {', '.join(unknown)}")
+    return [by_id[value] for value in wanted]
+
+
 async def create_post(db: Session, product_id: int, payload: dict,
                       *, prepared: Optional[dict] = None) -> dict:
-    idempotency_key = str(payload.get("idempotency_key") or uuid.uuid4())[:180]
-    cached = _cached_result(db, idempotency_key)
-    if cached:
-        return cached
+    """Одна чернетка → окремий job на КОЖНУ обрану Сторінку.
+
+    Медіа рендериться й заливається один раз: Meta тягне його за URL, і той
+    самий файл однаково придатний обом Сторінкам.
+    """
+    base_key = str(payload.get("idempotency_key") or uuid.uuid4())[:140]
     if payload.get("dry_run") is True:
         return dry_run(db, product_id, payload)
     status = await dispatcher_status()
@@ -613,14 +639,33 @@ async def create_post(db: Session, product_id: int, payload: dict,
         detail = status.get("dispatcher_error") or ", ".join(missing) or "Сторінку не підключено"
         return {"ok": False, "error": f"Facebook ще не готовий до публікації: {detail}"}
     try:
+        pages = _target_pages(payload, status)
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+    if not pages:
+        return {"ok": False, "error": "Не обрано жодної Сторінки Facebook"}
+
+    try:
         from starlette.concurrency import run_in_threadpool
         # _prepare = повний рендер (Pillow, для Reel ще й FFmpeg). На event loop
         # він морозив би весь бекенд, тому і він, і заливка йдуть у threadpool.
         ready = prepared or await run_in_threadpool(_prepare, db, product_id, payload)
         uploaded = await run_in_threadpool(_upload_derivatives, ready)
         spec = ready["rendered"]["spec"]
+    except Exception as exc:
+        db.rollback()
+        return {"ok": False, "error": str(exc), "idempotency_key": base_key}
+
+    results: List[dict] = []
+    for page in pages:
+        idempotency_key = f"{base_key}:{page['id']}"[:180]
+        cached = _cached_result(db, idempotency_key)
+        if cached:
+            results.append({**cached, "page": page})
+            continue
         request_payload = {
             "idempotency_key": idempotency_key,
+            "account_id": page["id"],
             "product_id": product_id,
             "product_number": ready["pnum"].lstrip("#"),
             "publish_type": spec["publish_type"].upper(),
@@ -628,36 +673,52 @@ async def create_post(db: Session, product_id: int, payload: dict,
             "media": uploaded["media"],
             "publish_at": ready["scheduled_at"].isoformat() if ready["scheduled_at"] else None,
         }
-        dispatched = await _dispatcher_request("POST", "/v1/jobs", payload=request_payload)
-        _record(
-            db, product_id=product_id, prepared=ready, uploaded=uploaded,
-            dispatch=dispatched, idempotency_key=idempotency_key,
-            request_payload={**request_payload, "media_spec": spec, "media_keys": uploaded["media_keys"]},
-        )
-        dispatch_status = str(dispatched.get("status") or "queued").lower()
-        if dispatch_status in {"failed", "error", "cancelled"}:
-            return {
-                "ok": False,
-                "error": dispatched.get("error") or "Meta відхилила публікацію у Facebook",
-                "product_id": product_id,
-                "productnumber": ready["pnum"].lstrip("#"),
+        try:
+            dispatched = await _dispatcher_request("POST", "/v1/jobs", payload=request_payload)
+            _record(
+                db, product_id=product_id, prepared=ready, uploaded=uploaded,
+                dispatch={**dispatched, "account_id": page["id"]},
+                idempotency_key=idempotency_key,
+                request_payload={
+                    **request_payload, "media_spec": spec,
+                    "media_keys": uploaded["media_keys"], "page_name": page["name"],
+                },
+            )
+            dispatch_status = str(dispatched.get("status") or "queued").lower()
+            failed = dispatch_status in {"failed", "error", "cancelled"}
+            results.append({
+                "ok": not failed,
+                "page": page,
                 "idempotency_key": idempotency_key,
                 "job_id": dispatched.get("job_id"),
                 "status": dispatch_status,
-                "publish_type": spec["publish_type"],
-            }
-        return {
-            "ok": True, "product_id": product_id,
-            "productnumber": ready["pnum"].lstrip("#"),
-            "idempotency_key": idempotency_key,
-            "job_id": dispatched.get("job_id"),
-            "status": dispatched.get("status"),
-            "scheduled_at": ready["scheduled_at"].isoformat() if ready["scheduled_at"] else None,
-            "publish_type": spec["publish_type"],
-        }
-    except Exception as exc:
-        db.rollback()
-        return {"ok": False, "error": str(exc), "idempotency_key": idempotency_key}
+                "error": dispatched.get("error") if failed else None,
+            })
+        except Exception as exc:
+            db.rollback()
+            results.append({
+                "ok": False, "page": page, "idempotency_key": idempotency_key,
+                "status": "error", "error": str(exc),
+            })
+
+    succeeded = [row for row in results if row.get("ok")]
+    errors = [row for row in results if not row.get("ok")]
+    return {
+        "ok": bool(succeeded) and not errors,
+        "product_id": product_id,
+        "productnumber": ready["pnum"].lstrip("#"),
+        "idempotency_key": base_key,
+        "publish_type": spec["publish_type"],
+        "scheduled_at": ready["scheduled_at"].isoformat() if ready["scheduled_at"] else None,
+        "pages": [{"id": row["page"]["id"], "name": row["page"]["name"],
+                   "ok": bool(row.get("ok")), "job_id": row.get("job_id"),
+                   "status": row.get("status"), "error": row.get("error")}
+                  for row in results],
+        "status": succeeded[0].get("status") if succeeded else "error",
+        "error": "; ".join(
+            f"{row['page']['name']}: {row.get('error') or 'помилка'}" for row in errors
+        ) or None,
+    }
 
 
 async def create_posts_batch(db: Session, items: Any, batch_id: Any,
@@ -679,7 +740,8 @@ async def create_posts_batch(db: Session, items: Any, batch_id: Any,
             return {"ok": False, "error": f"Картка {position + 1} пошкоджена"}
         pid = int(item["product_id"])
         payload = dict(item.get("payload") or item)
-        payload["idempotency_key"] = str(payload.get("idempotency_key") or f"{batch}:{pid}")[:180]
+        # Сторінку до ключа додає create_post — тут лишається база на товар.
+        payload["idempotency_key"] = str(payload.get("idempotency_key") or f"{batch}:{pid}")[:140]
         try:
             ready = await run_in_threadpool(_prepare, db, pid, payload)
         except ValueError as exc:
@@ -695,6 +757,7 @@ async def create_posts_batch(db: Session, items: Any, batch_id: Any,
         results.append({
             "product_id": pid, "productnumber": ready["pnum"].lstrip("#"),
             "status": result.get("status") if result.get("ok") else "error",
+            "pages": result.get("pages") or [],
             "result": result if result.get("ok") else None,
             "error": result.get("error") if not result.get("ok") else None,
         })

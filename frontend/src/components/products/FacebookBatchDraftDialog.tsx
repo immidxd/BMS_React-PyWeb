@@ -95,8 +95,28 @@ const FacebookBatchDraftDialog: React.FC<Props> = ({ productIds, busy = false, o
     || card.draft.caption.length > facebookCaptionLimit(card.preview, card.draft.publish_type)
     || card.draft.story_text.length > (card.preview.story_text_limit || 320)
     || !card.draft.image_idx.length
+    || ((card.preview.connection.pages || []).length > 0 && !card.draft.page_ids.length)
     || (card.preview.condition_confirmation_required && card.draft.condition_confirmed !== true)
   );
+  // Сторінки в пакеті спільні для всіх карток: розрізняти їх покартково —
+  // це вікно на пів екрана заради випадку, якого досі не було.
+  const batchPages = cards[0]?.preview.connection.pages || [];
+  const selectedPages = cards[0]?.draft.page_ids || [];
+
+  const toggleBatchPage = (pageId: string, checked: boolean) => {
+    setSummary(null);
+    setCards(current => current.map(card => ({
+      ...card,
+      draft: {
+        ...card.draft,
+        page_ids: checked
+          ? (card.draft.page_ids.includes(pageId)
+              ? card.draft.page_ids
+              : [...card.draft.page_ids, pageId])
+          : card.draft.page_ids.filter(value => value !== pageId),
+      },
+    })));
+  };
   const liveReady = cards.length > 0 && cards.every(card => card.preview.connection.live_publish_available && card.preview.connection.oauth_connected !== false);
 
   const applyBatchSchedule = (baseIso: string | null, intervalMinutes = batchIntervalMinutes) => {
@@ -248,6 +268,30 @@ const FacebookBatchDraftDialog: React.FC<Props> = ({ productIds, busy = false, o
             <div className={`mt-4 flex gap-2 rounded-xl border px-3 py-3 text-sm ${summary.ok ? 'border-green-200 bg-green-50 text-green-700 dark:border-green-800 dark:bg-green-900/20 dark:text-green-300' : 'border-red-200 bg-red-50 text-red-700 dark:border-red-800 dark:bg-red-900/20 dark:text-red-300'}`}>
               {summary.ok ? <CheckCircleOutlined className="mt-0.5" /> : <WarningOutlined className="mt-0.5" />}
               <span>{summary.ok ? `${summary.counts.success} чернеток пройшли перевірку. Зовнішніх викликів: 0.` : summary.error || `${summary.counts?.error || 0} чернеток мають помилки.`}</span>
+            </div>
+          )}
+          {batchPages.length > 1 && (
+            <div className="mt-4 rounded-xl border border-gray-200 p-3 dark:border-gray-700">
+              <div className="mb-2 flex items-center justify-between">
+                <span className="text-xs font-semibold text-gray-700 dark:text-gray-200">Сторінки для всього пакета</span>
+                <span className={`text-xs ${selectedPages.length ? 'text-gray-400' : 'font-semibold text-red-500'}`}>
+                  {selectedPages.length}/{batchPages.length}
+                </span>
+              </div>
+              <div className="grid gap-2 sm:grid-cols-2">
+                {batchPages.map(page => {
+                  const checked = selectedPages.includes(page.id);
+                  return (
+                    <label key={page.id}
+                      className={`flex cursor-pointer items-center gap-2 rounded-lg border px-2.5 py-2 text-xs transition ${checked ? 'border-[#1877F2] bg-blue-50 font-semibold text-[#1877F2] dark:bg-blue-900/20 dark:text-blue-300' : 'border-gray-200 text-gray-600 dark:border-gray-700 dark:text-gray-300'}`}>
+                      <input type="checkbox" checked={checked}
+                        onChange={event => toggleBatchPage(page.id, event.target.checked)} />
+                      <span className="min-w-0 truncate">{page.name}</span>
+                    </label>
+                  );
+                })}
+              </div>
+              <p className="mt-1 text-[11px] text-gray-400">Кожна картка піде окремою публікацією в кожну обрану Сторінку.</p>
             </div>
           )}
           {liveReady && <div className="mt-4 grid gap-3 rounded-xl border border-gray-200 p-3 sm:grid-cols-2 dark:border-gray-700">

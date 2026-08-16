@@ -7,9 +7,10 @@ workers_dev = true
 FACEBOOK_APP_ID = "<facebook-app-id>"
 META_API_VERSION = "v23.0"
 FACEBOOK_REDIRECT_URI = "https://bms-facebook-dispatcher.<your-subdomain>.workers.dev/oauth/facebook/callback"
-# Точна назва або числовий id Сторінки. Порожнє значення дозволене лише коли
-# обліковий запис адмініструє РІВНО одну Сторінку.
-EXPECTED_FB_PAGE = "<page-name-or-id>"
+# Точні назви або числові id Сторінок через кому — BMS публікує в усі
+# перелічені. Порожнє значення дозволене лише коли обліковий запис адмініструє
+# РІВНО одну Сторінку.
+EXPECTED_FB_PAGES = "<page-name-or-id>, <page-name-or-id>"
 # Заповнювати лише якщо застосунок Meta користується Facebook Login for Business
 # зі збереженою конфігурацією. Інакше Worker сам просить потрібні scope.
 FACEBOOK_CONFIG_ID = ""

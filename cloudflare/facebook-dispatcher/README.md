@@ -10,7 +10,7 @@ Meta — одна компанія, але Pages API — інший API, а не
 |---|---|---|
 | Вхід | Instagram Login (`api.instagram.com`) | Facebook Login (`graph.facebook.com/oauth`) |
 | Токен | Instagram User token, 60 днів, `ig_refresh_token` | long-lived user token → **Page access token** із `/me/accounts` |
-| Дозволи | `instagram_business_basic`, `instagram_business_content_publish` | `pages_show_list`, `pages_read_engagement`, `pages_manage_posts`, `publish_video` |
+| Дозволи | `instagram_business_basic`, `instagram_business_content_publish` | `pages_show_list`, `pages_read_engagement`, `pages_manage_posts` |
 | Пост | media container → `media_publish` | `/photos` (одне фото) або непубліковані `/photos` + `/feed` з `attached_media` (альбом) |
 | Story | container `media_type=STORIES` | непубліковане `/photos` → `/photo_stories` |
 | Reel | container `media_type=REELS` | `/video_reels` start → `rupload.facebook.com` із заголовком `file_url` → finish |
@@ -28,7 +28,7 @@ Meta — одна компанія, але Pages API — інший API, а не
 - Приймає лише підписані Meta webhook-події.
 - Валідує Feed/альбоми, Stories та Reels: 1–10 HTTPS JPEG/відео, розклад до 365 днів.
 - Idempotent job у D1, до 5 повторів, відновлення завислих job, cancel/reschedule до початку завантаження медіа.
-- Консервативний локальний ліміт 45 публікацій / 24 год.
+- Консервативний локальний ліміт 30 публікацій / 24 год (за найсуворішим — Reels).
 - `FACEBOOK_LIVE_ENABLED=false` фізично блокує створення job.
 
 ## Cloudflare bindings
@@ -57,7 +57,7 @@ Meta — одна компанія, але Pages API — інший API, а не
 2. Застосувати `schema.sql` до remote D1.
 3. Додати secrets тільки через `wrangler secret put`.
 4. У Meta App додати продукт **Facebook Login** (або Facebook Login for Business) і внести `/oauth/facebook/callback` як exact redirect URI.
-5. Дозволи `pages_show_list`, `pages_read_engagement`, `pages_manage_posts`, `publish_video`. Для живої роботи поза dev-режимом потрібен App Review (Advanced Access).
+5. Дозволи `pages_show_list`, `pages_read_engagement`, `pages_manage_posts` — саме ці три й не більше. Для живої роботи поза dev-режимом потрібен App Review (Advanced Access).
 6. Провести OAuth із `FACEBOOK_LIVE_ENABLED=false`, виконати `account-check` і лише після окремого підтвердження ввімкнути живий режим.
 
 Не додавайте App Secret, access token чи dispatcher key у `.env.example`, Git, скриншоти або чат.

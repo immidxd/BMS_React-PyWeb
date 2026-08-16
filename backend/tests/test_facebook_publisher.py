@@ -231,3 +231,133 @@ def test_dry_run_batch_reports_each_card_separately(monkeypatch):
     assert result["ok"] is False
     assert result["counts"] == {"success": 1, "error": 1}
     assert result["external_calls"] == 0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Дві Сторінки. Найризикованіше місце: одна чернетка мусить розійтись у кілька
+# Сторінок, і ЖОДНА з них не має отримати чужий ключ ідемпотентності.
+# ─────────────────────────────────────────────────────────────────────────────
+
+PAGES = [{"id": "111", "name": "b.randstoreua"}, {"id": "222", "name": "Lyudmila"}]
+
+
+def test_empty_selection_means_every_connected_page():
+    assert fb._target_pages({}, {"pages": PAGES}) == PAGES
+    assert fb._target_pages({"page_ids": []}, {"pages": PAGES}) == PAGES
+
+
+def test_explicit_selection_is_honoured_and_ordered():
+    assert fb._target_pages({"page_ids": ["222"]}, {"pages": PAGES}) == [PAGES[1]]
+    assert fb._target_pages({"page_ids": ["222", "111"]}, {"pages": PAGES}) == [PAGES[1], PAGES[0]]
+
+
+def test_unknown_page_is_loud_not_silently_dropped():
+    """Мовчки проігнорувати чужий id = «нічого не опубліковано», і людина
+    дізнається про це лише з порожньої стрічки."""
+    try:
+        fb._target_pages({"page_ids": ["111", "999"]}, {"pages": PAGES})
+    except ValueError as exc:
+        assert "999" in str(exc)
+    else:
+        raise AssertionError("невідома Сторінка мала б дати помилку")
+
+
+class _FakeSession:
+    """Мінімальна сесія: create_post відкочує транзакцію на невдалій Сторінці."""
+
+    def __init__(self): self.rollbacks = 0
+
+    def rollback(self): self.rollbacks += 1
+
+
+def _stub_publish(monkeypatch, *, dispatch_results):
+    """Готує create_post так, щоб він не торкався ані рендера, ані мережі."""
+    sent: list[dict] = []
+    recorded: list[dict] = []
+
+    async def fake_status():
+        return {"live_publish_available": True, "oauth_connected": True, "pages": PAGES}
+
+    async def fake_dispatch(_method, _path, *, payload=None):
+        sent.append(payload)
+        result = dispatch_results[len(sent) - 1]
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    monkeypatch.setattr(fb, "dispatcher_status", fake_status)
+    monkeypatch.setattr(fb, "_dispatcher_request", fake_dispatch)
+    monkeypatch.setattr(fb, "_cached_result", lambda _db, _key: None)
+    monkeypatch.setattr(fb, "_prepare", lambda _db, _pid, _payload: {
+        "pnum": "#Ф42", "caption": "Підпис", "scheduled_at": None,
+        "rendered": {"spec": {"publish_type": "feed", "image_idx": [0]}, "assets": [], "cover": None},
+    })
+    monkeypatch.setattr(fb, "_upload_derivatives", lambda _ready: {
+        "media": [{"type": "IMAGE", "url": "https://cdn.example.com/a.jpeg"}],
+        "media_keys": ["k"], "cover_url": None, "digest": "d",
+    })
+    monkeypatch.setattr(fb, "_record", lambda db, **kwargs: recorded.append(kwargs))
+    return sent, recorded
+
+
+def test_one_draft_becomes_one_job_per_page(monkeypatch):
+    sent, recorded = _stub_publish(monkeypatch, dispatch_results=[
+        {"ok": True, "job_id": "job-1", "status": "queued"},
+        {"ok": True, "job_id": "job-2", "status": "queued"},
+    ])
+
+    result = asyncio.run(fb.create_post(_FakeSession(), 42, {"idempotency_key": "draft-7"}))
+
+    assert result["ok"] is True
+    assert [job["account_id"] for job in sent] == ["111", "222"]
+    # Ключі мусять РІЗНИТИСЬ, інакше друга Сторінка отримає кешовану відповідь
+    # першої й мовчки лишиться без публікації.
+    assert [job["idempotency_key"] for job in sent] == ["draft-7:111", "draft-7:222"]
+    assert len(set(job["idempotency_key"] for job in sent)) == 2
+    # Медіа готується ОДИН раз на обидві Сторінки.
+    assert sent[0]["media"] == sent[1]["media"]
+    assert [row["dispatch"]["account_id"] for row in recorded] == ["111", "222"]
+    assert [page["name"] for page in result["pages"]] == ["b.randstoreua", "Lyudmila"]
+
+
+def test_selected_page_only_publishes_there(monkeypatch):
+    sent, _ = _stub_publish(monkeypatch, dispatch_results=[
+        {"ok": True, "job_id": "job-1", "status": "queued"},
+    ])
+
+    result = asyncio.run(fb.create_post(_FakeSession(), 42, {"idempotency_key": "d", "page_ids": ["222"]}))
+
+    assert result["ok"] is True
+    assert len(sent) == 1
+    assert sent[0]["account_id"] == "222"
+
+
+def test_one_failing_page_does_not_hide_the_other(monkeypatch):
+    """Часткова невдача — штатний результат, а не «все впало»: другу Сторінку
+    вже опубліковано, і мовчати про це не можна."""
+    sent, _ = _stub_publish(monkeypatch, dispatch_results=[
+        RuntimeError("Meta відхилила"),
+        {"ok": True, "job_id": "job-2", "status": "queued"},
+    ])
+
+    session = _FakeSession()
+    result = asyncio.run(fb.create_post(session, 42, {"idempotency_key": "d"}))
+
+    assert result["ok"] is False
+    assert session.rollbacks == 1
+    assert len(sent) == 2
+    assert [page["ok"] for page in result["pages"]] == [False, True]
+    assert "b.randstoreua" in result["error"]
+    assert "Meta відхилила" in result["error"]
+
+
+def test_publishing_without_any_connected_page_is_refused(monkeypatch):
+    async def fake_status():
+        return {"live_publish_available": True, "oauth_connected": True, "pages": []}
+
+    monkeypatch.setattr(fb, "dispatcher_status", fake_status)
+
+    result = asyncio.run(fb.create_post(_FakeSession(), 42, {}))
+
+    assert result["ok"] is False
+    assert "Сторінк" in result["error"]

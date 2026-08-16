@@ -21,14 +21,19 @@ const MAX_MEDIA = 10;
 const STATE_TTL_MS = 10 * 60 * 1000;
 const MAX_ATTEMPTS = 5;
 const MAX_BATCH_PER_TICK = 5;
-const LOCAL_PUBLISHING_LIMIT = 45;
+// Meta явно обмежує Reels 30 публікаціями на 24 год і радить, щоб застосунок
+// стежив за цим сам — надто якщо вміє планувати наперед (а BMS вміє). Тримаємо
+// спільний консервативний ліміт по найсуворішому типу, а не по стрічці.
+const LOCAL_PUBLISHING_LIMIT = 30;
 const VIDEO_POLL_MS = 45 * 1000;
 const RETRY_MINUTES = [1, 5, 15, 60, 180];
+// Рівно ті три дозволи, що їх вимагає документація Pages/Reels Publishing API.
+// `publish_video` сюди НЕ входить (перевірено в docs 2026-08-16): застосунок
+// його не має, а зайвий scope в OAuth-діалозі — це відмова, а не «про запас».
 const FACEBOOK_SCOPES = [
   'pages_show_list',
   'pages_read_engagement',
   'pages_manage_posts',
-  'publish_video',
 ];
 
 function json(value, status = 200) {
@@ -292,25 +297,33 @@ async function exchangeLongLivedUserToken(env, shortToken) {
   return data;
 }
 
-/** Обирає Сторінку: точний збіг з EXPECTED_FB_PAGE (id або назва), інакше —
- *  єдина доступна. Дві Сторінки без явного очікування — це помилка, а не
- *  «візьмемо першу»: помилитися Сторінкою в живій публікації неприпустимо. */
-function pickPage(pages, expected) {
+/** Обирає Сторінки за списком очікуваних (id або назва, через кому).
+ *
+ *  BMS публікує у КІЛЬКА Сторінок, тому підключаємо всі перелічені одразу. Але
+ *  «всі, які знайшлися» — теж ні: назва в конфізі має збігтися, інакше це
+ *  помилка. Мовчки опублікувати не в ту Сторінку неприпустимо, а порожній
+ *  список очікуваних дозволений лише коли Сторінка рівно одна. */
+function pickPages(pages, expected) {
   const list = Array.isArray(pages) ? pages : [];
   if (!list.length) throw new Error('Обліковий запис не адмініструє жодної Сторінки Facebook');
-  const wanted = String(expected || '').trim().toLowerCase();
-  if (wanted) {
-    const matched = list.find(page => String(page.id) === wanted
-      || String(page.name || '').trim().toLowerCase() === wanted);
-    if (!matched) {
-      throw new Error(`Серед доступних Сторінок немає «${expected}»: ${list.map(page => page.name).join(', ')}`);
+  const wanted = String(expected || '')
+    .split(',').map(value => value.trim().toLowerCase()).filter(Boolean);
+  if (!wanted.length) {
+    if (list.length > 1) {
+      throw new Error(`Доступно кілька Сторінок (${list.map(page => page.name).join(', ')}); вкажи EXPECTED_FB_PAGES`);
     }
-    return matched;
+    return list;
   }
-  if (list.length > 1) {
-    throw new Error(`Доступно кілька Сторінок (${list.map(page => page.name).join(', ')}); вкажи EXPECTED_FB_PAGE`);
+  const matched = [];
+  for (const name of wanted) {
+    const page = list.find(item => String(item.id).toLowerCase() === name
+      || String(item.name || '').trim().toLowerCase() === name);
+    if (!page) {
+      throw new Error(`Серед доступних Сторінок немає «${name}»: ${list.map(item => item.name).join(', ')}`);
+    }
+    if (!matched.some(item => String(item.id) === String(page.id))) matched.push(page);
   }
-  return list[0];
+  return matched;
 }
 
 async function fetchPages(env, userToken) {
@@ -376,15 +389,18 @@ async function oauthCallback(request, env) {
     const shortToken = await exchangeCode(env, code);
     const longToken = await exchangeLongLivedUserToken(env, shortToken.access_token);
     const pages = await fetchPages(env, longToken.access_token);
-    const page = pickPage(pages, env.EXPECTED_FB_PAGE);
-    if (!page.access_token) {
-      throw new Error(`Meta не повернула Page access token для «${page.name}»`);
-    }
+    const picked = pickPages(pages, expectedPages(env));
     const expiresAt = Number(longToken.expires_in) > 0
       ? new Date(Date.now() + Number(longToken.expires_in) * 1000).toISOString()
       : null;
-    await saveAccount(env, page, page.access_token, longToken.access_token, expiresAt);
-    return htmlPage('Facebook підключено', `Сторінку «${page.name}» безпечно збережено в Cloudflare.`, true);
+    for (const page of picked) {
+      if (!page.access_token) {
+        throw new Error(`Meta не повернула Page access token для «${page.name}»`);
+      }
+      await saveAccount(env, page, page.access_token, longToken.access_token, expiresAt);
+    }
+    const names = picked.map(page => `«${page.name}»`).join(', ');
+    return htmlPage('Facebook підключено', `${picked.length > 1 ? 'Сторінки' : 'Сторінку'} ${names} безпечно збережено в Cloudflare.`, true);
   } catch (reason) {
     return htmlPage('Не вдалося підключити Facebook', String(reason?.message || reason || 'Невідома помилка'), false);
   }
@@ -458,25 +474,30 @@ async function readJob(env, id) {
   return env.DB.prepare('SELECT * FROM facebook_jobs WHERE id = ?').bind(id).first();
 }
 
+/** Список очікуваних Сторінок. EXPECTED_FB_PAGE лишається як сумісність із
+ *  однією Сторінкою — щоб старий конфіг не ламався мовчки. */
+function expectedPages(env) {
+  return String(env.EXPECTED_FB_PAGES || env.EXPECTED_FB_PAGE || '').trim();
+}
+
+async function allAccounts(env) {
+  const rows = await env.DB.prepare('SELECT * FROM facebook_accounts ORDER BY page_name').all();
+  return rows.results || [];
+}
+
+/** ⚠️ Якщо Сторінку запитали явно і її НЕ знайдено — це помилка, а не привід
+ *  узяти якусь іншу. З двома підключеними Сторінками тихий fallback означав би
+ *  публікацію не туди, і помітили б це вже в стрічці. */
 async function accountFor(env, requested) {
   if (requested) {
-    const exact = await env.DB.prepare(`
+    return env.DB.prepare(`
       SELECT * FROM facebook_accounts
        WHERE id = ? OR page_id = ? OR lower(page_name) = lower(?)
        ORDER BY updated_at DESC LIMIT 1
     `).bind(String(requested), String(requested), String(requested)).first();
-    if (exact) return exact;
   }
-  const expected = String(env.EXPECTED_FB_PAGE || '').trim();
-  if (expected) {
-    const matched = await env.DB.prepare(`
-      SELECT * FROM facebook_accounts
-       WHERE page_id = ? OR lower(page_name) = lower(?)
-       ORDER BY updated_at DESC LIMIT 1
-    `).bind(expected, expected).first();
-    if (matched) return matched;
-  }
-  return env.DB.prepare('SELECT * FROM facebook_accounts ORDER BY updated_at DESC LIMIT 1').first();
+  const accounts = await allAccounts(env);
+  return accounts.length === 1 ? accounts[0] : null;
 }
 
 async function pageToken(env, account) {
@@ -492,29 +513,30 @@ async function publishingUsage(env, account) {
 }
 
 async function accountCheck(env) {
-  const account = await accountFor(env, null);
-  if (!account) return error('Сторінку Facebook ще не підключено через OAuth', 503);
+  const accounts = await allAccounts(env);
+  if (!accounts.length) return error('Сторінку Facebook ще не підключено через OAuth', 503);
+  const checked = [];
   try {
-    const token = await pageToken(env, account);
-    const profile = await graphRequest(env, token, account.page_id, {
-      query: { fields: 'id,name,username,fan_count,link' },
-    });
-    const expected = String(env.EXPECTED_FB_PAGE || '').trim().toLowerCase();
-    const name = String(profile.name || account.page_name || '');
-    if (expected && String(profile.id) !== expected && name.toLowerCase() !== expected) {
-      return error(`Підключено «${name}», але BMS очікує «${env.EXPECTED_FB_PAGE}»`, 409);
-    }
-    return json({
-      ok: true,
-      account: {
+    for (const account of accounts) {
+      const token = await pageToken(env, account);
+      const profile = await graphRequest(env, token, account.page_id, {
+        query: { fields: 'id,name,username,fan_count,link' },
+      });
+      checked.push({
         id: String(profile.id || account.page_id),
-        name,
+        name: String(profile.name || account.page_name || ''),
         username: profile.username || null,
         followers: Number(profile.fan_count || 0),
         link: profile.link || null,
         user_token_expires_at: account.user_token_expires_at || null,
-      },
-      publishing_usage: await publishingUsage(env, account),
+        publishing_usage: await publishingUsage(env, account),
+      });
+    }
+    return json({
+      ok: true,
+      accounts: checked,
+      // Сумісність зі старим однокористувацьким читанням відповіді.
+      account: checked[0],
       live_publish_enabled: liveEnabled(env),
     });
   } catch (reason) {
@@ -764,8 +786,13 @@ async function createJob(request, env) {
   if (!String(body.idempotency_key || '').trim()) return error('Немає idempotency_key');
   if (!Number.isInteger(Number(body.product_id)) || Number(body.product_id) <= 0) return error('Некоректний product_id');
   if (!liveEnabled(env)) return error('Жива Facebook-публікація вимкнена у Worker', 503);
+  const connected = await allAccounts(env);
+  if (!connected.length) return error('Сторінку Facebook ще не підключено через OAuth', 503);
+  if (!body.account_id && connected.length > 1) {
+    return error('Підключено кілька Сторінок — job має явно вказати account_id', 400);
+  }
   const account = await accountFor(env, body.account_id);
-  if (!account) return error('Сторінку Facebook ще не підключено через OAuth', 503);
+  if (!account) return error(`Сторінку «${body.account_id}» не підключено`, 404);
   const key = String(body.idempotency_key).trim().slice(0, 180);
   const existing = await env.DB.prepare('SELECT * FROM facebook_jobs WHERE idempotency_key = ?').bind(key).first();
   if (existing) return json({ ok: true, cached: true, ...publicJob(existing) });
@@ -931,7 +958,7 @@ export {
   encryptToken,
   messageField,
   normalizedPublishType,
-  pickPage,
+  pickPages,
   signatureMatches,
   validMediaUrl,
   validateDraft,

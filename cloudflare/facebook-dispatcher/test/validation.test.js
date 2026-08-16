@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import worker, {
-  encryptToken, decryptToken, normalizedPublishType, pickPage, signatureMatches,
+  encryptToken, decryptToken, normalizedPublishType, pickPages, signatureMatches,
   validMediaUrl, validateDraft,
 } from '../src/index.js';
 
@@ -90,17 +90,29 @@ test('schedule window mirrors Instagram', () => {
   }), /365/);
 });
 
-test('page selection never silently guesses between two pages', () => {
+test('page selection takes every listed page and never guesses', () => {
   const pages = [
-    { id: '111', name: 'Brand X Store' },
-    { id: '222', name: 'Інша Сторінка' },
+    { id: '111', name: 'b.randstoreua' },
+    { id: '222', name: 'Lyudmila Brand X Original Stuff' },
+    { id: '333', name: 'Стороння Сторінка' },
   ];
-  assert.equal(pickPage(pages, 'Brand X Store').id, '111');
-  assert.equal(pickPage(pages, '222').id, '222');
-  assert.throws(() => pickPage(pages, ''), /кілька Сторінок/);
-  assert.throws(() => pickPage(pages, 'Немає такої'), /немає/);
-  assert.throws(() => pickPage([], ''), /жодної Сторінки/);
-  assert.equal(pickPage([{ id: '333', name: 'Одна' }], '').id, '333');
+
+  // Обидві цільові Сторінки — саме те, як налаштовано в BMS.
+  assert.deepEqual(
+    pickPages(pages, 'b.randstoreua, Lyudmila Brand X Original Stuff').map(page => page.id),
+    ['111', '222'],
+  );
+  // Порядок у конфізі зберігається, id працює нарівні з назвою.
+  assert.deepEqual(pickPages(pages, '222,111').map(page => page.id), ['111', '222'].reverse());
+  // Дублікат у конфізі не створює двох підключень тієї самої Сторінки.
+  assert.deepEqual(pickPages(pages, '111, b.randstoreua').map(page => page.id), ['111']);
+  // Стороння Сторінка НЕ підтягується лише тому, що доступна.
+  assert.equal(pickPages(pages, 'b.randstoreua').length, 1);
+
+  assert.throws(() => pickPages(pages, ''), /кілька Сторінок/);
+  assert.throws(() => pickPages(pages, 'Немає такої'), /немає/);
+  assert.throws(() => pickPages([], ''), /жодної Сторінки/);
+  assert.deepEqual(pickPages([{ id: '444', name: 'Одна' }], '').map(page => page.id), ['444']);
 });
 
 test('token encryption round-trips and refuses a wrong-length key', async () => {

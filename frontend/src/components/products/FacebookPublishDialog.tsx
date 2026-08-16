@@ -46,6 +46,7 @@ export interface FacebookPreview {
     configured: boolean;
     mode: 'draft_ready' | 'production';
     account: string;
+    pages?: { id: string; name: string }[];
     live_publish_available: boolean;
     schedule_available: boolean;
     oauth_connected?: boolean;
@@ -65,6 +66,7 @@ export interface FacebookDraftPayload {
   background: 'white' | 'soft' | 'dark';
   frames: { image_idx: number; zoom: number; x: number; y: number }[];
   publish_at: string | null;
+  page_ids: string[];
   idempotency_key: string;
   condition_confirmed?: boolean;
 }
@@ -121,6 +123,9 @@ export function facebookDraftFromPreview(preview: FacebookPreview): FacebookDraf
     })),
     story_text: preview.story_text || '',
     publish_at: null,
+    // Типовий вибір — усі підключені Сторінки: інтеграцію завели саме заради
+    // того, щоб товар ішов у всі одразу. Зняти зайву — один клік.
+    page_ids: (preview.connection.pages || []).map(page => page.id),
     idempotency_key: typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `facebook-${Date.now()}-${Math.random()}`,
   };
 }
@@ -154,6 +159,8 @@ const FacebookPublishDialog: React.FC<Props> = ({ data, busy = false, onCancel, 
   const storyTextLimit = data.story_text_limit || 320;
   const storyTextTooLong = draft.story_text.length > storyTextLimit;
   const captionRequired = draft.publish_type !== 'story';
+  const pages = data.connection.pages || [];
+  const noPageChosen = pages.length > 0 && draft.page_ids.length === 0;
   const liveReady = data.connection.live_publish_available && data.connection.oauth_connected !== false;
   const maxMedia = data.publish_types?.[draft.publish_type]?.max_media || (draft.publish_type === 'story' ? 1 : data.carousel_limit);
   const selectedOrder = useMemo(
@@ -426,6 +433,39 @@ const FacebookPublishDialog: React.FC<Props> = ({ data, busy = false, onCancel, 
                 Story Сторінки живе 24 години й не має окремого підпису — увесь текст наноситься на сам кадр.
               </div>}
 
+              {pages.length > 1 && (
+                <div>
+                  <div className="mb-2 flex items-center justify-between">
+                    <label className="text-xs font-semibold text-gray-700 dark:text-gray-200">Сторінки</label>
+                    <span className={`text-xs ${noPageChosen ? 'font-semibold text-red-500' : 'text-gray-400'}`}>
+                      {draft.page_ids.length}/{pages.length}
+                    </span>
+                  </div>
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    {pages.map(page => {
+                      const checked = draft.page_ids.includes(page.id);
+                      return (
+                        <label key={page.id}
+                          className={`flex cursor-pointer items-center gap-2 rounded-lg border px-2.5 py-2 text-xs transition ${checked ? 'border-[#1877F2] bg-blue-50 font-semibold text-[#1877F2] dark:bg-blue-900/20 dark:text-blue-300' : 'border-gray-200 text-gray-600 dark:border-gray-700 dark:text-gray-300'}`}>
+                          <input type="checkbox" checked={checked} onChange={event => {
+                            const next = event.target.checked;
+                            setValidation(null);
+                            setDraft(current => ({
+                              ...current,
+                              page_ids: next
+                                ? [...current.page_ids, page.id]
+                                : current.page_ids.filter(value => value !== page.id),
+                            }));
+                          }} />
+                          <span className="min-w-0 truncate">{page.name}</span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                  <p className="mt-1 text-[11px] text-gray-400">Для кожної Сторінки створюється окрема публікація; медіа готується один раз.</p>
+                </div>
+              )}
+
               <div className="grid gap-3 sm:grid-cols-2">
                 <label className="text-xs font-semibold text-gray-700 dark:text-gray-200">Коли публікувати
                   <select value={draft.publish_at ? 'scheduled' : 'now'} disabled={!liveReady}
@@ -473,7 +513,7 @@ const FacebookPublishDialog: React.FC<Props> = ({ data, busy = false, onCancel, 
               Перевірити без надсилання
             </button>
             {liveReady && onConfirm && <button type="button" onClick={() => onConfirm(draft)}
-              disabled={validating || busy || !draft.image_idx.length || captionTooLong || storyTextTooLong || (captionRequired && !draft.caption.trim()) || (data.condition_confirmation_required && draft.condition_confirmed !== true)}
+              disabled={validating || busy || !draft.image_idx.length || captionTooLong || storyTextTooLong || noPageChosen || (captionRequired && !draft.caption.trim()) || (data.condition_confirmation_required && draft.condition_confirmed !== true)}
               className="inline-flex items-center gap-2 rounded-lg bg-[#1877F2] px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-[#0B5FCC] disabled:cursor-not-allowed disabled:opacity-40">
               {busy ? <LoadingOutlined /> : draft.publish_at ? <ClockCircleOutlined /> : <SendOutlined />}
               {draft.publish_at ? 'Запланувати' : 'Опублікувати'}
