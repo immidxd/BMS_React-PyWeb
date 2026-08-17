@@ -865,6 +865,100 @@ async def create_post(db: Session, product_id: int, payload: dict,
         return {"ok": False, "error": str(exc), "idempotency_key": idempotency_key}
 
 
+def _collection():
+    try:
+        from services import collection_collage
+    except ImportError:
+        from backend.services import collection_collage
+    return collection_collage
+
+
+async def create_collection_post(db: Session, payload: dict) -> dict:
+    """Підбірка: один банер-сітка з кількох товарів.
+
+    Свідомо НЕ пише у `viber_publications` і не викликає `_existing_count`:
+    показ товару в сітці не робить його «опублікованим», інакше повторний
+    одиничний пост цього товару впирався б у гард дублікатів.
+    """
+    collection = _collection()
+    idempotency_key = str(payload.get("idempotency_key") or uuid.uuid4())[:180]
+    cached = collection.cached_post(db, idempotency_key)
+    if cached:
+        return cached
+
+    caption = str(payload.get("caption") or "").strip()
+    problem = validate_caption(caption)
+    if problem:
+        return {"ok": False, "error": problem}
+    scheduled_at, schedule_error = _validate_schedule(payload.get("publish_at"))
+    if schedule_error:
+        return {"ok": False, "error": schedule_error}
+
+    if not payload.get("dry_run"):
+        status = connection_status()
+        if not status["configured"]:
+            return {
+                "ok": False,
+                "error": "Viber-диспетчер ще не підключений: " + ", ".join(status["missing"]),
+            }
+
+    from starlette.concurrency import run_in_threadpool
+    try:
+        rendered = await run_in_threadpool(
+            collection.render, db, {**payload, "platform": "viber"},
+        )
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+
+    if payload.get("dry_run"):
+        return {
+            "ok": True,
+            "dry_run": True,
+            "platform": "viber",
+            "image_bytes": len(rendered["main"]),
+            "thumbnail_bytes": len(rendered["thumbnail"]),
+            "product_numbers": rendered["product_numbers"],
+            "spec": rendered["spec"],
+        }
+
+    try:
+        uploaded = await run_in_threadpool(collection.upload_derivatives, rendered, caption)
+        # Worker вимагає додатний product_id для власного обліку в D1. Підбірка
+        # не належить одному товару, тож передаємо перший у сітці — це слід для
+        # налагодження, а не ознака публікації цього товару.
+        request_payload = {
+            "idempotency_key": idempotency_key,
+            "product_id": rendered["product_ids"][0],
+            "product_number": rendered["product_numbers"][0],
+            "channel_title": CHANNEL_TITLE,
+            "type": "picture",
+            "caption": caption,
+            "media_url": uploaded["image_url"],
+            "thumbnail_url": uploaded["thumbnail_url"],
+            "publish_at": scheduled_at.isoformat() if scheduled_at else None,
+        }
+        dispatched = await _dispatch(request_payload)
+        collection.record_post(
+            db, platform="viber", idempotency_key=idempotency_key, caption=caption,
+            rendered=rendered, uploaded=uploaded, dispatch=dispatched,
+            scheduled_at=scheduled_at, account_label=CHANNEL_TITLE,
+            request_payload=request_payload,
+        )
+        return {
+            "ok": True,
+            "platform": "viber",
+            "idempotency_key": idempotency_key,
+            "job_id": dispatched.get("job_id"),
+            "status": dispatched.get("status"),
+            "scheduled_at": scheduled_at.isoformat() if scheduled_at else None,
+            "image_url": uploaded["image_url"],
+            "product_numbers": rendered["product_numbers"],
+        }
+    except Exception as exc:
+        db.rollback()
+        return {"ok": False, "error": str(exc), "idempotency_key": idempotency_key}
+
+
 async def create_posts_batch(
     db: Session, items: Any, batch_id: Any, *, dry_run: bool = False,
 ) -> dict:
@@ -1015,10 +1109,28 @@ async def sync_statuses(db: Session, *, product_id: Optional[int] = None) -> dic
                 updated += 1
             except Exception as exc:
                 errors.append({"job_id": row["dispatcher_job_id"], "error": str(exc)})
+
+        # Підбірки живуть в окремій таблиці, але їдуть тим самим диспетчером,
+        # тож і стан їм треба звіряти тут — інакше банер назавжди лишиться
+        # «у черзі». Товарний фільтр до них не застосовний.
+        collection_rows = [] if product_id is not None else _collection().pending_jobs(db, "viber")
+        for row in collection_rows:
+            try:
+                response = await client.get(
+                    f"{DISPATCHER_URL}/v1/jobs/{row['dispatcher_job_id']}",
+                    headers={"Authorization": f"Bearer {DISPATCHER_KEY}"},
+                )
+                data = response.json()
+                if response.status_code >= 400 or not data.get("ok"):
+                    raise RuntimeError(data.get("error") or f"HTTP {response.status_code}")
+                _collection().apply_job_status(db, row["id"], data)
+                updated += 1
+            except Exception as exc:
+                errors.append({"job_id": row["dispatcher_job_id"], "error": str(exc)})
     db.commit()
     return {
         "ok": not errors,
-        "checked": len(rows),
+        "checked": len(rows) + len(collection_rows),
         "updated": updated,
         "errors": errors,
     }

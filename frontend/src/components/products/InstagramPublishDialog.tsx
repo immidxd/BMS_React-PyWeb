@@ -4,6 +4,7 @@ import {
   RightOutlined, SafetyCertificateOutlined, SendOutlined, WarningOutlined,
 } from '@ant-design/icons';
 import SmartImage from '../common/SmartImage';
+import CrosspostToggle, { useMirrorStatus } from './CrosspostToggle';
 
 export interface InstagramFeedPreset {
   label: string;
@@ -70,6 +71,9 @@ export interface InstagramDraftPayload {
   is_ai_generated: boolean;
   idempotency_key: string;
   condition_confirmed?: boolean;
+  /** Дзеркальна публікація тієї самої чернетки у Facebook. */
+  also_facebook?: boolean;
+  facebook_page_ids?: string[];
 }
 
 interface Props {
@@ -118,6 +122,8 @@ export function instagramDraftFromPreview(preview: InstagramPreview): InstagramD
     alt_text: '',
     share_to_feed: true,
     is_ai_generated: false,
+    also_facebook: false,
+    facebook_page_ids: [],
     idempotency_key: typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `instagram-${Date.now()}-${Math.random()}`,
   };
 }
@@ -137,6 +143,18 @@ const InstagramPublishDialog: React.FC<Props> = ({ data, busy = false, onCancel,
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [previewBusy, setPreviewBusy] = useState(false);
   const [focusedImage, setFocusedImage] = useState<number | null>(null);
+  const facebookStatus = useMirrorStatus('facebook');
+
+  // Типово дзеркалимо в усі підключені Сторінки — так само, як це робить сам
+  // Facebook-редактор. Зняти зайву — один клік.
+  useEffect(() => {
+    if (!facebookStatus.ready) return;
+    setDraft(current => (
+      current.facebook_page_ids?.length
+        ? current
+        : { ...current, facebook_page_ids: facebookStatus.pages.map(page => page.id) }
+    ));
+  }, [facebookStatus.ready, facebookStatus.pages]);
 
   useEffect(() => {
     setDraft(instagramDraftFromPreview(data));
@@ -445,6 +463,17 @@ const InstagramPublishDialog: React.FC<Props> = ({ data, busy = false, onCancel,
                     className="mt-1.5 w-full rounded-lg border border-gray-200 bg-white px-2.5 py-2 text-sm font-normal dark:border-gray-700 dark:bg-gray-800" />
                 </label>}
               </div>
+
+              <CrosspostToggle
+                target="facebook"
+                status={facebookStatus}
+                checked={draft.also_facebook === true}
+                onChange={value => setDraft(current => ({ ...current, also_facebook: value }))}
+                pageIds={draft.facebook_page_ids || []}
+                onPageIdsChange={value => setDraft(current => ({ ...current, facebook_page_ids: value }))}
+                publishType={draft.publish_type}
+                scheduled={Boolean(draft.publish_at)}
+              />
 
               <div className="flex flex-wrap gap-4 text-xs text-gray-600 dark:text-gray-300">
                 {draft.publish_type === 'reel' && <label className="flex items-center gap-2"><input type="checkbox" checked={draft.share_to_feed} onChange={event => setDraft(current => ({ ...current, share_to_feed: event.target.checked }))} /> Також показати у стрічці</label>}

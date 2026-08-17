@@ -728,6 +728,163 @@ async def create_post(db: Session, product_id: int, payload: dict,
     }
 
 
+def _collection():
+    try:
+        from services import collection_collage
+    except ImportError:
+        from backend.services import collection_collage
+    return collection_collage
+
+
+# Формати Instagram і Facebook збігаються (той самий renderer, ті самі пресети),
+# тому дзеркальна публікація — це та сама чернетка з іншим адресатом. Єдина
+# змістовна різниця — заклик у кінці підпису: у Facebook пишуть у Messenger.
+CROSSPOST_DROPPED_KEYS = {
+    "idempotency_key", "also_facebook", "also_instagram", "facebook_page_ids",
+    "collaborators", "share_to_feed", "is_ai_generated", "is_paid_partnership",
+    "branded_content_sponsor_ids", "user_tags", "product_tags", "location_id",
+    "page_ids", "dry_run",
+}
+
+
+def payload_from_instagram(payload: dict, *, page_ids: Optional[List[str]] = None) -> dict:
+    """Instagram-чернетка → Facebook-чернетка без повторного налаштування кадру.
+
+    Підпис не переписуємо: людина могла редагувати його вручну, і мовчки
+    згенерований наново текст був би сюрпризом. Міняємо лише заклик, і лише
+    якщо він у тексті справді є.
+    """
+    mirrored = {
+        key: value for key, value in payload.items()
+        if key not in CROSSPOST_DROPPED_KEYS
+    }
+    source_cta = str(_ig().DIRECT_CTA or "").strip()
+    caption = str(payload.get("caption") or "")
+    if source_cta and FACEBOOK_CTA and source_cta in caption:
+        caption = caption.replace(source_cta, FACEBOOK_CTA)
+    mirrored["caption"] = caption
+    mirrored["page_ids"] = [str(value) for value in (page_ids or []) if str(value).strip()]
+    base_key = str(payload.get("idempotency_key") or uuid.uuid4())[:120]
+    mirrored["idempotency_key"] = f"{base_key}:mirror-fb"
+    return mirrored
+
+
+async def create_collection_post(db: Session, payload: dict) -> dict:
+    """Підбірка у стрічку Сторінки: одне зображення-сітка на кожну обрану Сторінку.
+
+    Як і у Viber, публікація підбірки нічого не змінює у `facebook_publications`
+    і не позначає товари опублікованими: у сітці вони показані, а не виставлені
+    окремими дописами.
+    """
+    collection = _collection()
+    base_key = str(payload.get("idempotency_key") or uuid.uuid4())[:140]
+    caption = str(payload.get("caption") or "").strip()
+    problem = validate_caption(caption, "feed")
+    if problem:
+        return {"ok": False, "error": problem}
+    ig = _ig()
+    scheduled_at, schedule_error = ig._validate_schedule(payload.get("publish_at"))
+    if schedule_error:
+        return {"ok": False, "error": schedule_error.replace("Instagram", "Facebook")}
+
+    from starlette.concurrency import run_in_threadpool
+    if payload.get("dry_run"):
+        try:
+            rendered = await run_in_threadpool(
+                collection.render, db, {**payload, "platform": "facebook"},
+            )
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
+        return {
+            "ok": True,
+            "dry_run": True,
+            "platform": "facebook",
+            "image_bytes": len(rendered["main"]),
+            "product_numbers": rendered["product_numbers"],
+            "spec": rendered["spec"],
+        }
+
+    status = await dispatcher_status()
+    if not status.get("live_publish_available") or not status.get("oauth_connected"):
+        detail = status.get("dispatcher_error") or ", ".join(status.get("missing") or []) or "Сторінку не підключено"
+        return {"ok": False, "error": f"Facebook ще не готовий до публікації: {detail}"}
+    try:
+        pages = _target_pages(payload, status)
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+    if not pages:
+        return {"ok": False, "error": "Не обрано жодної Сторінки Facebook"}
+
+    try:
+        rendered = await run_in_threadpool(
+            collection.render, db, {**payload, "platform": "facebook"},
+        )
+        uploaded = await run_in_threadpool(collection.upload_derivatives, rendered, caption)
+    except Exception as exc:
+        db.rollback()
+        return {"ok": False, "error": str(exc), "idempotency_key": base_key}
+
+    results: List[dict] = []
+    for page in pages:
+        idempotency_key = f"{base_key}:{page['id']}"[:180]
+        cached = collection.cached_post(db, idempotency_key)
+        if cached:
+            results.append({**cached, "page": page})
+            continue
+        request_payload = {
+            "idempotency_key": idempotency_key,
+            "account_id": page["id"],
+            # Worker вимагає додатний product_id; підбірка не належить одному
+            # товару, тож передаємо перший у сітці — суто для його журналу.
+            "product_id": rendered["product_ids"][0],
+            "product_number": rendered["product_numbers"][0],
+            "publish_type": "FEED",
+            "caption": caption,
+            "media": [{"type": "IMAGE", "url": uploaded["image_url"]}],
+            "publish_at": scheduled_at.isoformat() if scheduled_at else None,
+        }
+        try:
+            dispatched = await _dispatcher_request("POST", "/v1/jobs", payload=request_payload)
+            collection.record_post(
+                db, platform="facebook", idempotency_key=idempotency_key, caption=caption,
+                rendered=rendered, uploaded=uploaded, dispatch=dispatched,
+                scheduled_at=scheduled_at, account_id=page["id"], account_label=page["name"],
+                request_payload=request_payload,
+            )
+            dispatch_status = str(dispatched.get("status") or "queued").lower()
+            failed = dispatch_status in {"failed", "error", "cancelled"}
+            results.append({
+                "ok": not failed, "page": page, "idempotency_key": idempotency_key,
+                "job_id": dispatched.get("job_id"), "status": dispatch_status,
+                "error": dispatched.get("error") if failed else None,
+            })
+        except Exception as exc:
+            db.rollback()
+            results.append({
+                "ok": False, "page": page, "idempotency_key": idempotency_key,
+                "status": "error", "error": str(exc),
+            })
+
+    succeeded = [row for row in results if row.get("ok")]
+    errors = [row for row in results if not row.get("ok")]
+    return {
+        "ok": bool(succeeded) and not errors,
+        "platform": "facebook",
+        "idempotency_key": base_key,
+        "scheduled_at": scheduled_at.isoformat() if scheduled_at else None,
+        "image_url": uploaded["image_url"],
+        "product_numbers": rendered["product_numbers"],
+        "pages": [{"id": row["page"]["id"], "name": row["page"]["name"],
+                   "ok": bool(row.get("ok")), "job_id": row.get("job_id"),
+                   "status": row.get("status"), "error": row.get("error")}
+                  for row in results],
+        "status": succeeded[0].get("status") if succeeded else "error",
+        "error": "; ".join(
+            f"{row['page']['name']}: {row.get('error') or 'помилка'}" for row in errors
+        ) or None,
+    }
+
+
 async def create_posts_batch(db: Session, items: Any, batch_id: Any,
                              *, dry_run_only: bool = False) -> dict:
     if not isinstance(items, list) or not items:
@@ -822,8 +979,24 @@ async def sync_statuses(db: Session, *, product_id: Optional[int] = None) -> dic
             updated += 1
         except Exception as exc:
             errors.append({"job_id": row["dispatcher_job_id"], "error": str(exc)})
+
+    # Підбірки їдуть тим самим Worker, але лежать в окремій таблиці — без цього
+    # блоку банер назавжди застряг би у стані «в черзі».
+    collection_rows = [] if product_id is not None else _collection().pending_jobs(db, "facebook")
+    for row in collection_rows:
+        try:
+            data = await _dispatcher_request("GET", f"/v1/jobs/{row['dispatcher_job_id']}")
+            _collection().apply_job_status(db, row["id"], data)
+            updated += 1
+        except Exception as exc:
+            errors.append({"job_id": row["dispatcher_job_id"], "error": str(exc)})
     db.commit()
-    return {"ok": not errors, "checked": len(rows), "updated": updated, "errors": errors}
+    return {
+        "ok": not errors,
+        "checked": len(rows) + len(collection_rows),
+        "updated": updated,
+        "errors": errors,
+    }
 
 
 async def cancel_publication(db: Session, publication_id: int) -> dict:

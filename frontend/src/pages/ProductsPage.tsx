@@ -42,6 +42,9 @@ import FacebookPublishDialog, {
   FacebookMark, type FacebookDraftPayload, type FacebookPreview,
 } from '../components/products/FacebookPublishDialog';
 import FacebookBatchDraftDialog, { type FacebookBatchRequest } from '../components/products/FacebookBatchDraftDialog';
+import CollectionCollageDialog, {
+  type CollectionPlatform, type CollectionPublishRequest,
+} from '../components/products/CollectionCollageDialog';
 
 // Placeholder for actual filter components for Products
 
@@ -94,6 +97,8 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
   const [facebookPreview, setFacebookPreview] = useState<FacebookPreview | null>(null);
   const [facebookBatchIds, setFacebookBatchIds] = useState<number[] | null>(null);
   const [facebookBusy, setFacebookBusy] = useState(false);
+  const [collectionRequest, setCollectionRequest] = useState<{ platform: CollectionPlatform; ids: number[] } | null>(null);
+  const [collectionBusy, setCollectionBusy] = useState(false);
             
   // Effect to react to global search changes and fetch insights
   useEffect(() => {
@@ -740,6 +745,60 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
     });
   };
 
+  const openSelectedCollection = (platform: CollectionPlatform) => {
+    const ids = selection.ids.slice();
+    if (ids.length < 2) {
+      notify.warning({ message: 'Для підбірки виділіть щонайменше два товари', duration: 6 });
+      return;
+    }
+    setCollectionRequest({ platform, ids });
+  };
+
+  const publishCollection = (request: CollectionPublishRequest, itemCount: number) => {
+    const label = request.platform === 'viber' ? 'Viber' : 'Facebook';
+    setCollectionBusy(true);
+    taskManager.run(
+      `Підбірка у ${label}: ${itemCount} товарів`,
+      async () => {
+        const response = await fetch(`/api/publications/${request.platform}/create-collection`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(request),
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || !data.ok) {
+          const error: any = new Error(data.detail || data.error || `Підбірку у ${label} не опубліковано`);
+          error.response = { data: { detail: data.detail || data.error } };
+          throw error;
+        }
+        return data;
+      },
+      {
+        silentSuccess: true,
+        resultStatus: (result: any) => ({
+          status: 'success',
+          detail: result.scheduled_at
+            ? `Заплановано на ${new Date(result.scheduled_at).toLocaleString('uk-UA')}`
+            : `Прийнято у захищену чергу · ${(result.product_numbers || []).map((value: string) => `#${value}`).join(' ')}`,
+        }),
+        onSuccess: (result: any) => {
+          notify.success({
+            message: result.scheduled_at ? `Підбірку заплановано у ${label}` : `Підбірку передано у ${label}`,
+            description: result.scheduled_at
+              ? new Date(result.scheduled_at).toLocaleString('uk-UA')
+              : `${itemCount} товарів одним банером. Статуси товарів не змінилися.`,
+            duration: 8,
+          });
+          setCollectionRequest(null);
+          selection.clear();
+          setSelectionMode(false);
+          window.dispatchEvent(new CustomEvent(
+            request.platform === 'viber' ? 'bms:viber-status-refresh' : 'bms:facebook-status-refresh',
+          ));
+        },
+      },
+    ).catch(() => undefined).finally(() => setCollectionBusy(false));
+  };
+
   const openSelectedInstagram = async () => {
     const ids = selection.ids.slice();
     if (!ids.length || instagramBusy) return;
@@ -766,9 +825,10 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
   const publishSingleInstagram = async (payload: InstagramDraftPayload) => {
     if (!instagramPreview || instagramBusy) return;
     const when = payload.publish_at ? `за розкладом на ${new Date(payload.publish_at).toLocaleString('uk-UA')}` : 'зараз';
+    const mirrored = payload.also_facebook === true;
     const approved = await confirmDialog({
       title: payload.publish_at ? 'Запланувати Instagram-публікацію?' : 'Опублікувати в Instagram зараз?',
-      body: `#${instagramPreview.productnumber} · ${payload.publish_type === 'feed' ? 'пост/карусель' : payload.publish_type === 'story' ? 'Story' : 'Reel'}\nАкаунт: ${instagramPreview.connection.account}\nЧас: ${when}`,
+      body: `#${instagramPreview.productnumber} · ${payload.publish_type === 'feed' ? 'пост/карусель' : payload.publish_type === 'story' ? 'Story' : 'Reel'}\nАкаунт: ${instagramPreview.connection.account}\nЧас: ${when}${mirrored ? '\nІ дзеркально у Facebook — двома окремими публікаціями' : ''}`,
       okText: payload.publish_at ? 'Запланувати' : 'Опублікувати', kind: 'warning',
     });
     if (!approved) return;
@@ -786,10 +846,31 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
       },
       {
         silentSuccess: true,
-        resultStatus: (result: any) => ({ status: 'success', detail: result.scheduled_at ? `Заплановано: ${new Date(result.scheduled_at).toLocaleString('uk-UA')}` : 'Передано у захищену чергу' }),
+        resultStatus: (result: any) => ({
+          status: mirrored && result.facebook && !result.facebook.ok ? 'partial' : 'success',
+          detail: [
+            result.scheduled_at ? `Заплановано: ${new Date(result.scheduled_at).toLocaleString('uk-UA')}` : 'Передано у захищену чергу',
+            mirrored ? (result.facebook?.ok ? 'Facebook: прийнято' : `Facebook: ${result.facebook?.error || 'не вдалося'}`) : '',
+          ].filter(Boolean).join(' · '),
+        }),
         onSuccess: (result: any) => {
-          notify.success({ message: result.scheduled_at ? 'Instagram-публікацію заплановано' : 'Instagram-публікацію передано в чергу', duration: 7 });
+          // Instagram уже прийнято — про зрив дзеркала кажемо окремо, інакше
+          // помилка Facebook читалася б як «нічого не опубліковано».
+          if (mirrored && result.facebook && !result.facebook.ok) {
+            notify.warning({
+              message: 'В Instagram опубліковано, у Facebook — ні',
+              description: result.facebook.error || 'Дзеркальну публікацію не прийнято. Подробиці є у Сповіщеннях.',
+              duration: 12,
+            });
+          } else {
+            notify.success({
+              message: result.scheduled_at ? 'Instagram-публікацію заплановано' : 'Instagram-публікацію передано в чергу',
+              description: mirrored ? 'Дзеркальну публікацію у Facebook теж прийнято.' : undefined,
+              duration: 7,
+            });
+          }
           setInstagramPreview(null); selection.clear(); setSelectionMode(false);
+          if (mirrored) window.dispatchEvent(new CustomEvent('bms:facebook-status-refresh'));
         },
       },
     ).catch(() => undefined).finally(() => setInstagramBusy(false));
@@ -853,9 +934,10 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
   const publishSingleFacebook = async (payload: FacebookDraftPayload) => {
     if (!facebookPreview || facebookBusy) return;
     const when = payload.publish_at ? `за розкладом на ${new Date(payload.publish_at).toLocaleString('uk-UA')}` : 'зараз';
+    const mirrored = payload.also_instagram === true;
     const approved = await confirmDialog({
       title: payload.publish_at ? 'Запланувати Facebook-публікацію?' : 'Опублікувати у Facebook зараз?',
-      body: `#${facebookPreview.productnumber} · ${payload.publish_type === 'feed' ? 'пост/альбом' : payload.publish_type === 'story' ? 'Story' : 'Reel'}\nСторінка: ${facebookPreview.connection.account}\nЧас: ${when}`,
+      body: `#${facebookPreview.productnumber} · ${payload.publish_type === 'feed' ? 'пост/альбом' : payload.publish_type === 'story' ? 'Story' : 'Reel'}\nСторінка: ${facebookPreview.connection.account}\nЧас: ${when}${mirrored ? '\nІ дзеркально в Instagram — двома окремими публікаціями' : ''}`,
       okText: payload.publish_at ? 'Запланувати' : 'Опублікувати', kind: 'warning',
     });
     if (!approved) return;
@@ -873,10 +955,29 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
       },
       {
         silentSuccess: true,
-        resultStatus: (result: any) => ({ status: 'success', detail: result.scheduled_at ? `Заплановано: ${new Date(result.scheduled_at).toLocaleString('uk-UA')}` : 'Передано у захищену чергу' }),
+        resultStatus: (result: any) => ({
+          status: mirrored && result.instagram && !result.instagram.ok ? 'partial' : 'success',
+          detail: [
+            result.scheduled_at ? `Заплановано: ${new Date(result.scheduled_at).toLocaleString('uk-UA')}` : 'Передано у захищену чергу',
+            mirrored ? (result.instagram?.ok ? 'Instagram: прийнято' : `Instagram: ${result.instagram?.error || 'не вдалося'}`) : '',
+          ].filter(Boolean).join(' · '),
+        }),
         onSuccess: (result: any) => {
-          notify.success({ message: result.scheduled_at ? 'Facebook-публікацію заплановано' : 'Facebook-публікацію передано в чергу', duration: 7 });
+          if (mirrored && result.instagram && !result.instagram.ok) {
+            notify.warning({
+              message: 'У Facebook опубліковано, в Instagram — ні',
+              description: result.instagram.error || 'Дзеркальну публікацію не прийнято. Подробиці є у Сповіщеннях.',
+              duration: 12,
+            });
+          } else {
+            notify.success({
+              message: result.scheduled_at ? 'Facebook-публікацію заплановано' : 'Facebook-публікацію передано в чергу',
+              description: mirrored ? 'Дзеркальну публікацію в Instagram теж прийнято.' : undefined,
+              duration: 7,
+            });
+          }
           setFacebookPreview(null); selection.clear(); setSelectionMode(false);
+          if (mirrored) window.dispatchEvent(new CustomEvent('bms:instagram-status-refresh'));
         },
       },
     ).catch(() => undefined).finally(() => setFacebookBusy(false));
@@ -1138,6 +1239,19 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
                     { key: 'viber', icon: <span className="inline-flex h-4 w-4 items-center justify-center rounded bg-[#7360F2] text-[9px] leading-none text-white font-black">V</span>, label: 'Відправити у Viber' },
                     { key: 'instagram', icon: <InstagramMark className="h-4 w-4 text-[10px]" />, label: 'Підготувати для Instagram' },
                     { key: 'facebook', icon: <FacebookMark className="h-4 w-4 text-[10px]" />, label: 'Підготувати для Facebook' },
+                    ...(selection.size > 1 ? [
+                      { type: 'divider' as const },
+                      {
+                        key: 'viber-collection',
+                        icon: <span className="inline-flex h-4 w-4 items-center justify-center rounded bg-[#7360F2] text-[9px] leading-none text-white font-black">V</span>,
+                        label: `Підбірка у Viber (${selection.size} у сітці)`,
+                      },
+                      {
+                        key: 'facebook-collection',
+                        icon: <FacebookMark className="h-4 w-4 text-[10px]" />,
+                        label: `Підбірка у Facebook (${selection.size} у сітці)`,
+                      },
+                    ] : []),
                     { type: 'divider' as const },
                     { key: 'clear', label: 'Зняти виділення' },
                   ],
@@ -1149,6 +1263,8 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
                     else if (key === 'viber') void openSelectedViber();
                     else if (key === 'instagram') void openSelectedInstagram();
                     else if (key === 'facebook') void openSelectedFacebook();
+                    else if (key === 'viber-collection') openSelectedCollection('viber');
+                    else if (key === 'facebook-collection') openSelectedCollection('facebook');
                     else if (key === 'clear') selection.clear();
                   },
                 }}
@@ -1276,6 +1392,15 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
           busy={viberBusy}
           onCancel={() => { if (!viberBusy) setViberBatchIds(null); }}
           onPublish={publishViberBatch}
+        />
+      )}
+      {collectionRequest && (
+        <CollectionCollageDialog
+          platform={collectionRequest.platform}
+          productIds={collectionRequest.ids}
+          busy={collectionBusy}
+          onCancel={() => { if (!collectionBusy) setCollectionRequest(null); }}
+          onPublish={publishCollection}
         />
       )}
       {instagramPreview && (

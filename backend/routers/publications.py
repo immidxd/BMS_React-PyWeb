@@ -1794,6 +1794,14 @@ async def viber_create_posts_batch(body: Dict[str, Any] = Body(...), db: Session
     return result
 
 
+@router.post("/api/publications/viber/create-collection")
+async def viber_create_collection(body: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
+    result = await _viber_pub().create_collection_post(db, body)
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("error", "Підбірку у Viber не опубліковано"))
+    return result
+
+
 @router.get("/api/publications/viber/product-status/{product_id}")
 def viber_product_status(product_id: int, db: Session = Depends(get_db)):
     return _viber_pub().product_status(db, product_id)
@@ -1923,6 +1931,15 @@ async def instagram_create_post(body: Dict[str, Any] = Body(...), db: Session = 
     result = await _instagram_pub().create_post(db, int(product_id), body)
     if not result.get("ok"):
         raise HTTPException(status_code=400, detail=result.get("error", "Instagram-публікація не вдалася"))
+    if body.get("also_facebook") is True and body.get("dry_run") is not True:
+        # Дзеркало не має права зірвати вже успішну Instagram-публікацію, тому
+        # його помилка повертається полем, а не 400: пост в Instagram уже живий,
+        # і людина мусить бачити саме це, а не «публікація не вдалася».
+        facebook = _facebook_pub()
+        mirrored = facebook.payload_from_instagram(
+            body, page_ids=body.get("facebook_page_ids") or [],
+        )
+        result["facebook"] = await facebook.create_post(db, int(product_id), mirrored)
     return result
 
 
@@ -2089,6 +2106,19 @@ async def facebook_create_post(body: Dict[str, Any] = Body(...), db: Session = D
     result = await _facebook_pub().create_post(db, int(product_id), body)
     if not result.get("ok"):
         raise HTTPException(status_code=400, detail=result.get("error", "Facebook-публікація не вдалася"))
+    if body.get("also_instagram") is True and body.get("dry_run") is not True:
+        instagram = _instagram_pub()
+        result["instagram"] = await instagram.create_post(
+            db, int(product_id), instagram.payload_from_facebook(body),
+        )
+    return result
+
+
+@router.post("/api/publications/facebook/create-collection")
+async def facebook_create_collection(body: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
+    result = await _facebook_pub().create_collection_post(db, body)
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("error", "Підбірку у Facebook не опубліковано"))
     return result
 
 
@@ -2136,6 +2166,71 @@ async def facebook_reschedule_publication(
     if not result.get("ok"):
         raise HTTPException(status_code=409, detail=result.get("error", "Не вдалося перенести Facebook-публікацію"))
     return result
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Підбірки — один банер-сітка з кількох товарів (Viber і Facebook).
+# Спільні для обох майданчиків прев'ю та рендер; сама відправка — у роутерах
+# майданчика вище. Статус опублікованості товарів підбірка не змінює.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _collection_collage():
+    try:
+        from services import collection_collage
+    except ImportError:
+        from backend.services import collection_collage
+    return collection_collage
+
+
+@router.post("/api/publications/collections/preview")
+async def collection_preview(body: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
+    product_ids = body.get("product_ids")
+    if not isinstance(product_ids, list) or not product_ids:
+        raise HTTPException(status_code=400, detail="Не вибрано товари")
+    collection = _collection_collage()
+    try:
+        result = collection.preview_collection(db, product_ids, body.get("platform"))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("error", "Не вдалося зібрати підбірку"))
+    if result["platform"] == "viber":
+        result["connection"] = _viber_pub().connection_status()
+    else:
+        result["connection"] = await _facebook_pub().dispatcher_status()
+    return result
+
+
+@router.post("/api/publications/collections/render")
+async def collection_render(body: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
+    """Точний JPEG сітки з того самого renderer, що піде в публікацію."""
+    from starlette.concurrency import run_in_threadpool
+    try:
+        rendered = await run_in_threadpool(_collection_collage().render, db, body)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    spec = rendered["spec"]
+    return Response(
+        content=rendered["main"],
+        media_type="image/jpeg",
+        headers={
+            "Cache-Control": "no-store",
+            "X-BMS-Image-Bytes": str(len(rendered["main"])),
+            # Форму сітки повідомляє сам renderer — інакше редактор показував би
+            # число колонок із першого прев'ю й брехав після зміни розкладки.
+            "X-BMS-Grid": f"{spec['cols']}x{spec['rows']}",
+            "Access-Control-Expose-Headers": "X-BMS-Image-Bytes, X-BMS-Grid",
+            "Content-Disposition": 'inline; filename="bms-collection.jpeg"',
+        },
+    )
+
+
+@router.get("/api/publications/collections")
+def collection_history(platform: Optional[str] = None, limit: int = 50, db: Session = Depends(get_db)):
+    try:
+        return _collection_collage().history(db, platform=platform, limit=limit)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 # ─────────────────────────────────────────────────────────────────────────────

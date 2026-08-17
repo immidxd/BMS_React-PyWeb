@@ -79,6 +79,19 @@
 
 Ключові файли: `backend/services/instagram_publisher.py`, `backend/migrations/2026_08_11_003_create_instagram_publications.sql`, `backend/routers/publications.py`, `backend/tests/test_instagram_publisher.py`, `frontend/src/components/products/InstagramPublishDialog.tsx`, `frontend/src/components/products/InstagramBatchDraftDialog.tsx`, `frontend/src/pages/ProductsPage.tsx`, `frontend/src/pages/PublicationsPage.tsx`, `cloudflare/instagram-dispatcher/`.
 
+### Підбірки (колаж-сітка кількох товарів) і крос-постинг Instagram ↔ Facebook
+
+- «Підбірка» — це ОДИН рекламний банер із фотографіями кількох різних товарів, а не публікація кожного з них. Доступна для Viber і Facebook (у «Товарах» → «Дії» при виділених ≥2 товарах). Не плутати з наявним Viber-колажем `render_collage`, який збирає кілька фото ОДНОГО товару.
+- Головна домовленість, узгоджена з користувачем 2026-08-17: **підбірка не змінює статус опублікованості жодного товару**. Тому вона пише в окрему таблицю `social_collection_posts`, а не в `viber_publications`/`facebook_publications`: інакше кожен товар із сітки отримав би чіп «опубліковано», статистика рахувала б банер як N постів, а повторний одиничний пост товару впирався б у гард дублікатів. Не «спрощувати» це перенесенням у товарні журнали.
+- Дві розкладки: `grid9` (до 9 товарів) і `grid16` (до 16). Розкладка задає СТЕЛЮ, а фактичне число колонок рахується як `ceil(sqrt(n))` у межах цієї стелі — інакше 4 товари в сітці 3×3 давали б ряд із трьох і самотній кадр під ним. Полотно обрізається до вмісту (6 товарів → 1080×728), бо квадрат лишав би порожню смугу. Viber рендерить 1080 px і має жорсткий ліміт 950 КБ, Facebook — 1440 px.
+- Офіційні фото зняті на білому, тому на світлому/теплому/темному тлі вони лягали б у сітку білими прямокутниками. `_rebase_uniform_background` замінює однорідний фон фото на тло полотна з мʼяким переходом 10…40; живі фото (неоднорідний край) не чіпаються. У самій Viber-картці ця вада ще лишається — там тло за замовчуванням біле, тому вона не помітна.
+- Обидва Worker вимагають додатний `product_id`, якого в підбірки немає. Передаємо перший товар сітки — це слід для журналу Worker, а не ознака публікації цього товару.
+- Підпис підбірки редагується вручну перед відправкою. Чернетка складається як шапка + рядок на товар + заклик; у ліміт Viber (768) вона влазить не обрізанням посеред слова, а поступовим відкиданням розмірів, потім назв.
+- Крос-постинг: в Instagram-редакторі є чекбокс «Опублікувати і у Facebook» (з вибором Сторінок), у Facebook-редакторі — «Опублікувати і в Instagram». Працює для всіх трьох типів (пост/карусель, Story, Reel), бо renderer у них спільний. Дзеркало не перемальовує композицію й не переписує текст — міняється лише заклик (`нам в приватні` ↔ `нам у повідомлення`), і лише якщо він у тексті є. Помилка дзеркала НІКОЛИ не перетворює успішну першу публікацію на 400: вона повертається полем `facebook`/`instagram` у відповіді, а UI каже «в Instagram опубліковано, у Facebook — ні».
+- Історія підбірок доступна через `GET /api/publications/collections`; окремої вкладки в UI поки немає.
+
+Ключові файли: `backend/services/collection_collage.py`, `backend/migrations/2026_08_17_001_create_social_collection_posts.sql`, `backend/services/viber_publisher.py` (`create_collection_post`), `backend/services/facebook_publisher.py` (`create_collection_post`, `payload_from_instagram`), `backend/services/instagram_publisher.py` (`payload_from_facebook`), `backend/tests/test_collection_collage.py`, `frontend/src/components/products/CollectionCollageDialog.tsx`, `frontend/src/components/products/CrosspostToggle.tsx`.
+
 ### Мережа: мертвий IPv6 вішає весь бекенд
 
 - Інцидент 2026-08-14, ~3 години простою. Ноутбук у роздачі з iPhone (`172.20.10.x`): хотспот рекламує IPv6 (у системи є глобальна `2a02:…`), але не маршрутизує його. Заміряно: IPv6 → `sheets.googleapis.com` таймаут, IPv4 → 0.8 с.

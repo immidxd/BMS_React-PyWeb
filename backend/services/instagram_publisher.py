@@ -1597,6 +1597,36 @@ async def reschedule_publication(db: Session, publication_id: int, publish_at: A
         return {"ok": False, "error": str(exc)}
 
 
+def _fb():
+    try:
+        from services import facebook_publisher
+    except ImportError:
+        from backend.services import facebook_publisher
+    return facebook_publisher
+
+
+def payload_from_facebook(payload: dict) -> dict:
+    """Facebook-чернетка → Instagram-чернетка: та сама композиція, свій заклик.
+
+    Дзеркало `facebook_publisher.payload_from_instagram`. Сторінки Facebook в
+    Instagram не мають сенсу, тому вибір сторінок і суто фейсбучні поля сюди не
+    їдуть.
+    """
+    fb = _fb()
+    mirrored = {
+        key: value for key, value in payload.items()
+        if key not in fb.CROSSPOST_DROPPED_KEYS
+    }
+    source_cta = str(fb.FACEBOOK_CTA or "").strip()
+    caption = str(payload.get("caption") or "")
+    if source_cta and DIRECT_CTA and source_cta in caption:
+        caption = caption.replace(source_cta, DIRECT_CTA)
+    mirrored["caption"] = caption
+    base_key = str(payload.get("idempotency_key") or uuid.uuid4())[:120]
+    mirrored["idempotency_key"] = f"{base_key}:mirror-ig"
+    return mirrored
+
+
 def product_status(db: Session, product_id: int) -> dict:
     rows = db.execute(text("""
         SELECT id, status, media_type, dispatcher_job_id, instagram_media_id,

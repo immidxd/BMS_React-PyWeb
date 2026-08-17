@@ -4,6 +4,7 @@ import {
   RightOutlined, SafetyCertificateOutlined, SendOutlined, WarningOutlined,
 } from '@ant-design/icons';
 import SmartImage from '../common/SmartImage';
+import CrosspostToggle, { useMirrorStatus } from './CrosspostToggle';
 
 export interface FacebookFeedPreset {
   label: string;
@@ -69,6 +70,8 @@ export interface FacebookDraftPayload {
   page_ids: string[];
   idempotency_key: string;
   condition_confirmed?: boolean;
+  /** Дзеркальна публікація тієї самої чернетки в Instagram. */
+  also_instagram?: boolean;
 }
 
 interface Props {
@@ -126,6 +129,7 @@ export function facebookDraftFromPreview(preview: FacebookPreview): FacebookDraf
     // Типовий вибір — усі підключені Сторінки: інтеграцію завели саме заради
     // того, щоб товар ішов у всі одразу. Зняти зайву — один клік.
     page_ids: (preview.connection.pages || []).map(page => page.id),
+    also_instagram: false,
     idempotency_key: typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `facebook-${Date.now()}-${Math.random()}`,
   };
 }
@@ -145,6 +149,7 @@ const FacebookPublishDialog: React.FC<Props> = ({ data, busy = false, onCancel, 
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [previewBusy, setPreviewBusy] = useState(false);
   const [focusedImage, setFocusedImage] = useState<number | null>(null);
+  const instagramStatus = useMirrorStatus('instagram');
 
   useEffect(() => {
     setDraft(facebookDraftFromPreview(data));
@@ -485,6 +490,15 @@ const FacebookPublishDialog: React.FC<Props> = ({ data, busy = false, onCancel, 
               {draft.publish_at && <p className="text-[11px] leading-relaxed text-gray-400">
                 Розклад тримає BMS: до вказаного часу в Сторінці не існує нічого, тож публікацію можна вільно скасувати чи перенести.
               </p>}
+
+              <CrosspostToggle
+                target="instagram"
+                status={instagramStatus}
+                checked={draft.also_instagram === true}
+                onChange={value => setDraft(current => ({ ...current, also_instagram: value }))}
+                publishType={draft.publish_type}
+                scheduled={Boolean(draft.publish_at)}
+              />
 
               {data.warnings.filter(value => !value.includes('preview/dry-run')).map((warning, index) => (
                 <div key={index} className="flex gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-200"><WarningOutlined className="mt-0.5" />{warning}</div>
