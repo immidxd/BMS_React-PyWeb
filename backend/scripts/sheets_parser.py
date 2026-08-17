@@ -5977,21 +5977,30 @@ def _reconcile_delivery_orphans(session: Session, delivery_id: int, all_rows: li
             f"(> {max_share:.0%}) — схоже на збій читання вкладки, видалення пропущено"
         )
         return 0
+    # Бекап — умова видалення, а не побажання: не записався → не видаляємо.
+    # (Раніше тут стояв `Product`, якого в цьому модулі нема на рівні модуля —
+    # NameError мовчки з'їдався except'ом, і рядки зникали БЕЗ бекапу. Тому тепер
+    # дамп читається сирим SQL, без ORM, і провал зупиняє прибирання.)
     try:
         import json as _json
         from datetime import datetime as _dt2
         os.makedirs(_GHOST_SWEEP_BACKUP_DIR, exist_ok=True)
         dump = [
-            {c.name: (str(getattr(o, c.name)) if getattr(o, c.name) is not None else None)
-             for c in Product.__table__.columns}
-            for o in session.query(Product).filter(Product.id.in_(orphan_ids)).all()
+            {k: (str(v) if v is not None else None) for k, v in row.items()}
+            for row in session.execute(
+                text("SELECT * FROM products WHERE id = ANY(:ids)"), {"ids": orphan_ids}
+            ).mappings().all()
         ]
+        if len(dump) != len(orphan_ids):
+            raise RuntimeError(f"дамп {len(dump)} рядків замість {len(orphan_ids)}")
         path = os.path.join(_GHOST_SWEEP_BACKUP_DIR,
                             f"{_dt2.now():%Y%m%d_%H%M%S}_{tag}_orphans_d{delivery_id}.json")
         with open(path, "w") as f:
-            _json.dump(dump, f, ensure_ascii=False)
+            _json.dump(dump, f, ensure_ascii=False, indent=1)
     except Exception as e:
-        logger.warning(f"[sync] orphan backup failed: {e}")
+        logger.error(f"[{tag}] delivery {delivery_id}: бекап орфанів не вдався ({e}) — "
+                     f"видалення СКАСОВАНО")
+        return 0
     session.execute(text("DELETE FROM order_items WHERE product_id = ANY(:ids)"), {"ids": orphan_ids})
     session.execute(text("DELETE FROM products WHERE id = ANY(:ids)"), {"ids": orphan_ids})
     logger.info(f"[{tag}] delivery {delivery_id}: видалено {len(orphan_ids)} орфан-товар(ів)")
