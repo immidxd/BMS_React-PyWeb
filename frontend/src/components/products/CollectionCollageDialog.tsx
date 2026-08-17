@@ -1,9 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  ClockCircleOutlined, CloseOutlined, DeleteOutlined, LeftOutlined, LoadingOutlined,
-  RightOutlined, SendOutlined, WarningOutlined,
+  CheckCircleOutlined, ClockCircleOutlined, CloseOutlined, DeleteOutlined, DownloadOutlined,
+  LeftOutlined, LoadingOutlined, RightOutlined, SendOutlined, WarningOutlined,
 } from '@ant-design/icons';
 import SmartImage from '../common/SmartImage';
+import { saveCollectionCollage } from '../../services/imageTransfer';
 
 export type CollectionPlatform = 'viber' | 'facebook';
 
@@ -130,6 +131,8 @@ const CollectionCollageDialog: React.FC<Props> = ({ platform, productIds, busy =
   const [background, setBackground] = useState<CollectionSpec['background']>('white');
   const [gap, setGap] = useState(8);
   const [labels, setLabels] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState<string | null>(null);
   const [caption, setCaption] = useState('');
   const [publishAt, setPublishAt] = useState<string | null>(null);
   const [pageIds, setPageIds] = useState<string[]>([]);
@@ -263,6 +266,25 @@ const CollectionCollageDialog: React.FC<Props> = ({ platform, productIds, busy =
       ...(platform === 'facebook' ? { page_ids: pageIds } : {}),
       idempotency_key: idempotencyKey.current,
     }, frames.length);
+  };
+
+  /** Зберегти сітку файлом — без публікації, тим самим renderer. */
+  const saveImage = async () => {
+    if (saving || !frames.length || overCapacity) return;
+    setSaving(true);
+    setSaved(null);
+    try {
+      const result = await saveCollectionCollage({
+        platform, layout, background, gap, labels, items: frames,
+      });
+      setSaved(result.path
+        ? `Збережено: ${result.path}`
+        : `Збережено файл «${result.filename}»`);
+    } catch (reason: any) {
+      setSaved(`Не вдалося зберегти: ${reason.message || 'помилка'}`);
+    } finally {
+      setSaving(false);
+    }
   };
 
   const shownCanvas = canvas || data?.canvas || { width: 1080, height: 1080 };
@@ -552,13 +574,26 @@ const CollectionCollageDialog: React.FC<Props> = ({ platform, productIds, busy =
             </div>
 
             <div className="flex flex-wrap items-center justify-between gap-3 border-t border-gray-100 bg-gray-50/70 px-5 py-3.5 dark:border-gray-800 dark:bg-gray-950/30">
-              <span className="text-xs text-gray-400">
-                Один банер · {frames.length} {plural(frames.length, ['позиція', 'позиції', 'позицій'])} · статуси товарів лишаються незмінними
+              <span className="min-w-0 text-xs text-gray-400">
+                {saved ? (
+                  <span className={`inline-flex items-start gap-1.5 ${saved.startsWith('Не вдалося') ? 'text-red-500' : 'text-green-600 dark:text-green-400'}`}>
+                    {saved.startsWith('Не вдалося') ? <WarningOutlined className="mt-0.5" /> : <CheckCircleOutlined className="mt-0.5" />}
+                    <span className="break-all">{saved}</span>
+                  </span>
+                ) : (
+                  <>Один банер · {frames.length} {plural(frames.length, ['позиція', 'позиції', 'позицій'])} · статуси товарів лишаються незмінними</>
+                )}
               </span>
               <div className="flex gap-2">
                 <button type="button" onClick={onCancel} disabled={busy}
                   className="rounded-lg border border-gray-200 px-4 py-2 text-sm text-gray-600 disabled:opacity-50 dark:border-gray-700 dark:text-gray-300">
                   Закрити
+                </button>
+                <button type="button" onClick={saveImage} disabled={saving || busy || !frames.length || overCapacity}
+                  title="Зберегти сітку як звичайний JPEG, без публікації"
+                  className="inline-flex items-center gap-2 rounded-lg border border-gray-200 px-4 py-2 text-sm text-gray-600 disabled:cursor-not-allowed disabled:opacity-40 dark:border-gray-700 dark:text-gray-300">
+                  {saving ? <LoadingOutlined /> : <DownloadOutlined />}
+                  Зберегти картинку
                 </button>
                 <button type="button" onClick={submit} disabled={!canPublish}
                   className="inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold text-white shadow-sm disabled:cursor-not-allowed disabled:opacity-40"

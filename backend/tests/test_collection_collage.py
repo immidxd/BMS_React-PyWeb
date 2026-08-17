@@ -371,3 +371,26 @@ def test_hand_written_caption_survives_the_mirror_untouched():
     caption = "Власний текст без службового заклику"
     assert fb.payload_from_instagram({"caption": caption})["caption"] == caption
     assert ig.payload_from_facebook({"caption": caption})["caption"] == caption
+
+
+# ─── Збереження сітки файлом ─────────────────────────────────────────────────
+
+def test_saving_a_collage_uses_the_same_renderer_as_publishing(monkeypatch):
+    """Збережений файл і опублікований банер не мають права розійтися."""
+    _fake_photos(monkeypatch)
+    payload = {"platform": "viber", "items": _items(4), "background": "soft"}
+    published = cc.render(None, payload)
+    saved = cc.render(None, dict(payload))
+    assert published["main"] == saved["main"]
+
+
+def test_saving_never_writes_to_publication_journals(monkeypatch):
+    """Збереження на диск — не публікація: жодного SQL і жодного запису стану."""
+    _fake_photos(monkeypatch)
+
+    class ForbiddenSession:
+        def execute(self, *_args, **_kwargs):
+            raise AssertionError("Збереження сітки не має звертатися до БД")
+
+    rendered = cc.render(ForbiddenSession(), {"platform": "viber", "items": _items(3)})
+    assert rendered["main"][:2] == b"\xff\xd8"

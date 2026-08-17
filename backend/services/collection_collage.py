@@ -73,14 +73,40 @@ MARGIN_RATIO = 0.0167  # 18px на полотні 1080 — той самий в�
 # Артикул і ціна живуть у власній смузі під фото, а не поверх кадру: на живих
 # фото (полиця, руки, інтер'єр) напис поверх зображення нечитабельний, а
 # півпрозора плашка під ним перетворює мінімалістичну сітку на строкату.
-LABEL_BAND_RATIO = 0.15
-LABEL_BAND_MIN = 26
-# Приглушений артикул + контрастна ціна: у стрічці око має чіплятися за ціну.
+LABEL_BAND_RATIO = 0.21
+LABEL_BAND_MIN = 44
+# Нижче цього кегля ціна в стрічці вже не читається — тоді замість двох рядів
+# збираємо один компактний.
+LABEL_PRICE_MIN_STACKED = 21
+
+# Та сама палітра, що й у Story-картці Instagram: слива для ціни й артикула,
+# приглушений сірий для другорядного. Один магазин — один голос, тому кольори
+# й типографіку не вигадуємо заново, а переносимо з уже затвердженого макета.
+STORY_PLUM = (78, 35, 88)
+STORY_PLUM_TEXT = (103, 47, 116)
+STORY_PILL_FILL = (249, 246, 250)
+STORY_PILL_OUTLINE = (183, 144, 191)
+STORY_MUTED = (111, 105, 115)
+
 LABEL_COLORS = {
-    "white": {"number": (138, 144, 153), "price": (31, 35, 40)},
-    "soft": {"number": (134, 140, 149), "price": (28, 32, 37)},
-    "warm": {"number": (142, 134, 122), "price": (40, 33, 26)},
-    "dark": {"number": (150, 156, 164), "price": (243, 244, 246)},
+    "white": {
+        "price": STORY_PLUM, "number": STORY_PLUM_TEXT, "muted": STORY_MUTED,
+        "pill_fill": STORY_PILL_FILL, "pill_outline": STORY_PILL_OUTLINE,
+    },
+    "soft": {
+        "price": STORY_PLUM, "number": STORY_PLUM_TEXT, "muted": STORY_MUTED,
+        "pill_fill": (252, 250, 253), "pill_outline": STORY_PILL_OUTLINE,
+    },
+    "warm": {
+        "price": (74, 38, 74), "number": (104, 54, 104), "muted": (124, 110, 106),
+        "pill_fill": (253, 250, 250), "pill_outline": (191, 158, 178),
+    },
+    # На темному тлі слива стає нечитабельною, тому беремо її світлий відповідник:
+    # відчуття кольору лишається, контраст повертається.
+    "dark": {
+        "price": (240, 232, 246), "number": (226, 210, 235), "muted": (150, 146, 156),
+        "pill_fill": (44, 38, 50), "pill_outline": (126, 100, 136),
+    },
 }
 
 
@@ -464,50 +490,133 @@ def measurement_label(db: Session, bms: dict) -> Optional[str]:
     return f"{ordered[0]}–{ordered[-1]} см"
 
 
+def _fit_font(draw: ImageDraw.ImageDraw, text: str, start: int, minimum: int,
+              max_width: float, *, bold: bool):
+    """Найбільший кегль, за якого рядок ще вкладається в комірку."""
+    size = max(minimum, start)
+    while size > minimum:
+        font = _label_font(size, bold=bold)
+        if draw.textlength(text, font=font) <= max_width:
+            return font, size
+        size -= 1
+    return _label_font(minimum, bold=bold), minimum
+
+
+def _draw_pill(draw: ImageDraw.ImageDraw, box: Tuple[float, float, float, float],
+               text: str, font, colors: dict) -> None:
+    """Артикул у контурній капсулі — той самий елемент, що й у Story-картці."""
+    left, top, right, bottom = box
+    radius = (bottom - top) / 2
+    draw.rounded_rectangle(
+        (left, top, right, bottom), radius=radius,
+        fill=colors["pill_fill"], outline=colors["pill_outline"],
+        width=2 if (bottom - top) >= 30 else 1,
+    )
+    draw.text(((left + right) / 2, (top + bottom) / 2), text, font=font,
+              fill=colors["number"], anchor="mm")
+
+
 def _draw_cell_label(canvas: Image.Image, box: Tuple[int, int, int, int], *,
                      number: str, measurement: Optional[str], price: Optional[str],
                      background_key: str) -> None:
-    """Артикул · замір · ціна одним рядком, відцентровані під фото.
+    """Комерційний блок комірки мовою Story-картки.
 
-    Кегль підбирається під ширину комірки: у сітці 4×4 місця вдвічі менше, ніж
-    у 2×2, і фіксований розмір там або наліз би на сусідні комірки, або
-    виглядав би загубленим.
+    Ієрархія та сама, що вже затверджена в Stories: ціна — герой (велика,
+    кольору сливи), артикул — у легкій контурній капсулі, замір — приглушена
+    деталь. Рядок однакової ваги, який стояв тут раніше, читався як службовий
+    підпис до фото, а не як вітрина.
+
+    Розкладка адаптивна. У просторих сітках (2×2, 3×3) блок стає у два яруси:
+    ціна зверху, капсула з артикулом і замір під нею. У щільній 4×4 два яруси
+    зменшили б ціну до нечитабельного кегля, тому там збирається один
+    компактний ряд — але тими самими кольорами й тією ж капсулою.
     """
     x, y, width, height = box
     draw = ImageDraw.Draw(canvas)
     colors = LABEL_COLORS.get(background_key, LABEL_COLORS["white"])
-    parts = [
-        (f"#{number}" if number else "", False, "number"),
-        (measurement or "", False, "number"),
-        (f"{price} грн" if price else "", True, "price"),
-    ]
-    parts = [part for part in parts if part[0]]
-    if not parts:
+    price_text = f"{price} грн" if price else ""
+    number_text = f"#{number}" if number else ""
+    available = max(20, width - 10)
+    if not price_text and not number_text and not measurement:
         return
 
-    available = max(20, width - 8)
-    size = max(11, round(height * 0.58))
-    while True:
-        fonts = [_label_font(size, bold=bold) for _text, bold, _color in parts]
-        separator_font = _label_font(size)
-        separator = "  ·  "
-        total = sum(draw.textlength(text, font=font) for (text, _b, _c), font in zip(parts, fonts))
-        total += draw.textlength(separator, font=separator_font) * (len(parts) - 1)
-        if total <= available or size <= 11:
-            break
-        size -= 1
+    _price_font, price_size = _fit_font(
+        draw, price_text or "0 грн", round(height * 0.42), 13, available, bold=True,
+    )
+    stacked = (price_size >= LABEL_PRICE_MIN_STACKED and bool(price_text)
+               and bool(number_text or measurement))
+
+    if stacked:
+        # Блок вирівнюється від ВЕРХУ смуги, а не по її центру: увесь вільний
+        # запас має лишитися знизу, інакше підпис зорово прилипає до фото
+        # наступного ряду й читається як його заголовок.
+        pad_top = max(5, round(height * 0.09))
+        price_top = y + pad_top
+        draw.text((x + width / 2, price_top), price_text,
+                  font=_label_font(price_size, bold=True), fill=colors["price"], anchor="ma")
+
+        detail_size = max(11, round(price_size * 0.46))
+        detail_font = _label_font(detail_size)
+        pill_height = round(detail_size * 1.85)
+        pill_pad = round(detail_size * 0.72)
+        number_width = draw.textlength(number_text, font=detail_font) if number_text else 0
+        pill_width = number_width + pill_pad * 2 if number_text else 0
+        gap = round(detail_size * 0.62) if (number_text and measurement) else 0
+        measure_width = draw.textlength(measurement, font=detail_font) if measurement else 0
+        total = pill_width + gap + measure_width
+        cursor = x + (width - total) / 2
+        detail_y = price_top + round(price_size * 1.16) + pill_height / 2
+        if number_text:
+            _draw_pill(
+                draw,
+                (cursor, detail_y - pill_height / 2,
+                 cursor + pill_width, detail_y + pill_height / 2),
+                number_text, detail_font, colors,
+            )
+            cursor += pill_width + gap
+        if measurement:
+            draw.text((cursor, detail_y), measurement, font=detail_font,
+                      fill=colors["muted"], anchor="lm")
+        return
+
+    # Компактний ряд: капсула · замір · ціна — усе в одну лінію.
+    base = max(11, round(height * 0.32))
+    detail_font = _label_font(base)
+    price_font = _label_font(round(base * 1.18), bold=True)
+    pill_height = round(base * 1.8)
+    pill_pad = round(base * 0.62)
+    number_width = draw.textlength(number_text, font=detail_font) if number_text else 0
+    pill_width = number_width + pill_pad * 2 if number_text else 0
+    measure_width = draw.textlength(measurement, font=detail_font) if measurement else 0
+    price_width = draw.textlength(price_text, font=price_font) if price_text else 0
+    gap = round(base * 0.5)
+
+    def _total(values):
+        present = [value for value in values if value]
+        return sum(present) + gap * max(0, len(present) - 1)
+
+    total = _total((pill_width, measure_width, price_width))
+    # Замір — перше, чим жертвуємо: артикул і ціна важливіші за деталь.
+    if total > available and measurement:
+        measurement, measure_width = None, 0
+        total = _total((pill_width, price_width))
 
     cursor = x + (width - total) / 2
-    # Трохи вище центру смуги: інакше підпис зорово «прилипає» до фото
-    # наступного ряду, а не до свого власного.
-    baseline = y + height * 0.42
-    for index, ((text, _bold, color_key), font) in enumerate(zip(parts, fonts)):
-        draw.text((cursor, baseline), text, font=font, fill=colors[color_key], anchor="lm")
-        cursor += draw.textlength(text, font=font)
-        if index < len(parts) - 1:
-            draw.text((cursor, baseline), separator, font=separator_font,
-                      fill=colors["number"], anchor="lm")
-            cursor += draw.textlength(separator, font=separator_font)
+    middle = y + max(6, round(height * 0.12)) + pill_height / 2
+    if number_text:
+        _draw_pill(
+            draw,
+            (cursor, middle - pill_height / 2, cursor + pill_width, middle + pill_height / 2),
+            number_text, detail_font, colors,
+        )
+        cursor += pill_width + gap
+    if measurement:
+        draw.text((cursor, middle), measurement, font=detail_font,
+                  fill=colors["muted"], anchor="lm")
+        cursor += measure_width + gap
+    if price_text:
+        draw.text((cursor, middle), price_text, font=price_font,
+                  fill=colors["price"], anchor="lm")
 
 
 def render(db: Session, payload: dict) -> dict:

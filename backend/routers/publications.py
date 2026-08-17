@@ -6,6 +6,7 @@ PHASE 1 (READ-ONLY): Scan Telegram, view publication status, no writes.
 
 import os
 import logging
+from datetime import datetime
 from typing import List, Optional, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, Query, Body
 from fastapi.responses import Response
@@ -2227,6 +2228,45 @@ async def collection_render(body: Dict[str, Any] = Body(...), db: Session = Depe
             "Content-Disposition": 'inline; filename="bms-collection.jpeg"',
         },
     )
+
+
+@router.post("/api/publications/collections/save")
+async def collection_save_to_disk(body: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
+    """Зберегти сітку як звичайний JPEG у теку «Завантаження».
+
+    Шлях для ДЕСКТОП-режиму: у вбудованому вебв'ю `<a download>` не зберігає
+    файл, а переходить на нього — картинка розгорнулася б поверх застосунку.
+    Бекенд працює на тій самій машині, тому пише файл сам і повертає шлях.
+    Браузер натомість качає той самий `/collections/render` штатним способом.
+
+    Це чисте збереження: жодної публікації, жодного запису в журнали.
+    """
+    from starlette.concurrency import run_in_threadpool
+    try:
+        rendered = await run_in_threadpool(_collection_collage().render, db, body)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    try:
+        from services.file_saver import save_bytes
+    except ImportError:
+        from backend.services.file_saver import save_bytes
+
+    spec = rendered["spec"]
+    platform = "Viber" if spec["platform"] == "viber" else "Facebook"
+    stamp = datetime.now().strftime("%Y-%m-%d %H-%M")
+    name = f"Підбірка {platform} {len(spec['items'])} товарів {stamp}.jpeg"
+    try:
+        path, saved_name = save_bytes(rendered["main"], name, fallback_name="collection.jpeg")
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Не вдалося зберегти файл: {exc}")
+    return {
+        "saved": True,
+        "path": path,
+        "filename": saved_name,
+        "bytes": len(rendered["main"]),
+        "grid": f"{spec['cols']}×{spec['rows']}",
+    }
 
 
 @router.get("/api/publications/collections")

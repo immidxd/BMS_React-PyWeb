@@ -104,6 +104,41 @@ export async function saveProductPhotosZip(
   return { path: null, filename: name, count };
 }
 
+/**
+ * Зберегти сітку-підбірку як звичайний JPEG.
+ *
+ * Той самий renderer, що піде в публікацію, — збережений файл і опублікований
+ * банер не можуть розійтися. Публікації при цьому не відбувається.
+ */
+export async function saveCollectionCollage(
+  spec: Record<string, unknown>,
+): Promise<SavedFile & { grid?: string }> {
+  if (await isDesktopShell()) {
+    const res = await fetch('/api/publications/collections/save', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(spec),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data?.detail || `HTTP ${res.status}`);
+    return { path: data.path ?? null, filename: data.filename, grid: data.grid };
+  }
+  const res = await fetch('/api/publications/collections/render', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(spec),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err?.detail || `HTTP ${res.status}`);
+  }
+  const stamp = new Date().toISOString().slice(0, 16).replace('T', ' ').replace(':', '-');
+  const platform = spec.platform === 'facebook' ? 'Facebook' : 'Viber';
+  const name = `Підбірка ${platform} ${stamp}.jpeg`;
+  saveBlob(await res.blob(), name);
+  return { path: null, filename: name, grid: res.headers.get('X-BMS-Grid') || undefined };
+}
+
 /** Викачати одне фото за URL під його оригінальним іменем (шлях для браузера). */
 export async function downloadImage(url: string, filename: string): Promise<void> {
   const res = await fetch(url);
