@@ -23,11 +23,34 @@ def _items(count: int) -> list:
 
 
 def _fake_photos(monkeypatch):
-    """Кожен товар віддає власне фото, без БД і файлової системи."""
+    """Товар віддає власне фото, розміри й ціну — без БД і файлової системи.
+
+    Підміняємо саме `_tg`, а не готовий підпис: так рендер підписів (шрифти,
+    добір кегля, замір для ростовки) лишається під тестом.
+    """
     def photo(_db, product_id, image_idx):
         color = ((product_id * 37) % 255, (product_id * 91) % 255, 120)
-        return _jpeg(color=color), {"productnumber": f"#Ф{4000 + product_id}"}
+        return _jpeg(color=color), {
+            "productnumber": f"#Ф{4000 + product_id}",
+            "price": 1200 + product_id,
+        }
     monkeypatch.setattr(cc, "_photo_for_item", photo)
+
+    class Tg:
+        @staticmethod
+        def _is_bag(_bms):
+            return False
+
+        @staticmethod
+        def _available_sizes(_db, _number):
+            return [{"size": "38", "measurementscm": "24.5"},
+                    {"size": "40", "measurementscm": "26"}]
+
+        @staticmethod
+        def _fmt_price(value):
+            return f"{int(value)}" if value else None
+
+    monkeypatch.setattr(cc, "_tg", lambda: Tg)
 
 
 # ─── Специфікація ────────────────────────────────────────────────────────────
@@ -168,6 +191,68 @@ def test_facebook_render_uses_a_bigger_canvas_and_skips_the_viber_thumbnail(monk
     assert rendered["thumbnail"] == b""
     with Image.open(io.BytesIO(rendered["main"])) as image:
         assert image.width == cc.PLATFORMS["facebook"]["size"]
+
+
+# ─── Підписи: артикул · замір · ціна ─────────────────────────────────────────
+
+def test_measurement_shows_a_range_for_rostovka_and_one_value_for_a_single_size(monkeypatch):
+    class Tg:
+        @staticmethod
+        def _is_bag(_bms):
+            return False
+
+        @staticmethod
+        def _available_sizes(_db, number):
+            if number == "#Ф4336":
+                return [
+                    {"size": "36", "measurementscm": "23"},
+                    {"size": "40", "measurementscm": "26.0"},
+                    {"size": "38", "measurementscm": "24,5"},
+                ]
+            return [{"size": "39", "measurementscm": "25"}]
+
+    monkeypatch.setattr(cc, "_tg", lambda: Tg)
+    assert cc.measurement_label(None, {"productnumber": "#Ф4336"}) == "23–26 см"
+    assert cc.measurement_label(None, {"productnumber": "#Ф1681"}) == "25 см"
+
+
+def test_bags_have_no_foot_measurement(monkeypatch):
+    class Tg:
+        @staticmethod
+        def _is_bag(_bms):
+            return True
+
+    monkeypatch.setattr(cc, "_tg", lambda: Tg)
+    assert cc.measurement_label(None, {"productnumber": "#Ф4329"}) is None
+
+
+def test_measurement_falls_back_to_the_product_row_when_no_sizes_are_available(monkeypatch):
+    class Tg:
+        @staticmethod
+        def _is_bag(_bms):
+            return False
+
+        @staticmethod
+        def _available_sizes(_db, _number):
+            return []
+
+    monkeypatch.setattr(cc, "_tg", lambda: Tg)
+    label = cc.measurement_label(None, {"productnumber": "#Ф1", "measurementscm": "27.5"})
+    assert label == "27,5 см"
+    assert cc.measurement_label(None, {"productnumber": "#Ф2", "measurementscm": 0}) is None
+
+
+def test_labels_shrink_the_photo_but_stay_on_by_default(monkeypatch):
+    _fake_photos(monkeypatch)
+    spec = cc.normalize_spec({"platform": "viber", "items": _items(4)})
+    assert spec["labels"] is True
+
+    with_labels = cc.render(None, {"platform": "viber", "items": _items(4)})
+    without = cc.render(None, {"platform": "viber", "items": _items(4), "labels": False})
+    # Смуга з підписом забирає висоту в самого фото, а не в полотна: інакше
+    # сітка «поповзла» б і перестала збігатися з прев'ю.
+    assert with_labels["spec"]["height"] == without["spec"]["height"]
+    assert with_labels["main"] != without["main"]
 
 
 def test_render_refuses_a_single_product(monkeypatch):

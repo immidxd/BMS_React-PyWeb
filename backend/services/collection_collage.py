@@ -70,6 +70,19 @@ FRAME_ZOOM_MIN = 0.5
 FRAME_ZOOM_MAX = 3.0
 MARGIN_RATIO = 0.0167  # 18px на полотні 1080 — той самий відступ, що й у картки
 
+# Артикул і ціна живуть у власній смузі під фото, а не поверх кадру: на живих
+# фото (полиця, руки, інтер'єр) напис поверх зображення нечитабельний, а
+# півпрозора плашка під ним перетворює мінімалістичну сітку на строкату.
+LABEL_BAND_RATIO = 0.15
+LABEL_BAND_MIN = 26
+# Приглушений артикул + контрастна ціна: у стрічці око має чіплятися за ціну.
+LABEL_COLORS = {
+    "white": {"number": (138, 144, 153), "price": (31, 35, 40)},
+    "soft": {"number": (134, 140, 149), "price": (28, 32, 37)},
+    "warm": {"number": (142, 134, 122), "price": (40, 33, 26)},
+    "dark": {"number": (150, 156, 164), "price": (243, 244, 246)},
+}
+
 
 def _viber():
     try:
@@ -208,6 +221,7 @@ def normalize_spec(payload: dict, *, item_count: Optional[int] = None) -> dict:
         "platform": config["key"],
         "layout": layout,
         "background": background,
+        "labels": payload.get("labels") is not False,
         "gap": gap,
         "width": geometry["width"],
         "height": geometry["height"],
@@ -405,6 +419,97 @@ def _rebase_uniform_background(raw: bytes, target: Tuple[int, int, int]) -> byte
     return out.getvalue()
 
 
+def _label_font(size: int, *, bold: bool = False):
+    """Та сама нейтральна типографіка, що й у Story-картці, — один голос."""
+    try:
+        from services import instagram_publisher
+    except ImportError:
+        from backend.services import instagram_publisher
+    return instagram_publisher._story_display_font(size, bold=bold)
+
+
+def _fmt_cm(value: Any) -> Optional[str]:
+    try:
+        number = float(str(value).replace(",", "."))
+    except (TypeError, ValueError):
+        return None
+    if number <= 0:
+        return None
+    text = f"{number:.1f}".rstrip("0").rstrip(".")
+    return text.replace(".", ",")
+
+
+def measurement_label(db: Session, bms: dict) -> Optional[str]:
+    """Замір по устілці в сантиметрах — те, за чим реально обирають взуття.
+
+    Ростовка — це кілька рядків products з одним номером, тому в сітці показуємо
+    діапазон наявних замірів («23–26 см»), а не замір випадкового рядка. У сумок
+    заміру ніжки немає, тож для них рядок порожній.
+    """
+    tg = _tg()
+    if tg._is_bag(bms):
+        return None
+    number = str(bms.get("productnumber") or "")
+    values = []
+    for row in tg._available_sizes(db, number):
+        formatted = _fmt_cm(row.get("measurementscm"))
+        if formatted and formatted not in values:
+            values.append(formatted)
+    if not values:
+        formatted = _fmt_cm(bms.get("measurementscm"))
+        return f"{formatted} см" if formatted else None
+    if len(values) == 1:
+        return f"{values[0]} см"
+    ordered = sorted(values, key=lambda item: float(item.replace(",", ".")))
+    return f"{ordered[0]}–{ordered[-1]} см"
+
+
+def _draw_cell_label(canvas: Image.Image, box: Tuple[int, int, int, int], *,
+                     number: str, measurement: Optional[str], price: Optional[str],
+                     background_key: str) -> None:
+    """Артикул · замір · ціна одним рядком, відцентровані під фото.
+
+    Кегль підбирається під ширину комірки: у сітці 4×4 місця вдвічі менше, ніж
+    у 2×2, і фіксований розмір там або наліз би на сусідні комірки, або
+    виглядав би загубленим.
+    """
+    x, y, width, height = box
+    draw = ImageDraw.Draw(canvas)
+    colors = LABEL_COLORS.get(background_key, LABEL_COLORS["white"])
+    parts = [
+        (f"#{number}" if number else "", False, "number"),
+        (measurement or "", False, "number"),
+        (f"{price} грн" if price else "", True, "price"),
+    ]
+    parts = [part for part in parts if part[0]]
+    if not parts:
+        return
+
+    available = max(20, width - 8)
+    size = max(11, round(height * 0.58))
+    while True:
+        fonts = [_label_font(size, bold=bold) for _text, bold, _color in parts]
+        separator_font = _label_font(size)
+        separator = "  ·  "
+        total = sum(draw.textlength(text, font=font) for (text, _b, _c), font in zip(parts, fonts))
+        total += draw.textlength(separator, font=separator_font) * (len(parts) - 1)
+        if total <= available or size <= 11:
+            break
+        size -= 1
+
+    cursor = x + (width - total) / 2
+    # Трохи вище центру смуги: інакше підпис зорово «прилипає» до фото
+    # наступного ряду, а не до свого власного.
+    baseline = y + height * 0.42
+    for index, ((text, _bold, color_key), font) in enumerate(zip(parts, fonts)):
+        draw.text((cursor, baseline), text, font=font, fill=colors[color_key], anchor="lm")
+        cursor += draw.textlength(text, font=font)
+        if index < len(parts) - 1:
+            draw.text((cursor, baseline), separator, font=separator_font,
+                      fill=colors["number"], anchor="lm")
+            cursor += draw.textlength(separator, font=separator_font)
+
+
 def render(db: Session, payload: dict) -> dict:
     """Детермінований рендер сітки. Ті самі кроки, що й у Viber-картки."""
     viber = _viber()
@@ -419,17 +524,31 @@ def render(db: Session, payload: dict) -> dict:
     cells = grid_geometry(len(items), spec["layout"], spec["width"], spec["gap"])["cells"]
     numbers: List[str] = []
     product_ids: List[int] = []
+    tg = _tg()
     for item, (x, y, width, height) in zip(items, cells):
         raw, bms = _photo_for_item(db, item["product_id"], item["image_idx"])
-        numbers.append(str(bms.get("productnumber") or "").lstrip("#"))
+        number = str(bms.get("productnumber") or "").lstrip("#")
+        numbers.append(number)
         product_ids.append(item["product_id"])
+        band = 0
+        if spec["labels"]:
+            band = max(LABEL_BAND_MIN, round(height * LABEL_BAND_RATIO))
+        photo_height = max(1, height - band)
         tile = viber._render_tile(
-            _rebase_uniform_background(raw, background), (width, height), item, background,
+            _rebase_uniform_background(raw, background), (width, photo_height), item, background,
         )
-        radius = max(8, min(24, min(width, height) // 18))
-        mask = Image.new("L", (width, height), 0)
-        ImageDraw.Draw(mask).rounded_rectangle((0, 0, width, height), radius=radius, fill=255)
+        radius = max(8, min(24, min(width, photo_height) // 18))
+        mask = Image.new("L", (width, photo_height), 0)
+        ImageDraw.Draw(mask).rounded_rectangle((0, 0, width, photo_height), radius=radius, fill=255)
         canvas.paste(tile, (x, y), mask)
+        if band:
+            _draw_cell_label(
+                canvas, (x, y + photo_height, width, band),
+                number=number,
+                measurement=measurement_label(db, bms),
+                price=tg._fmt_price(bms.get("price")),
+                background_key=spec["background"],
+            )
 
     main = viber._jpeg_under_limit(canvas, int(config["max_bytes"]))
     thumb = b""

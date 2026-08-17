@@ -34,6 +34,8 @@ export interface CollectionSpec {
   platform: CollectionPlatform;
   layout: string;
   background: 'white' | 'soft' | 'warm' | 'dark';
+  /** Артикул · замір у см · ціна під кожним фото. */
+  labels: boolean;
   gap: number;
   width: number;
   height: number;
@@ -73,6 +75,7 @@ export interface CollectionPublishRequest {
   platform: CollectionPlatform;
   layout: string;
   background: string;
+  labels: boolean;
   gap: number;
   items: CollectionFrame[];
   caption: string;
@@ -126,6 +129,7 @@ const CollectionCollageDialog: React.FC<Props> = ({ platform, productIds, busy =
   const [layout, setLayout] = useState('grid9');
   const [background, setBackground] = useState<CollectionSpec['background']>('white');
   const [gap, setGap] = useState(8);
+  const [labels, setLabels] = useState(true);
   const [caption, setCaption] = useState('');
   const [publishAt, setPublishAt] = useState<string | null>(null);
   const [pageIds, setPageIds] = useState<string[]>([]);
@@ -159,6 +163,7 @@ const CollectionCollageDialog: React.FC<Props> = ({ platform, productIds, busy =
         setLayout(result.spec.layout);
         setBackground(result.spec.background);
         setGap(result.spec.gap);
+        setLabels(result.spec.labels !== false);
         setCaption(result.caption || '');
         setPageIds((result.connection?.pages || []).map((page: any) => page.id));
       } catch (error: any) {
@@ -194,7 +199,7 @@ const CollectionCollageDialog: React.FC<Props> = ({ platform, productIds, busy =
     try {
       const response = await fetch('/api/publications/collections/render', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ platform, layout, background, gap, items: frames }),
+        body: JSON.stringify({ platform, layout, background, gap, labels, items: frames }),
         signal,
       });
       if (!response.ok) {
@@ -210,7 +215,7 @@ const CollectionCollageDialog: React.FC<Props> = ({ platform, productIds, busy =
     } finally {
       if (!signal.aborted) setPreviewBusy(false);
     }
-  }, [platform, layout, background, gap, frames, data, overCapacity]);
+  }, [platform, layout, background, gap, labels, frames, data, overCapacity]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -252,7 +257,7 @@ const CollectionCollageDialog: React.FC<Props> = ({ platform, productIds, busy =
   const submit = () => {
     if (!canPublish) return;
     onPublish({
-      platform, layout, background, gap, items: frames,
+      platform, layout, background, gap, labels, items: frames,
       caption: caption.trim(),
       publish_at: publishAt,
       ...(platform === 'facebook' ? { page_ids: pageIds } : {}),
@@ -357,6 +362,19 @@ const CollectionCollageDialog: React.FC<Props> = ({ platform, productIds, busy =
                       </button>
                     ))}
                   </div>
+
+                  <label className="mt-4 flex cursor-pointer items-start gap-2 rounded-xl border border-gray-200 px-3 py-2.5 text-xs dark:border-gray-700">
+                    <input type="checkbox" className="mt-0.5" checked={labels}
+                      onChange={event => setLabels(event.target.checked)} />
+                    <span className="min-w-0">
+                      <span className="font-semibold text-gray-800 dark:text-gray-100"
+                        style={labels ? { color: accent } : undefined}>Артикул, замір і ціна під фото</span>
+                      <span className="mt-0.5 block leading-relaxed text-gray-500 dark:text-gray-400">
+                        Замір по устілці береться з наявних розмірів; для ростовки — діапазон.
+                        У сумок заміру немає, тому рядок коротший.
+                      </span>
+                    </span>
+                  </label>
 
                   <label className="mt-4 grid grid-cols-[110px_1fr_42px] items-center gap-2 text-[11px] text-gray-500">
                     <span>Проміжок</span>
