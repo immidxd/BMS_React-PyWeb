@@ -345,6 +345,15 @@ ORDER_GHOST_SWEEP = os.getenv("ORDER_GHOST_SWEEP", "1") != "0"
 # матчив живого рядка цього прогону, — привид (рядок видалено/змінено). Ловить навіть
 # disjoint-привидів (інший набір товарів), які containment-сигнатура не бачить.
 ORDER_GID_SWEEP = os.getenv("ORDER_GID_SWEEP", "1") != "0"
+# Орфани товарів після парсу вкладки завозу (номер зник з аркуша: перейменування
+# 4336 → Ф4336, видалений рядок). Вузько: тільки товари ЦЬОГО завозу, тільки без
+# продажів, з JSON-бекапом. Запобіжник спрацьовує лише на ВЕЛИКИХ пачках
+# (> PARSE_ORPHAN_MIN_ABS штук І > PARSE_ORPHAN_MAX_SHARE завозу) — щоб недочитана
+# вкладка не знесла завіз, але дрібне перейменування на 5 рядків лікувалось саме.
+# PARSE_ORPHAN_MAX_SHARE=0 + MIN_ABS=0 → вимкнути авто-прибирання (ручний синк
+# картки завозу працює як і раніше).
+PARSE_ORPHAN_MAX_SHARE = float(os.getenv("PARSE_ORPHAN_MAX_SHARE", "0.5"))
+PARSE_ORPHAN_MIN_ABS = int(os.getenv("PARSE_ORPHAN_MIN_ABS", "20"))
 _GHOST_SWEEP_BACKUP_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ghost_sweep_backups")
 
 # Marker written into a merged lost product's Воркспейс row ("Екстра примітка").
@@ -4169,7 +4178,58 @@ def _normalize_pnum(pnum: str) -> str:
     return _canon(pnum) or ""
 
 
-def _resolve_order_product(session, pnum_clean: str, size_hints: dict):
+def _as_plain_date(v):
+    """datetime|date|None → date|None (для порівнянь «товар уже існував»)."""
+    if v is None:
+        return None
+    return v.date() if hasattr(v, "date") else v
+
+
+def _pick_order_candidate(candidates: list, order_date=None, item_price=None):
+    """Детермінований вибір товару, коли номер НЕ унікальний.
+
+    Один `productnumber` цілком легально належить різним товарам (див. #А1124,
+    #А1198), а ще той самий номер лишається у БД після перейменування у аркуші
+    (4336 → Ф4336). Раніше тут був `candidates[0]` без ORDER BY: продаж ботинок
+    Gino Rossi #4336 з 2023-го приклеївся до кросівок Ecco, завезених 2026-го.
+
+    Пріоритет фільтрів (кожен застосовується, лише якщо лишає ≥1 кандидата):
+      1. товар уже існував на дату замовлення (`dateadded` ≤ дата);
+      2. ціна товару збігається з ціною позиції в замовленні;
+      3. номер із '#' (новіша конвенція);
+      4. найменший id — щоб вибір був стабільним між прогонами.
+    """
+    if not candidates:
+        return None
+    cands = sorted(candidates, key=lambda c: c.id)
+    if len(cands) == 1:
+        return cands[0]
+
+    od = _as_plain_date(order_date)
+    if od is not None:
+        arrived = [c for c in cands
+                   if c.dateadded is None or _as_plain_date(c.dateadded) <= od]
+        if arrived:
+            cands = arrived
+
+    try:
+        price_f = float(item_price) if item_price else 0.0
+    except (TypeError, ValueError):
+        price_f = 0.0
+    if price_f > 0:
+        exact = [c for c in cands
+                 if c.price is not None and abs(float(c.price) - price_f) < 0.01]
+        if exact:
+            cands = exact
+
+    with_hash = [c for c in cands if (c.productnumber or "").startswith("#")]
+    if with_hash:
+        cands = with_hash
+    return cands[0]
+
+
+def _resolve_order_product(session, pnum_clean: str, size_hints: dict,
+                           order_date=None, item_price=None):
     """
     Find the correct Product for an order item.
 
@@ -4177,10 +4237,12 @@ def _resolve_order_product(session, pnum_clean: str, size_hints: dict):
     1. If there is a size hint for this pnum in 'Уточнення' (e.g. "Ф2982 (39)"),
        try to find a product with matching productnumber AND sizeeu.
        Size hint may be a range like "37-38" — try both values.
-    2. If no size hint or no match found with size, fall back to:
-       a. Single product with this productnumber (not a rostovka) → use it.
-       b. Multiple products (rostovka without hint) → use first, log warning.
+    2. If no size hint or no match found with size, fall back to all products
+       with this productnumber.
     3. Try clonednumbers match as last resort.
+
+    Коли на кроці 1/2 кандидатів кілька — вибір робить `_pick_order_candidate`
+    (дата завозу + ціна + '#' + id), а не «перший, який повернула БД».
     """
     from backend.models.models import Product
 
@@ -4200,10 +4262,11 @@ def _resolve_order_product(session, pnum_clean: str, size_hints: dict):
             size_candidates.append(hint.strip())
 
         for sz in size_candidates:
-            product = session.query(Product).filter(
+            sized = session.query(Product).filter(
                 Product.productnumber == pnum_with_hash,
                 Product.sizeeu == sz,
-            ).first()
+            ).all()
+            product = _pick_order_candidate(sized, order_date, item_price)
             if product:
                 return product
 
@@ -4216,14 +4279,8 @@ def _resolve_order_product(session, pnum_clean: str, size_hints: dict):
         )
     ).all()
 
-    if len(candidates) == 1:
-        return candidates[0]
-    if len(candidates) > 1:
-        # Prefer the one with # prefix (newer convention)
-        with_hash = [c for c in candidates if c.productnumber.startswith("#")]
-        if with_hash:
-            return with_hash[0]
-        return candidates[0]
+    if candidates:
+        return _pick_order_candidate(candidates, order_date, item_price)
 
     # ── Step 3: clonednumbers fallback ───────────────────────────────────────
     return session.query(Product).filter(
@@ -4760,7 +4817,8 @@ def _parse_orders_sheet(
             if not pnum_clean:
                 continue
 
-            product = _resolve_order_product(session, pnum_clean, size_hints)
+            product = _resolve_order_product(session, pnum_clean, size_hints,
+                                             order_date=order_date, item_price=price)
 
             if not product:
                 logger.debug("Product not found for pnum=%s, skipping order_item", pnum_clean)
@@ -5407,6 +5465,7 @@ def run_products_parsing(
         batch_sheets = batch_sheets[:QUICK_SHEETS_COUNT]
 
     total_added = total_updated = total_skipped = 0
+    total_orphans_deleted = 0
     total_sheets = len(batch_sheets)
     # Спільний лічильник появ product.id між усіма аркушами в цьому run.
     # Передається у _parse_products_sheet щоб quantity = кількість появ
@@ -5446,6 +5505,26 @@ def run_products_parsing(
         total_updated += result["updated"]
         total_skipped += result["skipped"]
 
+        # ── Орфани вкладки: номер зник із аркуша (перейменували 4336 → Ф4336,
+        # прибрали рядок), а запис у БД лишався НАЗАВЖДИ: глобальний mark&sweep
+        # вимкнено з 02.06.2026, а point-wise reconcile бігав ЛИШЕ з картки
+        # завозу (`sync_one_delivery_tab`). Тепер — одразу після парсу вкладки,
+        # з тими самими гардами (scoped by deliveryid + protect-sold + JSON-бекап)
+        # плюс запобіжник по частці на випадок недочитаної вкладки.
+        # _parse_products_sheet уже зробив commit, тож reconcile — окрема транзакція.
+        if shipment_id:
+            try:
+                deleted = _reconcile_delivery_orphans(
+                    session, shipment_id, all_rows,
+                    max_share=PARSE_ORPHAN_MAX_SHARE, tag="products",
+                )
+                if deleted:
+                    session.commit()
+                    total_orphans_deleted += deleted
+            except Exception as e:  # noqa: BLE001 — парс не має падати через прибирання
+                session.rollback()
+                logger.warning(f"[products] orphan-reconcile '{ws.title}' failed: {e}")
+
     if shipment_ids:
         session.commit()
 
@@ -5466,6 +5545,7 @@ def run_products_parsing(
         "updated": total_updated,
         "skipped": total_skipped,
         "locks_restored": restored,
+        "orphans_deleted": total_orphans_deleted,
         "seen_product_ids": set(seen_in_run.keys()),
     }
 
@@ -5842,9 +5922,16 @@ def run_workspace_parsing(
     }
 
 
-def _reconcile_delivery_orphans(session: Session, delivery_id: int, all_rows: list) -> int:
+def _reconcile_delivery_orphans(session: Session, delivery_id: int, all_rows: list,
+                                max_share: Optional[float] = None, tag: str = "sync") -> int:
     """Point-wise видалення: товари БД(deliveryid), чий номер зник із вкладки аркуша
-    і БЕЗ продажів. Scoped + protect-sold + JSON-бекап. Повертає к-сть видалених."""
+    і БЕЗ продажів. Scoped + protect-sold + JSON-бекап. Повертає к-сть видалених.
+
+    `max_share` — запобіжник для АВТОМАТИЧНОГО виклику з парсера: якщо орфанами
+    виявилась більша частка завозу, це ознака не перейменування, а кривого
+    читання вкладки → нічого не видаляємо, лише лог. Ручний синк картки завозу
+    передає None (як і було): там людина бачить дифф і тисне сама.
+    """
     if not all_rows:
         return 0
     header = all_rows[0]
@@ -5857,14 +5944,38 @@ def _reconcile_delivery_orphans(session: Session, delivery_id: int, all_rows: li
         return (s or "").strip().lstrip("#").rstrip(";").strip().upper()
 
     sheet_nums = {_canon(r[num_idx]) for r in all_rows[1:] if num_idx < len(r) and _canon(r[num_idx])}
+    if not sheet_nums:
+        # Порожня/недочитана вкладка ≠ «завіз зник». Без цього гарду весь завіз
+        # пішов би під ніж на першому ж збої читання.
+        logger.warning(f"[{tag}] delivery {delivery_id}: у вкладці 0 номерів — reconcile пропущено")
+        return 0
+
     rows = session.execute(
-        text("""SELECT p.id, p.productnumber FROM products p
-                WHERE p.deliveryid = :d
-                  AND NOT EXISTS (SELECT 1 FROM order_items oi WHERE oi.product_id = p.id)"""),
+        text("""SELECT p.id, p.productnumber,
+                       EXISTS(SELECT 1 FROM order_items oi WHERE oi.product_id = p.id) AS has_sales
+                FROM products p WHERE p.deliveryid = :d"""),
         {"d": delivery_id},
     ).fetchall()
-    orphan_ids = [r[0] for r in rows if _canon(r[1]) not in sheet_nums]
+    orphan_ids = [r[0] for r in rows if not r[2] and _canon(r[1]) not in sheet_nums]
+
+    # Продані під старим номером — не чіпаємо (історія продажу реальна), але
+    # мовчати не можна: це рівно та пара-двійник, яку далі зливають руками.
+    protected = [(r[0], r[1]) for r in rows if r[2] and _canon(r[1]) not in sheet_nums]
+    if protected:
+        logger.warning(
+            f"[{tag}] delivery {delivery_id}: {len(protected)} товар(ів) зникли з вкладки, "
+            f"але мають продажі — лишаю: {protected[:10]}"
+        )
+
     if not orphan_ids:
+        return 0
+    if (max_share is not None and len(rows)
+            and len(orphan_ids) > PARSE_ORPHAN_MIN_ABS
+            and len(orphan_ids) / len(rows) > max_share):
+        logger.warning(
+            f"[{tag}] delivery {delivery_id}: орфанів {len(orphan_ids)}/{len(rows)} "
+            f"(> {max_share:.0%}) — схоже на збій читання вкладки, видалення пропущено"
+        )
         return 0
     try:
         import json as _json
@@ -5876,14 +5987,14 @@ def _reconcile_delivery_orphans(session: Session, delivery_id: int, all_rows: li
             for o in session.query(Product).filter(Product.id.in_(orphan_ids)).all()
         ]
         path = os.path.join(_GHOST_SWEEP_BACKUP_DIR,
-                            f"{_dt2.now():%Y%m%d_%H%M%S}_sync_orphans_d{delivery_id}.json")
+                            f"{_dt2.now():%Y%m%d_%H%M%S}_{tag}_orphans_d{delivery_id}.json")
         with open(path, "w") as f:
             _json.dump(dump, f, ensure_ascii=False)
     except Exception as e:
         logger.warning(f"[sync] orphan backup failed: {e}")
     session.execute(text("DELETE FROM order_items WHERE product_id = ANY(:ids)"), {"ids": orphan_ids})
     session.execute(text("DELETE FROM products WHERE id = ANY(:ids)"), {"ids": orphan_ids})
-    logger.info(f"[sync] delivery {delivery_id}: видалено {len(orphan_ids)} орфан-товар(ів)")
+    logger.info(f"[{tag}] delivery {delivery_id}: видалено {len(orphan_ids)} орфан-товар(ів)")
     return len(orphan_ids)
 
 
