@@ -367,17 +367,29 @@ async function status(env) {
     publish_endpoint_available: true,
     scheduler: 'cron-every-minute',
     local_24h_limit: LOCAL_PUBLISHING_LIMIT,
+    max_per_tick: MAX_BATCH_PER_TICK,
+    // Локальний лічильник, без звернення до Meta: /v1/status смикає інтерфейс
+    // часто, а квоту Graph API теж рахує у власному ліміті викликів.
+    usage: await Promise.all(
+      (accounts.results || []).map(row => localUsage(env, row.ig_user_id)),
+    ),
     accounts: accounts.results || [],
   });
 }
 
 class MetaRequestError extends Error {
-  constructor(message, { retriable = false, code = null, subcode = null, containerInvalid = false } = {}) {
+  constructor(message, {
+    retriable = false, code = null, subcode = null, containerInvalid = false,
+    deferUntil = null,
+  } = {}) {
     super(message);
     this.name = 'MetaRequestError';
     this.retriable = retriable;
     this.code = code;
     this.subcode = subcode;
+    // Черга сповнена, а не зламана: чекати треба стільки, скільки треба, і не
+    // витрачати на це спроби. Див. failJob.
+    this.deferUntil = deferUntil;
     this.containerInvalid = containerInvalid;
   }
 }
@@ -542,14 +554,53 @@ async function publishingUsage(env, account, token) {
     query: { fields: 'quota_usage,config' },
   });
   const row = Array.isArray(meta.data) ? meta.data[0] || {} : meta;
+  const windowStart = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
   const local = await env.DB.prepare(`
-    SELECT COUNT(*) AS count FROM instagram_jobs
+    SELECT COUNT(*) AS count, MIN(published_at) AS oldest FROM instagram_jobs
      WHERE instagram_account_id = ? AND status = 'published' AND published_at >= ?
-  `).bind(account.ig_user_id, new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()).first();
+  `).bind(account.ig_user_id, windowStart).first();
+  const used = Number(local?.count || 0);
   return {
     meta: Number(row.quota_usage || 0),
     meta_total: Number(row.config?.quota_total || 0) || null,
-    local: Number(local?.count || 0),
+    local: used,
+    limit: LOCAL_PUBLISHING_LIMIT,
+    remaining: Math.max(0, LOCAL_PUBLISHING_LIMIT - Math.max(used, Number(row.quota_usage || 0))),
+    // Коли найстаріша публікація вийде з 24-годинного вікна — рівно тоді
+    // звільниться перший слот, і саме на цей час варто переносити чергу.
+    window_frees_at: windowFreesAt(local?.oldest),
+  };
+}
+
+/** Момент, коли найстаріша публікація 24-годинного вікна перестане його займати. */
+function windowFreesAt(oldestPublishedAt) {
+  const oldest = oldestPublishedAt ? new Date(String(oldestPublishedAt)) : null;
+  if (!oldest || Number.isNaN(oldest.getTime())) {
+    return new Date(Date.now() + 60 * 60 * 1000).toISOString();
+  }
+  const freesAt = oldest.getTime() + 24 * 60 * 60 * 1000 + 60 * 1000;
+  return new Date(Math.max(freesAt, Date.now() + 5 * 60 * 1000)).toISOString();
+}
+
+/** Локальний лічильник без звернення до Meta — для дешевого /v1/status. */
+async function localUsage(env, accountId) {
+  const windowStart = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+  const row = await env.DB.prepare(`
+    SELECT COUNT(*) AS count, MIN(published_at) AS oldest FROM instagram_jobs
+     WHERE instagram_account_id = ? AND status = 'published' AND published_at >= ?
+  `).bind(accountId, windowStart).first();
+  const queued = await env.DB.prepare(`
+    SELECT COUNT(*) AS count FROM instagram_jobs
+     WHERE instagram_account_id = ? AND status IN ('queued', 'scheduled', 'processing', 'retrying')
+  `).bind(accountId).first();
+  const used = Number(row?.count || 0);
+  return {
+    account_id: String(accountId),
+    used,
+    queued: Number(queued?.count || 0),
+    limit: LOCAL_PUBLISHING_LIMIT,
+    remaining: Math.max(0, LOCAL_PUBLISHING_LIMIT - used),
+    window_frees_at: windowFreesAt(row?.oldest),
   };
 }
 
@@ -586,10 +637,18 @@ async function accountCheck(env) {
 
 async function assertPublishingCapacity(env, account, token) {
   const usage = await publishingUsage(env, account, token);
-  if (usage.meta >= LOCAL_PUBLISHING_LIMIT || usage.local >= LOCAL_PUBLISHING_LIMIT) {
+  const metaTotal = usage.meta_total || Infinity;
+  const overMeta = usage.meta >= metaTotal;
+  const overLocal = usage.meta >= LOCAL_PUBLISHING_LIMIT || usage.local >= LOCAL_PUBLISHING_LIMIT;
+  if (overMeta || overLocal) {
+    // Раніше це був звичайний retriable-збій: 5 спроб за ~4 години, далі job
+    // помирав. Для великого пакета це означало мовчки спалені пости. Черга,
+    // що вперлася в добову квоту, не зламана — вона просто чекає слот.
     throw new MetaRequestError(
-      `Досягнуто консервативний добовий ліміт (${Math.max(usage.meta, usage.local)}/${LOCAL_PUBLISHING_LIMIT})`,
-      { retriable: true, code: 613 },
+      `Добову квоту вичерпано (${Math.max(usage.meta, usage.local)}/`
+      + `${overMeta ? usage.meta_total : LOCAL_PUBLISHING_LIMIT}). `
+      + 'Публікація почекає, доки звільниться слот.',
+      { retriable: true, code: 613, deferUntil: usage.window_frees_at },
     );
   }
   return usage;
@@ -693,6 +752,9 @@ async function publishContainer(env, row, account, token) {
 }
 
 async function failJob(env, row, reason) {
+  // Перенесення (черга вперлася в добову квоту) — не спроба. Інакше очікування
+  // слота з'їдало б MAX_ATTEMPTS і вбивало цілком справний пост.
+  if (reason?.deferUntil) return deferJob(env, row, reason);
   const attempts = Number(row.attempts || 0) + 1;
   const retriable = reason?.retriable !== false;
   const terminal = !retriable || attempts >= MAX_ATTEMPTS;
@@ -712,6 +774,20 @@ async function failJob(env, row, reason) {
     String(reason?.message || reason || 'Невідома помилка Meta').slice(0, 1200),
     reset ? 1 : 0, reset ? 1 : 0, reset ? 1 : 0,
     new Date().toISOString(), row.id,
+  ).run();
+}
+
+/** Job чекає вільного слота добової квоти: без витрачених спроб і без паніки. */
+async function deferJob(env, row, reason) {
+  const now = new Date().toISOString();
+  await env.DB.prepare(`
+    UPDATE instagram_jobs
+       SET status = 'scheduled', next_attempt_at = ?, error = ?, updated_at = ?
+     WHERE id = ?
+  `).bind(
+    String(reason.deferUntil),
+    String(reason?.message || 'Очікує вільного слота добової квоти').slice(0, 1200),
+    now, row.id,
   ).run();
 }
 
@@ -967,6 +1043,7 @@ export {
   signatureMatches,
   validMediaUrl,
   validateDraft,
+  windowFreesAt,
 };
 
 export default {

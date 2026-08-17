@@ -429,6 +429,10 @@ async function status(env) {
     publish_endpoint_available: true,
     scheduler: 'cron-every-minute',
     local_24h_limit: LOCAL_PUBLISHING_LIMIT,
+    max_per_tick: MAX_BATCH_PER_TICK,
+    usage: await Promise.all(
+      (accounts.results || []).map(row => publishingUsage(env, row.page_id)),
+    ),
     accounts: accounts.results || [],
   });
 }
@@ -462,13 +466,17 @@ async function appSecretCheck(env) {
 }
 
 class MetaRequestError extends Error {
-  constructor(message, { retriable = false, code = null, subcode = null, mediaInvalid = false } = {}) {
+  constructor(message, {
+    retriable = false, code = null, subcode = null, mediaInvalid = false, deferUntil = null,
+  } = {}) {
     super(message);
     this.name = 'MetaRequestError';
     this.retriable = retriable;
     this.code = code;
     this.subcode = subcode;
     this.mediaInvalid = mediaInvalid;
+    // Черга сповнена, а не зламана: чекання слота не має витрачати спроби.
+    this.deferUntil = deferUntil;
   }
 }
 
@@ -536,12 +544,36 @@ async function pageToken(env, account) {
   return decryptToken(env, account.page_token_ciphertext, account.page_token_iv);
 }
 
-async function publishingUsage(env, account) {
+/** Момент, коли найстаріша публікація 24-годинного вікна перестане його займати. */
+function windowFreesAt(oldestPublishedAt) {
+  const oldest = oldestPublishedAt ? new Date(String(oldestPublishedAt)) : null;
+  if (!oldest || Number.isNaN(oldest.getTime())) {
+    return new Date(Date.now() + 60 * 60 * 1000).toISOString();
+  }
+  const freesAt = oldest.getTime() + 24 * 60 * 60 * 1000 + 60 * 1000;
+  return new Date(Math.max(freesAt, Date.now() + 5 * 60 * 1000)).toISOString();
+}
+
+async function publishingUsage(env, pageId) {
+  const windowStart = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
   const local = await env.DB.prepare(`
-    SELECT COUNT(*) AS count FROM facebook_jobs
+    SELECT COUNT(*) AS count, MIN(published_at) AS oldest FROM facebook_jobs
      WHERE facebook_page_id = ? AND status = 'published' AND published_at >= ?
-  `).bind(account.page_id, new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()).first();
-  return { local: Number(local?.count || 0), limit: LOCAL_PUBLISHING_LIMIT };
+  `).bind(pageId, windowStart).first();
+  const queued = await env.DB.prepare(`
+    SELECT COUNT(*) AS count FROM facebook_jobs
+     WHERE facebook_page_id = ? AND status IN ('queued', 'scheduled', 'processing', 'retrying')
+  `).bind(pageId).first();
+  const used = Number(local?.count || 0);
+  return {
+    account_id: String(pageId),
+    local: used,
+    used,
+    queued: Number(queued?.count || 0),
+    limit: LOCAL_PUBLISHING_LIMIT,
+    remaining: Math.max(0, LOCAL_PUBLISHING_LIMIT - used),
+    window_frees_at: windowFreesAt(local?.oldest),
+  };
 }
 
 async function accountCheck(env) {
@@ -561,7 +593,7 @@ async function accountCheck(env) {
         followers: Number(profile.fan_count || 0),
         link: profile.link || null,
         user_token_expires_at: account.user_token_expires_at || null,
-        publishing_usage: await publishingUsage(env, account),
+        publishing_usage: await publishingUsage(env, account.page_id),
       });
     }
     return json({
@@ -577,11 +609,14 @@ async function accountCheck(env) {
 }
 
 async function assertPublishingCapacity(env, account) {
-  const usage = await publishingUsage(env, account);
+  const usage = await publishingUsage(env, account.page_id);
   if (usage.local >= LOCAL_PUBLISHING_LIMIT) {
+    // Не помилка, а черга: переносимо на момент, коли звільниться слот, і не
+    // витрачаємо спроби. Інакше великий пакет мовчки згорав би за ~4 години.
     throw new MetaRequestError(
-      `Досягнуто консервативний добовий ліміт (${usage.local}/${LOCAL_PUBLISHING_LIMIT})`,
-      { retriable: true, code: 613 },
+      `Добову квоту Сторінки вичерпано (${usage.local}/${LOCAL_PUBLISHING_LIMIT}). `
+      + 'Публікація почекає, доки звільниться слот.',
+      { retriable: true, code: 613, deferUntil: usage.window_frees_at },
     );
   }
   return usage;
@@ -753,7 +788,22 @@ async function markPublished(env, row, token, postId) {
   `).bind(postId || null, permalink, now, now, row.id).run();
 }
 
+/** Job чекає вільного слота добової квоти: без витрачених спроб. */
+async function deferJob(env, row, reason) {
+  const now = new Date().toISOString();
+  await env.DB.prepare(`
+    UPDATE facebook_jobs
+       SET status = 'scheduled', next_attempt_at = ?, error = ?, updated_at = ?
+     WHERE id = ?
+  `).bind(
+    String(reason.deferUntil),
+    String(reason?.message || 'Очікує вільного слота добової квоти').slice(0, 1200),
+    now, row.id,
+  ).run();
+}
+
 async function failJob(env, row, reason) {
+  if (reason?.deferUntil) return deferJob(env, row, reason);
   const attempts = Number(row.attempts || 0) + 1;
   const retriable = reason?.retriable !== false;
   const terminal = !retriable || attempts >= MAX_ATTEMPTS;
@@ -1012,6 +1062,7 @@ export {
   signatureMatches,
   validMediaUrl,
   validateDraft,
+  windowFreesAt,
 };
 
 export default {

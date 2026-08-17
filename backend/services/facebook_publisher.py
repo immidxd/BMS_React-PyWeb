@@ -33,7 +33,10 @@ from sqlalchemy.orm import Session
 # близько, але валідувати треба за ним, а не за інстаграмівським 2200.
 MESSAGE_LIMIT = 63_206
 REEL_DESCRIPTION_LIMIT = 2_200
-BATCH_MAX_PRODUCTS = int(os.getenv("FACEBOOK_BATCH_MAX_PRODUCTS", "10"))
+# Meta не публікує добової стелі для дописів Сторінки, тому орієнтир — наш
+# власний консервативний guard у Worker (30/24 год, взятий за найсуворішим
+# форматом — Reels). Пакет на 25 вкладається в нього з запасом на кросспост.
+BATCH_MAX_PRODUCTS = int(os.getenv("FACEBOOK_BATCH_MAX_PRODUCTS", "25"))
 # «В приватні» — інстаграмівське слово (Direct). У Facebook пишуть у Messenger,
 # тому заклик той самий за змістом, але звучить по-місцевому.
 FACEBOOK_CTA = os.getenv("FACEBOOK_CTA", "нам у повідомлення").strip()
@@ -885,6 +888,34 @@ async def create_collection_post(db: Session, payload: dict) -> dict:
     }
 
 
+async def daily_capacity() -> dict:
+    """Скільки дописів ще влізе в добове вікно — за найтіснішою Сторінкою.
+
+    Одна чернетка Facebook = окрема публікація на КОЖНУ обрану Сторінку, тож
+    вирішує та, у якої слотів лишилося найменше: якщо пустити пакет за
+    середнім, одна зі Сторінок мовчки залишиться з половиною постів.
+    """
+    try:
+        status = await _dispatcher_request("GET", "/v1/status")
+    except Exception as exc:
+        return {"known": False, "error": str(exc)}
+    rows = status.get("usage") or []
+    if not rows:
+        return {"known": False, "limit": status.get("local_24h_limit")}
+    tightest = min(rows, key=lambda row: int(row.get("remaining") or 0))
+    return {
+        "known": True,
+        "used": int(tightest.get("used") or 0),
+        "queued": int(tightest.get("queued") or 0),
+        "limit": int(tightest.get("limit") or status.get("local_24h_limit") or 0),
+        "remaining": int(tightest.get("remaining") or 0),
+        "frees_at": tightest.get("window_frees_at"),
+        "frees_at_label": _ig()._capacity_label(tightest.get("window_frees_at")),
+        "pages": len(rows),
+        "batch_max": BATCH_MAX_PRODUCTS,
+    }
+
+
 async def create_posts_batch(db: Session, items: Any, batch_id: Any,
                              *, dry_run_only: bool = False) -> dict:
     if not isinstance(items, list) or not items:
@@ -896,6 +927,17 @@ async def create_posts_batch(db: Session, items: Any, batch_id: Any,
         return {"ok": False, "error": "Пакет не має batch_id"}
     if dry_run_only:
         return dry_run_batch(db, [dict(item.get("payload") or item, product_id=item.get("product_id")) for item in items])
+    capacity = await daily_capacity()
+    if capacity.get("known") and len(items) > capacity["remaining"]:
+        return {
+            "ok": False,
+            "error": (
+                f"Сьогодні лишилося {capacity['remaining']} із {capacity['limit']} "
+                f"дописів Facebook. Пакет на {len(items)} товарів не влізе: "
+                f"квота звільниться {capacity['frees_at_label']}."
+            ),
+            "daily_capacity": capacity,
+        }
     from starlette.concurrency import run_in_threadpool
     prepared_items: List[Tuple[int, dict, dict]] = []
     numbers = set()

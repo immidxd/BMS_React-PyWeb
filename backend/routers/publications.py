@@ -1877,6 +1877,9 @@ async def instagram_preview_posts_batch(
     for item in result.get("items", []):
         if item.get("preview"):
             item["preview"]["connection"] = connection
+    # Залишок добової квоти показуємо разом із пакетом: людина має бачити
+    # стелю до того, як витратить час на редагування чернеток.
+    result["daily_capacity"] = await _instagram_pub().daily_capacity()
     return result
 
 
@@ -2052,6 +2055,7 @@ async def facebook_preview_posts_batch(
     for item in result.get("items", []):
         if item.get("preview"):
             item["preview"]["connection"] = connection
+    result["daily_capacity"] = await _facebook_pub().daily_capacity()
     return result
 
 

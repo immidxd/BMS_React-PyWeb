@@ -3,7 +3,7 @@ import test from 'node:test';
 
 import worker, {
   carouselParentPayload, containerStatuses, mediaContainerPayload, signatureMatches,
-  validMediaUrl, validateDraft,
+  validMediaUrl, validateDraft, windowFreesAt,
 } from '../src/index.js';
 
 test('accepts a safe one-photo draft', () => {
@@ -210,4 +210,28 @@ test('scheduled jobs can be rescheduled and cancelled before container creation'
   }), { BMS_DISPATCHER_KEY: key, DB: db });
   assert.equal(cancelled.status, 200);
   assert.equal((await cancelled.json()).status, 'cancelled');
+});
+
+// ─── Добова квота: чекання слота, а не смерть job ────────────────────────────
+
+test('window frees exactly 24 hours after the oldest post in it', () => {
+  const oldest = new Date('2026-08-17T09:00:00.000Z').toISOString();
+  const freesAt = new Date(windowFreesAt(oldest));
+  // +24 години і хвилина запасу, щоб не впертися в ту саму секунду.
+  assert.equal(freesAt.toISOString(), '2026-08-18T09:01:00.000Z');
+});
+
+test('an empty or broken window never schedules a retry in the past', () => {
+  const now = Date.now();
+  for (const value of [null, '', 'не дата']) {
+    const freesAt = new Date(windowFreesAt(value)).getTime();
+    assert.ok(freesAt > now, `${value} дав час у минулому`);
+  }
+});
+
+test('a long-past window still waits a few minutes instead of hammering', () => {
+  // Найстаріша публікація вийшла з вікна давно: слот вільний, але повторювати
+  // одразу тією ж хвилиною немає сенсу — cron і так тікає щохвилини.
+  const freesAt = new Date(windowFreesAt('2020-01-01T00:00:00.000Z')).getTime();
+  assert.ok(freesAt >= Date.now() + 4 * 60 * 1000);
 });

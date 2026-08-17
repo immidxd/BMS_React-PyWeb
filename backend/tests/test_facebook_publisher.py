@@ -456,3 +456,43 @@ def test_publishing_without_any_connected_page_is_refused(monkeypatch):
 
     assert result["ok"] is False
     assert "Сторінк" in result["error"]
+
+
+# ─── Добова квота Сторінок ───────────────────────────────────────────────────
+
+def test_daily_capacity_follows_the_tightest_page(monkeypatch):
+    """Публікація йде на КОЖНУ Сторінку, тож вирішує найтісніша з них.
+
+    Якби рахували за середнім чи за першою, пакет пройшов би перевірку, а одна
+    зі Сторінок мовчки лишилася б із половиною постів.
+    """
+    monkeypatch.setattr(fb, "_dispatcher_request", lambda *_a, **_k: asyncio.sleep(0, result={
+        "local_24h_limit": 30,
+        "usage": [
+            {"account_id": "111", "used": 4, "queued": 0, "limit": 30, "remaining": 26,
+             "window_frees_at": "2026-08-18T05:00:00+00:00"},
+            {"account_id": "222", "used": 27, "queued": 1, "limit": 30, "remaining": 3,
+             "window_frees_at": "2026-08-18T06:30:00+00:00"},
+        ],
+    }))
+    capacity = asyncio.run(fb.daily_capacity())
+    assert capacity["remaining"] == 3
+    assert capacity["used"] == 27
+    assert capacity["pages"] == 2
+
+
+def test_batch_over_the_page_quota_is_refused_before_any_render(monkeypatch):
+    monkeypatch.setattr(fb, "_dispatcher_request", lambda *_a, **_k: asyncio.sleep(0, result={
+        "local_24h_limit": 30,
+        "usage": [{"account_id": "222", "used": 28, "queued": 0, "limit": 30, "remaining": 2,
+                   "window_frees_at": "2026-08-18T06:30:00+00:00"}],
+    }))
+    def explode(*_args, **_kwargs):
+        raise AssertionError("_prepare не повинен викликатися за вичерпаної квоти")
+    monkeypatch.setattr(fb, "_prepare", explode)
+
+    result = asyncio.run(fb.create_posts_batch(
+        None, [{"product_id": index} for index in range(1, 6)], "batch-over-quota",
+    ))
+    assert result["ok"] is False
+    assert "лишилося 2 із 30" in result["error"]

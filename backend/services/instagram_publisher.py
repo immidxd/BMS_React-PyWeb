@@ -43,7 +43,11 @@ STORY_CTA_RE = re.compile(
 HASHTAG_LIMIT = 30
 MENTION_LIMIT = 20
 MAX_MEDIA = 10
-BATCH_MAX_PRODUCTS = int(os.getenv("INSTAGRAM_BATCH_MAX_PRODUCTS", "10"))
+# Стеля пакета — не наша обережність, а стеля Meta. Офіційна документація
+# суперечлива (загальний розділ — 100/24 год, підрозділ каруселей — 50), а BMS
+# публікує саме каруселі, тож орієнтир — 50. Половина цього числа за один
+# пакет лишає запас на ручні пости з телефона й на кросспост із Facebook.
+BATCH_MAX_PRODUCTS = int(os.getenv("INSTAGRAM_BATCH_MAX_PRODUCTS", "25"))
 JPEG_MAX_BYTES = 7_900_000
 REEL_MAX_BYTES = 295_000_000
 FRAME_ZOOM_MIN = 0.5
@@ -1439,6 +1443,49 @@ async def create_post(db: Session, product_id: int, payload: dict,
         return {"ok": False, "error": str(exc), "idempotency_key": idempotency_key}
 
 
+def _capacity_label(raw: Any) -> str:
+    """Коли саме звільниться слот — людською мовою, у київському часі."""
+    try:
+        value = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return "згодом"
+    local = value.astimezone(KYIV_TZ)
+    today = datetime.now(KYIV_TZ).date()
+    day = "сьогодні" if local.date() == today else (
+        "завтра" if (local.date() - today).days == 1 else local.strftime("%d.%m")
+    )
+    return f"{day} о {local.strftime('%H:%M')}"
+
+
+async def daily_capacity() -> dict:
+    """Скільки публікацій ще влізе в добове вікно акаунта.
+
+    Джерело правди — Worker: він рахує і власні published за 24 години, і
+    реальну квоту Meta. Якщо диспетчер недоступний, повертаємо known=False і
+    НЕ блокуємо публікацію: краще спробувати й отримати чесну відмову від Meta,
+    ніж вигадати ліміт і не пустити людину до її ж акаунта.
+    """
+    try:
+        status = await _dispatcher_request("GET", "/v1/status")
+    except Exception as exc:
+        return {"known": False, "error": str(exc)}
+    rows = status.get("usage") or []
+    if not rows:
+        return {"known": False, "limit": status.get("local_24h_limit")}
+    # Акаунт один, але беремо найтісніший рядок — на випадок кількох.
+    tightest = min(rows, key=lambda row: int(row.get("remaining") or 0))
+    return {
+        "known": True,
+        "used": int(tightest.get("used") or 0),
+        "queued": int(tightest.get("queued") or 0),
+        "limit": int(tightest.get("limit") or status.get("local_24h_limit") or 0),
+        "remaining": int(tightest.get("remaining") or 0),
+        "frees_at": tightest.get("window_frees_at"),
+        "frees_at_label": _capacity_label(tightest.get("window_frees_at")),
+        "batch_max": BATCH_MAX_PRODUCTS,
+    }
+
+
 async def create_posts_batch(db: Session, items: Any, batch_id: Any,
                              *, dry_run_only: bool = False) -> dict:
     if not isinstance(items, list) or not items:
@@ -1450,6 +1497,19 @@ async def create_posts_batch(db: Session, items: Any, batch_id: Any,
         return {"ok": False, "error": "Пакет не має batch_id"}
     if dry_run_only:
         return dry_run_batch(db, [dict(item.get("payload") or item, product_id=item.get("product_id")) for item in items])
+    # Квоту питаємо ДО рендерингу: інакше людина чекала б хвилину-другу на
+    # підготовку пакета, який Worker однаково відкладе до завтра.
+    capacity = await daily_capacity()
+    if capacity.get("known") and len(items) > capacity["remaining"]:
+        return {
+            "ok": False,
+            "error": (
+                f"Сьогодні лишилося {capacity['remaining']} із {capacity['limit']} "
+                f"публікацій Instagram. Пакет на {len(items)} товарів не влізе: "
+                f"квота звільниться {capacity['frees_at_label']}."
+            ),
+            "daily_capacity": capacity,
+        }
     prepared_items: List[Tuple[int, dict, dict]] = []
     numbers = set()
     for position, item in enumerate(items):

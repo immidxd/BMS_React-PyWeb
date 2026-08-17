@@ -37,7 +37,10 @@ THUMB_SIZE = 400
 COLLAGE_MAX_BYTES = 950_000
 THUMB_MAX_BYTES = 95_000
 MAX_COLLAGE_PHOTOS = 5
-BATCH_MAX_PRODUCTS = int(os.getenv("VIBER_BATCH_MAX_PRODUCTS", "10"))
+# Channels Post API не має добової стелі, а Worker зливає чергу по 10 постів за
+# хвилину. Обмежує тут не Viber, а тривалість одного HTTP-запиту, у якому
+# готується весь пакет: 40 карток — це приблизно хвилина рендерингу.
+BATCH_MAX_PRODUCTS = int(os.getenv("VIBER_BATCH_MAX_PRODUCTS", "40"))
 BATCH_GAP_SEC = float(os.getenv("VIBER_BATCH_GAP_SEC", "1.1"))
 KYIV_TZ = ZoneInfo("Europe/Kyiv")
 

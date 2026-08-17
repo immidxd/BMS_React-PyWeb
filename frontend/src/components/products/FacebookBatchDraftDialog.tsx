@@ -8,6 +8,7 @@ import {
   FacebookMark, facebookCaptionLimit, facebookDefaultZoom, facebookDraftFromPreview,
   type FacebookDraftPayload, type FacebookPreview,
 } from './FacebookPublishDialog';
+import DailyCapacityNote, { type DailyCapacity } from './DailyCapacityNote';
 
 interface Props {
   productIds: number[];
@@ -41,6 +42,8 @@ const FacebookBatchDraftDialog: React.FC<Props> = ({ productIds, busy = false, o
   const [summary, setSummary] = useState<any | null>(null);
   const [commonPublishAt, setCommonPublishAt] = useState<string | null>(null);
   const [batchIntervalMinutes, setBatchIntervalMinutes] = useState(2);
+  const [capacity, setCapacity] = useState<DailyCapacity | null>(null);
+  const [batchMax, setBatchMax] = useState(25);
   const requestKey = useMemo(() => productIds.join(','), [productIds]);
 
   useEffect(() => {
@@ -64,6 +67,8 @@ const FacebookBatchDraftDialog: React.FC<Props> = ({ productIds, busy = false, o
           error: item.error || null,
         }));
         setCards(next);
+        setCapacity(result.daily_capacity || null);
+        if (result.batch_max_products) setBatchMax(Number(result.batch_max_products));
       })
       .catch(reason => { if (!cancelled) setLoadError(reason.message || 'Не вдалося зібрати пакет'); })
       .finally(() => { if (!cancelled) setLoading(false); });
@@ -165,7 +170,7 @@ const FacebookBatchDraftDialog: React.FC<Props> = ({ productIds, busy = false, o
             <FacebookMark className="h-10 w-10 text-xl" />
             <div>
               <h2 className="text-base font-semibold text-gray-900 dark:text-gray-50">Пакет Facebook-чернеток</h2>
-              <p className="text-xs text-gray-500 dark:text-gray-400">До 10 унікальних товарів · окрема чернетка кожної картки</p>
+              <p className="text-xs text-gray-500 dark:text-gray-400">До {batchMax} унікальних товарів · окрема чернетка кожної картки</p>
             </div>
           </div>
           <button type="button" onClick={onCancel} disabled={loading || validating} className="rounded-lg p-2 text-gray-400 hover:bg-gray-100 disabled:opacity-50 dark:hover:bg-gray-800"><CloseOutlined /></button>
@@ -176,6 +181,8 @@ const FacebookBatchDraftDialog: React.FC<Props> = ({ productIds, busy = false, o
             <SafetyCertificateOutlined className="mt-0.5 shrink-0" />
             <span>{liveReady ? 'Захищена черга готова. Кожна картка має власний тип, текст, формат і набір фото.' : 'Пакет можна повністю перевірити, але живе надсилання заблоковане до OAuth/Cloudflare.'}</span>
           </div>
+
+          <DailyCapacityNote capacity={capacity} planned={enabled.length} network="Facebook" />
 
           {loading ? (
             <div className="flex h-64 items-center justify-center gap-2 text-sm text-gray-500"><LoadingOutlined /> Готую стабільний знімок товарів…</div>

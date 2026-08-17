@@ -69,7 +69,12 @@ ALBUM_HARD_LIMIT = 10          # межа самого Telegram — вище н�
 # у гілках і форвард у канал. MTProto не має сталої «квоти» — Telegram повертає
 # FLOOD_WAIT динамічно, тому BMS посилає послідовно й зупиняє хвіст черги при
 # першому rate-limit. Це суттєво безпечніше за паралельні Promise/корутини.
-BATCH_MAX_PRODUCTS = int(os.getenv("TELEGRAM_BATCH_MAX_PRODUCTS", "10"))
+# Telegram не публікує числа: FloodWait/SlowMode динамічні й залежать від віку
+# акаунта та історії. Тому стелю тримає не ліміт, а поведінка — пакет іде з
+# паузою BATCH_POST_GAP_SEC, а після першого ж FloodWait хвіст не надсилається
+# й позначається пропущеним. Це робить великий пакет безпечним: він не згорає,
+# а зупиняється. 25 постів ≈ 30 секунд самих лише пауз.
+BATCH_MAX_PRODUCTS = int(os.getenv("TELEGRAM_BATCH_MAX_PRODUCTS", "25"))
 MAX_THREADS_PER_POST = int(os.getenv("TELEGRAM_MAX_THREADS_PER_POST", "6"))
 BATCH_POST_GAP_SEC = float(os.getenv("TELEGRAM_BATCH_POST_GAP_SEC", "1.25"))
 BATCH_DESTINATION_GAP_SEC = float(os.getenv("TELEGRAM_BATCH_DESTINATION_GAP_SEC", "0.45"))

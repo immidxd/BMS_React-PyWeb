@@ -3,7 +3,7 @@ import test from 'node:test';
 
 import worker, {
   encryptToken, decryptToken, normalizedPublishType, pickPages, signatureMatches,
-  validMediaUrl, validateDraft,
+  validMediaUrl, validateDraft, windowFreesAt,
 } from '../src/index.js';
 
 test('accepts a safe one-photo page post', () => {
@@ -146,4 +146,15 @@ test('health check stays public and leaks nothing', async () => {
   assert.equal(data.service, 'bms-facebook-dispatcher');
   assert.equal(data.live_publish_enabled, false);
   assert.equal(data.app_secret, undefined);
+});
+
+// ─── Добова квота Сторінки: перенесення, а не втрата ─────────────────────────
+
+test('window frees exactly 24 hours after the oldest post in it', () => {
+  const freesAt = new Date(windowFreesAt('2026-08-17T09:00:00.000Z'));
+  assert.equal(freesAt.toISOString(), '2026-08-18T09:01:00.000Z');
+});
+
+test('an empty window never schedules a retry in the past', () => {
+  assert.ok(new Date(windowFreesAt(null)).getTime() > Date.now());
 });

@@ -468,3 +468,61 @@ def test_create_post_surfaces_immediate_terminal_worker_failure(monkeypatch):
     assert result["ok"] is False
     assert result["status"] == "failed"
     assert result["error"] == "Invalid parameter"
+
+
+# ─── Добова квота: чесна відмова ДО рендерингу ───────────────────────────────
+
+def _capacity_status(used, limit=45, frees_at="2026-08-18T06:30:00+00:00"):
+    return {
+        "local_24h_limit": limit,
+        "usage": [{
+            "account_id": "17841450824246612",
+            "used": used,
+            "queued": 0,
+            "limit": limit,
+            "remaining": max(0, limit - used),
+            "window_frees_at": frees_at,
+        }],
+    }
+
+
+def test_daily_capacity_reports_the_remaining_window(monkeypatch):
+    monkeypatch.setattr(ip, "_dispatcher_request",
+                        lambda *_a, **_k: asyncio.sleep(0, result=_capacity_status(used=40)))
+    capacity = asyncio.run(ip.daily_capacity())
+    assert capacity["known"] is True
+    assert capacity["remaining"] == 5
+    assert capacity["used"] == 40
+    assert capacity["limit"] == 45
+
+
+def test_batch_bigger_than_the_remaining_quota_is_refused_before_rendering(monkeypatch):
+    monkeypatch.setattr(ip, "_dispatcher_request",
+                        lambda *_a, **_k: asyncio.sleep(0, result=_capacity_status(used=40)))
+    # Рендер не має навіть початися: інакше людина чекала б хвилини заради відмови.
+    def explode(*_args, **_kwargs):
+        raise AssertionError("_prepare не повинен викликатися за вичерпаної квоти")
+    monkeypatch.setattr(ip, "_prepare", explode)
+
+    items = [{"product_id": index} for index in range(1, 11)]
+    result = asyncio.run(ip.create_posts_batch(None, items, "batch-over-quota"))
+
+    assert result["ok"] is False
+    assert "лишилося 5 із 45" in result["error"]
+    assert result["daily_capacity"]["remaining"] == 5
+
+
+def test_unreachable_dispatcher_never_blocks_publishing(monkeypatch):
+    """Не знаємо квоти — пробуємо публікувати. Вигаданий ліміт гірший за спробу."""
+    def fail(*_args, **_kwargs):
+        raise RuntimeError("Worker не відповів")
+    monkeypatch.setattr(ip, "_dispatcher_request", fail)
+    capacity = asyncio.run(ip.daily_capacity())
+    assert capacity["known"] is False
+    assert "Worker не відповів" in capacity["error"]
+
+
+def test_capacity_label_speaks_kyiv_time(monkeypatch):
+    label = ip._capacity_label("2026-08-18T06:30:00+00:00")
+    assert "о 09:30" in label
+    assert ip._capacity_label("не дата") == "згодом"
