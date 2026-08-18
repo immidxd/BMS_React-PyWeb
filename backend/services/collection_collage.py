@@ -28,12 +28,17 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 
-MAX_ITEMS = 16
+MAX_ITEMS = 32
 MIN_ITEMS = 2
 
+# `scale` розтягує полотно під щільну сітку. Комірка має лишатися приблизно
+# однакового розміру в усіх розкладках: 32 товари на полотні 1080 дали б
+# 167 px на товар і ціну кеглем 15 — у стрічці телефона це вже не читається.
+# Ліміт Viber — байти, а не пікселі, і його тримає сам JPEG-енкодер.
 GRID_LAYOUTS: Dict[str, dict] = {
-    "grid9": {"label": "Сітка 3×3 · до 9 товарів", "cols": 3, "capacity": 9},
-    "grid16": {"label": "Сітка 4×4 · до 16 товарів", "cols": 4, "capacity": 16},
+    "grid9": {"label": "Сітка 3×3 · до 9 товарів", "cols": 3, "capacity": 9, "scale": 1.0},
+    "grid16": {"label": "Сітка 4×4 · до 16 товарів", "cols": 4, "capacity": 16, "scale": 1.0},
+    "grid32": {"label": "Сітка 6×6 · до 32 товарів", "cols": 6, "capacity": 32, "scale": 1.5},
 }
 
 # Viber тягне картку через власний диспетчер і має жорсткий ліміт розміру, тому
@@ -159,7 +164,16 @@ def _clamp(value: Any, low: float, high: float, fallback: float) -> float:
 
 def layout_for_count(count: int) -> str:
     """Найменша сітка, що вміщує вибір: 9 товарів не мають їхати в 4×4."""
-    return "grid9" if count <= GRID_LAYOUTS["grid9"]["capacity"] else "grid16"
+    for key in ("grid9", "grid16", "grid32"):
+        if count <= GRID_LAYOUTS[key]["capacity"]:
+            return key
+    return "grid32"
+
+
+def canvas_size(platform_size: int, layout: str) -> int:
+    """Полотно під конкретну розкладку — щоб комірка не мізерніла з густотою."""
+    scale = float(GRID_LAYOUTS.get(layout, {}).get("scale") or 1.0)
+    return int(round(platform_size * scale))
 
 
 def _columns(count: int, layout: str) -> int:
@@ -239,7 +253,9 @@ def normalize_spec(payload: dict, *, item_count: Optional[int] = None) -> dict:
     background = str(payload.get("background") or "white").strip().lower()
     if background not in {row["key"] for row in BACKGROUNDS}:
         background = "white"
-    size = int(config["size"])
+    # Полотно залежить і від майданчика, і від густоти сітки: 6 колонок на
+    # базовому розмірі перетворили б товар на плямку.
+    size = canvas_size(int(config["size"]), layout)
     gap = int(_clamp(payload.get("gap"), 0, 40, round(size / 135)))
     geometry = grid_geometry(max(1, len(items)), layout, size, gap)
     return {

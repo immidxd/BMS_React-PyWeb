@@ -81,8 +81,12 @@ def test_spec_picks_smallest_grid_that_fits_and_never_exceeds_it():
 
 
 def test_spec_never_takes_more_than_the_hard_ceiling():
-    spec = cc.normalize_spec({"platform": "facebook", "layout": "grid16", "items": _items(30)})
-    assert len(spec["items"]) == cc.MAX_ITEMS
+    # Дві різні стелі: обрана розкладка (16) і загальний максимум (32).
+    chosen = cc.normalize_spec({"platform": "facebook", "layout": "grid16", "items": _items(30)})
+    assert len(chosen["items"]) == 16
+
+    overflow = cc.normalize_spec({"platform": "facebook", "items": _items(40)})
+    assert len(overflow["items"]) == cc.MAX_ITEMS
 
 
 def test_unknown_platform_is_rejected_before_any_render():
@@ -394,3 +398,53 @@ def test_saving_never_writes_to_publication_journals(monkeypatch):
 
     rendered = cc.render(ForbiddenSession(), {"platform": "viber", "items": _items(3)})
     assert rendered["main"][:2] == b"\xff\xd8"
+
+
+# ─── Щільна сітка 6×6 ────────────────────────────────────────────────────────
+
+def test_thirty_two_products_get_the_dense_grid_and_a_bigger_canvas():
+    """32 товари на базовому полотні дали б 167 px на товар — це вже не вітрина."""
+    assert cc.layout_for_count(32) == "grid32"
+    assert cc.layout_for_count(17) == "grid32"
+    assert cc.layout_for_count(16) == "grid16"
+
+    spec = cc.normalize_spec({"platform": "viber", "items": _items(32)})
+    assert spec["layout"] == "grid32"
+    assert (spec["cols"], spec["rows"]) == (6, 6)
+    # Полотно росте разом із густотою, щоб комірка лишалася читабельною.
+    assert spec["width"] == 1620
+    cell = spec["items"] and cc.grid_geometry(32, "grid32", spec["width"], spec["gap"])["cells"][0]
+    assert cell[2] >= 240, "комірка щільної сітки не має бути дрібнішою за 4×4"
+
+
+def test_dense_grid_keeps_cells_inside_the_canvas():
+    for count in range(17, cc.MAX_ITEMS + 1):
+        geometry = cc.grid_geometry(count, "grid32", 1620, 10)
+        assert len(geometry["cells"]) == count
+        for x, y, width, height in geometry["cells"]:
+            assert x >= 0 and y >= 0
+            assert x + width <= geometry["width"]
+            assert y + height <= geometry["height"]
+
+
+def test_dense_viber_collage_still_fits_the_hard_byte_limit(monkeypatch):
+    """Головний ризик 32 фото — не пікселі, а 950 КБ Viber."""
+    _fake_photos(monkeypatch)
+    rendered = cc.render(None, {"platform": "viber", "items": _items(32)})
+    assert rendered["spec"]["layout"] == "grid32"
+    assert len(rendered["main"]) <= cc.PLATFORMS["viber"]["max_bytes"]
+    assert len(rendered["thumbnail"]) <= vp.THUMB_MAX_BYTES
+
+
+def test_caption_for_thirty_two_products_keeps_every_number():
+    """Підпис радше згорнеться до самих номерів, ніж загубить позицію."""
+    items = _caption_items(32)
+    caption = cc.build_caption(items, "viber")
+    assert len(caption) <= cc.PLATFORMS["viber"]["caption_limit"]
+    for item in items:
+        assert f"#{item['productnumber']}" in caption
+
+
+def test_choosing_a_smaller_grid_still_clamps_the_selection():
+    spec = cc.normalize_spec({"platform": "viber", "layout": "grid16", "items": _items(32)})
+    assert len(spec["items"]) == 16

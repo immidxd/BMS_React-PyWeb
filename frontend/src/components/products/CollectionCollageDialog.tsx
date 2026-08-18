@@ -364,7 +364,7 @@ const CollectionCollageDialog: React.FC<Props> = ({ platform, productIds, busy =
                   </div>
 
                   <label className="mt-4 block text-xs font-semibold text-gray-700 dark:text-gray-200">Розмір сітки</label>
-                  <div className="mt-2 grid grid-cols-2 gap-2">
+                  <div className="mt-2 grid grid-cols-3 gap-2">
                     {data.layouts.map(preset => (
                       <button key={preset.key} type="button" onClick={() => setLayout(preset.key)}
                         className={`rounded-lg border px-2 py-2 text-xs transition ${layout === preset.key ? 'font-semibold' : 'border-gray-200 text-gray-600 dark:border-gray-700 dark:text-gray-300'}`}
