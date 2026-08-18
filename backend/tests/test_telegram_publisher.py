@@ -608,3 +608,53 @@ def test_batch_reuses_connection_stops_after_flood_and_is_idempotent(monkeypatch
     assert published == [(1, scanner), (2, scanner)]
     assert len(connects) == 1 and scanner.disconnected == 1
     assert second["replayed"] is True
+
+
+# ─── Збіги часу каналу ───────────────────────────────────────────────────────
+
+def _slot(day: int, hour: int, minute: int = 0):
+    from datetime import datetime
+    return datetime(2026, 8, day, hour, minute, tzinfo=tp.KYIV_TZ)
+
+
+def test_all_channel_time_conflicts_are_reported_at_once():
+    """Раніше віддавався лише перший конфлікт — і виправлення йшло по колу."""
+    scheduled = [
+        (0, _slot(19, 11), "Ф3832"),
+        (5, _slot(20, 13), "Ф2657"),
+        (6, _slot(20, 15), "Ф2620"),
+        (11, _slot(20, 13), "Ф2499"),
+        (12, _slot(20, 15), "Ф2298"),
+        (13, _slot(20, 15), "Ф2605"),
+    ]
+    conflicts = tp._channel_time_conflicts(scheduled)
+    groups = {when: set(numbers) for when, numbers in conflicts}
+    assert groups == {
+        _slot(20, 13): {"Ф2657", "Ф2499"},
+        _slot(20, 15): {"Ф2620", "Ф2298", "Ф2605"},
+    }
+    message = tp._format_channel_conflicts(conflicts)
+    for number in ("Ф2657", "Ф2499", "Ф2620", "Ф2298", "Ф2605"):
+        assert f"#{number}" in message
+    assert "Ф3832" not in message, "самотній слот не є конфліктом"
+
+
+def test_conflicts_are_measured_by_distance_not_equality():
+    """18:00:30 і 18:01:10 — теж сплеск, хоч час і не однаковий."""
+    close = tp._channel_time_conflicts([
+        (0, _slot(19, 18, 0), "А"),
+        (1, _slot(19, 18, 0).replace(second=40), "Б"),
+    ])
+    assert len(close) == 1
+
+    apart = tp._channel_time_conflicts([
+        (0, _slot(19, 18, 0), "А"),
+        (1, _slot(19, 18, 2), "Б"),
+    ])
+    assert apart == []
+
+
+def test_message_names_products_and_the_slot_in_kyiv_time():
+    message = tp._format_channel_conflicts([(_slot(20, 15), ["Ф2620", "Ф2605"])])
+    assert "20.08 15:00" in message
+    assert "#Ф2620, #Ф2605" in message

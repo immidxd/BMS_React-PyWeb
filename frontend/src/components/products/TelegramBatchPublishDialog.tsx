@@ -210,6 +210,46 @@ const TelegramBatchPublishDialog: React.FC<Props> = ({ productIds, busy, onCance
     }));
   };
 
+  /** Скільки увімкнених постів стоять на однакову хвилину каналу. */
+  const channelClashes = useMemo(() => {
+    const byMinute = new Map<number, number>();
+    for (const entry of entries) {
+      if (!entry.included || !entry.draft.to_channel || !entry.draft.channel_at) continue;
+      const minute = Math.floor(new Date(entry.draft.channel_at).getTime() / 60000);
+      byMinute.set(minute, (byMinute.get(minute) || 0) + 1);
+    }
+    return Array.from(byMinute.values()).filter(count => count > 1)
+      .reduce((sum, count) => sum + count, 0);
+  }, [entries]);
+
+  /**
+   * Розводить пости, що потрапили на ту саму хвилину каналу.
+   *
+   * Перший у групі лишається на своєму слоті контент-плану, решта зсуваються
+   * на +2, +4 хвилини. Так розклад по днях зберігається — на відміну від
+   * загального «за розкладом, із паузою», яке перебиває час УСІМ карткам і
+   * стягує тижневий план в одну годину.
+   */
+  const spreadChannelClashes = () => {
+    const used = new Set<number>();
+    setEntries(current => current.map(entry => {
+      if (!entry.included || !entry.draft.to_channel || !entry.draft.channel_at) return entry;
+      const at = new Date(entry.draft.channel_at);
+      let minute = Math.floor(at.getTime() / 60000);
+      if (!used.has(minute)) {
+        used.add(minute);
+        return entry;
+      }
+      while (used.has(minute)) minute += 2;
+      used.add(minute);
+      return {
+        ...entry,
+        draft: { ...entry.draft, channel_at: new Date(minute * 60000).toISOString() },
+        edited: true,
+      };
+    }));
+  };
+
   const scopeAll = (value: boolean) =>
     setEntries(current => current.map(entry => ({ ...entry, commonSelected: value })));
 
@@ -367,6 +407,13 @@ const TelegramBatchPublishDialog: React.FC<Props> = ({ productIds, busy, onCance
 
                     <div className="mt-3 flex items-center justify-between gap-3">
                       <span className="text-[11px] text-gray-400">«ВСІ ПРОПОЗИЦІЇ» завжди лишається оригіналом — вимкнути його не можна.</span>
+                      {channelClashes > 0 && (
+                        <button onClick={spreadChannelClashes} type="button"
+                                title="Зсуває лише ті пости, що збіглися: перший лишається на своєму слоті, решта на +2 хвилини"
+                                className="px-3 py-2 rounded-lg border border-amber-300 bg-amber-50 text-xs font-semibold text-amber-800 dark:border-amber-700 dark:bg-amber-900/20 dark:text-amber-200">
+                          Розвести однаковий час ({channelClashes})
+                        </button>
+                      )}
                       <button onClick={applyCommon} disabled={commonCount === 0 || baseTimeInvalid}
                               className="px-3 py-2 rounded-lg bg-gray-900 dark:bg-gray-100 text-white dark:text-gray-900 text-xs font-semibold disabled:opacity-40">
                         Застосувати до {commonCount}

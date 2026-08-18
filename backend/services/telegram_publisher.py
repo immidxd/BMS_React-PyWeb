@@ -1727,6 +1727,35 @@ def _preflight_batch_item(db: Session, product_id: int, payload: dict) -> Option
     return None
 
 
+def _channel_time_conflicts(
+    scheduled: List[Tuple[int, datetime, str]],
+) -> List[Tuple[datetime, List[str]]]:
+    """Групи постів, чий час каналу ближчий за хвилину один до одного.
+
+    Порівнюємо не рівність, а відстань: 18:00:30 і 18:01:10 — теж сплеск.
+    """
+    ordered = sorted(scheduled, key=lambda row: row[1])
+    groups: List[List[Tuple[int, datetime, str]]] = []
+    for row in ordered:
+        if groups and abs((row[1] - groups[-1][-1][1]).total_seconds()) < 60:
+            groups[-1].append(row)
+        else:
+            groups.append([row])
+    return [(group[0][1], [item[2] for item in group]) for group in groups if len(group) > 1]
+
+
+def _format_channel_conflicts(conflicts: List[Tuple[datetime, List[str]]]) -> str:
+    parts = []
+    for when, numbers in conflicts:
+        listed = ", ".join(f"#{number}" for number in numbers)
+        parts.append(f"{when.astimezone(KYIV_TZ):%d.%m %H:%M} — {listed}")
+    head = (
+        "Однаковий час каналу — Telegram отримав би кілька пересилань поспіль. "
+        "Розведіть їх щонайменше на хвилину:"
+    )
+    return head + " " + "; ".join(parts) + "."
+
+
 async def create_posts_batch(db: Session, items: List[dict], batch_id: str) -> dict:
     """Безпечна послідовна черга кількох відредагованих Telegram-постів.
 
@@ -1772,22 +1801,21 @@ async def create_posts_batch(db: Session, items: List[dict], batch_id: str) -> d
         if payload.get("to_channel") and payload.get("channel_at") is not None:
             when, _ = _validate_when(payload.get("channel_at"))
             if when:
-                scheduled.append((pos, when))
+                scheduled.append((pos, when, pnum.lstrip("#") or str(pid)))
         normalized.append((pid, payload, pnum))
 
     # Однаковий/майже однаковий час для кількох форвардів створює некерований
     # сплеск. Інтерфейс розставляє +2 хв, а бекенд не допускає випадкове
     # затирання цього кроку загальними налаштуваннями.
-    for i, (left_pos, left) in enumerate(scheduled):
-        for right_pos, right in scheduled[i + 1:]:
-            if abs((right - left).total_seconds()) < 60:
-                return {
-                    "ok": False,
-                    "error": (
-                        f"Час каналу в постах {left_pos + 1} і {right_pos + 1} надто близький. "
-                        "Залиши щонайменше 1 хвилину між ними."
-                    ),
-                }
+    #
+    # Повідомлення навмисно перелічує ВСІ збіги й називає товари за номером.
+    # Раніше воно віддавало перший-ліпший конфлікт і позицію в списку
+    # увімкнених карток — через вимкнену картку нумерація розходилася з тим, що
+    # людина бачить на екрані, і виправлення перетворювалося на гру в лови:
+    # полагодив одну пару — вискочила наступна.
+    conflicts = _channel_time_conflicts(scheduled)
+    if conflicts:
+        return {"ok": False, "error": _format_channel_conflicts(conflicts)}
 
     async with _PUBLISH_LOCK:
         # Повторний запит міг чекати lock, поки перший уже завершив цей batch.
