@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  CheckOutlined, CloseOutlined, EditOutlined, SendOutlined,
+  CheckOutlined, ClockCircleOutlined, CloseOutlined, EditOutlined, SendOutlined,
   SettingOutlined, WarningOutlined,
 } from '@ant-design/icons';
 import SmartImage from '../common/SmartImage';
@@ -57,6 +57,11 @@ const INPUT = 'px-2.5 py-1.5 rounded-lg text-xs border border-gray-200 dark:bord
 function uuid(): string {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
   return `tg-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+/** «24.08 15:04» — рівно те, що людина бачить на картці. */
+function shortTime(value: Date): string {
+  return value.toLocaleString('uk-UA', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
 }
 
 function asLocal(iso: string): string {
@@ -210,45 +215,70 @@ const TelegramBatchPublishDialog: React.FC<Props> = ({ productIds, busy, onCance
     }));
   };
 
-  /** Скільки увімкнених постів стоять на однакову хвилину каналу. */
-  const channelClashes = useMemo(() => {
-    const byMinute = new Map<number, number>();
-    for (const entry of entries) {
-      if (!entry.included || !entry.draft.to_channel || !entry.draft.channel_at) continue;
-      const minute = Math.floor(new Date(entry.draft.channel_at).getTime() / 60000);
-      byMinute.set(minute, (byMinute.get(minute) || 0) + 1);
-    }
-    return Array.from(byMinute.values()).filter(count => count > 1)
-      .reduce((sum, count) => sum + count, 0);
-  }, [entries]);
+  const [autoShifted, setAutoShifted] = useState<{ number: string; from: string; to: string }[]>([]);
 
   /**
-   * Розводить пости, що потрапили на ту саму хвилину каналу.
+   * Сам розводить пости, що потрапили на ту саму хвилину каналу.
    *
-   * Перший у групі лишається на своєму слоті контент-плану, решта зсуваються
-   * на +2, +4 хвилини. Так розклад по днях зберігається — на відміну від
-   * загального «за розкладом, із паузою», яке перебиває час УСІМ карткам і
-   * стягує тижневий план в одну годину.
+   * Telegram отримав би кілька пересилань поспіль, і бекенд такий пакет просто
+   * не пустить. Раніше людина ганялася за конфліктами вручну — і, зсуваючи
+   * один, легко сідала на хвилину, яку вже зайняв інший.
+   *
+   * Перший пост групи лишається на своєму слоті контент-плану, решта йдуть на
+   * найближчу вільну хвилину з кроком +2. Це навмисно не те саме, що загальне
+   * «за розкладом, із паузою»: воно перебиває час УСІМ карткам і стягує
+   * тижневий план в одну годину.
+   *
+   * Зсув ніколи не мовчазний — що саме переїхало, видно в повідомленні над
+   * списком.
    */
-  const spreadChannelClashes = () => {
-    const used = new Set<number>();
-    setEntries(current => current.map(entry => {
-      if (!entry.included || !entry.draft.to_channel || !entry.draft.channel_at) return entry;
-      const at = new Date(entry.draft.channel_at);
-      let minute = Math.floor(at.getTime() / 60000);
-      if (!used.has(minute)) {
-        used.add(minute);
+  useEffect(() => {
+    const eligible = (entry: Entry) =>
+      entry.included && entry.draft.to_channel && Boolean(entry.draft.channel_at);
+    const minuteOf = (entry: Entry) =>
+      Math.floor(new Date(entry.draft.channel_at as string).getTime() / 60000);
+
+    // Спершу позначаємо ВСІ зайняті хвилини, і лише потім розводимо дублікати.
+    // Інакше зсунутий пост сідав би на слот сусіда й породжував новий конфлікт —
+    // рівно те, на що людина натрапила вручну.
+    const taken = new Set<number>();
+    for (const entry of entries) {
+      if (!eligible(entry)) continue;
+      const minute = minuteOf(entry);
+      if (!Number.isNaN(minute)) taken.add(minute);
+    }
+
+    const claimed = new Set<number>();
+    const moved: { number: string; from: string; to: string }[] = [];
+    const next = entries.map(entry => {
+      if (!eligible(entry)) return entry;
+      const minute = minuteOf(entry);
+      if (Number.isNaN(minute)) return entry;
+      if (!claimed.has(minute)) {
+        claimed.add(minute);
         return entry;
       }
-      while (used.has(minute)) minute += 2;
-      used.add(minute);
+      // Зайнято своїм же дублікатом: шукаємо найближчу хвилину, вільну і від
+      // чужих слотів, і від уже зайнятих цим проходом.
+      let free = minute;
+      do { free += 2; } while (taken.has(free) || claimed.has(free));
+      claimed.add(free);
+      moved.push({
+        number: entry.preview.productnumber,
+        from: shortTime(new Date(minute * 60000)),
+        to: shortTime(new Date(free * 60000)),
+      });
       return {
         ...entry,
-        draft: { ...entry.draft, channel_at: new Date(minute * 60000).toISOString() },
+        draft: { ...entry.draft, channel_at: new Date(free * 60000).toISOString() },
         edited: true,
       };
-    }));
-  };
+    });
+
+    if (!moved.length) return;
+    setEntries(next);
+    setAutoShifted(moved);
+  }, [entries]);
 
   const scopeAll = (value: boolean) =>
     setEntries(current => current.map(entry => ({ ...entry, commonSelected: value })));
@@ -407,13 +437,6 @@ const TelegramBatchPublishDialog: React.FC<Props> = ({ productIds, busy, onCance
 
                     <div className="mt-3 flex items-center justify-between gap-3">
                       <span className="text-[11px] text-gray-400">«ВСІ ПРОПОЗИЦІЇ» завжди лишається оригіналом — вимкнути його не можна.</span>
-                      {channelClashes > 0 && (
-                        <button onClick={spreadChannelClashes} type="button"
-                                title="Зсуває лише ті пости, що збіглися: перший лишається на своєму слоті, решта на +2 хвилини"
-                                className="px-3 py-2 rounded-lg border border-amber-300 bg-amber-50 text-xs font-semibold text-amber-800 dark:border-amber-700 dark:bg-amber-900/20 dark:text-amber-200">
-                          Розвести однаковий час ({channelClashes})
-                        </button>
-                      )}
                       <button onClick={applyCommon} disabled={commonCount === 0 || baseTimeInvalid}
                               className="px-3 py-2 rounded-lg bg-gray-900 dark:bg-gray-100 text-white dark:text-gray-900 text-xs font-semibold disabled:opacity-40">
                         Застосувати до {commonCount}
@@ -422,6 +445,27 @@ const TelegramBatchPublishDialog: React.FC<Props> = ({ productIds, busy, onCance
                   </div>
                 )}
               </section>
+
+              {autoShifted.length > 0 && (
+                <div className="mb-4 flex gap-2 rounded-xl border border-sky-200 bg-sky-50 px-3 py-2.5 text-xs leading-relaxed text-sky-900 dark:border-sky-800 dark:bg-sky-900/20 dark:text-sky-200">
+                  <ClockCircleOutlined className="mt-0.5 shrink-0" />
+                  <div className="min-w-0">
+                    <b>Час каналу збігався — розвели автоматично.</b> Telegram не приймає кілька
+                    пересилань в одну хвилину.
+                    <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5">
+                      {autoShifted.map(row => (
+                        <span key={row.number} className="tabular-nums">
+                          #{row.number}: {row.from} → <b>{row.to}</b>
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                  <button type="button" onClick={() => setAutoShifted([])}
+                          className="ml-auto shrink-0 self-start text-sky-500 hover:text-sky-700" aria-label="Сховати">
+                    <CloseOutlined />
+                  </button>
+                </div>
+              )}
 
               <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
                 {entries.map((entry, index) => {
