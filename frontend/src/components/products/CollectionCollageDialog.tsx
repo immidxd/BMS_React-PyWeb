@@ -287,6 +287,15 @@ const CollectionCollageDialog: React.FC<Props> = ({ platform, productIds, busy =
     }
   };
 
+  // Скільки комірок лишилося порожніми: сітка рахується як cols×rows, тож
+  // будь-яке число, що не є їхнім добутком, лишає дірки в останньому ряду.
+  const gridFill = useMemo(() => {
+    if (!grid || !frames.length) return null;
+    const [cols, rows] = grid.split('x').map(Number);
+    if (!cols || !rows) return null;
+    return { cols, rows, missing: cols * rows - frames.length, square: cols === rows };
+  }, [grid, frames.length]);
+
   const shownCanvas = canvas || data?.canvas || { width: 1080, height: 1080 };
   const aspect = `${shownCanvas.width}/${shownCanvas.height}`;
 
@@ -362,6 +371,15 @@ const CollectionCollageDialog: React.FC<Props> = ({ platform, productIds, busy =
                       `${frames.length} ${plural(frames.length, ['позиція', 'позиції', 'позицій'])}`,
                     ].filter(Boolean).join(' · ')}
                   </div>
+                  {gridFill && !previewBusy && (
+                    <div className="mt-1 text-center text-[11px] text-gray-400">
+                      {gridFill.missing === 0
+                        ? (gridFill.square
+                          ? 'Сітка заповнена повністю · формат 1:1'
+                          : `Сітка заповнена повністю · формат ${gridFill.cols}:${gridFill.rows}`)
+                        : `В останньому ряду ${gridFill.missing} ${plural(gridFill.missing, ['вільне місце', 'вільні місця', 'вільних місць'])} — додайте стільки ж товарів для повної сітки`}
+                    </div>
+                  )}
 
                   <label className="mt-4 block text-xs font-semibold text-gray-700 dark:text-gray-200">Розмір сітки</label>
                   <div className="mt-2 grid grid-cols-3 gap-2">

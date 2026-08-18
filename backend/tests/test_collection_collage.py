@@ -402,24 +402,24 @@ def test_saving_never_writes_to_publication_journals(monkeypatch):
 
 # ─── Щільна сітка 6×6 ────────────────────────────────────────────────────────
 
-def test_thirty_two_products_get_the_dense_grid_and_a_bigger_canvas():
-    """32 товари на базовому полотні дали б 167 px на товар — це вже не вітрина."""
-    assert cc.layout_for_count(32) == "grid32"
-    assert cc.layout_for_count(17) == "grid32"
+def test_thirty_six_products_get_the_dense_grid_and_a_bigger_canvas():
+    """36 товарів на базовому полотні дали б 167 px на товар — це вже не вітрина."""
+    assert cc.layout_for_count(36) == "grid36"
+    assert cc.layout_for_count(17) == "grid36"
     assert cc.layout_for_count(16) == "grid16"
 
-    spec = cc.normalize_spec({"platform": "viber", "items": _items(32)})
-    assert spec["layout"] == "grid32"
+    spec = cc.normalize_spec({"platform": "viber", "items": _items(36)})
+    assert spec["layout"] == "grid36"
     assert (spec["cols"], spec["rows"]) == (6, 6)
     # Полотно росте разом із густотою, щоб комірка лишалася читабельною.
     assert spec["width"] == 1620
-    cell = spec["items"] and cc.grid_geometry(32, "grid32", spec["width"], spec["gap"])["cells"][0]
+    cell = cc.grid_geometry(36, "grid36", spec["width"], spec["gap"])["cells"][0]
     assert cell[2] >= 240, "комірка щільної сітки не має бути дрібнішою за 4×4"
 
 
 def test_dense_grid_keeps_cells_inside_the_canvas():
     for count in range(17, cc.MAX_ITEMS + 1):
-        geometry = cc.grid_geometry(count, "grid32", 1620, 10)
+        geometry = cc.grid_geometry(count, "grid36", 1620, 10)
         assert len(geometry["cells"]) == count
         for x, y, width, height in geometry["cells"]:
             assert x >= 0 and y >= 0
@@ -430,15 +430,15 @@ def test_dense_grid_keeps_cells_inside_the_canvas():
 def test_dense_viber_collage_still_fits_the_hard_byte_limit(monkeypatch):
     """Головний ризик 32 фото — не пікселі, а 950 КБ Viber."""
     _fake_photos(monkeypatch)
-    rendered = cc.render(None, {"platform": "viber", "items": _items(32)})
-    assert rendered["spec"]["layout"] == "grid32"
+    rendered = cc.render(None, {"platform": "viber", "items": _items(36)})
+    assert rendered["spec"]["layout"] == "grid36"
     assert len(rendered["main"]) <= cc.PLATFORMS["viber"]["max_bytes"]
     assert len(rendered["thumbnail"]) <= vp.THUMB_MAX_BYTES
 
 
-def test_caption_for_thirty_two_products_keeps_every_number():
+def test_caption_for_a_full_dense_grid_keeps_every_number():
     """Підпис радше згорнеться до самих номерів, ніж загубить позицію."""
-    items = _caption_items(32)
+    items = _caption_items(36)
     caption = cc.build_caption(items, "viber")
     assert len(caption) <= cc.PLATFORMS["viber"]["caption_limit"]
     for item in items:
@@ -446,5 +446,23 @@ def test_caption_for_thirty_two_products_keeps_every_number():
 
 
 def test_choosing_a_smaller_grid_still_clamps_the_selection():
-    spec = cc.normalize_spec({"platform": "viber", "layout": "grid16", "items": _items(32)})
+    spec = cc.normalize_spec({"platform": "viber", "layout": "grid16", "items": _items(36)})
     assert len(spec["items"]) == 16
+
+
+def test_a_full_dense_grid_is_square_and_leaves_no_empty_cells():
+    """36 — єдине число, за якого шість колонок дають рівний квадрат.
+
+    32 товари лишали в останньому ряду чотири порожні місця: сітка рахується як
+    cols×rows, тож повністю заповнюють її лише добутки (9, 16, 25, 36).
+    """
+    geometry = cc.grid_geometry(36, "grid36", 1620, 10)
+    assert (geometry["cols"], geometry["rows"]) == (6, 6)
+    assert geometry["cols"] * geometry["rows"] == 36, "жодної порожньої комірки"
+    assert abs(geometry["height"] - geometry["width"]) <= 4, "формат має бути 1:1"
+
+
+def test_the_old_grid32_key_still_resolves(monkeypatch):
+    """У вже збережених банерах у payload_json лишилася назва grid32."""
+    spec = cc.normalize_spec({"platform": "viber", "layout": "grid32", "items": _items(20)})
+    assert spec["layout"] == "grid36"

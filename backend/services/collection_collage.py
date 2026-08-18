@@ -28,7 +28,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 
-MAX_ITEMS = 32
+MAX_ITEMS = 36
 MIN_ITEMS = 2
 
 # `scale` розтягує полотно під щільну сітку. Комірка має лишатися приблизно
@@ -38,7 +38,7 @@ MIN_ITEMS = 2
 GRID_LAYOUTS: Dict[str, dict] = {
     "grid9": {"label": "Сітка 3×3 · до 9 товарів", "cols": 3, "capacity": 9, "scale": 1.0},
     "grid16": {"label": "Сітка 4×4 · до 16 товарів", "cols": 4, "capacity": 16, "scale": 1.0},
-    "grid32": {"label": "Сітка 6×6 · до 32 товарів", "cols": 6, "capacity": 32, "scale": 1.5},
+    "grid36": {"label": "Сітка 6×6 · до 36 товарів", "cols": 6, "capacity": 36, "scale": 1.5},
 }
 
 # Viber тягне картку через власний диспетчер і має жорсткий ліміт розміру, тому
@@ -63,6 +63,8 @@ PLATFORMS: Dict[str, dict] = {
         "markdown": False,
     },
 }
+
+LAYOUT_ALIASES = {"grid32": "grid36"}
 
 BACKGROUNDS = [
     {"key": "white", "label": "Біле"},
@@ -164,10 +166,10 @@ def _clamp(value: Any, low: float, high: float, fallback: float) -> float:
 
 def layout_for_count(count: int) -> str:
     """Найменша сітка, що вміщує вибір: 9 товарів не мають їхати в 4×4."""
-    for key in ("grid9", "grid16", "grid32"):
+    for key in ("grid9", "grid16", "grid36"):
         if count <= GRID_LAYOUTS[key]["capacity"]:
             return key
-    return "grid32"
+    return "grid36"
 
 
 def canvas_size(platform_size: int, layout: str) -> int:
@@ -244,6 +246,7 @@ def normalize_spec(payload: dict, *, item_count: Optional[int] = None) -> dict:
             break
 
     layout = str(payload.get("layout") or "").strip().lower()
+    layout = LAYOUT_ALIASES.get(layout, layout)
     if layout not in GRID_LAYOUTS:
         layout = layout_for_count(item_count if item_count is not None else len(items))
     capacity = int(GRID_LAYOUTS[layout]["capacity"])
