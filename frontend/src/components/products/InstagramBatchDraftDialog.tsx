@@ -29,6 +29,52 @@ interface DraftCard {
   error?: string | null;
 }
 
+/** Зміна типу публікації однієї картки: та сама логіка для однієї й для пакета.
+ *
+ *  Story приймає лише одне фото, тому при поверненні з нього набір відновлюється
+ *  з типового вибору — інакше карусель лишилася б з одним кадром.
+ */
+function withPublishType(card: DraftCard, publish_type: InstagramDraftPayload['publish_type']): DraftCard {
+  if (card.draft.publish_type === publish_type) return card;
+  const preview = card.preview;
+  const limit = preview.publish_types[publish_type].max_media;
+  const image_idx = publish_type !== 'story' && card.draft.publish_type === 'story'
+    ? preview.default_image_idx.slice(0, limit)
+    : card.draft.image_idx.slice(0, limit);
+  const framesByImage = new Map(card.draft.frames.map(frame => [frame.image_idx, frame]));
+  return {
+    ...card,
+    draft: {
+      ...card.draft,
+      publish_type,
+      image_idx,
+      frames: image_idx.map(index => ({
+        ...(framesByImage.get(index) || { image_idx: index, x: 0, y: 0 }),
+        zoom: instagramDefaultZoom(preview, publish_type, index, card.draft.feed_preset),
+      })),
+    },
+  };
+}
+
+/** Зміна формату кадру. Ручний масштаб не чіпаємо — лише типовий. */
+function withFeedPreset(card: DraftCard, feed_preset: string): DraftCard {
+  const preview = card.preview;
+  const previousPreset = card.draft.feed_preset;
+  return {
+    ...card,
+    draft: {
+      ...card.draft,
+      feed_preset,
+      frames: card.draft.frames.map(frame => {
+        const previousDefault = instagramDefaultZoom(preview, 'feed', frame.image_idx, previousPreset);
+        return Math.abs(frame.zoom - previousDefault) > 0.0001
+          ? frame
+          : { ...frame, zoom: instagramDefaultZoom(preview, 'feed', frame.image_idx, feed_preset) };
+      }),
+    },
+  };
+}
+
 const toLocalDateTimeValue = (iso: string) => {
   const date = new Date(iso);
   return new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
@@ -104,6 +150,33 @@ const InstagramBatchDraftDialog: React.FC<Props> = ({ productIds, busy = false, 
   );
   const liveReady = cards.length > 0 && cards.every(card => card.preview.connection.live_publish_available && card.preview.connection.oauth_connected !== false);
 
+  /** Тип публікації одразу для всього пакета — щоб не клацати кожну картку.
+   *
+   *  Діє лише на увімкнені картки: вимкнена картка не поїде в публікацію, тож
+   *  мовчки міняти їй тип означало б готувати сюрприз на потім.
+   */
+  const applyPublishTypeToAll = (publish_type: InstagramDraftPayload['publish_type']) => {
+    setSummary(null);
+    setCards(current => current.map(card => card.enabled ? withPublishType(card, publish_type) : card));
+  };
+
+  const applyFeedPresetToAll = (feed_preset: string) => {
+    setSummary(null);
+    setCards(current => current.map(card =>
+      card.enabled && card.draft.publish_type === 'feed' ? withFeedPreset(card, feed_preset) : card,
+    ));
+  };
+
+  // Спільне значення показуємо лише тоді, коли воно справді спільне.
+  const commonPublishType = enabled.length
+    && enabled.every(card => card.draft.publish_type === enabled[0].draft.publish_type)
+    ? enabled[0].draft.publish_type : null;
+  const commonFeedPreset = enabled.length
+    && enabled.every(card => card.draft.feed_preset === enabled[0].draft.feed_preset)
+    ? enabled[0].draft.feed_preset : null;
+  const publishTypes = cards[0]?.preview.publish_types;
+  const feedPresets = cards[0]?.preview.feed_presets;
+
   const applyBatchSchedule = (baseIso: string | null, intervalMinutes = batchIntervalMinutes) => {
     setCards(current => current.map((card, index) => ({
       ...card,
@@ -164,6 +237,36 @@ const InstagramBatchDraftDialog: React.FC<Props> = ({ productIds, busy = false, 
 
           <DailyCapacityNote capacity={capacity} planned={enabled.length} network="Instagram" />
 
+          {!loading && enabled.length > 1 && publishTypes && (
+            <div className="mb-4 rounded-xl border border-gray-200 px-3 py-3 dark:border-gray-700">
+              <div className="mb-2 flex flex-wrap items-baseline gap-x-2 gap-y-1">
+                <span className="text-xs font-semibold text-gray-700 dark:text-gray-200">Тип для всього пакета</span>
+                <span className="text-[11px] text-gray-400">· діє на {enabled.length} {enabled.length === 1 ? 'увімкнену картку' : 'увімкнених карток'}; окрему картку далі можна змінити вручну</span>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {Object.entries(publishTypes).map(([key, value]) => {
+                  const active = commonPublishType === key;
+                  return (
+                    <button key={key} type="button"
+                      onClick={() => applyPublishTypeToAll(key as InstagramDraftPayload['publish_type'])}
+                      className={`rounded-lg border px-3 py-1.5 text-xs transition ${active
+                        ? 'border-pink-400 bg-pink-50 font-semibold text-pink-600 dark:bg-pink-900/20 dark:text-pink-300'
+                        : 'border-gray-200 text-gray-600 hover:border-pink-300 dark:border-gray-700 dark:text-gray-300'}`}>
+                      {value.label}
+                    </button>
+                  );
+                })}
+                {commonPublishType === 'feed' && feedPresets && (
+                  <select value={commonFeedPreset || ''} onChange={event => applyFeedPresetToAll(event.target.value)}
+                    className="rounded-lg border border-gray-200 bg-white px-2 py-1.5 text-xs text-gray-700 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-200">
+                    {!commonFeedPreset && <option value="">Формат: різний</option>}
+                    {Object.entries(feedPresets).map(([key, value]) => <option key={key} value={key}>{value.label}</option>)}
+                  </select>
+                )}
+              </div>
+            </div>
+          )}
+
           {loading ? (
             <div className="flex h-64 items-center justify-center gap-2 text-sm text-gray-500"><LoadingOutlined /> Готую стабільний знімок товарів…</div>
           ) : loadError ? (
@@ -187,34 +290,14 @@ const InstagramBatchDraftDialog: React.FC<Props> = ({ productIds, busy = false, 
                             <div className="text-[11px] text-gray-400">{card.draft.image_idx.length} фото · {preview.image_kind === 'official' ? 'офіційні' : preview.image_kind === 'real' ? 'живі' : 'фото відсутні'}</div>
                           </div>
                           <div className="flex gap-2">
-                          <select value={card.draft.publish_type} disabled={!card.enabled} onChange={event => updateCard(preview.product_id, current => {
-                            const publish_type = event.target.value as InstagramDraftPayload['publish_type'];
-                            const limit = preview.publish_types[publish_type].max_media;
-                            const image_idx = publish_type !== 'story' && current.draft.publish_type === 'story'
-                              ? preview.default_image_idx.slice(0, limit)
-                              : current.draft.image_idx.slice(0, limit);
-                            const framesByImage = new Map(current.draft.frames.map(frame => [frame.image_idx, frame]));
-                            return { ...current, draft: { ...current.draft, publish_type, image_idx, frames: image_idx.map(image_idx => ({
-                              ...(framesByImage.get(image_idx) || { image_idx, x: 0, y: 0 }),
-                              zoom: instagramDefaultZoom(preview, publish_type, image_idx, current.draft.feed_preset),
-                            })) } };
-                          })} className="rounded-lg border border-gray-200 bg-white px-2 py-1.5 text-xs text-gray-700 disabled:opacity-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-200">
+                          <select value={card.draft.publish_type} disabled={!card.enabled} onChange={event => updateCard(preview.product_id, current =>
+                            withPublishType(current, event.target.value as InstagramDraftPayload['publish_type']),
+                          )} className="rounded-lg border border-gray-200 bg-white px-2 py-1.5 text-xs text-gray-700 disabled:opacity-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-200">
                             {Object.entries(preview.publish_types).map(([key, value]) => <option key={key} value={key}>{value.label}</option>)}
                           </select>
-                          {card.draft.publish_type === 'feed' && <select value={card.draft.feed_preset} disabled={!card.enabled} onChange={event => updateCard(preview.product_id, current => {
-                            const feed_preset = event.target.value;
-                            const previousPreset = current.draft.feed_preset;
-                            return { ...current, draft: {
-                              ...current.draft,
-                              feed_preset,
-                              frames: current.draft.frames.map(frame => {
-                                const previousDefault = instagramDefaultZoom(preview, 'feed', frame.image_idx, previousPreset);
-                                return Math.abs(frame.zoom - previousDefault) > 0.0001
-                                  ? frame
-                                  : { ...frame, zoom: instagramDefaultZoom(preview, 'feed', frame.image_idx, feed_preset) };
-                              }),
-                            } };
-                          })}
+                          {card.draft.publish_type === 'feed' && <select value={card.draft.feed_preset} disabled={!card.enabled} onChange={event => updateCard(preview.product_id, current =>
+                            withFeedPreset(current, event.target.value),
+                          )}
                             className="rounded-lg border border-gray-200 bg-white px-2 py-1.5 text-xs text-gray-700 disabled:opacity-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-200">
                             {Object.entries(preview.feed_presets).map(([key, value]) => <option key={key} value={key}>{value.label}</option>)}
                           </select>}
