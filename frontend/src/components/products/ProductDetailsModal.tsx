@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useMemo, useRef } from 'react';
 import { productService } from '../../services/productService';
 import type { Product, ProductFilters } from '../../types/product';
-import { Tag, Image } from 'antd';
+import { Tag, Image, Tooltip } from 'antd';
 import { CloseOutlined, PictureOutlined, LeftOutlined, RightOutlined, WarningOutlined, EditOutlined, CheckOutlined, PlusOutlined, SyncOutlined, EyeOutlined, EyeInvisibleOutlined, StarFilled, ShoppingOutlined, TableOutlined, InboxOutlined, TagOutlined, DownloadOutlined, CopyOutlined, LoadingOutlined, RotateLeftOutlined, RotateRightOutlined, SwapOutlined } from '@ant-design/icons';
 import { copyImageToClipboard, saveProductPhoto, saveProductPhotosZip } from '../../services/imageTransfer';
 import { CopyOnClick, formatBrandName, getProductDisplayStatus, getProductStock, getConditionColor, effectiveProductNumber } from '../common/displayHelpers';
@@ -2329,6 +2329,20 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                   >
                     <TableOutlined style={{ fontSize: 14 }} /><span>Таблиця</span>
                   </button>
+                )}
+
+                {/* Значок «не в журналі»: скільки полів цієї картки ще чекають
+                    запису в аркуш (або впали). Без нього розсинхрон був
+                    невидимий — правка зберігалась у БД, запис падав мовчки. */}
+                {((p as any)?.journal_pending ?? 0) > 0 && (
+                  <Tooltip title={`${(p as any).journal_pending} правк(и) ще не потрапили в журнал — застосунок повторює спроби`}>
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium
+                                     bg-amber-50 text-amber-700 border border-amber-200
+                                     dark:bg-amber-900/30 dark:text-amber-300 dark:border-amber-800">
+                      <SyncOutlined style={{ fontSize: 11 }} />
+                      не в журналі · {(p as any).journal_pending}
+                    </span>
+                  </Tooltip>
                 )}
 
                 {/* «Прийняти у завіз» — лише для орфанів (нема deliveryid: воркспейс/

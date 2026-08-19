@@ -18,12 +18,12 @@ try:
     from models.database import get_db
     from models import models
     from schemas import product as schemas
-    from services import product_service, catalog_sync_service
+    from services import product_service, catalog_sync_service, journal_sync
 except ImportError:
     from backend.models.database import get_db
     from backend.models import models
     from backend.schemas import product as schemas
-    from backend.services import product_service, catalog_sync_service
+    from backend.services import product_service, catalog_sync_service, journal_sync
 
 logger = logging.getLogger(__name__)
 
@@ -875,6 +875,15 @@ def get_product(
         if not product:
             raise HTTPException(status_code=404, detail=f"Товар з ID {product_id} не знайдено")
         
+        # Скільки правок цієї картки ще не лягло в журнал (черга + провалені).
+        # Без цього числа розсинхрон картки й аркуша був невидимий: правка
+        # зберігалась у БД, запис в аркуш падав, і дізнатись про це було ніяк.
+        try:
+            product["journal_pending"] = journal_sync.pending_by_product(
+                db, [product_id]).get(product_id, 0)
+        except Exception as _e:  # noqa: BLE001
+            logger.warning(f"journal_pending failed for {product_id}: {_e}")
+            product["journal_pending"] = 0
         return product
     except HTTPException:
         raise
@@ -1145,9 +1154,11 @@ def update_product(
         # Заміри → синтетичні meas_<name> (значення = рядок-діапазон).
         measurement_writeback = getattr(updated_product, "_measurement_writeback", {}) or {}
 
-        # Phase 2b: write-back у журнал — у ФОНІ, щоб PUT відповідав миттєво
-        # (запис в аркуш ~2-3с мережі не має блокувати UI). Лок у БД зберігає
-        # правку, якщо фоновий запис відстане/впаде.
+        # Phase 2b: write-back у журнал — через чергу, щоб PUT відповідав миттєво
+        # (запис в аркуш ~2-3с мережі не має блокувати UI). Раніше тут стартував
+        # daemon-потік напряму: якщо він падав (токен/SSL/мережа), правка лишалась
+        # тільки в БД і аркуш відставав назавжди. Тепер поля лягають у
+        # journal_writeback_queue, а воркер несе їх в аркуш і повторює спроби.
         if edited_lockable or material_writeback or measurement_writeback:
             sheet_title = product_service.get_delivery_name(db, updated_product.deliveryid)
             pnum = updated_product.productnumber
@@ -1165,20 +1176,9 @@ def update_product(
             for mkey, rng in measurement_writeback.items():
                 field_values[mkey] = rng   # mkey уже 'meas_<name>'
 
-            def _writeback_bg(sheet_title=sheet_title, pnum=pnum, field_values=field_values):
-                try:
-                    from backend.scripts import sheets_parser as _sp
-                except ImportError:
-                    from scripts import sheets_parser as _sp
-                for f, v in field_values.items():
-                    try:
-                        res = _sp.writeback_field_to_journal(sheet_title, pnum, f, v)
-                        if not res.get("ok"):
-                            logger.warning(f"[writeback] {f} skipped: {res.get('reason')}")
-                    except Exception as we:
-                        logger.error(f"[writeback] {f} failed: {we}")
-
-            threading.Thread(target=_writeback_bg, daemon=True).start()
+            journal_sync.enqueue_many(db, updated_product.id, pnum, sheet_title, field_values)
+            db.commit()
+            journal_sync.kick()
 
         return updated_product
     except HTTPException:

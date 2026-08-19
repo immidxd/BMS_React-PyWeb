@@ -26,6 +26,7 @@ from routers import (
     parsing,
     search,
 )
+from routers import journal_sync as journal_sync_router
 try:
     from routers import deliveries  # optional
 except Exception:
@@ -203,6 +204,7 @@ app.include_router(order_statuses.router, tags=["order-statuses"])      # routes
 app.include_router(delivery_methods.router, tags=["delivery-methods"])  # routes define full /api prefix
 app.include_router(parsing.router, prefix="/api/parsing", tags=["parsing"])  # router exposes paths like /parsing/.. → final /api/parsing/..
 app.include_router(search.router, tags=["search"])  # search router already has /api/search prefix
+app.include_router(journal_sync_router.router, tags=["journal-sync"])  # /api/journal-sync/..
 if suppliers:
     app.include_router(suppliers.router, tags=["suppliers"])  # routes already prefixed with /api
 if deliveries:
@@ -428,6 +430,33 @@ async def _reap_stale_parse_jobs():
             db.close()
     except Exception as e:
         logger.warning(f"Stale-job reaper failed: {e}")
+
+
+@app.on_event("startup")
+async def _journal_sync_worker():
+    """Драйнер черги записів у журнал.
+
+    Дві ролі: на старті добрати те, що лишилось незаписаним після минулого
+    сеансу (падіння/перезапуск під час фонового запису), і далі періодично
+    підбирати задачі, яким настав час повторної спроби — інакше відкладена з
+    відступом задача чекала б наступної правки, щоб хтось її розбудив.
+    """
+    import asyncio
+    try:
+        from services import journal_sync as _js
+    except ImportError:
+        from backend.services import journal_sync as _js
+
+    async def _loop():
+        await asyncio.sleep(20)   # дати старту застосунку відпрацювати
+        while True:
+            try:
+                await asyncio.to_thread(_js.drain)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"journal-sync drain failed: {e}")
+            await asyncio.sleep(60)
+
+    asyncio.create_task(_loop())
 
 
 @app.on_event("startup")
