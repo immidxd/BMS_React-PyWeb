@@ -219,7 +219,11 @@ def reconcile(db: Session, apply: bool = False,
                         continue   # нема чим заповнювати
                     import gspread as _gspread
                     a1 = _gspread.utils.rowcol_to_a1(r_i, col_idx + 1)
-                    updates.append({"range": a1, "values": [[new_str]]})
+                    # Числові поля (Ціна/Стара ціна/Рік) мусять лягти ЧИСЛОМ, а не
+                    # текстом: журнал рахує по них суми. Той самий поділ, що й у
+                    # writeback_field_to_journal — RAW лише для текстових полів.
+                    bucket = ("raw" if field in sp.WRITEBACK_TEXT_FIELDS else "user")
+                    updates.append({"range": a1, "values": [[new_str]], "_bucket": bucket})
                     backups.append({"sheet": sheet_title, "a1": a1, "number": pr.productnumber,
                                     "field": field, "header": header_name,
                                     "old": old, "new": new_str})
@@ -240,11 +244,15 @@ def reconcile(db: Session, apply: bool = False,
             path = os.path.join(backup_dir, f"{stamp}_reconcile_{safe}.json")
             with open(path, "w", encoding="utf-8") as fh:
                 json.dump(backups, fh, ensure_ascii=False, indent=1)
-            # Пишемо порціями: один batch_update на кілька сотень клітинок.
-            for i in range(0, len(updates), 400):
-                if i:
-                    time.sleep(_MIN_INTERVAL_SEC)
-                ws.batch_update(updates[i:i + 400], value_input_option="RAW")
+            # Пишемо порціями: один batch_update на кілька сотень клітинок,
+            # окремо текстові й числові (різний value_input_option).
+            for bucket, opt in (("raw", "RAW"), ("user", "USER_ENTERED")):
+                part = [{k: v for k, v in u.items() if k != "_bucket"}
+                        for u in updates if u["_bucket"] == bucket]
+                for i in range(0, len(part), 400):
+                    if i or bucket == "user":
+                        time.sleep(_MIN_INTERVAL_SEC)
+                    ws.batch_update(part[i:i + 400], value_input_option=opt)
             report["applied"] += len(updates)
             logger.info("[reconcile] %s: %d клітинок оновлено, backup=%s",
                         sheet_title, len(updates), path)
