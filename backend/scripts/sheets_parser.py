@@ -318,6 +318,8 @@ WRITEBACK_TEXT_FIELDS = {"model", "marking", "description", "season", "extranote
                          "colorid",
                          "typeid", "subtypeid", "styleid", "brandid", "genderid",
                          "current_conditionid",
+                         # Країна-виробник — теж назва, теж літеральний текст.
+                         "manufacturercountryid",
                          # Матеріали (CSV назв) — пишуться як літеральний текст.
                          "material_upper", "material_middle", "material_insole",
                          "material_sole", "material_midsole", "material_membrane",
@@ -1381,6 +1383,21 @@ def _apply_product_materials(
                 ord_idx += 1
             except Exception as e:
                 logger.warning(f"[materials] insert failed pid={product_id} pos={position} mid={mid}: {e}")
+
+
+def _clean_country(val: str) -> str:
+    """Назва країни з журнальної клітинки, або "" якщо там не країна.
+
+    Країни не звуться числами. У колонки «Країна-виробник»/«Країна-власник»
+    числа потрапляли двома шляхами: writeback додатку писав сирий FK-id («3»
+    замість «Китай»), а з чужих аркушів туди з'їжджали розміри («36») й номери
+    моделей («574»). get-or-create робив із кожного такого значення окрему
+    країну-привида, і картка товару показувала цифру замість назви.
+    """
+    v = (val or "").strip()
+    if not v or re.fullmatch(r"[0-9]+([.,][0-9]+)?", v):
+        return ""
+    return v
 
 
 # Canonical letter sizes. Includes 4XL as XXXXL though rarely used.
@@ -2678,8 +2695,8 @@ def _parse_products_sheet(
         # Габарити (сумки/валізи/рюкзаки): "22x16x7". Журнальний парсер раніше це поле
         # ІГНОРУВАВ (читав лише workspace) → усі журнальні сумки лишались без габаритів.
         dimensions_val = col(row, "Габарити").strip() if "Габарити" in header else ""
-        mfr_cntry  = col(row, "Країна-виробник")
-        own_cntry  = col(row, "Країна-власник")
+        mfr_cntry  = _clean_country(col(row, "Країна-виробник"))
+        own_cntry  = _clean_country(col(row, "Країна-власник"))
         size_val   = _normalize_size(col(row, "Розмір"))
         # Letter size (XS/S/M/L/XL/...) — нова опційна колонка "Буквений" одразу після "Розмір".
         # Старі аркуші без неї повертають "" → size_letter = NULL.
@@ -5069,8 +5086,8 @@ def _parse_workspace_sheet(
         # Якщо в клітинці кілька кольорів через кому — беремо перший
         color_val  = color_raw.split(",")[0].strip() if color_raw else ""
         cond_val   = col(row, "Стан")
-        mfr_cntry  = col(row, "Країна-виробник")
-        own_cntry  = col(row, "Країна-власник")
+        mfr_cntry  = _clean_country(col(row, "Країна-виробник"))
+        own_cntry  = _clean_country(col(row, "Країна-власник"))
         size_val   = _normalize_size(col(row, "Розмір"))
         letter_val = _normalize_size_letter(col(row, "Буквений")) if "Буквений" in header else ""
         if not letter_val and size_val:

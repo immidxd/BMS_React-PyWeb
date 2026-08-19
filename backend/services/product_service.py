@@ -1313,6 +1313,10 @@ def resolve_lookup_name(db: Session, fk_field: str, fk_id: Optional[int]) -> Opt
         "styleid":             ("styles",          "stylename"),
         "brandid":             ("brands",          "brandname"),
         "genderid":            ("genders",         "gendername"),
+        # Країна-виробник. Без цього рядка writeback писав у журнал сирий FK-id
+        # («3» замість «Китай»), парсер читав його назад як назву країни й плодив
+        # країни-привиди з іменами-числами.
+        "manufacturercountryid": ("countries",      "countryname"),
     }.get(fk_field)
     if not tbl_col:
         return None
@@ -1328,7 +1332,9 @@ SHOE_FK_NAME_FIELDS = {"heeltypeid", "lacetypeid", "packagingid", "technologyid"
                        "soletypeid", "toeshapeid", "fasteningtypeid", "liningid",
                        "colorid", "current_conditionid",
                        # Класифікація — write-back as canonical name.
-                       "typeid", "subtypeid", "styleid", "brandid", "genderid"}
+                       "typeid", "subtypeid", "styleid", "brandid", "genderid",
+                       # Країна-виробник — теж FK, теж пишеться назвою.
+                       "manufacturercountryid"}
 # Propagation policy across rostovka siblings (same productnumber):
 #   PER_ITEM_FIELDS — unique per pair/size, NEVER propagated (e.g. condition/розмір).
 #   PRICE_FIELDS    — propagated only to same-condition siblings without their own locked price.
