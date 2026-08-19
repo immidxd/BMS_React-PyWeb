@@ -35,3 +35,24 @@ def test_sheet_numbers_is_empty_when_the_tab_is_unreadable():
 
 def test_canon_strips_hash_and_semicolon():
     assert _canon_sheet_num(" #Ф955; ") == "Ф955"
+
+
+def test_counter_and_database_must_agree():
+    from backend.scripts.sheets_parser import _added_mismatch
+    # Чесний прогін: 60 доданих, 0 видалених, база виросла на 60.
+    assert _added_mismatch(60, 0, 12000, 12060) is None
+    # Прибирання враховується.
+    assert _added_mismatch(10, 4, 100, 106) is None
+    # Класика #Ф955: лічильник каже +59, у базі не змінилось нічого.
+    msg = _added_mismatch(59, 0, 12000, 12000)
+    assert msg and "розбіжність -59" in msg
+
+
+def test_journal_numbers_skip_headers_and_blanks():
+    from backend.scripts.sheets_parser import _numbers_from_value_ranges
+    vrs = [
+        {"values": [["Номер"], ["#Ф955"], [""], ["ф956;"]]},
+        {"values": [["Номер"], ["#Ф986-2"]]},
+        {},                      # вкладка без даних
+    ]
+    assert _numbers_from_value_ranges(vrs) == {"Ф955", "Ф956", "Ф986-2"}

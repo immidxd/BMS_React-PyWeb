@@ -5509,6 +5509,7 @@ def run_products_parsing(
     total_added = total_updated = total_skipped = 0
     total_orphans_deleted = 0
     orphan_scan: list = []   # (shipment_id, назва вкладки, номери з аркуша)
+    products_before = session.execute(text("SELECT count(*) FROM products")).scalar() or 0
     total_sheets = len(batch_sheets)
     # Спільний лічильник появ product.id між усіма аркушами в цьому run.
     # Передається у _parse_products_sheet щоб quantity = кількість появ
@@ -5594,6 +5595,12 @@ def run_products_parsing(
         _record_file_state(session, JOURNAL_ID, f"products_{mode}", file_lut)
         session.commit()
 
+    # Звірка лічильника з реальністю: «added» без рядків у БД = мовчазна втрата.
+    products_after = session.execute(text("SELECT count(*) FROM products")).scalar() or 0
+    mismatch = _added_mismatch(total_added, total_orphans_deleted, products_before, products_after)
+    if mismatch:
+        logger.error(f"[products] ⚠️ лічильник розійшовся з базою: {mismatch}")
+
     return {
         "mode":    mode,
         "sheets":  total_sheets,
@@ -5602,6 +5609,9 @@ def run_products_parsing(
         "skipped": total_skipped,
         "locks_restored": restored,
         "orphans_deleted": total_orphans_deleted,
+        "products_before": products_before,
+        "products_after": products_after,
+        "added_mismatch": mismatch,
         "seen_product_ids": set(seen_in_run.keys()),
     }
 
@@ -6013,6 +6023,57 @@ def _sheet_numbers(all_rows: list) -> set:
             if num_idx < len(r) and _canon_sheet_num(r[num_idx])}
 
 
+def _added_mismatch(added: int, deleted: int, before: int, after: int) -> Optional[str]:
+    """Опис розбіжності «скільки парсер нарахував» vs «скільки реально в БД», або None.
+
+    Парсер може брехати лічильником: у 2025-2026 роках `added` рахувався ДО того,
+    як рядок переживе коміт, тож відкат транзакції аркуша давав «added: 59» при
+    нулі в базі (#Ф955 і вся вкладка). Ця звірка робить таку втрату гучною одразу.
+    Різниця може бути НЕ нульовою легально (хтось додав товар у застосунку під час
+    парсу), тому це попередження, а не виняток.
+    """
+    expected = added - deleted
+    actual = after - before
+    if expected == actual:
+        return None
+    return (f"парсер нарахував +{added} −{deleted} = {expected:+d}, "
+            f"а в БД {before} → {after} = {actual:+d} (розбіжність {actual - expected:+d})")
+
+
+def _numbers_from_value_ranges(value_ranges: list) -> set:
+    """Канонічні номери з відповіді values_batch_get по колонці «Номер».
+
+    Перший рядок кожного діапазону — заголовок, тому пропускається. Порожні
+    клітинки ігноруються.
+    """
+    out = set()
+    for vr in value_ranges or []:
+        for row in (vr.get("values") or [])[1:]:
+            n = _canon_sheet_num(row[0] if row else "")
+            if n:
+                out.add(n)
+    return out
+
+
+def _journal_all_numbers(sh) -> set:
+    """Усі номери журналу (колонка A кожної вкладки завозу), одним пакетом читань.
+
+    Потрібно, щоб точкове прибирання НЕ судило по одній вкладці: `deliveryid`
+    товару не гарантує, що його рядок і досі саме там — рядок міг переїхати.
+    Кидає виняток, якщо читання не вдалося: краще не прибрати, ніж прибрати живе.
+    """
+    tabs = [ws.title for ws in sh.worksheets() if not is_skip_sheet(ws.title)]
+    nums: set = set()
+    CHUNK = 60
+    for i in range(0, len(tabs), CHUNK):
+        chunk = tabs[i:i + CHUNK]
+        res = sh.values_batch_get([f"'{t}'!A:A" for t in chunk])
+        nums |= _numbers_from_value_ranges(res.get("valueRanges", []))
+    if not nums:
+        raise RuntimeError("журнал повернув 0 номерів")
+    return nums
+
+
 def _reconcile_delivery_orphans(session: Session, delivery_id: int, all_rows: Optional[list],
                                 max_share: Optional[float] = None, tag: str = "sync",
                                 sheet_nums: Optional[set] = None,
@@ -6148,10 +6209,28 @@ def sync_one_delivery_tab(session: Session, deliveryname: str) -> dict:
     )
     res = _parse_products_sheet(ws, session, sheet_date, None, {}, supplier_id, shipment_id, prefetched_rows=all_rows)
     session.flush()
-    deleted = _reconcile_delivery_orphans(session, shipment_id, all_rows) if shipment_id else 0
+
+    # Прибирати орфанів можна ЛИШЕ знаючи весь журнал: товар цього завозу міг
+    # переїхати рядком в іншу вкладку, а `deliveryid` лишитись старим — саме на
+    # цій хибній засаді 19.08.2026 згоріло 135 живих товарів. Не змогли прочитати
+    # журнал — не видаляємо нічого (адди/правки цієї вкладки все одно застосовані).
+    deleted, scan_failed = 0, None
+    if shipment_id:
+        try:
+            journal_nums = _journal_all_numbers(sh)
+        except Exception as e:  # noqa: BLE001
+            journal_nums, scan_failed = None, str(e)
+            logger.warning(f"[sync] скан журналу не вдався ({e}) — прибирання орфанів пропущено")
+        if journal_nums is not None:
+            deleted = _reconcile_delivery_orphans(
+                session, shipment_id, all_rows, all_sheet_nums=journal_nums,
+            )
     session.commit()
-    return {"shipment_id": shipment_id, "added": res.get("added", 0),
-            "updated": res.get("updated", 0), "deleted": deleted}
+    out = {"shipment_id": shipment_id, "added": res.get("added", 0),
+           "updated": res.get("updated", 0), "deleted": deleted}
+    if scan_failed:
+        out["orphan_scan_skipped"] = scan_failed
+    return out
 
 
 def run_full_parsing(
