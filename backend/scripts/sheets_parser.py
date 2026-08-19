@@ -352,6 +352,12 @@ ORDER_GID_SWEEP = os.getenv("ORDER_GID_SWEEP", "1") != "0"
 # вкладка не знесла завіз, але дрібне перейменування на 5 рядків лікувалось саме.
 # PARSE_ORPHAN_MAX_SHARE=0 + MIN_ABS=0 → вимкнути авто-прибирання (ручний синк
 # картки завозу працює як і раніше).
+# ⚠️ ВИМКНЕНО за замовчуванням після інциденту 19.08.2026: авто-прохід знищив
+# 135 живих товарів (рядок переїхав в іншу вкладку, а deliveryid лишився старим).
+# Логіку полагоджено (рішення в кінці прогону, з seen_in_run і номерами ВСІХ
+# вкладок), але вмикати — свідомо: PARSE_ORPHAN_AUTO=1. Ручний синк картки завозу
+# працює завжди, незалежно від цього прапорця.
+PARSE_ORPHAN_AUTO = os.getenv("PARSE_ORPHAN_AUTO", "0") != "0"
 PARSE_ORPHAN_MAX_SHARE = float(os.getenv("PARSE_ORPHAN_MAX_SHARE", "0.5"))
 PARSE_ORPHAN_MIN_ABS = int(os.getenv("PARSE_ORPHAN_MIN_ABS", "20"))
 _GHOST_SWEEP_BACKUP_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ghost_sweep_backups")
@@ -5466,6 +5472,7 @@ def run_products_parsing(
 
     total_added = total_updated = total_skipped = 0
     total_orphans_deleted = 0
+    orphan_scan: list = []   # (shipment_id, назва вкладки, номери з аркуша)
     total_sheets = len(batch_sheets)
     # Спільний лічильник появ product.id між усіма аркушами в цьому run.
     # Передається у _parse_products_sheet щоб quantity = кількість появ
@@ -5505,28 +5512,41 @@ def run_products_parsing(
         total_updated += result["updated"]
         total_skipped += result["skipped"]
 
-        # ── Орфани вкладки: номер зник із аркуша (перейменували 4336 → Ф4336,
-        # прибрали рядок), а запис у БД лишався НАЗАВЖДИ: глобальний mark&sweep
-        # вимкнено з 02.06.2026, а point-wise reconcile бігав ЛИШЕ з картки
-        # завозу (`sync_one_delivery_tab`). Тепер — одразу після парсу вкладки,
-        # з тими самими гардами (scoped by deliveryid + protect-sold + JSON-бекап)
-        # плюс запобіжник по частці на випадок недочитаної вкладки.
-        # _parse_products_sheet уже зробив commit, тож reconcile — окрема транзакція.
+        # ── Орфани вкладки збираємо, але НЕ видаляємо тут ─────────────────
+        # ⚠️ 19.08.2026: прибирання одразу після кожної вкладки знесло 135 живих
+        # товарів. Причина — `deliveryid` товару НЕ дорівнює вкладці, де його рядок
+        # лежить зараз: рядок міг переїхати в іншу вкладку, а прив'язка лишитись
+        # старою. Reconcile вкладки D бачив «номера нема в D» і видаляв, хоча далі
+        # в цьому ж прогоні той номер знаходився у вкладці A (парсер потім створював
+        # його наново, вже іншим id). Тому рішення відкладаємо до кінця прогону,
+        # коли відомо ВСЕ, що журнал реально бачив (`seen_in_run`).
         if shipment_id:
+            orphan_scan.append((shipment_id, ws.title, _sheet_numbers(all_rows)))
+
+    if shipment_ids:
+        session.commit()
+
+    # ── Орфани: одне рішення на весь прогін, коли відомо все ──────────────
+    # Видаляємо лише те, що: (а) не з'явилось у ЖОДНІЙ розібраній вкладці,
+    # (б) парсер не торкався цього прогону, (в) не має продажів, (г) не сміттєвий
+    # номер ('???'/'__tmp_rename'), (д) не суфіксна ростовка живого номера.
+    # Плюс бекап (без нього — не видаляємо) і стеля частки завозу.
+    if PARSE_ORPHAN_AUTO and orphan_scan:
+        all_sheet_nums = set().union(*(nums for _, _, nums in orphan_scan))
+        seen_ids = set(seen_in_run.keys())
+        for shipment_id, title, nums in orphan_scan:
             try:
                 deleted = _reconcile_delivery_orphans(
-                    session, shipment_id, all_rows,
-                    max_share=PARSE_ORPHAN_MAX_SHARE, tag="products",
+                    session, shipment_id, None, max_share=PARSE_ORPHAN_MAX_SHARE,
+                    tag="products", sheet_nums=nums, seen_ids=seen_ids,
+                    all_sheet_nums=all_sheet_nums,
                 )
                 if deleted:
                     session.commit()
                     total_orphans_deleted += deleted
             except Exception as e:  # noqa: BLE001 — парс не має падати через прибирання
                 session.rollback()
-                logger.warning(f"[products] orphan-reconcile '{ws.title}' failed: {e}")
-
-    if shipment_ids:
-        session.commit()
+                logger.warning(f"[products] orphan-reconcile '{title}' failed: {e}")
 
     # Phase 2a: restore user-locked fields the parser may have overwritten
     restored = _restore_product_locks(session, locked_snapshot)
@@ -5922,28 +5942,61 @@ def run_workspace_parsing(
     }
 
 
-def _reconcile_delivery_orphans(session: Session, delivery_id: int, all_rows: list,
-                                max_share: Optional[float] = None, tag: str = "sync") -> int:
+def _canon_sheet_num(s) -> str:
+    """Номер у порівнянному вигляді: без '#', без ';', UPPER."""
+    return (s or "").strip().lstrip("#").rstrip(";").strip().upper()
+
+
+def _num_base(n: str) -> str:
+    """Базовий номер без парсерських суфіксів: 'Ф3477-2' → 'Ф3477', '0738(Л5)' → '0738'.
+
+    Суфікси створює САМ парсер для повторів рядка з одним номером, і в аркуші їх
+    нема — тож без цього зрізу кожна така ростовка виглядає «зниклою з вкладки».
+    """
+    n = re.sub(r"\([^)]*\)$", "", n or "")
+    n = re.sub(r"\s*-\s*\d+$", "", n)
+    return n.strip()
+
+
+def _is_placeholder_num(n: str) -> bool:
+    """'???', '???_123', '__tmp_rename_123', порожньо — сміттєві номери, які веде
+    вручну людина у «проблемних». Автоматика їх НЕ прибирає."""
+    n = (n or "").strip().lstrip("#")
+    return (not n) or n.startswith("???") or n.startswith("__TMP_RENAME") or n.upper().startswith("__TMP_RENAME")
+
+
+def _sheet_numbers(all_rows: list) -> set:
+    """Канонічні номери з колонки «Номер» вкладки. Порожньо → порожня множина."""
+    if not all_rows:
+        return set()
+    try:
+        num_idx = all_rows[0].index("Номер")
+    except (ValueError, AttributeError):
+        return set()
+    return {_canon_sheet_num(r[num_idx]) for r in all_rows[1:]
+            if num_idx < len(r) and _canon_sheet_num(r[num_idx])}
+
+
+def _reconcile_delivery_orphans(session: Session, delivery_id: int, all_rows: Optional[list],
+                                max_share: Optional[float] = None, tag: str = "sync",
+                                sheet_nums: Optional[set] = None,
+                                seen_ids: Optional[set] = None,
+                                all_sheet_nums: Optional[set] = None) -> int:
     """Point-wise видалення: товари БД(deliveryid), чий номер зник із вкладки аркуша
     і БЕЗ продажів. Scoped + protect-sold + JSON-бекап. Повертає к-сть видалених.
 
-    `max_share` — запобіжник для АВТОМАТИЧНОГО виклику з парсера: якщо орфанами
-    виявилась більша частка завозу, це ознака не перейменування, а кривого
-    читання вкладки → нічого не видаляємо, лише лог. Ручний синк картки завозу
-    передає None (як і було): там людина бачить дифф і тисне сама.
+    `max_share` — запобіжник: якщо орфанами виявилась більша частка завозу, це
+    ознака не перейменування, а кривого читання вкладки → лише лог. Ручний синк
+    картки завозу передає None: там людина бачить дифф і тисне сама.
+
+    `seen_ids` / `all_sheet_nums` — контекст ПРОГОНУ парсера (id, які журнал реально
+    бачив, і всі номери з усіх розібраних вкладок). Без них вкладка судить наодинці
+    й помиляється: `deliveryid` товару НЕ означає, що його рядок і досі в ЦІЙ вкладці.
+    Саме на цьому 19.08.2026 згоріло 135 живих товарів.
     """
-    if not all_rows:
-        return 0
-    header = all_rows[0]
-    try:
-        num_idx = header.index("Номер")
-    except ValueError:
-        return 0
-
-    def _canon(s):
-        return (s or "").strip().lstrip("#").rstrip(";").strip().upper()
-
-    sheet_nums = {_canon(r[num_idx]) for r in all_rows[1:] if num_idx < len(r) and _canon(r[num_idx])}
+    if sheet_nums is None:
+        sheet_nums = _sheet_numbers(all_rows)
+    _canon = _canon_sheet_num
     if not sheet_nums:
         # Порожня/недочитана вкладка ≠ «завіз зник». Без цього гарду весь завіз
         # пішов би під ніж на першому ж збої читання.
@@ -5956,11 +6009,24 @@ def _reconcile_delivery_orphans(session: Session, delivery_id: int, all_rows: li
                 FROM products p WHERE p.deliveryid = :d"""),
         {"d": delivery_id},
     ).fetchall()
-    orphan_ids = [r[0] for r in rows if not r[2] and _canon(r[1]) not in sheet_nums]
+
+    def _is_orphan(pid, pnum) -> bool:
+        if _is_placeholder_num(pnum):
+            return False                      # «проблемні» веде людина, не автоматика
+        if seen_ids is not None and pid in seen_ids:
+            return False                      # журнал бачив цей рядок у цьому прогоні
+        c = _canon(pnum)
+        if c in sheet_nums or _num_base(c) in sheet_nums:
+            return False                      # є у вкладці (з суфіксом чи без)
+        if all_sheet_nums is not None and (c in all_sheet_nums or _num_base(c) in all_sheet_nums):
+            return False                      # рядок переїхав в ІНШУ вкладку журналу
+        return True
+
+    orphan_ids = [r[0] for r in rows if not r[2] and _is_orphan(r[0], r[1])]
 
     # Продані під старим номером — не чіпаємо (історія продажу реальна), але
     # мовчати не можна: це рівно та пара-двійник, яку далі зливають руками.
-    protected = [(r[0], r[1]) for r in rows if r[2] and _canon(r[1]) not in sheet_nums]
+    protected = [(r[0], r[1]) for r in rows if r[2] and _is_orphan(r[0], r[1])]
     if protected:
         logger.warning(
             f"[{tag}] delivery {delivery_id}: {len(protected)} товар(ів) зникли з вкладки, "
