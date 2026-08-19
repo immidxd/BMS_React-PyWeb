@@ -1920,6 +1920,37 @@ def update_product_visibility(db: Session, product_id: int, is_visible: bool) ->
         logger.error(f"Error updating visibility for product ID {product_id}: {str(e)}")
         raise
 
+def _enqueue_bulk_writeback(db: Session, product_ids: List[int], fields: Set[str]) -> None:
+    """Поставити в чергу запис у журнал для масово змінених полів.
+
+    FK-поля резолвимо в назви тут, поки сесія жива: воркер працює поза нею.
+    """
+    try:
+        try:
+            from backend.services import journal_sync
+        except ImportError:
+            from services import journal_sync
+        rows = db.execute(text("""
+            SELECT p.id, p.productnumber, d.deliveryname
+            FROM products p LEFT JOIN deliveries d ON d.id = p.deliveryid
+            WHERE p.id = ANY(:ids)
+        """), {"ids": list(product_ids)}).fetchall()
+        for r in rows:
+            values = {}
+            for f in fields:
+                v = db.execute(text(f"SELECT {f} FROM products WHERE id = :i"),
+                               {"i": r.id}).scalar()
+                if f in SHOE_FK_NAME_FIELDS:
+                    v = resolve_lookup_name(db, f, v)
+                values[f] = v
+            journal_sync.enqueue_many(db, r.id, r.productnumber, r.deliveryname, values)
+        db.commit()
+        journal_sync.kick()
+    except Exception as e:  # noqa: BLE001
+        db.rollback()
+        logger.error(f"bulk write-back enqueue failed: {e}")
+
+
 def bulk_update_products(db: Session, product_ids: List[int], update_data: Dict[str, Any]) -> int:
     """
     Масове оновлення товарів
@@ -1938,8 +1969,24 @@ def bulk_update_products(db: Session, product_ids: List[int], update_data: Dict[
             filtered_data, 
             synchronize_session=False
         )
-        
+        db.flush()
+
+        # Масова правка — така сама правка користувача, як і в картці: її треба
+        # ЗАЛОЧИТИ (інакше наступний парсинг мовчки поверне старе значення з
+        # аркуша) і донести до журналу. Раніше тут був голий UPDATE: дані
+        # лишались тільки в БД, у таблиці журналу порожньо, а лок відсутній —
+        # тобто правка ще й жила до першого парсингу.
+        lockable = {f for f in filtered_data if f in LOCKABLE_PRODUCT_FIELDS}
+        if lockable:
+            for prod in db.query(models.Product).filter(models.Product.id.in_(product_ids)).all():
+                _merge_lock(prod, set(lockable))
+            db.flush()
+
         db.commit()
+
+        if lockable:
+            _enqueue_bulk_writeback(db, product_ids, lockable)
+
         logger.info(f"Bulk updated {result} products")
         return result
     except Exception as e:

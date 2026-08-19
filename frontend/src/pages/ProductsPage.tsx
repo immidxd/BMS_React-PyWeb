@@ -1304,6 +1304,7 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
           onPageChange={(p) => setPage(p)}
           onVisibilityChange={async (id, isVisible) => { await productService.updateProductVisibility(id, isVisible); await fetchProducts(); }}
           onSortChange={(sb, sd) => { setSortBy(sb); setSortDir(sd); setPage(1); }}
+          onProductSaved={() => { void fetchProducts(); }}
             selectionEnabled={selectionMode}
             selectedRowKeys={selection.ids as React.Key[]}
             onSelectedRowKeysChange={(keys) => selection.set(keys as number[])}

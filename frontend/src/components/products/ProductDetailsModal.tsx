@@ -36,6 +36,10 @@ interface Props {
   /** Опц. синхронізація перед завантаженням (напр. точкова синхр. вкладки завозу),
    *  щоб картка показала дані, що збігаються з аркушем. Виконується зі спінером. */
   syncBeforeLoad?: () => Promise<unknown>;
+  /** Викликається після успішного збереження будь-якого поля картки. Потрібен,
+   *  щоб рядок у таблиці не показував старе значення: таблиця тримає свою копію
+   *  списку й сама про правку в картці не дізнається. */
+  onSaved?: (productId: number) => void;
 }
 
 type GalleryKind = 'official' | 'real' | 'defect';
@@ -170,7 +174,7 @@ const measurementsFromProduct = (p: any): Record<string, string> => {
 // одразу — фото вантажаться окремо й «доїжджають» у фоні навіть після таймауту).
 const IMAGE_SOFT_TIMEOUT_MS = 3500;
 
-const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev, onNext, syncBeforeLoad }) => {
+const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev, onNext, syncBeforeLoad, onSaved }) => {
   const [loading, setLoading] = useState(false);
   // Перехід ◀/▶ у процесі: показана картка вже НЕ відповідає обраному товару.
   // Поки true — картка приглушена, редагування заблоковане, зверху індикатор.
@@ -1425,6 +1429,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     try {
       const val = photoSrcDraft.trim();
       await productService.updateProduct(productId, { official_photos_from: val || null });
+      onSaved?.(productId);
       setEditingPhotoSrc(false);
       await loadProduct(false);
       await loadImages();
@@ -1451,6 +1456,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
       await productService.updateProduct(productId, { [field]: val } as any);
       setEditingField(null);
       await loadProduct(false);
+      onSaved?.(productId);
     } catch (e) {
       console.error('Failed to save field', field, e);
     } finally {
@@ -1466,6 +1472,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     try {
       await productService.updateProduct(productId, { oldprice: null } as any);
       await loadProduct(false);
+      onSaved?.(productId);
     } catch (e) {
       console.error('Failed to clear oldprice', e);
     } finally {
@@ -1593,6 +1600,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
         successMsg: `Зміни ${pnum} збережено`,
         errorMsg: `Редагування ${pnum}`,
       });
+      onSaved?.(pid);   // рядок таблиці має підхопити правку навіть якщо картку вже закрили
       if (curPidRef.current !== pid) return;  // картку закрили/перейшли — задача завершилась у фоні
       await loadProduct(false);
       setEditMode(false);

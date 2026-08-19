@@ -212,6 +212,10 @@ interface ProductsTableProps {
   selectedRowKeys: React.Key[];
   onSelectedRowKeysChange: (keys: React.Key[]) => void;
   selectionEnabled?: boolean;   // режим виділення (чекбокси рядків) увімкнено з ProductsPage
+  /** Перезавантажити поточну сторінку списку. Викликається після правки в
+   *  картці: таблиця тримає власну копію списку, тож інакше рядок показував би
+   *  старе значення до наступного гортання/фільтра. */
+  onProductSaved?: () => void;
 }
 
 const ProductsTable: React.FC<ProductsTableProps> = ({ 
@@ -224,6 +228,7 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
     selectedRowKeys,
     onSelectedRowKeysChange,
     selectionEnabled = false,
+    onProductSaved,
 }) => {
     const navigate = useNavigate();
     const [visibilityLoading, setVisibilityLoading] = useState<Record<number, boolean>>({});
@@ -816,6 +821,7 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
                 productId={detailsId}
                 open={detailsOpen}
                 onClose={() => setDetailsOpen(false)}
+                onSaved={() => onProductSaved?.()}
                 onPrev={canNavigate ? () => navigateDetails(-1) : undefined}
                 onNext={canNavigate ? () => navigateDetails(1) : undefined}
             />

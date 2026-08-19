@@ -53,14 +53,20 @@ def retry(include_skipped: bool = Query(False, description="Повторити �
 def reconcile(apply: bool = Query(False, description="false = лише звіт, нічого не пишемо"),
               sheets: Optional[List[str]] = Query(None, description="Обмежити переліком вкладок"),
               max_sheets: Optional[int] = Query(None, ge=1),
+              mode: str = Query("locked", regex="^(locked|fill_empty)$",
+                                description="locked = синхронізувати правки з картки; "
+                                            "fill_empty = заповнити ПОРОЖНІ клітинки з картки"),
+              numbers: Optional[List[str]] = Query(None, description="Лише ці номери товарів"),
               db: Session = Depends(get_db)):
-    """Звірити картки з аркушем по залочених полях.
+    """Звірити картки з аркушем.
 
-    За замовчуванням — сухий прогін: показує, що розійшлося, і НЕ пише.
+    За замовчуванням — сухий прогін по залочених полях: показує, що
+    розійшлося, і НЕ пише.
     """
     try:
         return journal_reconcile.reconcile(db, apply=apply, sheet_titles=sheets,
-                                           max_sheets=max_sheets)
+                                           max_sheets=max_sheets, mode=mode,
+                                           numbers=numbers)
     except Exception as e:  # noqa: BLE001
         logger.error(f"reconcile failed: {e}")
         raise HTTPException(status_code=502, detail=f"Звірка не вдалася: {e}")

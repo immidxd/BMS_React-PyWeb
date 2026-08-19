@@ -95,22 +95,44 @@ def _locked_fields(raw: Optional[str]) -> List[str]:
 
 def reconcile(db: Session, apply: bool = False,
               sheet_titles: Optional[List[str]] = None,
-              max_sheets: Optional[int] = None) -> Dict[str, Any]:
+              max_sheets: Optional[int] = None,
+              mode: str = "locked",
+              numbers: Optional[List[str]] = None) -> Dict[str, Any]:
     """Знайти (і за apply=True — виправити) розбіжності картка→аркуш.
 
-    Повертає звіт: скільки вкладок пройдено, скільки клітинок розійшлося,
-    приклади. Нічого не пише, поки apply не True.
+    Два режими:
+
+    ``locked`` (типовий) — синхронізує лише ЗАЛОЧЕНІ поля, тобто ті, які людина
+    правила в застосунку. Решта журналу лишається джерелом правди.
+
+    ``fill_empty`` — заповнює ПОРОЖНІ клітинки з картки, незалежно від локів, і
+    ніколи не чіпає клітинку, де вже щось є. Для випадку «рядок у журналі
+    недозаповнений, хоча в картці все є»: дані з БД не губляться, а порожнеча
+    в аркуші не є чиєюсь думкою, яку можна затерти.
+
+    ``numbers`` звужує роботу до конкретних номерів товарів.
+
+    Повертає звіт. Нічого не пише, поки apply не True.
     """
+    if mode not in ("locked", "fill_empty"):
+        raise ValueError("mode має бути 'locked' або 'fill_empty'")
     sp = _sp()
     ps = _product_service()
 
-    rows = db.execute(text("""
+    where = ["TRUE"]
+    params: Dict[str, Any] = {}
+    if mode == "locked":
+        where.append("COALESCE(p.manually_edited_fields, '') <> ''")
+    if numbers:
+        where.append("REPLACE(UPPER(p.productnumber), '#', '') = ANY(:nums)")
+        params["nums"] = [n.replace('#', '').upper() for n in numbers]
+    rows = db.execute(text(f"""
         SELECT p.id, p.productnumber, p.manually_edited_fields, d.deliveryname
         FROM products p
         JOIN deliveries d ON d.id = p.deliveryid
-        WHERE COALESCE(p.manually_edited_fields, '') <> ''
+        WHERE {' AND '.join(where)}
         ORDER BY d.deliveryname, p.productnumber
-    """)).fetchall()
+    """), params).fetchall()
 
     by_sheet: Dict[str, List[Any]] = {}
     for r in rows:
@@ -169,7 +191,9 @@ def reconcile(db: Session, apply: bool = False,
                 report["row_not_found"] += 1
                 continue
 
-            for field in _locked_fields(pr.manually_edited_fields):
+            fields = (_locked_fields(pr.manually_edited_fields) if mode == "locked"
+                      else list(sp.WRITEBACK_FIELD_HEADERS.keys()))
+            for field in fields:
                 header_name = sp.WRITEBACK_FIELD_HEADERS.get(field)
                 if not header_name or header_name not in header:
                     report["no_column"] += 1
@@ -189,6 +213,10 @@ def reconcile(db: Session, apply: bool = False,
                     old = row[col_idx] if col_idx < len(row) else ""
                     if old.strip() == new_str.strip():
                         continue
+                    if mode == "fill_empty" and old.strip():
+                        continue   # у клітинці вже щось є — не наша справа
+                    if not new_str.strip():
+                        continue   # нема чим заповнювати
                     import gspread as _gspread
                     a1 = _gspread.utils.rowcol_to_a1(r_i, col_idx + 1)
                     updates.append({"range": a1, "values": [[new_str]]})
