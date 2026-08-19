@@ -3157,14 +3157,23 @@ def _parse_products_sheet(
                     ownercountryid        = own_id,
                     deliveryid            = shipment_id,
                 )
+                # Вставка під SAVEPOINT: конфлікт унікальності ламає ЛИШЕ цей рядок.
+                # Раніше тут стояв session.rollback() — він відкочував УСЮ транзакцію
+                # аркуша, тобто всі раніше додані товари цієї вкладки зникали, а
+                # лічильник `added` лишався. Так вкладка 23.01.2025(Андрій) роками
+                # рапортувала «додано 59» і не додавала жодного (#Ф955 і сусіди).
+                sp_add = session.begin_nested()
                 session.add(product)
                 try:
                     session.flush()
+                    sp_add.commit()
                     seen_in_run[product.id] = 1
                     _apply_product_materials(session, product.id, materials_parsed, ws.title)
                     added += 1
                 except IntegrityError:
-                    session.rollback()
+                    sp_add.rollback()
+                    if product in session:
+                        session.expunge(product)
                     # Conflict on uix_products_num_size_color: record was inserted by a
                     # previous row in this batch (flush not yet visible to query).
                     # Find it now and set quantity via seen_in_run.
@@ -3251,14 +3260,23 @@ def _parse_products_sheet(
                     ownercountryid        = own_id,
                     deliveryid            = shipment_id,
                 )
+                # Вставка під SAVEPOINT: конфлікт унікальності ламає ЛИШЕ цей рядок.
+                # Раніше тут стояв session.rollback() — він відкочував УСЮ транзакцію
+                # аркуша, тобто всі раніше додані товари цієї вкладки зникали, а
+                # лічильник `added` лишався. Так вкладка 23.01.2025(Андрій) роками
+                # рапортувала «додано 59» і не додавала жодного (#Ф955 і сусіди).
+                sp_add = session.begin_nested()
                 session.add(product)
                 try:
                     session.flush()
+                    sp_add.commit()
                     seen_in_run[product.id] = 1
                     _apply_product_materials(session, product.id, materials_parsed, ws.title)
                     added += 1
                 except IntegrityError:
-                    session.rollback()
+                    sp_add.rollback()
+                    if product in session:
+                        session.expunge(product)
                     existing_now = session.query(Product).filter(
                         Product.productnumber == base_pnum,
                         Product.sizeeu == (size_val or None),
@@ -3423,14 +3441,23 @@ def _parse_products_sheet(
                             ownercountryid        = own_id,
                             deliveryid            = shipment_id,
                         )
+                        # Вставка під SAVEPOINT: конфлікт унікальності ламає ЛИШЕ цей рядок.
+                        # Раніше тут стояв session.rollback() — він відкочував УСЮ транзакцію
+                        # аркуша, тобто всі раніше додані товари цієї вкладки зникали, а
+                        # лічильник `added` лишався. Так вкладка 23.01.2025(Андрій) роками
+                        # рапортувала «додано 59» і не додавала жодного (#Ф955 і сусіди).
+                        sp_add = session.begin_nested()
                         session.add(product)
                         try:
                             session.flush()
+                            sp_add.commit()
                             seen_in_run[product.id] = 1
                             _apply_product_materials(session, product.id, materials_parsed, ws.title)
                             added += 1
                         except IntegrityError:
-                            session.rollback()
+                            sp_add.rollback()
+                            if product in session:
+                                session.expunge(product)
                             existing_now = session.query(Product).filter(
                                 Product.productnumber == target_pnum,
                                 Product.sizeeu == (size_val or None),
@@ -3563,14 +3590,23 @@ def _parse_products_sheet(
                         ownercountryid        = own_id,
                         deliveryid            = shipment_id,
                     )
+                    # Вставка під SAVEPOINT: конфлікт унікальності ламає ЛИШЕ цей рядок.
+                    # Раніше тут стояв session.rollback() — він відкочував УСЮ транзакцію
+                    # аркуша, тобто всі раніше додані товари цієї вкладки зникали, а
+                    # лічильник `added` лишався. Так вкладка 23.01.2025(Андрій) роками
+                    # рапортувала «додано 59» і не додавала жодного (#Ф955 і сусіди).
+                    sp_add = session.begin_nested()
                     session.add(product)
                     try:
                         session.flush()
+                        sp_add.commit()
                         seen_in_run[product.id] = 1
                         _apply_product_materials(session, product.id, materials_parsed, ws.title)
                         added += 1
                     except IntegrityError:
-                        session.rollback()
+                        sp_add.rollback()
+                        if product in session:
+                            session.expunge(product)
                         existing_now = session.query(Product).filter(
                             Product.productnumber == target_pnum,
                             Product.sizeeu == (size_val or None),
