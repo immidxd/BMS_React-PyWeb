@@ -27,7 +27,7 @@ import ProductHoverPreview from './ProductHoverPreview';
 import { LinkOutlined, LockFilled, PictureOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import { productService } from '../../services/productService';
-import { CopyOnClick, UnknownIf, isUnknownValue, BrandName, getProductDisplayStatus, effectiveProductNumber } from '../common/displayHelpers';
+import { CopyOnClick, UnknownIf, isUnknownValue, BrandName, getProductDisplayStatus, getProductStock, effectiveProductNumber } from '../common/displayHelpers';
 import { notify } from '../../ui/feedback';
 import LoadingSpinner from '../common/LoadingSpinner';
 // Pagination is rendered at page level
@@ -540,21 +540,22 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
                 if (!display) return <span className="text-gray-300 text-xs">—</span>;
                 // ×N — це ЗАЛИШОК, а не завезена кількість. Раніше тут стояв
                 // record.quantity: чіп показував «×3» на ростовці, де вже продали
-                // дві пари, і не рухався НІКОЛИ. available_qty приходить у кожному
-                // рядку відповіді (quantity − sold_count) — беремо його.
+                // дві пари, і не рухався НІКОЛИ. Залишок рахує getProductStock —
+                // спільний із колонкою «В наявності» й узгоджений зі «Статусом».
                 // Чіп лишається видимим і при залишку 1, поки завезли >1: інакше
                 // ростовка візуально перестала б відрізнятись від одиничного товару.
-                const total = record.quantity ?? 0;
-                const avail = record.available_qty ?? total;
-                const sold  = record.sold_count ?? 0;
+                const { total, sold, avail, byJournal } = getProductStock(record);
                 const countChip = isRost && total > 1 ? (
                     <span className={`ml-0.5 ${avail <= 0 ? 'text-red-400' : 'text-purple-400'}`}>×{avail}</span>
                 ) : null;
+                const tip = byJournal
+                    ? `Позначено проданим у журналі — залишку нема (завезено ${total})`
+                    : sold > 0 ? `Залишок ${avail} з ${total} — продано ${sold}` : '';
                 return (
                     <span className={`text-xs ${isRost ? 'text-purple-700 font-medium' : ''}`}>
                         {display}
-                        {countChip && (sold > 0 ? (
-                            <Tooltip title={`Залишок ${avail} з ${total} — продано ${sold}`}>
+                        {countChip && (tip ? (
+                            <Tooltip title={tip}>
                                 {countChip}
                             </Tooltip>
                         ) : countChip)}
@@ -594,10 +595,13 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
             render: (q: number) => <Tag color={q > 0 ? 'blue' : 'red'}>{q}</Tag> },
         available_qty: { title: 'В наявності', key: 'available_qty', width: 80, align: 'center' as const,
             render: (_: any, record: Product) => {
-                const total = record.quantity ?? 0;
-                const avail = record.available_qty ?? total;
-                const sold  = record.sold_count  ?? 0;
+                const { total, sold, avail, byJournal } = getProductStock(record);
                 if (total === 0) return <Tag color="red">0</Tag>;
+                if (byJournal) return (
+                    <Tooltip title={`Позначено проданим у журналі — залишку нема (завезено ${total})`}>
+                        <Tag color="red">0 / {total}</Tag>
+                    </Tooltip>
+                );
                 if (sold === 0)  return <Tag color="green">{total}</Tag>;
                 if (avail <= 0) return <Tag color="red">0 / {total}</Tag>;
                 return (

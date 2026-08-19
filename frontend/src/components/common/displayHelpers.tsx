@@ -285,6 +285,43 @@ export function getProductDisplayStatus(p: ProductStatusInput): { text: string; 
     return { text: 'Непродано', color: 'green' };
 }
 
+// ── Наявний залишок — ЄДИНЕ джерело для всіх лічильників «в наявності» ──────
+//
+// Бекенд дає available_qty = quantity − sold_count, тобто рахує лише продажі,
+// підтверджені замовленнями. Але статус має ще один шлях стати «Продано» —
+// знімок журналу БЕЗ жодного замовлення (неформальний продаж, п.3 правила
+// вище). У такому разі sold_count=0, available_qty=quantity, і поряд із
+// червоним «Продано» чіп показував повний запас: «38 ×10 · Продано».
+// Тому залишок іде тим самим правилом, що й статус: фінальний продаж → нуль.
+//
+// byJournal каже, ЧОМУ нуль: не замовлення, а знімок — щоб підказка не
+// брехала «продано 0».
+export interface ProductStockInput extends ProductStatusInput {
+    available_qty?: number | null;
+}
+
+export function getProductStock(p: ProductStockInput): {
+    total: number; sold: number; avail: number; byJournal: boolean;
+} {
+    const total = p.quantity ?? 0;
+    const sold = p.sold_count ?? 0;
+    const raw = p.available_qty ?? Math.max(total - sold, 0);
+    const status = getProductDisplayStatus(p).text;
+    // Знімок обнуляє залишок ЛИШЕ коли ми справді бачимо живі дані про
+    // замовлення. Якщо order_count не прийшов (старіший бекенд у тому ж
+    // застосунку — сторінка перезавантажилась, процес ще ні), відрізнити
+    // застарілий знімок від справжнього неформального продажу неможливо:
+    // тоді нічого не вигадуємо і лишаємо чесний quantity − sold_count.
+    const liveOrders = p.order_count !== undefined && p.order_count !== null;
+    const finalSold = liveOrders && (status === 'Продано' || status === 'Подаровано');
+    return {
+        total,
+        sold,
+        avail: finalSold ? 0 : raw,
+        byJournal: finalSold && sold < total,
+    };
+}
+
 // ── Колір чипа «Стан» товару за значенням ───────────────────────────────────
 // Новий → зелений, Хороший → синій, Легковживаний → жовтий,
 // Вживаний → помаранчевий, Пошкоджений → червоний. Невідоме → сірий.

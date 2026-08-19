@@ -332,6 +332,9 @@ class Product(ProductBase):
 class ProductList(BaseModel):
     id: int
     productnumber: str
+    # Номер для показу (реальний або перший клон-номер, поки реального нема).
+    # Сервіс його обчислює; без поля тут він зрізався і UI падав на фолбек.
+    display_number: Optional[str] = None
     clonednumbers: Optional[str] = None
     official_photos_from: Optional[str] = None
     model: Optional[str] = None
@@ -424,6 +427,11 @@ class ProductList(BaseModel):
     # Computed from order_items
     sold_count: int = 0
     available_qty: Optional[int] = None
+    # Скільки взагалі замовлень на товар (будь-який статус). Сервіс його рахує
+    # і кладе в рядок, але без поля тут response_model мовчки його зрізав — і
+    # детект застарілого знімку «Продано» в таблиці не працював ніколи:
+    # order_count завжди приходив undefined → знімку вірили беззастережно.
+    order_count: int = 0
     reserved_count: int = 0           # Підтверджено без Оплачено = бронь
     is_reserved: bool = False         # активна бронь і товар ще не повністю проданий
     pnum_dup_brands: int = 0

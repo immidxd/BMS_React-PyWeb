@@ -4,7 +4,7 @@ import type { Product, ProductFilters } from '../../types/product';
 import { Tag, Image } from 'antd';
 import { CloseOutlined, PictureOutlined, LeftOutlined, RightOutlined, WarningOutlined, EditOutlined, CheckOutlined, PlusOutlined, SyncOutlined, EyeOutlined, EyeInvisibleOutlined, StarFilled, ShoppingOutlined, TableOutlined, InboxOutlined, TagOutlined, DownloadOutlined, CopyOutlined, LoadingOutlined, RotateLeftOutlined, RotateRightOutlined, SwapOutlined } from '@ant-design/icons';
 import { copyImageToClipboard, saveProductPhoto, saveProductPhotosZip } from '../../services/imageTransfer';
-import { CopyOnClick, formatBrandName, getProductDisplayStatus, getConditionColor, effectiveProductNumber } from '../common/displayHelpers';
+import { CopyOnClick, formatBrandName, getProductDisplayStatus, getProductStock, getConditionColor, effectiveProductNumber } from '../common/displayHelpers';
 import { hiddenFieldsForType } from './productCategory';
 import { taskManager, emitProductPhotosChanged } from '../../services/taskManager';
 import {
@@ -2990,11 +2990,13 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                       </Tag>
                     )}
                     {(() => {
-                      const total = p.quantity ?? 0;
-                      const avail = p.available_qty ?? total;
-                      const sold = p.sold_count ?? 0;
+                      // Залишок — той самий getProductStock, що й у таблиці:
+                      // фінальний продаж (у т.ч. знімок журналу без замовлень)
+                      // обнуляє наявність, інакше картка й таблиця розходились.
+                      const { total, sold, avail, byJournal } = getProductStock(p as any);
                       let label = '', color = '';
                       if (total === 0) { label = '0 в наявності'; color = 'red'; }
+                      else if (byJournal) { label = `0 / ${total}`; color = 'red'; }
                       else if (sold === 0) { label = `${total} в наявності`; color = 'green'; }
                       else if (avail <= 0) { label = `0 / ${total}`; color = 'red'; }
                       else { label = `${avail} / ${total} в наявності`; color = 'orange'; }

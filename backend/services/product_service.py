@@ -532,7 +532,11 @@ def _build_product_where(filters: Optional["schemas.ProductFilter"]) -> tuple:
             where_conditions.append("p.quantity > 0")
 
         if filters.only_unsold:
-            where_conditions.append("""(
+            # Застарілий знімок «Продано» спростовують лише РЕАЛЬНІ замовлення:
+            # анонімна мітка «В черзі» — це рядок Sheets, а не замовлення, і
+            # раніше вона одна повертала товар у «Тільки непродані», хоча UI
+            # (order_count рахує з тим самим real_order_sql) показував «Продано».
+            where_conditions.append(f"""(
                 GREATEST(COALESCE(p.quantity, 0) - COALESCE(sold.sold_count, 0), 0) > 0
                 AND (
                     s.statusname IS NULL
@@ -540,7 +544,11 @@ def _build_product_where(filters: Optional["schemas.ProductFilter"]) -> tuple:
                     OR (
                         s.statusname IN ('Продано', 'Подаровано')
                         AND COALESCE(sold.sold_count, 0) < COALESCE(NULLIF(p.quantity, 0), 1)
-                        AND EXISTS (SELECT 1 FROM order_items oi_uns WHERE oi_uns.product_id = p.id)
+                        AND EXISTS (
+                            SELECT 1 FROM order_items oi_uns
+                            JOIN orders o_uns ON o_uns.id = oi_uns.order_id
+                            WHERE oi_uns.product_id = p.id AND {real_order_sql('o_uns')}
+                        )
                     )
                 )
             )""")
