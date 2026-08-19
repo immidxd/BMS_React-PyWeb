@@ -538,12 +538,26 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
                 // на пошук/фільтри/сортування не впливає (вони працюють по колонках БД).
                 const display = text || letter || '';
                 if (!display) return <span className="text-gray-300 text-xs">—</span>;
+                // ×N — це ЗАЛИШОК, а не завезена кількість. Раніше тут стояв
+                // record.quantity: чіп показував «×3» на ростовці, де вже продали
+                // дві пари, і не рухався НІКОЛИ. available_qty приходить у кожному
+                // рядку відповіді (quantity − sold_count) — беремо його.
+                // Чіп лишається видимим і при залишку 1, поки завезли >1: інакше
+                // ростовка візуально перестала б відрізнятись від одиничного товару.
+                const total = record.quantity ?? 0;
+                const avail = record.available_qty ?? total;
+                const sold  = record.sold_count ?? 0;
+                const countChip = isRost && total > 1 ? (
+                    <span className={`ml-0.5 ${avail <= 0 ? 'text-red-400' : 'text-purple-400'}`}>×{avail}</span>
+                ) : null;
                 return (
                     <span className={`text-xs ${isRost ? 'text-purple-700 font-medium' : ''}`}>
                         {display}
-                        {isRost && record.quantity > 1 && (
-                            <span className="text-purple-400 ml-0.5">×{record.quantity}</span>
-                        )}
+                        {countChip && (sold > 0 ? (
+                            <Tooltip title={`Залишок ${avail} з ${total} — продано ${sold}`}>
+                                {countChip}
+                            </Tooltip>
+                        ) : countChip)}
                     </span>
                 );
             }},
