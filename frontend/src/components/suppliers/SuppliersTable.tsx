@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import {
   fetchSuppliers, mergeSuppliers, updateSupplier, deleteSupplier,
@@ -15,7 +15,13 @@ type SortCol = 'id' | 'name' | 'product_count' | 'shipments_count' | 'total_spen
 const fmt = (n: number) => n.toLocaleString('uk-UA', { maximumFractionDigits: 0 });
 const fmtPrice = (n: number) => n.toLocaleString('uk-UA', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
-const SuppliersTable: React.FC = () => {
+interface SuppliersTableProps {
+  searchTerm?: string;
+  reloadSignal?: number;
+  onLoadComplete?: () => void;
+}
+
+const SuppliersTable: React.FC<SuppliersTableProps> = ({ searchTerm = '', reloadSignal, onLoadComplete }) => {
   const [items, setItems] = useState<Supplier[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -39,23 +45,38 @@ const SuppliersTable: React.FC = () => {
   const [splittingAlias, setSplittingAlias] = useState<number | null>(null);
   const navigate = useNavigate();
   const location = useLocation();
+  const listAbortRef = useRef<AbortController | null>(null);
+  const listRequestRef = useRef(0);
 
   const loadData = useCallback(async () => {
+    listAbortRef.current?.abort();
+    const controller = new AbortController();
+    listAbortRef.current = controller;
+    const requestId = ++listRequestRef.current;
     setLoading(true);
     setError(null);
     try {
-      const data: SupplierList = await fetchSuppliers(undefined, page, perPage, sortBy as any, sortDir);
+      const data: SupplierList = await fetchSuppliers(
+        searchTerm.trim() || undefined, page, perPage, sortBy as any, sortDir, controller.signal,
+      );
+      if (requestId !== listRequestRef.current) return;
       setItems(data.items);
       setTotal(data.total);
-    } catch (e) {
-      setError('Помилка завантаження постачальників');
+    } catch (e: any) {
+      if (e?.name === 'CanceledError' || e?.code === 'ERR_CANCELED') return;
+      if (requestId === listRequestRef.current) setError('Помилка завантаження постачальників');
       console.error(e);
     } finally {
-      setLoading(false);
+      if (requestId === listRequestRef.current) {
+        setLoading(false);
+        onLoadComplete?.();
+      }
     }
-  }, [page, perPage, sortBy, sortDir]);
+  }, [page, perPage, sortBy, sortDir, searchTerm, onLoadComplete]);
 
-  useEffect(() => { loadData(); }, [loadData]);
+  useEffect(() => { loadData(); }, [loadData, reloadSignal]);
+  useEffect(() => { setPage(1); }, [searchTerm]);
+  useEffect(() => () => listAbortRef.current?.abort(), []);
 
   const loadGroups = useCallback(async () => {
     try {

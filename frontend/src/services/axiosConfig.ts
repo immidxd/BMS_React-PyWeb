@@ -49,6 +49,12 @@ axios.interceptors.response.use(
     return response;
   },
   error => {
+    // Перемикання сторінки/фільтра навмисно скасовує попередній запит. Axios
+    // не має response і для cancel, і для справжнього обриву мережі, тому без
+    // цієї перевірки нормальний швидкий перехід показувався як втрата сервера.
+    if (axios.isCancel(error) || error?.code === 'ERR_CANCELED') {
+      return Promise.reject(error);
+    }
     // Якщо бекенд недоступний - показуємо спеціальне повідомлення
     if (!error.response) {
       console.error('[API Network Error] Не вдалося з\'єднатися з сервером');
@@ -60,4 +66,4 @@ axios.interceptors.response.use(
   }
 );
 
-export default axios; 
+export default axios;

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import MainLayout from '../layouts/MainLayout';
 import ProductDetailsModal from '../components/products/ProductDetailsModal';
 import ProductNumberLink from '../components/products/ProductNumberLink';
@@ -181,6 +181,10 @@ const StatisticsPage: React.FC<StatisticsPageProps> = () => {
   // Products statistics state
   const [productStats, setProductStats] = useState<ProductsStatsResponse | null>(null);
   const [productStatsLoading, setProductStatsLoading] = useState(false);
+  const salesRequestRef = useRef(0);
+  const shipmentsRequestRef = useRef(0);
+  const suppliersRequestRef = useRef(0);
+  const deliveriesRequestRef = useRef(0);
 
   // Load years + summary
   useEffect(() => {
@@ -190,66 +194,74 @@ const StatisticsPage: React.FC<StatisticsPageProps> = () => {
 
   // Load sales data
   const loadSales = useCallback(async () => {
+    const requestId = ++salesRequestRef.current;
     setSalesLoading(true);
     try {
       const res = await statisticsService.getSalesStats(salesPeriod, salesYear);
-      setSalesData(res);
+      if (requestId === salesRequestRef.current) setSalesData(res);
     } catch (e) { console.error(e); }
-    finally { setSalesLoading(false); }
+    finally { if (requestId === salesRequestRef.current) setSalesLoading(false); }
   }, [salesPeriod, salesYear]);
   useEffect(() => { loadSales(); }, [loadSales]);
 
   // Load shipments data
   const loadShipments = useCallback(async () => {
+    const requestId = ++shipmentsRequestRef.current;
     setShipLoading(true);
     try {
       const res = await statisticsService.getShipmentsStats(shipPeriod, shipYear);
-      setShipData(res);
+      if (requestId === shipmentsRequestRef.current) setShipData(res);
     } catch (e) { console.error(e); }
-    finally { setShipLoading(false); }
+    finally { if (requestId === shipmentsRequestRef.current) setShipLoading(false); }
   }, [shipPeriod, shipYear]);
   useEffect(() => { loadShipments(); }, [loadShipments]);
 
   // Load suppliers data
   const loadSuppliers = useCallback(async () => {
+    const requestId = ++suppliersRequestRef.current;
     setSupLoading(true);
     try {
       const res = await statisticsService.getSuppliersStats(supPeriod, supYear, 15);
-      setSupData(res);
+      if (requestId === suppliersRequestRef.current) setSupData(res);
     } catch (e) { console.error(e); }
-    finally { setSupLoading(false); }
+    finally { if (requestId === suppliersRequestRef.current) setSupLoading(false); }
   }, [supPeriod, supYear]);
   useEffect(() => { loadSuppliers(); }, [loadSuppliers]);
 
   // Load deliveries list
   const loadDeliveries = useCallback(async () => {
+    const requestId = ++deliveriesRequestRef.current;
     setDelLoading(true);
     try {
       const res = await statisticsService.getDeliveriesList(delPage, 15);
-      setDelData(res);
+      if (requestId === deliveriesRequestRef.current) setDelData(res);
     } catch (e) { console.error(e); }
-    finally { setDelLoading(false); }
+    finally { if (requestId === deliveriesRequestRef.current) setDelLoading(false); }
   }, [delPage]);
   useEffect(() => { loadDeliveries(); }, [loadDeliveries]);
 
   // Load delivery detail
   useEffect(() => {
     if (delDetailId === null) { setDelDetail(null); return; }
+    let cancelled = false;
     setDelDetailLoading(true);
     statisticsService.getDeliveryDetail(delDetailId)
-      .then(setDelDetail)
+      .then((data) => { if (!cancelled) setDelDetail(data); })
       .catch(console.error)
-      .finally(() => setDelDetailLoading(false));
+      .finally(() => { if (!cancelled) setDelDetailLoading(false); });
+    return () => { cancelled = true; };
   }, [delDetailId]);
 
   // Load supplier detail
   useEffect(() => {
     if (supDetailId === null) { setSupDetail(null); return; }
+    let cancelled = false;
     setSupDetailLoading(true);
     statisticsService.getSupplierDetail(supDetailId)
-      .then(setSupDetail)
+      .then((data) => { if (!cancelled) setSupDetail(data); })
       .catch(console.error)
-      .finally(() => setSupDetailLoading(false));
+      .finally(() => { if (!cancelled) setSupDetailLoading(false); });
+    return () => { cancelled = true; };
   }, [supDetailId]);
 
   // Load client statistics

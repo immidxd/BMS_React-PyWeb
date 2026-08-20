@@ -9,6 +9,7 @@ interface SearchBarProps {
   showGlobalResults?: boolean;
   currentScope?: string;
   initialValue?: string;   // початковий термін (пер-вкладковий пошук: key={tab}+initialValue)
+  disabled?: boolean;
 }
 
 const SearchBar: React.FC<SearchBarProps> = ({
@@ -16,7 +17,8 @@ const SearchBar: React.FC<SearchBarProps> = ({
   placeholder = "Пошук по базі...",
   showGlobalResults = false,
   currentScope,
-  initialValue = ''
+  initialValue = '',
+  disabled = false
 }) => {
   const [searchTerm, setSearchTerm] = useState(initialValue);
   const [globalResults, setGlobalResults] = useState<GlobalSearchResponse | null>(null);
@@ -25,6 +27,9 @@ const SearchBar: React.FC<SearchBarProps> = ({
   const dropdownRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const debounceRef = useRef<NodeJS.Timeout | null>(null);
+  const pageDebounceRef = useRef<NodeJS.Timeout | null>(null);
+  const searchAbortRef = useRef<AbortController | null>(null);
+  const searchRequestRef = useRef(0);
 
   // Закриття dropdown при кліку поза ним
   useEffect(() => {
@@ -44,27 +49,39 @@ const SearchBar: React.FC<SearchBarProps> = ({
       if (debounceRef.current) {
         clearTimeout(debounceRef.current);
       }
+      if (pageDebounceRef.current) {
+        clearTimeout(pageDebounceRef.current);
+      }
+      searchAbortRef.current?.abort();
     };
   }, []);
 
   const handleInputChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     const value = event.target.value;
     setSearchTerm(value);
-    
-    // Викликаємо onSearch одразу для динамічного оновлення
-    onSearch(value);
+
+    // Важкі списки не мають ходити в БД на кожну введену літеру. Порожній
+    // пошук скидаємо одразу, непорожній — після короткої паузи друку.
+    if (pageDebounceRef.current) clearTimeout(pageDebounceRef.current);
+    if (!value) {
+      onSearch('');
+    } else {
+      pageDebounceRef.current = setTimeout(() => onSearch(value), 250);
+    }
     
     // Очищаємо попередній debounce
     if (debounceRef.current) {
       clearTimeout(debounceRef.current);
     }
+    searchAbortRef.current?.abort();
+    searchRequestRef.current += 1;
     
     // Якщо включено глобальні результати
     if (showGlobalResults) {
-      if (value.length >= 2) {
+      if (value.trim().length >= 2) {
         // Використовуємо debounce для глобального пошуку
         debounceRef.current = setTimeout(() => {
-          performGlobalSearch(value);
+          performGlobalSearch(value.trim());
         }, 300); // 300ms затримка
       } else {
         setGlobalResults(null);
@@ -75,7 +92,9 @@ const SearchBar: React.FC<SearchBarProps> = ({
 
   const handleSubmit = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (disabled) return;
     if (searchTerm.trim()) {
+      if (pageDebounceRef.current) clearTimeout(pageDebounceRef.current);
       onSearch(searchTerm.trim());
       setShowDropdown(false);
     }
@@ -95,36 +114,59 @@ const SearchBar: React.FC<SearchBarProps> = ({
     if (debounceRef.current) {
       clearTimeout(debounceRef.current);
     }
+    if (pageDebounceRef.current) {
+      clearTimeout(pageDebounceRef.current);
+    }
+    searchAbortRef.current?.abort();
+    searchRequestRef.current += 1;
+    setIsLoading(false);
     inputRef.current?.focus();
   };
 
   const performGlobalSearch = async (query: string) => {
+    const controller = new AbortController();
+    searchAbortRef.current?.abort();
+    searchAbortRef.current = controller;
+    const requestId = ++searchRequestRef.current;
     setIsLoading(true);
     try {
       const results = await searchService.globalSearch(query, {
         limit: 3, // Показуємо тільки превью
         include_insights: true,
-        scope: currentScope as any
+        scope: currentScope as any,
+        signal: controller.signal,
       });
+      if (requestId !== searchRequestRef.current) return;
       setGlobalResults(results);
       setShowDropdown(true);
-    } catch (error) {
+    } catch (error: any) {
+      if (error?.name === 'CanceledError' || error?.code === 'ERR_CANCELED') return;
       console.error('Global search error:', error);
-      setGlobalResults(null);
+      if (requestId === searchRequestRef.current) setGlobalResults(null);
     } finally {
-      setIsLoading(false);
+      if (requestId === searchRequestRef.current) setIsLoading(false);
     }
   };
 
   const handleNavigateToCategory = (category: string, query: string) => {
-    // TODO: Реалізувати навігацію до категорії
-    console.log(`Navigate to ${category} with query: ${query}`);
+    // Endpoint вже обмежений поточним розділом, тому «показати всі»
+    // застосовує запит до самого списку, а не лишає неробочу TODO-кнопку.
+    if (category === currentScope) onSearch(query);
     setShowDropdown(false);
   };
 
   const handleSelectItem = (category: string, item: any) => {
-    // TODO: Реалізувати вибір елемента
-    console.log(`Selected ${category} item:`, item);
+    if (category !== currentScope) return;
+    const value = category === 'products'
+      ? item.productnumber
+      : category === 'clients'
+        ? (item.phone_number || item.full_name)
+        : (item.order_number || item.id);
+    if (value !== undefined && value !== null) {
+      const next = String(value).replace(/^#/, '');
+      setSearchTerm(next);
+      onSearch(next);
+    }
     setShowDropdown(false);
   };
 
@@ -145,11 +187,12 @@ const SearchBar: React.FC<SearchBarProps> = ({
             autoCorrect="off"
             autoCapitalize="off"
             spellCheck={false}
+            disabled={disabled}
             value={searchTerm}
             onChange={handleInputChange}
             onFocus={handleInputFocus}
             placeholder={placeholder}
-            className={`w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-primary-500 dark:focus:ring-primary-400 focus:border-transparent outline-none bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 transition-shadow shadow-sm hover:shadow focus:shadow-md ${searchTerm ? 'pr-16' : 'pr-10'}`}
+            className={`w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-primary-500 dark:focus:ring-primary-400 focus:border-transparent outline-none bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 transition-shadow shadow-sm ${disabled ? 'cursor-not-allowed opacity-60' : 'hover:shadow focus:shadow-md'} ${searchTerm ? 'pr-16' : 'pr-10'}`}
           />
           {/* Кнопка очищення (показується тільки коли є текст) */}
           {searchTerm && (
@@ -169,7 +212,8 @@ const SearchBar: React.FC<SearchBarProps> = ({
           <button 
             type="submit" 
             aria-label="Пошук"
-            className="absolute right-0 top-0 bottom-0 px-3 text-gray-500 dark:text-gray-400 hover:text-primary-600 dark:hover:text-primary-300 focus:outline-none focus:text-primary-600 dark:focus:text-primary-300"
+            disabled={disabled}
+            className={`absolute right-0 top-0 bottom-0 px-3 text-gray-500 dark:text-gray-400 focus:outline-none ${disabled ? 'cursor-not-allowed opacity-60' : 'hover:text-primary-600 dark:hover:text-primary-300 focus:text-primary-600 dark:focus:text-primary-300'}`}
           >
             {isLoading ? (
               <svg className="animate-spin h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
@@ -209,4 +253,4 @@ const SearchBar: React.FC<SearchBarProps> = ({
   );
 };
 
-export default SearchBar; 
+export default SearchBar;

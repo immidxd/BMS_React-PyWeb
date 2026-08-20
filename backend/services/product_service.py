@@ -349,7 +349,21 @@ def _build_product_where(filters: Optional["schemas.ProductFilter"]) -> tuple:
             params['subtypeid'] = filters.subtypeid
 
         if filters.brandid and not filters.brandids:
-            where_conditions.append("p.brandid = :brandid")
+            # Один учасник альянсу брендів означає весь альянс. Для бренду без
+            # concern_id поведінка лишається точною по одному ID.
+            where_conditions.append("""
+                p.brandid IN (
+                    SELECT member.id
+                    FROM brands selected
+                    JOIN brands member
+                      ON member.id = selected.id
+                      OR (
+                          selected.concern_id IS NOT NULL
+                          AND member.concern_id = selected.concern_id
+                      )
+                    WHERE selected.id = :brandid
+                )
+            """)
             params['brandid'] = filters.brandid
 
         if filters.genderid and not filters.genderids:
@@ -404,7 +418,19 @@ def _build_product_where(filters: Optional["schemas.ProductFilter"]) -> tuple:
             where_conditions.append("(" + " OR ".join(_type_or) + ")")
 
         if filters.brandids:
-            where_conditions.append("p.brandid = ANY(:brandids)")
+            where_conditions.append("""
+                p.brandid IN (
+                    SELECT DISTINCT member.id
+                    FROM brands selected
+                    JOIN brands member
+                      ON member.id = selected.id
+                      OR (
+                          selected.concern_id IS NOT NULL
+                          AND member.concern_id = selected.concern_id
+                      )
+                    WHERE selected.id = ANY(:brandids)
+                )
+            """)
             params['brandids'] = filters.brandids
 
         if filters.genderids:
@@ -1639,7 +1665,17 @@ def get_product_filters(db: Session) -> Dict[str, Any]:
         # Exclude '?'-only placeholder entries (user marks unknown with ?, ??, ???)
         types = fetch_pairs("SELECT id, typename FROM types WHERE typename IS NOT NULL AND btrim(typename) !~ '^[?]+$' ORDER BY typename")
         subtypes_rows = db.execute(text("SELECT id, subtypename, typeid FROM subtypes WHERE subtypename IS NOT NULL AND btrim(subtypename) !~ '^[?]+$' ORDER BY subtypename")).fetchall()
-        brands = fetch_pairs("SELECT id, brandname FROM brands WHERE brandname IS NOT NULL AND btrim(brandname) !~ '^[?]+$' ORDER BY brandname")
+        # У товарному фільтрі показуємо лише бренди, які реально мають товари.
+        # Осиротілі/службові записи лишаються доступними на сторінці «Бренди»
+        # для аудиту, але більше не засмічують щоденний пошук товарів.
+        brands = fetch_pairs("""
+            SELECT b.id, b.brandname
+            FROM brands b
+            WHERE b.brandname IS NOT NULL
+              AND btrim(b.brandname) !~ '^[?]+$'
+              AND EXISTS (SELECT 1 FROM products p WHERE p.brandid = b.id)
+            ORDER BY b.brandname
+        """)
         genders = fetch_pairs(
             "SELECT id, INITCAP(gendername) as gendername FROM genders "
             "WHERE id != 0 ORDER BY gendername"
@@ -1656,7 +1692,17 @@ def get_product_filters(db: Session) -> Dict[str, Any]:
             ORDER BY cg.display_order
         """)).fetchall()
         statuses = fetch_pairs("SELECT id, statusname FROM statuses ORDER BY statusname")
-        conditions = fetch_pairs("SELECT id, conditionname FROM conditions ORDER BY conditionname")
+        # Фільтр має містити тільки стани, які реально використовуються як
+        # поточні. Раніше весь довідник безумовно потрапляв у UI, тому навіть
+        # осиротілий текст із помилково зміщеної колонки Sheets ставав опцією.
+        conditions = fetch_pairs("""
+            SELECT c.id, c.conditionname
+            FROM conditions c
+            WHERE EXISTS (
+                SELECT 1 FROM products p WHERE p.current_conditionid = c.id
+            )
+            ORDER BY c.conditionname
+        """)
         styles = fetch_pairs("SELECT id, stylename FROM styles ORDER BY stylename")
         # Унікальні значення для нових текстових полів (для випадаючих фільтрів)
         seasons_rows = db.execute(text("SELECT DISTINCT TRIM(season) FROM products WHERE season IS NOT NULL AND season != ''")).fetchall()

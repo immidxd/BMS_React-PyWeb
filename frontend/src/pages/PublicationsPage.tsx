@@ -654,6 +654,8 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const listAbortRef = useRef<AbortController | null>(null);
+  const listRequestRef = useRef(0);
   const [filterMode, setFilterMode] = useState<FilterMode>('published');
   const [platform, setPlatform] = useState<PublicationPlatform>('all');
   // Базовий безпечний режим — не пропонувати публікацію товару без залишку.
@@ -956,6 +958,10 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
   }, []);
 
   const fetchItems = useCallback(async () => {
+    listAbortRef.current?.abort();
+    const controller = new AbortController();
+    listAbortRef.current = controller;
+    const requestId = ++listRequestRef.current;
     setLoading(true);
     setError(null);
     try {
@@ -971,21 +977,27 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
       params.set('only_unsold', String(onlyUnsold && filterMode !== 'problematic'));
       if (onlyRostovka) params.set('only_rostovka', 'true');
 
-      const res = await fetch(`/api/publications/overview?${params}`);
+      const res = await fetch(`/api/publications/overview?${params}`, { signal: controller.signal });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
+      if (requestId !== listRequestRef.current) return;
       setItems(data.items || []);
       setTotal(data.total || 0);
       setPages(data.pages || 1);
     } catch (e: any) {
-      setError(e.message || 'Помилка завантаження');
+      if (e?.name === 'AbortError') return;
+      if (requestId === listRequestRef.current) setError(e.message || 'Помилка завантаження');
     } finally {
-      setLoading(false);
-      setIsRefreshing(false);
+      if (requestId === listRequestRef.current) {
+        setLoading(false);
+        setIsRefreshing(false);
+      }
     }
   }, [page, perPage, currentSearchTerm, filterMode, platform, onlyUnsold, onlyRostovka]);
 
   useEffect(() => { fetchItems(); }, [fetchItems]);
+  useEffect(() => () => listAbortRef.current?.abort(), []);
+  useEffect(() => { setPage(1); }, [currentSearchTerm]);
   useEffect(() => { fetchStats(); }, [fetchStats]);
 
   const handleRefresh = () => {

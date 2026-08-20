@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import MainLayout from '../layouts/MainLayout';
 import SuppliersTable from '../components/suppliers/SuppliersTable';
 
@@ -34,21 +34,12 @@ interface SuppliersPageProps {
 
 const SuppliersPage: React.FC<SuppliersPageProps> = ({ currentSearchTerm }) => {
   const [isRefreshing, setIsRefreshing] = useState(false);
-
-  useEffect(() => {
-    if (currentSearchTerm !== undefined) {
-        console.log('SuppliersPage received search term:', currentSearchTerm);
-        // TODO: Implement filtering
-    }
-  }, [currentSearchTerm]);
+  const [reloadSignal, setReloadSignal] = useState(0);
+  const handleLoadComplete = React.useCallback(() => setIsRefreshing(false), []);
 
   const handleRefresh = () => {
-    console.log('Refreshing suppliers...');
     setIsRefreshing(true);
-    setTimeout(() => {
-      setIsRefreshing(false);
-      console.log('Suppliers refreshed!');
-    }, 1500);
+    setReloadSignal((value) => value + 1);
   };
 
   const handleResetFilters = () => {
@@ -68,10 +59,14 @@ const SuppliersPage: React.FC<SuppliersPageProps> = ({ currentSearchTerm }) => {
             {currentSearchTerm && <p className='text-sm text-gray-500 dark:text-gray-400'>Активний пошук: "{currentSearchTerm}"</p>}
         </div>
 
-        <SuppliersTable />
+        <SuppliersTable
+          searchTerm={currentSearchTerm}
+          reloadSignal={reloadSignal}
+          onLoadComplete={handleLoadComplete}
+        />
       </div>
     </MainLayout>
   );
 };
 
-export default SuppliersPage; 
+export default SuppliersPage;

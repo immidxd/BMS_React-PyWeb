@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import MainLayout from '../layouts/MainLayout';
 import Pagination from '../components/common/Pagination';
@@ -145,6 +145,8 @@ const BrandsPage: React.FC<BrandsPageProps> = ({ currentSearchTerm }) => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const listAbortRef = useRef<AbortController | null>(null);
+  const listRequestRef = useRef(0);
 
   // Selection for merge
   const [selected, setSelected] = useState<Set<number>>(new Set());
@@ -175,6 +177,10 @@ const BrandsPage: React.FC<BrandsPageProps> = ({ currentSearchTerm }) => {
 
   // Fetch brands
   const fetchBrands = useCallback(async () => {
+    listAbortRef.current?.abort();
+    const controller = new AbortController();
+    listAbortRef.current = controller;
+    const requestId = ++listRequestRef.current;
     setLoading(true);
     setError(null);
     try {
@@ -188,21 +194,27 @@ const BrandsPage: React.FC<BrandsPageProps> = ({ currentSearchTerm }) => {
       if (selectedConcernId) params.set('concern_id', String(selectedConcernId));
       if (hasProducts !== null) params.set('has_products', String(hasProducts));
 
-      const res = await fetch(`/api/brands?${params}`);
+      const res = await fetch(`/api/brands?${params}`, { signal: controller.signal });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
+      if (requestId !== listRequestRef.current) return;
       setBrands(data.items || []);
       setTotal(data.total || 0);
       setPages(data.pages || 1);
     } catch (e: any) {
-      setError(e.message || 'Помилка завантаження');
+      if (e?.name === 'AbortError') return;
+      if (requestId === listRequestRef.current) setError(e.message || 'Помилка завантаження');
     } finally {
-      setLoading(false);
-      setIsRefreshing(false);
+      if (requestId === listRequestRef.current) {
+        setLoading(false);
+        setIsRefreshing(false);
+      }
     }
   }, [page, perPage, sortBy, sortDir, currentSearchTerm, selectedConcernId, hasProducts]);
 
   useEffect(() => { fetchBrands(); }, [fetchBrands]);
+  useEffect(() => () => listAbortRef.current?.abort(), []);
+  useEffect(() => { setPage(1); }, [currentSearchTerm]);
 
   // URL sync
   useEffect(() => {

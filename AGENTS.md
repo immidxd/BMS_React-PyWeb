@@ -147,6 +147,17 @@
 
 Ключові файли: `backend/services/photo_manager.py`, `backend/routers/products.py`, `frontend/src/components/products/ProductDetailsModal.tsx`.
 
+### Бренди, псевдоніми й альянси (2026-08-21)
+
+- Канонічні написання та точні правила перенесення хибно зміщених полів живуть в `backend/services/brand_normalization.py`. Автоматично застосовуй лише затверджені точні варіанти; fuzzy-схожість лишається приводом для аудиту, а не дозволом злити бренди.
+- `brand_concerns` — це альянс/материнська група, а не злиття назв. Вибір будь-якого бренду з `concern_id` у фільтрі «Товари» має охоплювати всіх учасників альянсу. Альянс `Armani` містить окремі бренди `Emporio Armani`, `EA7` та `Armani Exchange`; `LASOCKI` так само об’єднує Lasocki/Kids/Young без перейменування брендів один в одного.
+- Підтверджені окремі значення не зливати: `FASHION` — реальний бренд; `ADVANCE` і `ADVANCED` лишаються різними. Службовий `???` не нормалізується в реальний бренд.
+- Значення з помилкової колонки маршрутизуються у своє поле і в Google-першоджерелі, і в БД: `HIGH PERFORMANCE`, `HANDMADE SHOES`, `Lavorazione artigianale`, `Luftpolster`, `Sympatex`, `Thinsulate` — технології; `Loungewear Collection` — колекція; назви моделей сумок з перевірених рядків — у «Модель». Не очищай «Бренд», якщо цільове поле вже має інше значення: це конфлікт для ручного аудиту.
+- Після ручного злиття старі назви мають лишатися в `brand_aliases` і вказувати на канонічний бренд, а `normalized_name` — бути заповненим та унікальним. Виняток — службовий `???`. Parser-и Журналу, Воркспейсу і legacy-імпорт використовують спільну нормалізацію, щоб виправлені варіанти не поверталися.
+- Очищення 2026-08-21 виконувалось із клітинковими JSON-бекапами в ignored `manual_cleanup_backups/`; відтворюваний аудит/застосування — `backend/scripts/standardize_brands_2026_08_21.py`. Google і БД змінюються тільки після точного read-before-write та post-write контролю.
+
+Ключові файли: `backend/services/brand_normalization.py`, `backend/scripts/standardize_brands_2026_08_21.py`, `backend/scripts/sheets_parser.py`, `backend/scripts/brand_utils.py`, `backend/services/product_service.py`, `backend/routers/brands.py`.
+
 ### Статистика
 
 - Канали продажу розпізнаються з опису замовлення: `PROM` → Prom; `MONO`/`МОНО` без урахування регістру → MONO; `Catalog`, `CT` або `CG` як окремі маркери → «Каталог». Не допускай хибних збігів усередині інших слів.

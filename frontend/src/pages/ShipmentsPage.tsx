@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import MainLayout from '../layouts/MainLayout';
 import ShipmentsTable from '../components/shipments/ShipmentsTable';
 import CreateDeliveryModal from '../components/shipments/CreateDeliveryModal';
@@ -25,18 +25,11 @@ const ShipmentsPage: React.FC<ShipmentsPageProps> = ({ currentSearchTerm }) => {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [showCreate, setShowCreate] = useState(false);
   const [reloadSignal, setReloadSignal] = useState(0);
-
-  useEffect(() => {
-    if (currentSearchTerm !== undefined) {
-      console.log('ShipmentsPage received search term:', currentSearchTerm);
-    }
-  }, [currentSearchTerm]);
+  const handleLoadComplete = React.useCallback(() => setIsRefreshing(false), []);
 
   const handleRefresh = () => {
     setIsRefreshing(true);
-    setTimeout(() => {
-      setIsRefreshing(false);
-    }, 1500);
+    setReloadSignal((value) => value + 1);
   };
 
   const handleResetFilters = () => {
@@ -64,7 +57,11 @@ const ShipmentsPage: React.FC<ShipmentsPageProps> = ({ currentSearchTerm }) => {
           </button>
         </div>
 
-        <ShipmentsTable reloadSignal={reloadSignal} />
+        <ShipmentsTable
+          reloadSignal={reloadSignal}
+          searchTerm={currentSearchTerm}
+          onLoadComplete={handleLoadComplete}
+        />
       </div>
 
       <CreateDeliveryModal

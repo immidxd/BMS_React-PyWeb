@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import MainLayout from '../layouts/MainLayout';
 import Pagination from '../components/common/Pagination';
@@ -73,6 +73,8 @@ const ClientsPage: React.FC<ClientsPageProps> = ({ currentSearchTerm }) => {
   // Duplicates carousel
   const [carouselOpen, setCarouselOpen] = useState(false);
   const [dupCount, setDupCount] = useState<number | null>(null);
+  const listAbortRef = useRef<AbortController | null>(null);
+  const listRequestRef = useRef(0);
 
   const fetchDupCount = useCallback(async () => {
     try {
@@ -85,6 +87,10 @@ const ClientsPage: React.FC<ClientsPageProps> = ({ currentSearchTerm }) => {
   useEffect(() => { fetchDupCount(); }, [fetchDupCount]);
 
   const fetchClients = useCallback(async () => {
+    listAbortRef.current?.abort();
+    const controller = new AbortController();
+    listAbortRef.current = controller;
+    const requestId = ++listRequestRef.current;
     setLoading(true);
     setError(null);
     try {
@@ -95,21 +101,26 @@ const ClientsPage: React.FC<ClientsPageProps> = ({ currentSearchTerm }) => {
         sort_dir: sortDir,
       });
       if (currentSearchTerm) params.set('search', currentSearchTerm);
-      const res = await fetch(`/api/clients?${params}`);
+      const res = await fetch(`/api/clients?${params}`, { signal: controller.signal });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
+      if (requestId !== listRequestRef.current) return;
       setClients(data.items || []);
       setTotal(data.total || 0);
       setPages(data.pages || 1);
     } catch (e: any) {
-      setError(e.message || 'Помилка завантаження');
+      if (e?.name === 'AbortError') return;
+      if (requestId === listRequestRef.current) setError(e.message || 'Помилка завантаження');
     } finally {
-      setLoading(false);
-      setIsRefreshing(false);
+      if (requestId === listRequestRef.current) {
+        setLoading(false);
+        setIsRefreshing(false);
+      }
     }
   }, [page, perPage, sortBy, sortDir, currentSearchTerm]);
 
   useEffect(() => { fetchClients(); }, [fetchClients]);
+  useEffect(() => () => listAbortRef.current?.abort(), []);
 
   // Reset to first page whenever the search term changes — інакше попередня
   // позиція пагінації (напр. 21-ша сторінка) виходить за межі нового результату

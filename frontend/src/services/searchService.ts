@@ -52,6 +52,7 @@ export interface SearchOptions {
   scope?: 'products' | 'orders' | 'clients' | 'suppliers' | 'deliveries';
   limit?: number;
   include_insights?: boolean;
+  signal?: AbortSignal;
 }
 
 /**
@@ -86,7 +87,8 @@ class SearchService {
       console.log(`[SearchService] Global search: "${query}"`, options);
       
       const response = await axios.get<GlobalSearchResponse>(
-        `${this.baseUrl}/global?${params.toString()}`
+        `${this.baseUrl}/global?${params.toString()}`,
+        { signal: options.signal },
       );
       
       console.log('[SearchService] Search results:', response.data);

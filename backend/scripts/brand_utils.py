@@ -81,7 +81,17 @@ def upsert_brand_and_get_id(cur: _PGCursor, conn: _PGConn, raw_brand_name: Optio
     if not raw_brand_name:
         return None
 
-    display_name = str(raw_brand_name).strip()
+    try:
+        from backend.services.brand_normalization import canonicalize_brand_name
+    except ImportError:
+        try:
+            from services.brand_normalization import canonicalize_brand_name
+        except ImportError:  # standalone legacy environments
+            canonicalize_brand_name = lambda value: str(value).strip() if value else None
+
+    display_name = canonicalize_brand_name(str(raw_brand_name).strip()) or ""
+    if not display_name:
+        return None
     normalized_name = normalize_brand(display_name)
     if not normalized_name:
         return None
@@ -117,12 +127,15 @@ def upsert_brand_and_get_id(cur: _PGCursor, conn: _PGConn, raw_brand_name: Optio
         conn.commit()
         return int(cur.fetchone()[0])
 
-    # ON CONFLICT по normalized_name – створюємо або оновлюємо display name
+    # Частковий індекс потребує такого самого WHERE у conflict target.
+    # Display name при конфлікті НЕ перезаписуємо: випадковий регістр зі старої
+    # вкладки не має права зіпсувати вже затверджене канонічне написання.
     cur.execute(
         (
             "INSERT INTO brands (brandname, normalized_name) "
             "VALUES (%s, %s) "
-            "ON CONFLICT (normalized_name) DO UPDATE SET brandname = EXCLUDED.brandname "
+            "ON CONFLICT (normalized_name) WHERE normalized_name IS NOT NULL "
+            "DO UPDATE SET normalized_name = EXCLUDED.normalized_name "
             "RETURNING id"
         ),
         (display_name, normalized_name)
@@ -130,5 +143,4 @@ def upsert_brand_and_get_id(cur: _PGCursor, conn: _PGConn, raw_brand_name: Optio
     new_id = int(cur.fetchone()[0])
     conn.commit()
     return new_id
-
 

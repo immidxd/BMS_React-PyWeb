@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import {
   fetchShipments, fetchShipment, groupShipments, ungroupShipments, updateShipment,
@@ -21,7 +21,13 @@ const fmtDate = (d: string | null) => {
 const fmtPrice = (n: number) => n.toLocaleString('uk-UA', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fmt = (n: number) => n.toLocaleString('uk-UA', { maximumFractionDigits: 0 });
 
-const ShipmentsTable: React.FC<{ reloadSignal?: number }> = ({ reloadSignal }) => {
+interface ShipmentsTableProps {
+  reloadSignal?: number;
+  searchTerm?: string;
+  onLoadComplete?: () => void;
+}
+
+const ShipmentsTable: React.FC<ShipmentsTableProps> = ({ reloadSignal, searchTerm = '', onLoadComplete }) => {
   const [items, setItems] = useState<Shipment[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -37,6 +43,8 @@ const ShipmentsTable: React.FC<{ reloadSignal?: number }> = ({ reloadSignal }) =
   const [cardShipment, setCardShipment] = useState<Shipment | null>(null);
   const navigate = useNavigate();
   const location = useLocation();
+  const listAbortRef = useRef<AbortController | null>(null);
+  const listRequestRef = useRef(0);
 
   // Крос-таб «Поставка» з картки товару: deliveryid чекає в localStorage
   // (bms:pendingDeliveryCard). Читаємо при монтуванні І на подію-поштовх
@@ -56,19 +64,30 @@ const ShipmentsTable: React.FC<{ reloadSignal?: number }> = ({ reloadSignal }) =
   }, []);
 
   const loadData = useCallback(async () => {
+    listAbortRef.current?.abort();
+    const controller = new AbortController();
+    listAbortRef.current = controller;
+    const requestId = ++listRequestRef.current;
     setLoading(true);
     setError(null);
     try {
-      const data: ShipmentList = await fetchShipments(undefined, page, perPage, sortBy, sortDir);
+      const data: ShipmentList = await fetchShipments(
+        searchTerm.trim() || undefined, page, perPage, sortBy, sortDir, undefined, undefined, controller.signal,
+      );
+      if (requestId !== listRequestRef.current) return;
       setItems(data.items);
       setTotal(data.total);
-    } catch (e) {
-      setError('Помилка завантаження поставок');
+    } catch (e: any) {
+      if (e?.name === 'CanceledError' || e?.code === 'ERR_CANCELED') return;
+      if (requestId === listRequestRef.current) setError('Помилка завантаження поставок');
       console.error(e);
     } finally {
-      setLoading(false);
+      if (requestId === listRequestRef.current) {
+        setLoading(false);
+        onLoadComplete?.();
+      }
     }
-  }, [page, perPage, sortBy, sortDir]);
+  }, [page, perPage, sortBy, sortDir, searchTerm, onLoadComplete]);
 
   const loadGroups = useCallback(async () => {
     try {
@@ -78,6 +97,8 @@ const ShipmentsTable: React.FC<{ reloadSignal?: number }> = ({ reloadSignal }) =
   }, []);
 
   useEffect(() => { loadData(); }, [loadData, reloadSignal]);
+  useEffect(() => { setPage(1); }, [searchTerm]);
+  useEffect(() => () => listAbortRef.current?.abort(), []);
   useEffect(() => { loadGroups(); }, [loadGroups]);
 
   useEffect(() => {

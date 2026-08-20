@@ -39,11 +39,13 @@ const TaskCenter: React.FC = () => {
     let cancelled = false;
     let timer: number | undefined;
     const poll = async () => {
+      let nextDelay = 10000;
       try {
         const response = await fetch('/api/journal-sync/activity');
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const activity = await response.json();
         if (cancelled) return;
+        nextDelay = activity.state === 'idle' ? 5000 : 2000;
         if (activity.state === 'idle') {
           taskManager.remove('journal-sync-global');
         } else {
@@ -62,7 +64,9 @@ const TaskCenter: React.FC = () => {
       } catch {
         // Недоступність самого індикатора не створює фальшиву помилку даних.
       } finally {
-        if (!cancelled) timer = window.setTimeout(poll, 3000);
+        // В активному стані оновлюємося швидше; у спокої не тримаємо зайве
+        // постійне навантаження на API/БД.
+        if (!cancelled) timer = window.setTimeout(poll, nextDelay);
       }
     };
     poll();

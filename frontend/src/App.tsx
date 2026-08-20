@@ -101,6 +101,12 @@ const TABS: TabConfig[] = [
   { key: 'merge', label: 'Збіги', component: MergeQueuePage },
 ];
 
+// Показуємо активний пошук лише там, де сторінка справді передає його в API.
+// В інших розділах активне поле створювало хибне враження, що список фільтрується.
+const SEARCHABLE_TABS = new Set<TabKey>([
+  'products', 'orders', 'clients', 'suppliers', 'deliveries', 'brands', 'publications',
+]);
+
 const AppContent: React.FC = () => {
   const [activeTab, setActiveTab] = useState<TabKey>(TABS[0].key);
   const { toggleFilterPanel } = useFilterPanel();
@@ -307,8 +313,13 @@ const AppContent: React.FC = () => {
               key={activeTab}
               initialValue={searchByTab[activeTab] || ''}
               onSearch={handleGlobalSearch}
-              placeholder={`Пошук у розділі "${TABS.find(t=>t.key===activeTab)?.label}"...`}
-              showGlobalResults={true}
+              placeholder={SEARCHABLE_TABS.has(activeTab)
+                ? `Пошук у розділі "${TABS.find(t=>t.key===activeTab)?.label}"...`
+                : 'У цьому розділі пошук не потрібен'}
+              disabled={!SEARCHABLE_TABS.has(activeTab)}
+              // Backend-прев’ю реально реалізоване для товарів і клієнтів. На інших
+              // вкладках пошук фільтрує їхній список без зайвого порожнього API-запиту.
+              showGlobalResults={activeTab === 'products' || activeTab === 'clients'}
               currentScope={activeTab}
             />
           </div>

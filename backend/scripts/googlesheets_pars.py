@@ -12,10 +12,15 @@ import pycountry
 from dotenv import load_dotenv
 try:
     from .brand_utils import upsert_brand_and_get_id
+    from ..services.brand_normalization import normalize_brand_fields
 except Exception:
     # fallback for direct script execution
     sys.path.append(os.path.dirname(os.path.abspath(__file__)))
     from brand_utils import upsert_brand_and_get_id
+    try:
+       from services.brand_normalization import normalize_brand_fields
+    except ImportError:
+       from backend.services.brand_normalization import normalize_brand_fields
 
 load_dotenv()
 
@@ -376,9 +381,24 @@ def get_or_create_status(cursor, status_name, conn):
 def get_or_create_condition(cursor, condition_name, conn):
    if not condition_name:
        return None
-   c_name = condition_name.strip().capitalize()
-   cursor.execute("SELECT id FROM conditions WHERE LOWER(conditionname)=LOWER(%s)", (c_name,))
-   r = cursor.fetchone()
+   try:
+       from backend.services.condition_normalization import normalize_condition_name
+   except ImportError:
+       if os.path.dirname(SCRIPT_DIR) not in sys.path:
+           sys.path.append(os.path.dirname(SCRIPT_DIR))
+       from services.condition_normalization import normalize_condition_name
+   c_name = normalize_condition_name(condition_name)
+   if not c_name:
+       logger.warning("Проігноровано некоректний стан товару з Sheets: %r", str(condition_name).strip())
+       return None
+   # PostgreSQL DB uses C collation, where LOWER() is unreliable for Cyrillic.
+   # Compare in Python just like the primary sheets_parser does.
+   cursor.execute("SELECT id, conditionname FROM conditions")
+   r = next(
+       (row for row in cursor.fetchall()
+        if row[1] and row[1].strip().casefold() == c_name.casefold()),
+       None,
+   )
    if r:
        return r[0]
    else:
@@ -904,6 +924,14 @@ def process_sheet_data(data, wtitle, all_product_numbers):
             status_raw = validate_text(rowvals[17] if len(rowvals) > 17 else '')
             condition_raw = validate_text(rowvals[18] if len(rowvals) > 18 else '')
             extranote = validate_text(rowvals[19] if len(rowvals) > 19 else '')
+
+         # Той самий точний набір правил, що й у поточному parser-і. Legacy-
+         # імпорт більше не може повернути в БД одрук бренду або переплутані
+         # місцями «Бренд»/«Модель». Технології й колекції зберігає сучасний
+         # parser; тут принаймні не створюємо з них фальшивий бренд.
+         normalized_brand_fields = normalize_brand_fields(brand, model)
+         brand = normalized_brand_fields.brand
+         model = normalized_brand_fields.model
 
          # Очищаємо номер товару (без додавання символу #)
          product_number = sanitize_product_number(p_num_) if p_num_ else ''

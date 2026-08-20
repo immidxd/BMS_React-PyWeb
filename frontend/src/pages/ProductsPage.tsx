@@ -2,8 +2,6 @@ import React, { useState, useEffect, useRef } from 'react';
 import MainLayout from '../layouts/MainLayout';
 import ProductsTable from '../components/products/ProductsTable';
 import { productService, type ProductListResponse } from '../services/productService';
-import { searchService } from '../services/searchService';
-import SearchInsights from '../components/search/SearchInsights';
 import ProductFiltersPanel from '../components/filters/ProductFilters';
 import type { ProductFilter as ProductFilterType, ProductFilters as ProductFiltersType } from '../types/product';
 import { useLocation, useNavigate } from 'react-router-dom';
@@ -77,7 +75,6 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
   // відкриття/закриття картки й перемикання вкладок; скидається лише за дією користувача.
   const selection = useSelection();
   const [selectionMode, setSelectionMode] = useState<boolean>(false);
-  const [searchInsights, setSearchInsights] = useState<any>(null);
   const abortRef = useRef<AbortController | null>(null);
   const fetchIdRef = useRef(0);
   // Динамічні фасети (розміри + кольори), наявні в поточному відфільтрованому
@@ -85,6 +82,7 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
   const [availableEuSizes, setAvailableEuSizes] = useState<string[] | null>(null);
   const [availableColorGroups, setAvailableColorGroups] = useState<{ id: number; count: number }[] | null>(null);
   const facetsAbortRef = useRef<AbortController | null>(null);
+  const facetsFetchIdRef = useRef(0);
   const [telegramPreview, setTelegramPreview] = useState<TelegramPreview | null>(null);
   const [telegramBatchIds, setTelegramBatchIds] = useState<number[] | null>(null);
   const [telegramBusy, setTelegramBusy] = useState(false);
@@ -100,38 +98,10 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
   const [collectionRequest, setCollectionRequest] = useState<{ platform: CollectionPlatform; ids: number[] } | null>(null);
   const [collectionBusy, setCollectionBusy] = useState(false);
             
-  // Effect to react to global search changes and fetch insights
-  useEffect(() => {
-    if (currentSearchTerm !== undefined) {
-        console.log('ProductsPage received search term:', currentSearchTerm);
-        
-        // Якщо є пошуковий запит, отримуємо інсайти
-        if (currentSearchTerm.trim().length >= 2) {
-          fetchSearchInsights(currentSearchTerm.trim());
-        } else {
-          // Очищаємо інсайти коли пошук порожній
-          setSearchInsights(null);
-          // Скидаємо сторінку до першої при очищенні пошуку
-          if (page !== 1) {
-            setPage(1);
-          }
-        }
-    }
-  }, [currentSearchTerm]); // Прибрав page з залежностей
-
-  const fetchSearchInsights = async (query: string) => {
-    try {
-      const results = await searchService.globalSearch(query, {
-        scope: 'products',
-        limit: 0, // Нам потрібні тільки інсайти
-        include_insights: true
-      });
-      setSearchInsights(results.insights);
-    } catch (error) {
-      console.error('Failed to fetch search insights:', error);
-      setSearchInsights(null);
-    }
-  };
+  // Пошук по списку запускає основний effect нижче. Окреме preview живе
+  // у SearchBar; раніше тут дублювався той самий важкий global-search із limit=0,
+  // який backend коректно відхиляв (limit має бути >=1).
+  useEffect(() => { setPage(1); }, [currentSearchTerm]);
 
   const fetchProducts = async () => {
     // Cancel any in-flight request to prevent stale responses from overwriting fresh ones
@@ -207,6 +177,7 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
     if (facetsAbortRef.current) facetsAbortRef.current.abort();
     const controller = new AbortController();
     facetsAbortRef.current = controller;
+    const myFetchId = ++facetsFetchIdRef.current;
     const params: Record<string, any> = {
       search: currentSearchTerm && currentSearchTerm.trim() ? currentSearchTerm.trim() : undefined,
       only_unsold: onlyUnsold || undefined,
@@ -237,8 +208,10 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
     if (selectedFilters.max_measurementscm !== undefined) params['max_measurementscm'] = selectedFilters.max_measurementscm;
     try {
       const facets = await productService.getAvailableFacets(params, controller.signal);
-      setAvailableEuSizes(facets.eu);
-      setAvailableColorGroups(facets.colorGroups);
+      if (myFetchId === facetsFetchIdRef.current) {
+        setAvailableEuSizes(facets.eu);
+        setAvailableColorGroups(facets.colorGroups);
+      }
     } catch (err: any) {
       if (err?.name === 'CanceledError' || err?.code === 'ERR_CANCELED') return;
       // м'яка деградація: лишаємо попередні списки
@@ -1047,6 +1020,13 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     useEffect(() => { fetchAvailableFacets(); }, [currentSearchTerm, selectedFilters, onlyUnsold, onlyProblematic, onlyRostovka, selectedShipmentId, visibleOnly]);
 
+    useEffect(() => () => {
+      abortRef.current?.abort();
+      facetsAbortRef.current?.abort();
+      fetchIdRef.current += 1;
+      facetsFetchIdRef.current += 1;
+    }, []);
+
     // Auto-refresh products when parsing completes — через ref на АКТУАЛЬНИЙ
     // fetchProducts. Інакше listener із порожніми deps захоплює stale-замикання з
     // монтування (порожній пошук/дефолтні фільтри), і коли фоновий авто-парс
@@ -1282,18 +1262,6 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
             />
           </div>
         </div>
-
-        {/* Інсайти пошуку */}
-        {currentSearchTerm && searchInsights && (
-          <SearchInsights 
-            insights={searchInsights}
-            query={currentSearchTerm}
-            onNavigateToCategory={(category, query) => {
-              console.log(`Navigate to ${category} with query: ${query}`);
-              // TODO: Реалізувати навігацію до інших категорій
-            }}
-          />
-        )}
 
         {/* Видалено окремий sticky-бар дій, кнопки перенесені у шапку */}
         <div className="w-full overflow-x-auto">

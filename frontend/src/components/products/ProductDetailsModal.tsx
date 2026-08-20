@@ -975,8 +975,18 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
       setSheetSyncError(null);
       return;
     }
-    syncProductFromJournal();
-    return () => { journalPullSeqRef.current += 1; };
+    // При швидкому ◀/▶ не скануємо Google-журнал для кожної проміжної
+    // картки. Картка, на якій користувач зупинився, як і раніше, обов’язково
+    // проходить повну точкову звірку. Коротка пауза прибирає чергу зайвих
+    // HTTP-запитів і не затримує відображення даних з БД.
+    setSheetSyncing(true);
+    setSheetSyncError(null);
+    setSheetSyncMessage('Оновлення з журналу');
+    const timer = window.setTimeout(() => { void syncProductFromJournal(); }, 350);
+    return () => {
+      window.clearTimeout(timer);
+      journalPullSeqRef.current += 1;
+    };
   }, [open, productId, syncProductFromJournal]);
 
   // Легкий polling тільки стану черги: чіп з'являється одразу після правки й

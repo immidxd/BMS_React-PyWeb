@@ -410,6 +410,8 @@ const OrdersPage: React.FC<OrdersPageProps> = ({ currentSearchTerm }) => {
   const [filteredSum, setFilteredSum] = useState<number>(0);
   const [queueMarkersCount, setQueueMarkersCount] = useState<number>(0);
   const [filterOpts, setFilterOpts] = useState<FilterOptions | null>(null);
+  const listAbortRef = useRef<AbortController | null>(null);
+  const listRequestRef = useRef(0);
   // Дефолтний фільтр: останній тиждень. Діє доки користувач сам не змінить
   // фільтри (включно зі скиданням). Один раз на монтуванні.
   const [filters, setFilters] = useState<ActiveFilters>(() => ({
@@ -521,21 +523,32 @@ const OrdersPage: React.FC<OrdersPageProps> = ({ currentSearchTerm }) => {
   }, [page, perPage, sortBy, sortDir, currentSearchTerm, filters]);
 
   const fetchOrders = useCallback(async () => {
+    listAbortRef.current?.abort();
+    const controller = new AbortController();
+    listAbortRef.current = controller;
+    const requestId = ++listRequestRef.current;
     setLoading(true); setError(null);
     try {
-      const res = await fetch(`/api/orders?${buildParams()}`);
+      const res = await fetch(`/api/orders?${buildParams()}`, { signal: controller.signal });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
+      if (requestId !== listRequestRef.current) return;
       setOrders(data.items || []);
       setTotal(data.total || 0);
       setPages(data.pages || 1);
       setFilteredSum(data.filtered_sum || 0);
       setQueueMarkersCount(data.queue_markers_count || 0);
-    } catch (e: any) { setError(e.message || 'Помилка завантаження'); }
-    finally { setLoading(false); setIsRefreshing(false); }
+    } catch (e: any) {
+      if (e?.name === 'AbortError') return;
+      if (requestId === listRequestRef.current) setError(e.message || 'Помилка завантаження');
+    } finally {
+      if (requestId === listRequestRef.current) { setLoading(false); setIsRefreshing(false); }
+    }
   }, [buildParams]);
 
   useEffect(() => { fetchOrders(); }, [fetchOrders]);
+  useEffect(() => () => listAbortRef.current?.abort(), []);
+  useEffect(() => { setPage(1); }, [currentSearchTerm]);
 
   // URL sync
   useEffect(() => {

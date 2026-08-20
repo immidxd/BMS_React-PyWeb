@@ -10,6 +10,13 @@ import logging
 
 from models.database import get_db
 
+try:
+    from scripts.brand_utils import normalize_brand
+    from services.brand_normalization import canonicalize_brand_name
+except ImportError:
+    from backend.scripts.brand_utils import normalize_brand
+    from backend.services.brand_normalization import canonicalize_brand_name
+
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
@@ -208,18 +215,40 @@ def update_brand(brand_id: int, body: BrandUpdate, db: Session = Depends(get_db)
     params: dict = {"id": brand_id}
 
     if body.brandname is not None:
-        new_name = body.brandname.strip()
+        new_name = canonicalize_brand_name(body.brandname) or ""
+        if not new_name:
+            raise HTTPException(400, "Назва бренду порожня")
+        normalized_name = normalize_brand(new_name)
+        conflict = db.execute(
+            text("""
+                SELECT id, brandname FROM brands
+                WHERE normalized_name = :nn AND id <> :id
+                LIMIT 1
+            """),
+            {"nn": normalized_name, "id": brand_id},
+        ).fetchone()
+        if conflict:
+            raise HTTPException(
+                409,
+                f"Такий бренд уже існує: {conflict.brandname}. Використайте об’єднання.",
+            )
         # Save old name as alias so parser won't recreate old brand
         old_brand = db.execute(
             text("SELECT brandname FROM brands WHERE id = :id"), {"id": brand_id}
         ).fetchone()
         if old_brand and old_brand.brandname != new_name:
             db.execute(
-                text("INSERT INTO brand_aliases (alias_name, brand_id) VALUES (:name, :bid) ON CONFLICT (alias_name) DO NOTHING"),
+                text("""
+                    INSERT INTO brand_aliases (alias_name, brand_id)
+                    VALUES (:name, :bid)
+                    ON CONFLICT (alias_name) DO UPDATE SET brand_id = EXCLUDED.brand_id
+                """),
                 {"name": old_brand.brandname, "bid": brand_id},
             )
         updates.append("brandname = :brandname")
         params["brandname"] = new_name
+        updates.append("normalized_name = :normalized_name")
+        params["normalized_name"] = normalized_name
     if body.concern_id is not None:
         if body.concern_id == 0:
             updates.append("concern_id = NULL")
@@ -273,58 +302,138 @@ def merge_brands(body: BrandMergeRequest, db: Session = Depends(get_db)):
         raise HTTPException(400, "source_ids порожній")
 
     # Verify target exists
-    target = db.execute(text("SELECT id FROM brands WHERE id = :id"), {"id": body.target_id}).fetchone()
+    target = db.execute(
+        text("SELECT id, brandname, concern_id FROM brands WHERE id = :id"),
+        {"id": body.target_id},
+    ).fetchone()
     if not target:
         raise HTTPException(404, "Цільовий бренд не знайдено")
+
+    source_ids = sorted(set(body.source_ids))
+    source_brands = db.execute(
+        text("SELECT id, brandname, concern_id FROM brands WHERE id = ANY(:ids)"),
+        {"ids": source_ids},
+    ).fetchall()
+    if len(source_brands) != len(source_ids):
+        found_ids = {row.id for row in source_brands}
+        missing = [source_id for source_id in source_ids if source_id not in found_ids]
+        raise HTTPException(404, f"Не знайдено бренди для об’єднання: {missing}")
+
+    canonical_name = canonicalize_brand_name(body.new_name or target.brandname) or ""
+    if not canonical_name:
+        raise HTTPException(400, "Канонічна назва бренду порожня")
+    canonical_normalized = normalize_brand(canonical_name)
+    conflict = db.execute(
+        text("""
+            SELECT id, brandname FROM brands
+            WHERE normalized_name = :nn
+              AND id <> :target
+              AND NOT (id = ANY(:sources))
+            LIMIT 1
+        """),
+        {"nn": canonical_normalized, "target": body.target_id, "sources": source_ids},
+    ).fetchone()
+    if conflict:
+        raise HTTPException(
+            409,
+            f"Такий бренд уже існує: {conflict.brandname}. Оберіть його цільовим.",
+        )
 
     # Reassign products
     result = db.execute(
         text("UPDATE products SET brandid = :target WHERE brandid = ANY(:sources)"),
-        {"target": body.target_id, "sources": body.source_ids},
+        {"target": body.target_id, "sources": source_ids},
     )
     moved = result.rowcount
 
+    # Existing aliases of source brands must survive source deletion.
+    db.execute(
+        text("UPDATE brand_aliases SET brand_id = :target WHERE brand_id = ANY(:sources)"),
+        {"target": body.target_id, "sources": source_ids},
+    )
+
     # Save source brand names as aliases → parser will respect merges
-    source_brands = db.execute(
-        text("SELECT id, brandname FROM brands WHERE id = ANY(:ids)"),
-        {"ids": body.source_ids},
-    ).fetchall()
     for sb in source_brands:
-        # Don't create alias if name already exists as alias or as a brand
-        existing_alias = db.execute(
-            text("SELECT 1 FROM brand_aliases WHERE alias_name = :name"),
-            {"name": sb.brandname},
-        ).fetchone()
-        if not existing_alias:
+        db.execute(
+            text("""
+                INSERT INTO brand_aliases (alias_name, brand_id)
+                VALUES (:name, :bid)
+                ON CONFLICT (alias_name) DO UPDATE SET brand_id = EXCLUDED.brand_id
+            """),
+            {"name": sb.brandname, "bid": body.target_id},
+        )
+
+    # Якщо ціль ще без альянсу, а джерела належать одному альянсу — зберігаємо
+    # його. Різні альянси ніколи не зливаємо мовчки.
+    if target.concern_id is None:
+        source_concerns = db.execute(
+            text("""
+                SELECT DISTINCT concern_id FROM brands
+                WHERE id = ANY(:ids) AND concern_id IS NOT NULL
+            """),
+            {"ids": source_ids},
+        ).fetchall()
+        if len(source_concerns) == 1:
             db.execute(
-                text("INSERT INTO brand_aliases (alias_name, brand_id) VALUES (:name, :bid) ON CONFLICT (alias_name) DO NOTHING"),
-                {"name": sb.brandname, "bid": body.target_id},
+                text("UPDATE brands SET concern_id = :cid WHERE id = :id"),
+                {"cid": source_concerns[0].concern_id, "id": body.target_id},
             )
 
-    # Optionally rename target
-    if body.new_name:
-        # Also save old target name as alias before renaming
-        old_target = db.execute(
-            text("SELECT brandname FROM brands WHERE id = :id"), {"id": body.target_id}
-        ).fetchone()
-        if old_target and old_target.brandname != body.new_name.strip():
-            db.execute(
-                text("INSERT INTO brand_aliases (alias_name, brand_id) VALUES (:name, :bid) ON CONFLICT (alias_name) DO NOTHING"),
-                {"name": old_target.brandname, "bid": body.target_id},
-            )
+    # Save the previous target name before a canonical rename. The actual rename
+    # happens after source deletion so a source row with the same normalized key
+    # cannot trip the partial unique index mid-transaction.
+    if target.brandname != canonical_name:
         db.execute(
-            text("UPDATE brands SET brandname = :name WHERE id = :id"),
-            {"name": body.new_name.strip(), "id": body.target_id},
+            text("""
+                INSERT INTO brand_aliases (alias_name, brand_id)
+                VALUES (:name, :bid)
+                ON CONFLICT (alias_name) DO UPDATE SET brand_id = EXCLUDED.brand_id
+            """),
+            {"name": target.brandname, "bid": body.target_id},
+        )
+
+    # Переносимо country override зі старих назв на канонічну. Наявне ручне
+    # значення канонічної назви має пріоритет.
+    country_rows = db.execute(
+        text("""
+            SELECT bc.country
+            FROM brand_countries bc
+            JOIN brands b ON lower(b.brandname) = lower(bc.brand)
+            WHERE b.id = ANY(:ids)
+            ORDER BY b.id
+        """),
+        {"ids": source_ids},
+    ).fetchall()
+    if country_rows:
+        db.execute(
+            text("""
+                INSERT INTO brand_countries (brand, country, updated_at)
+                VALUES (lower(:brand), :country, now())
+                ON CONFLICT (brand) DO NOTHING
+            """),
+            {"brand": canonical_name, "country": country_rows[0].country},
         )
 
     # Delete source brands
     db.execute(
         text("DELETE FROM brands WHERE id = ANY(:sources)"),
-        {"sources": body.source_ids},
+        {"sources": source_ids},
+    )
+    db.execute(
+        text("""
+            UPDATE brands
+            SET brandname = :name, normalized_name = :normalized
+            WHERE id = :id
+        """),
+        {
+            "name": canonical_name,
+            "normalized": canonical_normalized,
+            "id": body.target_id,
+        },
     )
     db.commit()
 
-    return {"ok": True, "moved_products": moved, "deleted_brands": len(body.source_ids)}
+    return {"ok": True, "moved_products": moved, "deleted_brands": len(source_ids)}
 
 
 # ── POST /api/brands/{id}/block ─────────────────────────────────────

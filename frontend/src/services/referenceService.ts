@@ -350,6 +350,7 @@ export const fetchSuppliers = async (
   perPage: number = 100,
   sortBy: 'id' | 'name' | 'product_count' = 'name',
   sortDir: 'asc' | 'desc' = 'asc',
+  signal?: AbortSignal,
 ): Promise<SupplierList> => {
   const params = new URLSearchParams();
   params.append('page', String(page));
@@ -357,7 +358,7 @@ export const fetchSuppliers = async (
   if (search) params.append('search', search);
   if (sortBy) params.append('sort_by', sortBy);
   if (sortDir) params.append('sort_dir', sortDir);
-  const response = await axios.get(`/api/suppliers?${params.toString()}`);
+  const response = await axios.get(`/api/suppliers?${params.toString()}`, { signal });
   return response.data;
 };
 
@@ -436,6 +437,7 @@ export const fetchShipments = async (
   sortDir: string = 'desc',
   supplierId?: number,
   groupId?: number,
+  signal?: AbortSignal,
 ): Promise<ShipmentList> => {
   const params = new URLSearchParams();
   params.append('page', String(page));
@@ -445,7 +447,7 @@ export const fetchShipments = async (
   if (sortDir) params.append('sort_dir', sortDir);
   if (supplierId) params.append('supplier_id', String(supplierId));
   if (groupId) params.append('group_id', String(groupId));
-  const response = await axios.get(`/api/shipments?${params.toString()}`);
+  const response = await axios.get(`/api/shipments?${params.toString()}`, { signal });
   return response.data;
 };
 

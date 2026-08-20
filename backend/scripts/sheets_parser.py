@@ -33,6 +33,17 @@ try:
 except ImportError:
     from backend.services.runtime_config import credentials_file as _runtime_credentials_file
 
+try:
+    from services.brand_normalization import (
+        canonicalize_brand_name,
+        normalize_brand_fields,
+    )
+except ImportError:
+    from backend.services.brand_normalization import (
+        canonicalize_brand_name,
+        normalize_brand_fields,
+    )
+
 
 def get_credentials_path() -> str:
     """Resolve Google credentials for every Sheets parser mode.
@@ -2434,6 +2445,13 @@ def _get_or_create(session: Session, model, unique_field: str, value: str):
     if model is Brand:
         from sqlalchemy import text as sa_text
 
+        # Відомі одруки/гомогліфи завжди зводимо до затвердженої назви ще до
+        # aliases/normalized lookup. Так старий рядок Журналу не може повернути
+        # в БД «Сrocs», «Jenny Jairy» чи інший уже виправлений варіант.
+        value = canonicalize_brand_name(value) or ""
+        if not value:
+            return None
+
         if _is_garbage_brand_value(value):
             logger.warning(f"[parser-guard] Rejected Brand '{value}' — looks like description/material, not a brand name")
             return None
@@ -2538,14 +2556,19 @@ def _get_or_create(session: Session, model, unique_field: str, value: str):
 def _get_or_create_condition(session: Session, name: str) -> Optional[int]:
     """Get or create a condition row by name.
     Uses Python lower() comparison (DB collation 'C' breaks SQL LOWER for Cyrillic).
-    Rejects numeric/price values that indicate a wrong column was parsed.
+    Conditions are a closed business dictionary: unknown free text usually means
+    that a note was shifted into the wrong Sheet column and must not become a
+    permanent filter option.
     """
-    import re
     if not name or not name.strip():
         return None
-    n = name.strip()
-    # Відхиляємо числові значення (ціни, розміри) — вони не є станом товару
-    if re.match(r'^[\d\s,.\-₴]+$', n):
+    try:
+        from backend.services.condition_normalization import normalize_condition_name
+    except ImportError:
+        from services.condition_normalization import normalize_condition_name
+    n = normalize_condition_name(name)
+    if not n:
+        logger.warning("Проігноровано некоректний стан товару з Sheets: %r", name.strip())
         return None
     from sqlalchemy import text
     n_lower = n.lower()
@@ -2757,6 +2780,25 @@ def _parse_products_sheet(
         collection_val  = col(row, "Колекція").strip() if "Колекція" in header else ""
         gtin_val        = col(row, "GTIN").strip() if "GTIN" in header else ""
         geom_shape_val  = col(row, "Геометрична форма").strip() if "Геометрична форма" in header else ""
+        technology_val  = col(row, "Технології").strip() if "Технології" in header else ""
+
+        normalized_brand_fields = normalize_brand_fields(
+            brand_val,
+            model_val,
+            collection_val,
+            technology_val,
+        )
+        brand_val = normalized_brand_fields.brand or ""
+        model_val = normalized_brand_fields.model or ""
+        collection_val = normalized_brand_fields.collection or ""
+        technology_val = normalized_brand_fields.technology or ""
+        if normalized_brand_fields.reason:
+            logger.info(
+                "[brand-normalize] %s %s: %s",
+                ws.title,
+                pnum,
+                normalized_brand_fields.reason,
+            )
         # Опційні розширені колонки (старі аркуші можуть їх не мати)
         season_val       = col(row, "Сезон").strip() if "Сезон" in header else ""
         style_val        = col(row, "Стиль").strip() if "Стиль" in header else ""
@@ -2787,7 +2829,7 @@ def _parse_products_sheet(
         for sheet_col, (tbl, name_col, fk_col) in SHOE_LOOKUP_COLUMNS.items():
             if sheet_col not in header:
                 continue
-            raw_val = col(row, sheet_col).strip()
+            raw_val = technology_val if sheet_col == "Технології" else col(row, sheet_col).strip()
             if not raw_val:
                 continue
             rid = _resolve_shoe_lookup_id(session, tbl, name_col, raw_val)
@@ -2873,7 +2915,7 @@ def _parse_products_sheet(
         cond_id    = _get_or_create_condition(session, cond_val)
         # "Поточний стан": якщо порожнє в Sheet → успадковує "Стан"; інакше — окреме значення
         current_cond_id = (
-            _get_or_create_condition(session, current_cond_val)
+            _get_or_create_condition(session, current_cond_val) or cond_id
             if current_cond_val
             else cond_id
         )
@@ -5150,6 +5192,25 @@ def _parse_workspace_sheet(
         collection_val   = col(row, "Колекція").strip() if "Колекція" in header else ""
         gtin_val         = col(row, "GTIN").strip() if "GTIN" in header else ""
         geom_shape_val   = col(row, "Геометрична форма").strip() if "Геометрична форма" in header else ""
+        technology_val   = col(row, "Технології").strip() if "Технології" in header else ""
+
+        normalized_brand_fields = normalize_brand_fields(
+            brand_val,
+            model_val,
+            collection_val,
+            technology_val,
+        )
+        brand_val = normalized_brand_fields.brand or ""
+        model_val = normalized_brand_fields.model or ""
+        collection_val = normalized_brand_fields.collection or ""
+        technology_val = normalized_brand_fields.technology or ""
+        if normalized_brand_fields.reason:
+            logger.info(
+                "[brand-normalize] %s %s: %s",
+                ws.title,
+                pnum or "без номера",
+                normalized_brand_fields.reason,
+            )
 
         # ── Нові поля (виміри/взуття/матеріали) — дзеркало Журнал-парсера ──
         # Виміри: парсимо діапазони (single value → min==max).
@@ -5168,7 +5229,7 @@ def _parse_workspace_sheet(
         for sheet_col, (tbl, name_col, fk_col) in SHOE_LOOKUP_COLUMNS.items():
             if sheet_col not in header:
                 continue
-            raw_val = col(row, sheet_col).strip()
+            raw_val = technology_val if sheet_col == "Технології" else col(row, sheet_col).strip()
             if not raw_val:
                 continue
             rid = _resolve_shoe_lookup_id(session, tbl, name_col, raw_val)

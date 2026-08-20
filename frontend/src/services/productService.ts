@@ -129,7 +129,8 @@ export const productService = {
             
             // If we reach here, all retries failed
             throw new Error("Failed to fetch products after multiple attempts");
-        } catch (error) {
+        } catch (error: any) {
+            if (axios.isCancel(error) || error?.code === 'ERR_CANCELED') throw error;
             console.error('Error fetching products:', error);
             throw error;
         }
@@ -403,9 +404,12 @@ export const productService = {
                 `${API_URL}/available-facets?${queryParams.toString()}`, { signal }
             );
             return { eu: response.data?.eu || [], colorGroups: response.data?.color_groups || [] };
-        } catch (error) {
+        } catch (error: any) {
+            // Скасований старий фасет не є порожнім успішним результатом:
+            // інакше він на мить або назавжди затирав актуальні опції фільтра.
+            if (axios.isCancel(error) || error?.code === 'ERR_CANCELED') throw error;
             console.error('Error fetching available facets:', error);
-            return { eu: [], colorGroups: [] };
+            throw error;
         }
     }
 };

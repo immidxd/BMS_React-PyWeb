@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   SyncOutlined, ThunderboltOutlined, SendOutlined,
   MinusCircleOutlined, CheckCircleOutlined, DisconnectOutlined,
@@ -75,6 +75,8 @@ const ContentPlanPage: React.FC = () => {
   const [channelFilter, setChannelFilter] = useState<'all' | Channel>('all');
   const [publishDialog, setPublishDialog] = useState<{ slot: Slot; productIds: number[] } | null>(null);
   const [publishBusy, setPublishBusy] = useState(false);
+  const slotsAbortRef = useRef<AbortController | null>(null);
+  const slotsRequestRef = useRef(0);
 
   const loadStatus = useCallback(async () => {
     try {
@@ -84,19 +86,28 @@ const ContentPlanPage: React.FC = () => {
   }, []);
 
   const loadSlots = useCallback(async () => {
+    slotsAbortRef.current?.abort();
+    const controller = new AbortController();
+    slotsAbortRef.current = controller;
+    const requestId = ++slotsRequestRef.current;
     setLoading(true);
     try {
-      const res = await fetch(`/api/content-plan/slots?channel=${channelFilter}&days_back=7&days_ahead=45`);
+      const res = await fetch(
+        `/api/content-plan/slots?channel=${channelFilter}&days_back=7&days_ahead=45`,
+        { signal: controller.signal },
+      );
       const data = await res.json().catch(() => ({ slots: [] }));
-      setSlots(data.slots || []);
-    } catch {
-      notify.error('Не вдалося завантажити контент-план');
+      if (requestId === slotsRequestRef.current) setSlots(data.slots || []);
+    } catch (error: any) {
+      if (error?.name === 'AbortError') return;
+      if (requestId === slotsRequestRef.current) notify.error('Не вдалося завантажити контент-план');
     } finally {
-      setLoading(false);
+      if (requestId === slotsRequestRef.current) setLoading(false);
     }
   }, [channelFilter]);
 
   useEffect(() => { loadSlots(); }, [loadSlots]);
+  useEffect(() => () => slotsAbortRef.current?.abort(), []);
   useEffect(() => { loadStatus(); }, [loadStatus]);
 
   /** Ручна синхронізація. Вебхуки штовхають зміни самі, але кнопка потрібна
