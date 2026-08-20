@@ -13,7 +13,7 @@ import { notify } from '../ui/feedback';
  *  форми/рефреш) компонент робить через guard (mountedRef) або через подію bms:*.
  */
 
-export type TaskStatus = 'running' | 'success' | 'partial' | 'error';
+export type TaskStatus = 'running' | 'waiting' | 'success' | 'partial' | 'error';
 export interface Task {
   id: string;
   label: string;
@@ -38,7 +38,7 @@ class TaskManager {
   private seq = 0;
 
   getTasks(): Task[] { return this.tasks; }
-  runningCount(): number { return this.tasks.filter(t => t.status === 'running').length; }
+  runningCount(): number { return this.tasks.filter(t => t.status === 'running' || t.status === 'waiting').length; }
   errorCount(): number { return this.tasks.filter(t => t.status === 'error').length; }
   attentionCount(): number { return this.tasks.filter(t => t.status === 'error' || t.status === 'partial').length; }
 
@@ -49,8 +49,31 @@ class TaskManager {
   private emit() { this.listeners.forEach(fn => { try { fn(); } catch { /* ignore */ } }); }
 
   clearFinished() {
-    this.tasks = this.tasks.filter(t => t.status === 'running');
+    this.tasks = this.tasks.filter(t => t.status === 'running' || t.status === 'waiting');
     this.emit();
+  }
+
+  /** Стан процесу, який виконує backend незалежно від конкретного вікна. */
+  setExternal(id: string, label: string, status: TaskStatus, detail?: string) {
+    const existing = this.tasks.find(t => t.id === id);
+    if (existing) {
+      existing.label = label;
+      existing.status = status;
+      existing.detail = detail;
+      existing.endedAt = status === 'running' || status === 'waiting' ? undefined : Date.now();
+      this.tasks = [...this.tasks];
+    } else {
+      this.tasks = [{ id, label, status, detail, startedAt: Date.now() }, ...this.tasks].slice(0, 40);
+    }
+    this.emit();
+  }
+
+  remove(id: string) {
+    const next = this.tasks.filter(t => t.id !== id);
+    if (next.length !== this.tasks.length) {
+      this.tasks = next;
+      this.emit();
+    }
   }
 
   /** Запустити задачу. Повертає той самий промайс (можна await з guard, або кинути «й забути»). */
@@ -77,6 +100,7 @@ class TaskManager {
       task.status = outcome?.status ?? 'success';
       task.detail = outcome?.detail;
       task.endedAt = Date.now();
+      this.tasks = [...this.tasks];
       this.emit();
       if (!opts?.silentSuccess && task.status === 'partial') {
         notify.warning({
@@ -97,6 +121,7 @@ class TaskManager {
       task.status = 'error';
       task.detail = errDetail(e);
       task.endedAt = Date.now();
+      this.tasks = [...this.tasks];
       this.emit();
       notify.error({
         message: '✕ Не вдалося',

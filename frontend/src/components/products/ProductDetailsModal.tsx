@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useMemo, useRef } from 'react';
-import { productService } from '../../services/productService';
+import { productService, type JournalSyncState } from '../../services/productService';
 import type { Product, ProductFilters } from '../../types/product';
 import { Tag, Image, Tooltip } from 'antd';
 import { CloseOutlined, PictureOutlined, LeftOutlined, RightOutlined, WarningOutlined, EditOutlined, CheckOutlined, PlusOutlined, SyncOutlined, EyeOutlined, EyeInvisibleOutlined, StarFilled, ShoppingOutlined, TableOutlined, InboxOutlined, TagOutlined, DownloadOutlined, CopyOutlined, LoadingOutlined, RotateLeftOutlined, RotateRightOutlined, SwapOutlined } from '@ant-design/icons';
@@ -33,9 +33,6 @@ interface Props {
    *  Якщо не передано — крайові стрілки навігації не показуються. */
   onPrev?: () => void;
   onNext?: () => void;
-  /** Опц. синхронізація перед завантаженням (напр. точкова синхр. вкладки завозу),
-   *  щоб картка показала дані, що збігаються з аркушем. Виконується зі спінером. */
-  syncBeforeLoad?: () => Promise<unknown>;
   /** Викликається після успішного збереження будь-якого поля картки. Потрібен,
    *  щоб рядок у таблиці не показував старе значення: таблиця тримає свою копію
    *  списку й сама про правку в картці не дізнається. */
@@ -62,23 +59,22 @@ interface GalleryImage {
   kind?: GalleryKind;
 }
 
-type JournalSyncState = {
-  pending?: number;
-  stale?: number;
-  failed?: number;
-  skipped?: number;
-  unsynced?: number;
-  stuck?: boolean;
-};
-
 /** Людське пояснення, чому картка ще не збігається з журналом. */
 function journalTooltip(state?: JournalSyncState): string {
   const details: string[] = [];
-  if ((state?.stale ?? 0) > 0) details.push(`${state!.stale} давно очікує в черзі`);
-  if ((state?.failed ?? 0) > 0) details.push(`${state!.failed} не записалося після повторів`);
-  if ((state?.skipped ?? 0) > 0) details.push(`${state!.skipped} було пропущено`);
-  const reason = details.length ? details.join('; ') : 'Є незаписані зміни';
-  return `${reason}. Натисніть, щоб повторити запис зараз.`;
+  const processing = state?.processing ?? 0;
+  const pending = state?.pending ?? 0;
+  const retrying = state?.retrying ?? 0;
+  const failed = state?.failed ?? 0;
+  const blocked = state?.blocked ?? 0;
+  if (processing > 0) details.push(`${processing} зараз записується`);
+  if (pending > 0) details.push(`${pending} очікує запису`);
+  if (retrying > 0) details.push(`${retrying} автоматично повторюється`);
+  if (failed > 0) details.push(`${failed} не записалося після повторів`);
+  if (blocked > 0) details.push(`${blocked} потребує уваги`);
+  const fields = (state?.items || []).map((item) => item.field).filter(Boolean);
+  const suffix = fields.length ? ` Поля: ${Array.from(new Set(fields)).join(', ')}.` : '';
+  return `${details.length ? details.join('; ') : 'Синхронізація актуальна'}.${suffix}`;
 }
 
 // Панелька «завантажити/копіювати» в тулбарі повноекранного прев'ю — той самий
@@ -193,7 +189,7 @@ const measurementsFromProduct = (p: any): Record<string, string> => {
 // одразу — фото вантажаться окремо й «доїжджають» у фоні навіть після таймауту).
 const IMAGE_SOFT_TIMEOUT_MS = 3500;
 
-const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev, onNext, syncBeforeLoad, onSaved }) => {
+const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev, onNext, onSaved }) => {
   const [loading, setLoading] = useState(false);
   // Перехід ◀/▶ у процесі: показана картка вже НЕ відповідає обраному товару.
   // Поки true — картка приглушена, редагування заблоковане, зверху індикатор.
@@ -220,8 +216,14 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
   const [editingField, setEditingField] = useState<string | null>(null);
   const [fieldDraft, setFieldDraft] = useState('');
   const [savingField, setSavingField] = useState(false);
-  // Повтор запису саме цієї картки в Google-журнал.
+  // Живий двосторонній стан: journal→BMS під час відкриття + BMS→journal після правок.
   const [journalRetrying, setJournalRetrying] = useState(false);
+  const [journalState, setJournalState] = useState<JournalSyncState | null>(null);
+  const [sheetSyncing, setSheetSyncing] = useState(false);
+  const [sheetSyncMessage, setSheetSyncMessage] = useState('Оновлення з журналу');
+  const [sheetSyncError, setSheetSyncError] = useState<string | null>(null);
+  const onSavedRef = useRef(onSaved);
+  useEffect(() => { onSavedRef.current = onSaved; }, [onSaved]);
   // Менеджер фото (в editMode): додати/видалити/перейменувати(порядок)/замінити
   const [photoBusy, setPhotoBusy] = useState(false);
   const [dragIdx, setDragIdx] = useState<number | null>(null);
@@ -858,11 +860,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     setShowDefects(next);
   }, [showDefects, allImages, activeKind]);
 
-  // Завантаження товару — картка показується одразу, НЕ чекаючи фото з Drive.
-  // ref на колбек синхронізації (stale-closure-safe) — щоб loadProduct не змінював
-  // identity щоразу (інакше re-load loop). Див. feedback_stale_closure_event_listener.
-  const syncBeforeLoadRef = useRef(syncBeforeLoad);
-  useEffect(() => { syncBeforeLoadRef.current = syncBeforeLoad; }, [syncBeforeLoad]);
+  // Завантаження товару — картка показується одразу, НЕ чекаючи фото з Drive/Google.
   // Завжди свіжий productId — guard, щоб фон-синк не записав дані після навігації геть.
   const curPidRef = useRef(productId);
   curPidRef.current = productId;
@@ -873,19 +871,14 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     if (withSpinner) setLoading(true);
     try {
       const prod = await productService.getProduct(pid);  // МИТТЄВО з БД (не блокуємо на аркуші)
-      if (curPidRef.current === pid) setProduct(prod);
+      if (curPidRef.current === pid) {
+        setProduct(prod);
+        setJournalState(((prod as any).journal_sync || null) as JournalSyncState | null);
+      }
     } catch (e) {
       console.error('Failed to load product', e);
     } finally {
       if (withSpinner) setLoading(false);
-    }
-    // Точкова синхр. з аркушем — У ФОНІ (best-effort). Картку не блокує; якщо аркуш
-    // відрізняється — тихо перезавантажуємо. Guard curPidRef — проти навігації геть.
-    if (withSpinner && syncBeforeLoadRef.current) {
-      Promise.resolve(syncBeforeLoadRef.current())
-        .then(() => (curPidRef.current === pid ? productService.getProduct(pid) : null))
-        .then(prod => { if (prod && curPidRef.current === pid) setProduct(prod); })
-        .catch(() => { /* best-effort */ });
     }
   }, [productId]);
 
@@ -895,7 +888,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     setJournalRetrying(true);
     try {
       const response = await fetch(
-        `/api/journal-sync/retry?include_skipped=true&product_id=${encodeURIComponent(pid)}`,
+        `/api/journal-sync/retry?include_skipped=${(journalState?.blocked || 0) > 0 ? 'true' : 'false'}&product_id=${encodeURIComponent(pid)}`,
         { method: 'POST' },
       );
       const data = await response.json().catch(() => ({}));
@@ -914,6 +907,9 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
       // Endpoint уже повернув задачі у pending, тому чіп має одразу показати
       // актуальний стан. Guard усередині loadProduct захищає швидку навігацію.
       await loadProduct(false);
+      if (curPidRef.current === pid) {
+        setJournalState(await productService.getJournalSyncState(pid));
+      }
     } catch (e: any) {
       notify.error({
         message: 'Не вдалося повторити запис у журнал',
@@ -922,7 +918,94 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     } finally {
       setJournalRetrying(false);
     }
-  }, [productId, journalRetrying, loadProduct]);
+  }, [productId, journalRetrying, journalState?.blocked, loadProduct]);
+
+  // Однакова точкова journal→BMS синхронізація для ВСІХ місць відкриття картки.
+  // Картка вже видима з БД; цей процес показується окремим тимчасовим чіпом.
+  const journalPullSeqRef = useRef(0);
+  const syncProductFromJournal = React.useCallback(async () => {
+    if (!open || !productId) return;
+    const pid = productId;
+    const seq = ++journalPullSeqRef.current;
+    setSheetSyncing(true);
+    setSheetSyncError(null);
+    setSheetSyncMessage('Оновлення з журналу');
+    try {
+      // Якщо повний парсер уже читає журнал, не запускаємо конкурентне читання:
+      // чекаємо його завершення й одразу робимо контрольний точковий прохід.
+      for (let attempt = 0; attempt < 40; attempt += 1) {
+        if (journalPullSeqRef.current !== seq || curPidRef.current !== pid) return;
+        const result = await productService.syncProductFromJournal(pid);
+        if (result.waiting) {
+          setSheetSyncMessage('Журнал оновлюється у фоні');
+          await new Promise((resolve) => window.setTimeout(resolve, 3000));
+          continue;
+        }
+        if (!result.ok) {
+          const message = result.reason === 'row_not_found'
+            ? 'Товар не знайдено в журналі'
+            : 'Не вдалося звірити з журналом';
+          setSheetSyncError(message);
+          return;
+        }
+        await loadProduct(false);
+        if (curPidRef.current === pid) {
+          setJournalState(await productService.getJournalSyncState(pid));
+          // Список «Товари» тримає власний знімок рядків. Якщо журнал змінив
+          // картку, просимо батьківський екран освіжити і цей рядок теж.
+          onSavedRef.current?.(pid);
+        }
+        return;
+      }
+      setSheetSyncError('Фонове оновлення триває надто довго');
+    } catch (e: any) {
+      if (journalPullSeqRef.current === seq && curPidRef.current === pid) {
+        setSheetSyncError(e?.response?.data?.detail || e?.message || 'Журнал недоступний');
+      }
+    } finally {
+      if (journalPullSeqRef.current === seq && curPidRef.current === pid) {
+        setSheetSyncing(false);
+      }
+    }
+  }, [open, productId, loadProduct]);
+
+  useEffect(() => {
+    if (!open || !productId) {
+      setSheetSyncing(false);
+      setSheetSyncError(null);
+      return;
+    }
+    syncProductFromJournal();
+    return () => { journalPullSeqRef.current += 1; };
+  }, [open, productId, syncProductFromJournal]);
+
+  // Легкий polling тільки стану черги: чіп з'являється одразу після правки й
+  // сам зникає, щойно Google підтвердив запис. Повний товар тут не перечитуємо.
+  useEffect(() => {
+    if (!open || !productId) {
+      setJournalState(null);
+      return;
+    }
+    const pid = productId;
+    let cancelled = false;
+    let timer: number | undefined;
+    const poll = async () => {
+      try {
+        const state = await productService.getJournalSyncState(pid);
+        if (cancelled || curPidRef.current !== pid) return;
+        setJournalState(state);
+        const active = state.state !== 'idle';
+        timer = window.setTimeout(poll, active ? 1200 : 5000);
+      } catch {
+        if (!cancelled) timer = window.setTimeout(poll, 5000);
+      }
+    };
+    poll();
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [open, productId]);
 
   // «Прийняти у завіз»: відкрити панель + підвантажити список завозів (для дропдауна).
   const openAdopt = React.useCallback(async () => {
@@ -1463,6 +1546,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
           const prod = await productService.getProduct(productId);
           if (seq !== loadSeqRef.current) return;   // застарілий запит (швидке гортання)
           setProduct(prod);   // підміна картки (key=p.id → плавний fade); фото самі
+          setJournalState(((prod as any).journal_sync || null) as JournalSyncState | null);
                               // «прив'яжуться» до нового id — див. allImages вище
         } catch (e) {
           console.error('Failed to load product (nav)', e);
@@ -1763,6 +1847,8 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
       selectedPhotos.size, clearPhotoSelection]);
 
   const p = product;
+  const effectiveJournalState = journalState
+    || (((p as any)?.journal_sync || null) as JournalSyncState | null);
 
   const status = useMemo(() => {
     if (!p) return { text: '', color: 'default' };
@@ -1818,6 +1904,37 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
 
   // ── Дрібні UI-хелпери ─────────────────────────────────────────────────────────
   const inputCls = 'w-full px-2 py-1.5 text-sm rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-100 focus:outline-none focus:ring-1 focus:ring-primary-400';
+  const outgoingState = effectiveJournalState?.state || 'idle';
+  const showSyncChip = sheetSyncing || !!sheetSyncError || outgoingState !== 'idle';
+  const syncChipKind = sheetSyncError || outgoingState === 'error'
+    ? 'error'
+    : outgoingState === 'delayed'
+      ? 'delayed'
+      : 'syncing';
+  const syncChipLabel = sheetSyncing
+    ? sheetSyncMessage
+    : sheetSyncError
+      ? 'Журнал недоступний'
+      : outgoingState === 'error'
+        ? `Не синхронізовано${(effectiveJournalState?.unsynced || 0) > 1 ? ` · ${effectiveJournalState?.unsynced}` : ''}`
+        : outgoingState === 'delayed'
+          ? 'Затримка синхронізації'
+          : 'Синхронізація з журналом';
+  const syncChipTitle = sheetSyncing
+    ? `${sheetSyncMessage}. Картка вже відкрита з локальних даних і оновиться автоматично.`
+    : sheetSyncError
+      ? `${sheetSyncError}. Натисніть, щоб повторити.`
+      : `${journalTooltip(effectiveJournalState || undefined)}${outgoingState === 'idle' ? '' : ' Стан оновиться автоматично.'}`;
+  const syncChipClass = syncChipKind === 'error'
+    ? 'bg-red-50 text-red-700 border-red-200 hover:bg-red-100 dark:bg-red-900/30 dark:text-red-300 dark:border-red-700'
+    : syncChipKind === 'delayed'
+      ? 'bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100 dark:bg-amber-900/30 dark:text-amber-300 dark:border-amber-700'
+      : 'bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-900/30 dark:text-blue-300 dark:border-blue-700';
+  const handleSyncChipClick = () => {
+    if (sheetSyncing || journalRetrying) return;
+    if (sheetSyncError) syncProductFromJournal();
+    else if (outgoingState === 'error' || outgoingState === 'delayed') retryJournalSync();
+  };
 
   // Підтипи фільтруються за обраним типом (subtypes мають typeid). Тип у драфті —
   // НАЗВА (комбобокс), тож id шукаємо по довіднику (ci). Якщо тип не розпізнано
@@ -2190,26 +2307,23 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                     </span>
                   )}
 
-                  {/* «Не в журналі» — не індикатор процесу, а сигнал проблеми.
-                      Свіжа правка живе в черзі секунди, і чіп на неї НЕ
-                      реагує: інакше він блимав би при кожному збереженні й
-                      його перестали б читати. Тут світиться лише те, що
-                      справді не доїхало (спроби вичерпані, писати нікуди, або
-                      черга стоїть довше 5 хв). Клік — повторити зараз.
-                      Сенс: журнал — те, за чим працюють люди; якщо правка туди
-                      не дійшла, вони діють за старим числом і не знають про це. */}
-                  {(p as any)?.journal_sync?.stuck && (
+                  {/* Єдиний живий індикатор двох напрямків. Він існує РІВНО
+                      стільки, скільки дані справді очікують Google/BMS, і сам
+                      зникає після підтвердження. Помилка лишається дієвою
+                      кнопкою, а не безіменним «щось не так». */}
+                  {showSyncChip && (
                     <button
                       type="button"
-                      onClick={retryJournalSync}
-                      disabled={journalRetrying}
-                      title={journalTooltip((p as any).journal_sync)}
-                      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold border transition-colors disabled:opacity-50
-                                 bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100
-                                 dark:bg-amber-900/30 dark:text-amber-300 dark:border-amber-700 dark:hover:bg-amber-900/50"
+                      onClick={handleSyncChipClick}
+                      disabled={sheetSyncing || journalRetrying || outgoingState === 'syncing'}
+                      title={syncChipTitle}
+                      className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold border transition-colors disabled:opacity-70 ${syncChipClass}`}
                     >
-                      <SyncOutlined className="text-[11px]" spin={journalRetrying} />
-                      <span>Не в журналі{((p as any).journal_sync.unsynced > 1) ? `·${(p as any).journal_sync.unsynced}` : ''}</span>
+                      <SyncOutlined
+                        className="text-[11px]"
+                        spin={sheetSyncing || journalRetrying || outgoingState === 'syncing'}
+                      />
+                      <span>{syncChipLabel}</span>
                     </button>
                   )}
 

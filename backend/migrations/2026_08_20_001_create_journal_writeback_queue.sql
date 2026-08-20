@@ -18,7 +18,9 @@ CREATE TABLE IF NOT EXISTS journal_writeback_queue (
     -- Значення вже РЕЗОЛВНУТЕ до того, що має лежати в клітинці (FK→назва),
     -- бо воркер працює поза сесією БД і дорезолвити не зможе.
     value TEXT,
-    -- pending → в роботі; done → лягло в аркуш; skipped → писати нікуди
+    -- pending → очікує; processing → конкретна версія вже летить у Google;
+    -- done → лягло в аркуш або було безпечно заміщене новішою правкою;
+    -- skipped → писати нікуди
     -- (нема колонки/вкладки, per-item поле на багаторядковій ростовці);
     -- failed → вичерпані спроби, лишається видимим для ручного повтору.
     status VARCHAR(16) NOT NULL DEFAULT 'pending',
@@ -33,9 +35,9 @@ CREATE TABLE IF NOT EXISTS journal_writeback_queue (
 CREATE INDEX IF NOT EXISTS idx_jwq_ready ON journal_writeback_queue (status, next_attempt_at);
 CREATE INDEX IF NOT EXISTS idx_jwq_product ON journal_writeback_queue (product_id);
 
--- Одна незавершена задача на (товар, поле): друга правка того самого поля
--- ЗАМІНЮЄ значення в черзі, а не стає позаду першої. Інакше в аркуш поїхало б
--- спершу проміжне значення, а вже потім кінцеве — зайвий запис і мить брехні.
+-- Одна НЕЗАХОПЛЕНА задача на (товар, поле): до мережевого виклику нова правка
+-- замінює значення. Після переходу старої версії в processing нова створює
+-- окремий pending-рядок, тому завершення старого HTTP-запиту її не погасить.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_jwq_open_unique
     ON journal_writeback_queue (product_id, field)
     WHERE status IN ('pending', 'failed');

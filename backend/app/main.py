@@ -495,15 +495,13 @@ async def _journal_change_poller():
     import os as _os
     if _os.getenv("JOURNAL_POLLER", "1") == "0":
         return
-    poll_sec = int(_os.getenv("JOURNAL_POLL_SEC", "90"))
+    poll_sec = int(_os.getenv("JOURNAL_POLL_SEC", "30"))
 
-    # Кулдаун між АВТО-парсингами. Кожен парс перечитує всі аркуші, а Google має
-    # ліміт «Read requests per minute per user». Поки власник активно заповнює
-    # журнал, кожна правка міняла lastUpdateTime → парс запускався щоцикл (заміряно
-    # 22:18→23:40: ~22 парси поспіль, кожні ~3 хв). Квота вигоряла, і РУЧНИЙ повний
-    # парсинг падав з 429. Кулдаун коалесить серію правок в один парс: зміни не
-    # губляться (lastUpdateTime лишається новим → парс піде після кулдауну).
-    cooldown_sec = int(_os.getenv("AUTO_PARSE_COOLDOWN_SEC", "900"))
+    # Після переходу на batch-read один quick-parse витрачає одиниці пакетних
+    # запитів, а не сотні per-sheet. Тому типовий кулдаун можна безпечно зменшити
+    # з 15 до 2 хвилин: серія правок коалеситься, але BMS не живе зі старими
+    # даними чверть години. Очікування відображає глобальний sync-індикатор.
+    cooldown_sec = int(_os.getenv("AUTO_PARSE_COOLDOWN_SEC", "120"))
 
     async def _loop():
         import time as _time
@@ -516,9 +514,11 @@ async def _journal_change_poller():
                 try:
                     from scripts.sheets_parser import get_gc, JOURNAL_ID, ORDERS_ID
                     from routers.parsing import start_auto_full_quick
+                    from services import journal_sync as _journal_sync
                 except ImportError:
                     from backend.scripts.sheets_parser import get_gc, JOURNAL_ID, ORDERS_ID
                     from backend.routers.parsing import start_auto_full_quick
+                    from backend.services import journal_sync as _journal_sync
                 gc = get_gc()
                 changed = False
                 for sid in (JOURNAL_ID, ORDERS_ID):
@@ -531,9 +531,14 @@ async def _journal_change_poller():
                     last[sid] = lut
                 if changed:
                     pending = True
+                    _journal_sync.set_incoming_activity(
+                        "waiting", "У журналі є нові зміни — BMS готує оновлення")
                 if pending:
                     waited = _time.monotonic() - last_auto_at
                     if waited < cooldown_sec:
+                        left = max(1, int(cooldown_sec - waited))
+                        _journal_sync.set_incoming_activity(
+                            "waiting", f"Нові дані журналу очікують оновлення BMS (до {left} с)")
                         logger.info(
                             "Journal-poller: зміни є, чекаю кулдаун (%ds з %ds)",
                             int(waited), cooldown_sec)
@@ -544,8 +549,19 @@ async def _journal_change_poller():
                             # прапорець і починаємо новий відлік кулдауну.
                             pending = False
                             last_auto_at = _time.monotonic()
+                            _journal_sync.set_incoming_activity("idle")
+                        else:
+                            _journal_sync.set_incoming_activity(
+                                "waiting", "Оновлення журналу очікує завершення іншого процесу")
+                elif _journal_sync.incoming_activity().get("state") == "error":
+                    _journal_sync.set_incoming_activity("idle")
             except Exception as e:
                 logger.warning(f"Journal-poller error: {e}")
+                try:
+                    _journal_sync.set_incoming_activity(
+                        "error", "Не вдалося перевірити нові зміни журналу — BMS повторить автоматично")
+                except Exception:
+                    pass
             await asyncio.sleep(poll_sec)
 
     asyncio.create_task(_loop())

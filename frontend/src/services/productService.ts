@@ -17,6 +17,46 @@ export type ProductListResponse = {
     pages: number;
 };
 
+export type JournalSyncItem = {
+    id: number;
+    field: string;
+    status: 'pending' | 'processing' | 'failed' | 'skipped';
+    attempts: number;
+    last_error?: string | null;
+    sheet_title?: string | null;
+    next_attempt_at?: string | null;
+    created_at?: string | null;
+    updated_at?: string | null;
+};
+
+export type JournalSyncState = {
+    pending: number;
+    processing: number;
+    active: number;
+    retrying: number;
+    stale: number;
+    failed: number;
+    blocked: number;
+    ignored: number;
+    skipped: number;
+    unsynced: number;
+    stuck: boolean;
+    state: 'idle' | 'syncing' | 'delayed' | 'error';
+    items?: JournalSyncItem[];
+};
+
+export type ProductJournalPullResult = {
+    ok: boolean;
+    waiting?: boolean;
+    reason?: string;
+    sheet?: string | null;
+    moved_sheet?: boolean;
+    added?: number;
+    updated?: number;
+    restored_locks?: number;
+    queued_writebacks?: number;
+};
+
 /**
  * Сервіс для роботи з API товарів
  */
@@ -106,6 +146,18 @@ export const productService = {
             console.error(`Error fetching product ${id}:`, error);
             throw error;
         }
+    },
+
+    /** Легкий стан BMS→журнал для живого чіпа картки. */
+    async getJournalSyncState(id: number): Promise<JournalSyncState> {
+        const response = await axios.get<JournalSyncState>(`/api/journal-sync/product/${id}`);
+        return response.data;
+    },
+
+    /** Точково підтягнути один товар з актуальної вкладки журналу, без видалень. */
+    async syncProductFromJournal(id: number): Promise<ProductJournalPullResult> {
+        const response = await axios.post<ProductJournalPullResult>(`${API_URL}/${id}/sync-from-journal`);
+        return response.data;
     },
 
     /**

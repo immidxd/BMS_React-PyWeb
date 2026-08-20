@@ -14,6 +14,7 @@ Skip sheets: Publications, Data, New, Клієнти, Temporary, Лист*, Copy
 import logging
 import os
 import re
+import threading
 import time
 from datetime import datetime, date
 from pathlib import Path
@@ -78,6 +79,7 @@ SHEET_READ_DELAY_SEC = 1.1  # ~54 req/min, safe margin
 # PARSER_BATCH_READ=0 for an instant behavioural rollback to per-sheet reads.
 BATCH_READ_ENABLED = os.getenv("PARSER_BATCH_READ", "1") != "0"
 BATCH_CHUNK = int(os.getenv("PARSER_BATCH_CHUNK", "50"))  # sheets per batch read
+POINT_SYNC_LOCK = threading.Lock()  # одна точкова/вкладкова мутація БД за раз
 
 # ── Layer B: per-sheet change detection (hash skip) ───────────────────────────
 # A worksheet is reprocessed iff its content hash changed OR PARSER_VERSION was
@@ -113,7 +115,9 @@ PRODUCT_LOCKS_ENABLED = os.getenv("PRODUCT_LOCKS", "1") != "0"
 # oldprice included so the auto-markdown ("Стара ціна") survives reparse too.
 PRODUCT_LOCK_FIELDS = {"price", "oldprice", "model", "marking", "description", "extranote", "season",
                        # Нові журнальні колонки (2026-06-10): Колекція/GTIN/Геометрична форма.
-                       "collection", "gtin", "geometric_shape",
+                       "collection", "gtin", "geometric_shape", "year", "width",
+                       "clonednumbers", "sizeeu", "size_letter", "measurementscm",
+                       "dimensions",
                        # Shoe-lookup FKs edited in-app (model-level). Snapshot/restore by id.
                        "heeltypeid", "lacetypeid", "packagingid", "technologyid", "sole_colorid",
                        # «Інше» shoe-lookups edited in-app (model-level).
@@ -122,6 +126,7 @@ PRODUCT_LOCK_FIELDS = {"price", "oldprice", "model", "marking", "description", "
                        "colorid",
                        # Класифікація edited in-app (model-level, dropdown).
                        "typeid", "subtypeid", "styleid", "brandid", "genderid",
+                       "manufacturercountryid",
                        # Condition (per-item) edited in-app.
                        "current_conditionid"}
 # Order fields protected from parser overwrite (Order editing Phase A). Keep in
@@ -131,7 +136,7 @@ ORDER_LOCK_FIELDS = {"notes", "tracking_number", "sales_channel",
                      "order_status_id", "payment_status_id", "delivery_method_id"}
 
 
-def _snapshot_product_locks(session: Session) -> dict:
+def _snapshot_product_locks(session: Session, product_ids: Optional[list[int]] = None) -> dict:
     """Return {product_id: {field: value}} for products with active in-app
     locks, capturing the user's current (edited) values before a reparse."""
     if not PRODUCT_LOCKS_ENABLED:
@@ -140,11 +145,18 @@ def _snapshot_product_locks(session: Session) -> dict:
         from backend.models.models import Product
     except ImportError:
         from models.models import Product
-    rows = session.execute(text(
+    sql = (
         "SELECT id, manually_edited_fields FROM products "
         "WHERE manually_edited_at IS NOT NULL "
         "AND manually_edited_fields IS NOT NULL AND btrim(manually_edited_fields) <> ''"
-    )).fetchall()
+    )
+    params = {}
+    if product_ids is not None:
+        if not product_ids:
+            return {}
+        sql += " AND id = ANY(:ids)"
+        params["ids"] = [int(i) for i in product_ids]
+    rows = session.execute(text(sql), params).fetchall()
     snapshot: dict = {}
     for pid, fields_csv in rows:
         flds = [f.strip() for f in fields_csv.split(",")
@@ -158,7 +170,7 @@ def _snapshot_product_locks(session: Session) -> dict:
     return snapshot
 
 
-def _restore_product_locks(session: Session, snapshot: dict) -> int:
+def _restore_product_locks(session: Session, snapshot: dict, commit: bool = True) -> int:
     """Re-apply locked field values the parser may have overwritten. Returns the
     number of fields restored."""
     if not snapshot:
@@ -176,8 +188,10 @@ def _restore_product_locks(session: Session, snapshot: dict) -> int:
             if getattr(prod, f) != v:
                 setattr(prod, f, v)
                 restored += 1
-    if restored:
+    if restored and commit:
         session.commit()
+    elif restored:
+        session.flush()
     return restored
 
 
@@ -375,6 +389,26 @@ def _canon_pnum_for_match(s: str) -> str:
     return (s or "").strip().lstrip("#").strip().rstrip(";").strip()
 
 
+def _writeback_cell_value(field: str, old_value, new_value) -> str:
+    """Фінальне значення клітинки без втрати частини, якої BMS не моделює.
+
+    ``products.colorid`` — лише ОСНОВНИЙ колір, тоді як журнал дозволяє
+    ``"білий, сірий"``. Зміна основного кольору в BMS має замінити перший
+    елемент і зберегти додаткові; коли перший уже збігається, клітинка взагалі
+    не є розбіжністю.
+    """
+    old = "" if old_value is None else str(old_value)
+    new = "" if new_value is None else str(new_value)
+    if field != "colorid" or not new.strip():
+        return new
+    parts = [p.strip() for p in old.split(",") if p.strip()]
+    if not parts:
+        return new.strip()
+    if parts[0].casefold() == new.strip().casefold():
+        return old
+    return ", ".join([new.strip(), *parts[1:]])
+
+
 def _save_writeback_backup(sheet_title: str, productnumber: str, field: str, backups: list) -> Optional[str]:
     """Persist old cell values before a write-back so it can be reverted."""
     try:
@@ -466,11 +500,12 @@ def _writeback_field_to_journal_locked(sheet_title: str, productnumber: str, fie
         if _canon_pnum_for_match(cell_num) != target:
             continue
         old = row[col_idx] if col_idx < len(row) else ""
-        if old == new_str:
+        cell_new = _writeback_cell_value(field, old, new_str)
+        if old == cell_new:
             continue  # already up to date
         a1 = _gspread.utils.rowcol_to_a1(r_i, col_idx + 1)
-        updates.append({"range": a1, "values": [[new_str]]})
-        backups.append({"a1": a1, "row": r_i, "old": old, "new": new_str})
+        updates.append({"range": a1, "values": [[cell_new]]})
+        backups.append({"a1": a1, "row": r_i, "old": old, "new": cell_new})
 
     if not updates:
         return {"ok": True, "rows_updated": 0, "note": "no matching rows or already current"}
@@ -2601,6 +2636,7 @@ def _parse_products_sheet(
     supplier_id: Optional[int] = None,
     shipment_id: Optional[int] = None,
     prefetched_rows: Optional[list] = None,
+    commit: bool = True,
 ) -> dict:
     """
     Parse one batch sheet from Журнал into products table.
@@ -3692,7 +3728,10 @@ def _parse_products_sheet(
                     f"reverted to '{prod.productnumber}'"
                 )
 
-    session.commit()
+    if commit:
+        session.commit()
+    else:
+        session.flush()
     return {"added": added, "updated": updated, "skipped": skipped}
 
 
@@ -6072,6 +6111,27 @@ def _numbers_from_value_ranges(value_ranges: list) -> set:
     return out
 
 
+def _journal_number_index(sh) -> tuple[set, dict]:
+    """Усі номери + кількість рядків кожного базового номера по журналу."""
+    tabs = [ws.title for ws in sh.worksheets() if not is_skip_sheet(ws.title)]
+    nums: set = set()
+    counts: dict[str, int] = {}
+    chunk_size = 60
+    for i in range(0, len(tabs), chunk_size):
+        chunk = tabs[i:i + chunk_size]
+        res = sh.values_batch_get([f"'{t}'!A:A" for t in chunk])
+        value_ranges = res.get("valueRanges", [])
+        nums |= _numbers_from_value_ranges(value_ranges)
+        for vr in value_ranges:
+            for row in (vr.get("values") or [])[1:]:
+                base = _product_search_base(row[0] if row else "")
+                if base:
+                    counts[base] = counts.get(base, 0) + 1
+    if not nums:
+        raise RuntimeError("журнал повернув 0 номерів")
+    return nums, counts
+
+
 def _journal_all_numbers(sh) -> set:
     """Усі номери журналу (колонка A кожної вкладки завозу), одним пакетом читань.
 
@@ -6079,15 +6139,7 @@ def _journal_all_numbers(sh) -> set:
     товару не гарантує, що його рядок і досі саме там — рядок міг переїхати.
     Кидає виняток, якщо читання не вдалося: краще не прибрати, ніж прибрати живе.
     """
-    tabs = [ws.title for ws in sh.worksheets() if not is_skip_sheet(ws.title)]
-    nums: set = set()
-    CHUNK = 60
-    for i in range(0, len(tabs), CHUNK):
-        chunk = tabs[i:i + CHUNK]
-        res = sh.values_batch_get([f"'{t}'!A:A" for t in chunk])
-        nums |= _numbers_from_value_ranges(res.get("valueRanges", []))
-    if not nums:
-        raise RuntimeError("журнал повернув 0 номерів")
+    nums, _ = _journal_number_index(sh)
     return nums
 
 
@@ -6187,7 +6239,261 @@ def _reconcile_delivery_orphans(session: Session, delivery_id: int, all_rows: Op
     return len(orphan_ids)
 
 
+def _product_search_base(productnumber: str) -> str:
+    """Внутрішній суфікс BMS ``-2`` не є частиною номера в журналі."""
+    return re.sub(r"-\d+$", "", _canon_pnum_for_match(productnumber or ""))
+
+
+def _rows_for_product(all_rows: list, productnumber: str) -> list:
+    """Залишити заголовок і всі рядки номера/ростовки одного товару."""
+    if not all_rows:
+        return []
+    header = [str(h).strip() for h in all_rows[0]]
+    if "Номер" not in header:
+        return []
+    idx = header.index("Номер")
+    target = _canon_pnum_for_match(productnumber)
+    target_base = _product_search_base(productnumber)
+    matched = []
+    for row in all_rows[1:]:
+        raw = row[idx] if idx < len(row) else ""
+        current = _canon_pnum_for_match(raw)
+        if current and (current == target or _product_search_base(current) == target_base):
+            matched.append(row)
+    return [all_rows[0], *matched] if matched else []
+
+
+def _candidate_product_ids_for_rows(session: Session, rows: list,
+                                    extra_ids: Optional[list[int]] = None) -> list[int]:
+    ids = {int(i) for i in (extra_ids or []) if i}
+    if not rows:
+        return sorted(ids)
+    header = [str(h).strip() for h in rows[0]]
+    if "Номер" not in header:
+        return sorted(ids)
+    idx = header.index("Номер")
+    nums = {
+        _product_search_base(r[idx] if idx < len(r) else "")
+        for r in rows[1:]
+    }
+    nums.discard("")
+    if nums:
+        found = session.execute(text("""
+            SELECT id, productnumber FROM products
+            WHERE regexp_replace(REPLACE(UPPER(productnumber), '#', ''),
+                                 '-[0-9]+$', '') = ANY(:nums)
+        """), {"nums": sorted(nums)}).fetchall()
+        ids.update(int(r.id) for r in found)
+    return sorted(ids)
+
+
+def _snapshot_product_aggregates(session: Session, product_ids: list[int]) -> dict:
+    """Знімок полів, правильних лише після врахування всіх вкладок номера."""
+    if not product_ids:
+        return {}
+    rows = session.execute(text("""
+        SELECT id, productnumber, quantity, statusid, deliveryid
+        FROM products WHERE id = ANY(:ids)
+    """), {"ids": [int(i) for i in product_ids]}).mappings().all()
+    return {int(r["id"]): dict(r) for r in rows}
+
+
+def _restore_cross_sheet_aggregates(session: Session, snapshot: dict,
+                                    cross_sheet_bases: set[str]) -> int:
+    """Не дозволити синку однієї вкладки зіпсувати multi-tab quantity/status."""
+    if not snapshot or not cross_sheet_bases:
+        return 0
+    try:
+        from backend.models.models import Product
+    except ImportError:
+        from models.models import Product
+    restored = 0
+    for pid, old in snapshot.items():
+        if _product_search_base(old.get("productnumber") or "") not in cross_sheet_bases:
+            continue
+        product = session.get(Product, pid)
+        if product is None:
+            continue
+        for field in ("quantity", "statusid", "deliveryid"):
+            value = old.get(field)
+            if getattr(product, field) != value:
+                setattr(product, field, value)
+                restored += 1
+    if restored:
+        session.flush()
+    return restored
+
+
+def _number_counts_from_rows(rows: list) -> dict[str, int]:
+    if not rows:
+        return {}
+    header = [str(h).strip() for h in rows[0]]
+    if "Номер" not in header:
+        return {}
+    idx = header.index("Номер")
+    counts: dict[str, int] = {}
+    for row in rows[1:]:
+        base = _product_search_base(row[idx] if idx < len(row) else "")
+        if base:
+            counts[base] = counts.get(base, 0) + 1
+    return counts
+
+
+def _find_product_worksheets(sh, productnumber: str) -> list:
+    """Знайти ВСІ входження номера пакетним індексом колонки A.
+
+    Один товар може бути у кількох вкладках (кілька фізичних копій). Читання
+    лише ``deliveryid`` занижувало quantity й могло скинути агрегований статус.
+    Спершу 6–8 batch-запитів будують точний список вкладок, потім одним запитом
+    читаються повні дані тільки знайдених вкладок. Жодного HTTP на кожну вкладку.
+    """
+    worksheets = [ws for ws in sh.worksheets() if not is_skip_sheet(ws.title)]
+    target = _canon_pnum_for_match(productnumber)
+    target_base = _product_search_base(productnumber)
+    from gspread.utils import absolute_range_name
+    matched = []
+    # 60 ranges уже використовується безпечно в _journal_all_numbers.
+    for chunk in _chunks(worksheets, 60):
+        ranges = [absolute_range_name(ws.title, "A:A") for ws in chunk]
+        response = sh.values_batch_get(ranges, params={"majorDimension": "ROWS"})
+        for ws, vr in zip(chunk, response.get("valueRanges", [])):
+            values = vr.get("values", []) or []
+            found = False
+            for cell in values[1:]:
+                raw = cell[0] if cell else ""
+                current = _canon_pnum_for_match(raw)
+                if current and (current == target or _product_search_base(current) == target_base):
+                    found = True
+                    break
+            if found:
+                matched.append(ws)
+    if not matched:
+        return []
+
+    rows_by_id = _batch_read_values(sh, matched)
+    out = []
+    for ws in matched:  # порядок worksheets: найсвіжіші першими, як у full parser
+        rows = rows_by_id.get(ws.id, [])
+        filtered = _rows_for_product(rows, productnumber)
+        if filtered:
+            out.append((ws, rows, filtered))
+    return out
+
+
+def _find_product_worksheet(sh, productnumber: str,
+                            preferred_title: Optional[str] = None):
+    """Сумісний single-result wrapper: канонічна ціль — найсвіжіша вкладка."""
+    matches = _find_product_worksheets(sh, productnumber)
+    if not matches:
+        return None, [], [], False
+    ws, rows, filtered = matches[0]
+    return ws, rows, filtered, ws.title != preferred_title
+
+
+def sync_one_product_from_journal(session: Session, product_id: int) -> dict:
+    if not POINT_SYNC_LOCK.acquire(blocking=False):
+        return {"ok": True, "waiting": True, "reason": "point_sync_in_progress",
+                "added": 0, "updated": 0, "queued_writebacks": 0}
+    try:
+        return _sync_one_product_from_journal_locked(session, product_id)
+    finally:
+        POINT_SYNC_LOCK.release()
+
+
+def _sync_one_product_from_journal_locked(session: Session, product_id: int) -> dict:
+    """Швидкий і безпечний journal→BMS синк одного номера.
+
+    Якщо рядок переїхав між вкладками, шукаємо його batch-запитом по колонці A,
+    парсимо лише знайдені рядки й оновлюємо ``deliveryid``. Нічого не видаляємо.
+    Ручні BMS-локи відновлюються після парсера; доведені розбіжності цих локів
+    ставляться у звичайну надійну write-back чергу.
+    """
+    row = session.execute(text("""
+        SELECT p.id, p.productnumber, p.deliveryid, d.deliveryname
+        FROM products p LEFT JOIN deliveries d ON d.id=p.deliveryid
+        WHERE p.id=:pid
+    """), {"pid": int(product_id)}).fetchone()
+    if not row:
+        return {"ok": False, "reason": "product_not_found"}
+
+    busy = session.execute(text("""SELECT 1 FROM parsing_jobs
+        WHERE status IN ('queued','running')
+          AND COALESCE(last_heartbeat_at, updated_at, started_at) > NOW() - INTERVAL '120 seconds'
+        LIMIT 1""")).first()
+    if busy:
+        return {"ok": True, "waiting": True, "reason": "parse_in_progress",
+                "added": 0, "updated": 0, "queued_writebacks": 0}
+
+    gc = get_gc()
+    sh = gc.open_by_key(JOURNAL_ID)
+    matches = _find_product_worksheets(sh, row.productnumber)
+    if not matches:
+        return {"ok": False, "reason": "row_not_found", "productnumber": row.productnumber,
+                "sheet": row.deliveryname}
+
+    current_ws, current_rows, _ = matches[0]
+    moved_sheet = current_ws.title != row.deliveryname
+    all_filtered = [r for _, _, filtered in matches for r in filtered[1:]]
+    combined_for_ids = [matches[0][2][0], *all_filtered]
+    protected_ids = _candidate_product_ids_for_rows(session, combined_for_ids, [product_id])
+    locked_snapshot = _snapshot_product_locks(session, protected_ids)
+    seen_in_run: dict = {}
+    total_result = {"added": 0, "updated": 0, "skipped": 0}
+    current_shipment_id = None
+    for ws, all_rows, filtered_rows in matches:
+        sheet_date = parse_date_from_sheet_title(ws.title)
+        supplier_name = parse_supplier_from_sheet_title(ws.title)
+        supplier_id = _get_or_create_supplier(session, supplier_name) if supplier_name else None
+        financials = _parse_delivery_financials(all_rows)
+        shipment_id = _get_or_create_shipment(
+            session, ws.title, sheet_date, supplier_id,
+            purchase_cost=financials["purchase_cost"], delivery_cost=financials["delivery_cost"],
+            sheet_gid=ws.id,
+        )
+        if current_shipment_id is None:
+            current_shipment_id = shipment_id
+        result = _parse_products_sheet(
+            ws, session, sheet_date, None, seen_in_run, supplier_id, shipment_id,
+            prefetched_rows=filtered_rows, commit=False,
+        )
+        for key in total_result:
+            total_result[key] += result.get(key, 0)
+    restored = _restore_product_locks(session, locked_snapshot, commit=False)
+    session.commit()
+
+    try:
+        try:
+            from services import journal_reconcile
+        except ImportError:
+            from backend.services import journal_reconcile
+        repair = journal_reconcile.enqueue_locked_differences_from_values(
+            session, [int(product_id)], current_ws.title, current_rows,
+        )
+    except Exception as e:  # звірка не має відкотити вже безпечний sheet→DB sync
+        logger.warning("[product-sync] locked reconcile failed for %s: %s", product_id, e)
+        repair = {"queued": 0, "error": str(e)}
+
+    return {
+        "ok": True, "product_id": int(product_id), "sheet": current_ws.title,
+        "moved_sheet": bool(moved_sheet), "shipment_id": current_shipment_id,
+        "matched_sheets": len(matches),
+        "added": total_result["added"], "updated": total_result["updated"],
+        "restored_locks": restored, "queued_writebacks": repair.get("queued", 0),
+        "repair": repair,
+    }
+
+
 def sync_one_delivery_tab(session: Session, deliveryname: str) -> dict:
+    if not POINT_SYNC_LOCK.acquire(blocking=False):
+        return {"skipped": True, "reason": "point_sync_in_progress",
+                "added": 0, "updated": 0, "deleted": 0}
+    try:
+        return _sync_one_delivery_tab_locked(session, deliveryname)
+    finally:
+        POINT_SYNC_LOCK.release()
+
+
+def _sync_one_delivery_tab_locked(session: Session, deliveryname: str) -> dict:
     """⚡ Точкова синхронізація ОДНІЄЇ вкладки завозу з аркушем → БД.
 
     Адди/правки: upsert через `_parse_products_sheet` (та сама логіка, що повний парс,
@@ -6224,7 +6530,12 @@ def sync_one_delivery_tab(session: Session, deliveryname: str) -> dict:
         purchase_cost=financials["purchase_cost"], delivery_cost=financials["delivery_cost"],
         sheet_gid=ws.id,
     )
-    res = _parse_products_sheet(ws, session, sheet_date, None, {}, supplier_id, shipment_id, prefetched_rows=all_rows)
+    protected_ids = _candidate_product_ids_for_rows(session, all_rows)
+    locked_snapshot = _snapshot_product_locks(session, protected_ids)
+    aggregate_snapshot = _snapshot_product_aggregates(session, protected_ids)
+    res = _parse_products_sheet(ws, session, sheet_date, None, {}, supplier_id,
+                                shipment_id, prefetched_rows=all_rows, commit=False)
+    restored = _restore_product_locks(session, locked_snapshot, commit=False)
     session.flush()
 
     # Прибирати орфанів можна ЛИШЕ знаючи весь журнал: товар цього завозу міг
@@ -6232,19 +6543,56 @@ def sync_one_delivery_tab(session: Session, deliveryname: str) -> dict:
     # цій хибній засаді 19.08.2026 згоріло 135 живих товарів. Не змогли прочитати
     # журнал — не видаляємо нічого (адди/правки цієї вкладки все одно застосовані).
     deleted, scan_failed = 0, None
+    aggregate_restored = 0
     if shipment_id:
         try:
-            journal_nums = _journal_all_numbers(sh)
+            journal_nums, journal_counts = _journal_number_index(sh)
         except Exception as e:  # noqa: BLE001
-            journal_nums, scan_failed = None, str(e)
+            journal_nums, journal_counts, scan_failed = None, {}, str(e)
             logger.warning(f"[sync] скан журналу не вдався ({e}) — прибирання орфанів пропущено")
+        current_counts = _number_counts_from_rows(all_rows)
+        # Якщо скан не вдався, зберігаємо всі старі агрегати: частковий аркуш не
+        # має права занижувати quantity/status або пересаджувати deliveryid.
+        if journal_nums is None:
+            cross_sheet_bases = {
+                _product_search_base(v.get("productnumber") or "")
+                for v in aggregate_snapshot.values()
+            }
+        else:
+            cross_sheet_bases = {
+                base for base, total in journal_counts.items()
+                if total > current_counts.get(base, 0)
+            }
+        aggregate_restored = _restore_cross_sheet_aggregates(
+            session, aggregate_snapshot, cross_sheet_bases,
+        )
         if journal_nums is not None:
             deleted = _reconcile_delivery_orphans(
                 session, shipment_id, all_rows, all_sheet_nums=journal_nums,
             )
+    else:
+        aggregate_restored = _restore_cross_sheet_aggregates(
+            session,
+            aggregate_snapshot,
+            {_product_search_base(v.get("productnumber") or "")
+             for v in aggregate_snapshot.values()},
+        )
     session.commit()
+    try:
+        try:
+            from services import journal_reconcile
+        except ImportError:
+            from backend.services import journal_reconcile
+        repair = journal_reconcile.enqueue_locked_differences_from_values(
+            session, protected_ids, ws.title, all_rows,
+        )
+    except Exception as e:
+        logger.warning("[delivery-sync] locked reconcile failed for %s: %s", deliveryname, e)
+        repair = {"queued": 0, "error": str(e)}
     out = {"shipment_id": shipment_id, "added": res.get("added", 0),
-           "updated": res.get("updated", 0), "deleted": deleted}
+           "updated": res.get("updated", 0), "deleted": deleted,
+           "restored_locks": restored, "restored_cross_sheet_aggregates": aggregate_restored,
+           "queued_writebacks": repair.get("queued", 0)}
     if scan_failed:
         out["orphan_scan_skipped"] = scan_failed
     return out

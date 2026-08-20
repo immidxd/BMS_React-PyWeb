@@ -861,6 +861,30 @@ def get_product_journal_url(
                             detail=f"Не вдалося знайти вкладку «{sheet}» у журналі")
 
 
+@router.post("/api/products/{product_id}/sync-from-journal")
+def sync_product_from_journal(
+    product_id: int = Path(..., ge=1, description="ID товару"),
+    db: Session = Depends(get_db),
+):
+    """Точково й без видалень оновити одну картку з актуальної вкладки журналу.
+
+    Якщо номер переїхав між вкладками, backend знаходить його batch-пошуком і
+    виправляє прив'язку. Ручні BMS-поля захищені локами; їх доведені
+    розбіжності повертаються у надійну write-back чергу.
+    """
+    try:
+        try:
+            from scripts.sheets_parser import sync_one_product_from_journal
+        except ImportError:
+            from backend.scripts.sheets_parser import sync_one_product_from_journal
+        return sync_one_product_from_journal(db, product_id)
+    except Exception as e:  # noqa: BLE001
+        db.rollback()
+        logger.error("sync_product_from_journal failed for %s: %s", product_id, e)
+        raise HTTPException(status_code=502,
+                            detail=f"Не вдалося оновити картку з журналу: {e}")
+
+
 @router.get("/api/products/{product_id}")
 def get_product(
     product_id: int = Path(..., ge=1, description="ID товару"),
@@ -881,13 +905,10 @@ def get_product(
         # journal_sync.sync_state_by_product.
         try:
             product["journal_sync"] = journal_sync.sync_state_by_product(
-                db, [product_id]).get(product_id) or {
-                    "pending": 0, "stale": 0, "failed": 0, "skipped": 0,
-                    "unsynced": 0, "stuck": False}
+                db, [product_id]).get(product_id) or journal_sync.empty_sync_state()
         except Exception as _e:  # noqa: BLE001
             logger.warning(f"journal_sync state failed for {product_id}: {_e}")
-            product["journal_sync"] = {"pending": 0, "stale": 0, "failed": 0,
-                                       "skipped": 0, "unsynced": 0, "stuck": False}
+            product["journal_sync"] = journal_sync.empty_sync_state()
         return product
     except HTTPException:
         raise

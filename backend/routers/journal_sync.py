@@ -30,7 +30,7 @@ def get_status(db: Session = Depends(get_db)):
         SELECT id, product_id, productnumber, sheet_title, field, status,
                attempts, last_error, next_attempt_at
         FROM journal_writeback_queue
-        WHERE status IN ('pending', 'failed', 'skipped')
+        WHERE status IN ('pending', 'processing', 'failed', 'skipped')
         ORDER BY (status = 'failed') DESC, updated_at DESC
         LIMIT 100
     """)).fetchall()
@@ -40,8 +40,27 @@ def get_status(db: Session = Depends(get_db)):
     }
 
 
+@router.get("/api/journal-sync/activity")
+def get_activity(db: Session = Depends(get_db)):
+    """Короткий app-wide стан для тимчасового індикатора затримки/роботи."""
+    return journal_sync.global_activity(db)
+
+
+@router.get("/api/journal-sync/product/{product_id}")
+def get_product_status(product_id: int, db: Session = Depends(get_db)):
+    """Легкий живий стан двох-трьох задач картки без повторного читання товару."""
+    exists = db.execute(text("SELECT 1 FROM products WHERE id=:pid"),
+                        {"pid": int(product_id)}).first()
+    if not exists:
+        raise HTTPException(status_code=404, detail="Товар не знайдено")
+    state = journal_sync.sync_state_by_product(db, [product_id]).get(product_id)
+    out = state or journal_sync.empty_sync_state()
+    out["items"] = journal_sync.sync_items_by_product(db, product_id)
+    return out
+
+
 @router.post("/api/journal-sync/retry")
-def retry(include_skipped: bool = Query(True, description="Повторити й ті, що пропущені як безнадійні"),
+def retry(include_skipped: bool = Query(False, description="Повторити й ті, що пропущені як безнадійні"),
           product_id: Optional[int] = Query(None, description="Лише задачі цієї картки"),
           db: Session = Depends(get_db)):
     """Повернути провалені задачі в роботу негайно."""

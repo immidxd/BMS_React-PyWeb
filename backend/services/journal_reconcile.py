@@ -93,6 +93,98 @@ def _locked_fields(raw: Optional[str]) -> List[str]:
     return [f.strip() for f in (raw or "").split(",") if f.strip()]
 
 
+def enqueue_locked_differences_from_values(
+    db: Session,
+    product_ids: List[int],
+    sheet_title: str,
+    all_values: List[List[str]],
+) -> Dict[str, Any]:
+    """Поставити в чергу лише доведені розбіжності залочених полів.
+
+    Використовується після точкового journal→BMS читання. Незалочені поля вже
+    прийшли з аркуша через парсер; залочені належать BMS, тому їх порівнюємо з
+    тим самим знімком клітинок і, лише якщо вони відрізняються, ставимо у
+    write-back. Жодного другого читання Google і жодного масового перезапису.
+    """
+    report: Dict[str, Any] = {
+        "queued": 0, "row_not_found": 0, "no_column": 0,
+        "skipped_per_item": 0, "fields": [],
+    }
+    if not product_ids or not all_values:
+        return report
+    sp = _sp()
+    ps = _product_service()
+    header = [str(h).strip() for h in all_values[0]]
+    if "Номер" not in header:
+        report["no_column"] = 1
+        return report
+    num_idx = header.index("Номер")
+    rows_by_num: Dict[str, List[List[str]]] = {}
+    for row in all_values[1:]:
+        raw = row[num_idx] if num_idx < len(row) else ""
+        key = sp._canon_pnum_for_match(raw)
+        if key:
+            rows_by_num.setdefault(key, []).append(row)
+
+    try:
+        from backend.services import journal_sync
+    except ImportError:
+        from services import journal_sync
+
+    seen_tasks = set()
+    rows = db.execute(text("""
+        SELECT p.id, p.productnumber, p.manually_edited_fields
+        FROM products p
+        WHERE p.id = ANY(:ids)
+    """), {"ids": [int(i) for i in product_ids]}).fetchall()
+    for pr in rows:
+        key = sp._canon_pnum_for_match(pr.productnumber)
+        sheet_rows = rows_by_num.get(key, [])
+        if not sheet_rows:
+            # Внутрішній суфікс BMS (#X-2) не дає безпечного способу вибрати
+            # один із кількох однакових номерів аркуша. Не вгадуємо рядок.
+            report["row_not_found"] += 1
+            continue
+        detail = ps.get_product_with_relations(db, int(pr.id))
+        if not detail:
+            continue
+        expected = _full_sheet_map(detail)
+        for field in _locked_fields(pr.manually_edited_fields):
+            header_name = sp.WRITEBACK_FIELD_HEADERS.get(field)
+            if not header_name or header_name not in header:
+                report["no_column"] += 1
+                continue
+            if field in sp.PER_ITEM_WRITEBACK_FIELDS and len(sheet_rows) > 1:
+                report["skipped_per_item"] += 1
+                continue
+            if header_name not in expected:
+                continue
+            new_str = _cell_str(field, expected.get(header_name))
+            if not new_str.strip():
+                continue
+            col_idx = header.index(header_name)
+            differs = any(
+                sp._writeback_cell_value(
+                    field,
+                    row[col_idx] if col_idx < len(row) else "",
+                    new_str,
+                ).strip() != (row[col_idx] if col_idx < len(row) else "").strip()
+                for row in sheet_rows
+            )
+            task_key = (key, field, new_str)
+            if not differs or task_key in seen_tasks:
+                continue
+            seen_tasks.add(task_key)
+            journal_sync.enqueue(db, int(pr.id), pr.productnumber,
+                                 sheet_title, field, new_str)
+            report["queued"] += 1
+            report["fields"].append(field)
+    if report["queued"]:
+        db.commit()
+        journal_sync.kick()
+    return report
+
+
 def reconcile(db: Session, apply: bool = False,
               sheet_titles: Optional[List[str]] = None,
               max_sheets: Optional[int] = None,
@@ -211,7 +303,8 @@ def reconcile(db: Session, apply: bool = False,
                 for r_i in sheet_rows:
                     row = all_values[r_i - 1]
                     old = row[col_idx] if col_idx < len(row) else ""
-                    if old.strip() == new_str.strip():
+                    cell_new = sp._writeback_cell_value(field, old, new_str)
+                    if old.strip() == cell_new.strip():
                         continue
                     if mode == "fill_empty" and old.strip():
                         continue   # у клітинці вже щось є — не наша справа
@@ -223,16 +316,16 @@ def reconcile(db: Session, apply: bool = False,
                     # текстом: журнал рахує по них суми. Той самий поділ, що й у
                     # writeback_field_to_journal — RAW лише для текстових полів.
                     bucket = ("raw" if field in sp.WRITEBACK_TEXT_FIELDS else "user")
-                    updates.append({"range": a1, "values": [[new_str]], "_bucket": bucket})
+                    updates.append({"range": a1, "values": [[cell_new]], "_bucket": bucket})
                     backups.append({"sheet": sheet_title, "a1": a1, "number": pr.productnumber,
                                     "field": field, "header": header_name,
-                                    "old": old, "new": new_str})
+                                    "old": old, "new": cell_new})
                     report["diffs"] += 1
                     report["by_field"][field] = report["by_field"].get(field, 0) + 1
                     if len(report["examples"]) < 25:
                         report["examples"].append({
                             "sheet": sheet_title, "number": pr.productnumber,
-                            "column": header_name, "sheet_value": old, "card_value": new_str,
+                            "column": header_name, "sheet_value": old, "card_value": cell_new,
                         })
 
         if apply and updates:

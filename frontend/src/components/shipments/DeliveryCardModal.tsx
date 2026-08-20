@@ -494,7 +494,6 @@ const DeliveryCardModal: React.FC<Props> = ({ shipment, open, onClose }) => {
         <ProductDetailsModal
           productId={detailId}
           open={!!detailId}
-          syncBeforeLoad={() => syncDelivery(sid)}
           onPrev={products.length > 1 ? () => gotoOffset(-1) : undefined}
           onNext={products.length > 1 ? () => gotoOffset(1) : undefined}
           onClose={() => { setDetailId(null); loadProducts(); }}

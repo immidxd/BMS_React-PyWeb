@@ -26,9 +26,51 @@ const TaskCenter: React.FC = () => {
   const [, force] = useState(0);
 
   const running = tasks.filter(t => t.status === 'running').length;
+  const waiting = tasks.filter(t => t.status === 'waiting').length;
   const errors = tasks.filter(t => t.status === 'error').length;
   const partial = tasks.filter(t => t.status === 'partial').length;
   const hasAny = tasks.length > 0;
+  const journalTask = tasks.find(t => t.id === 'journal-sync-global');
+
+  // Backend може побачити зовнішню правку журналу поза будь-якою відкритою
+  // карткою. Поки BMS чекає/читає/повторює, показуємо той самий живий процес
+  // глобально; після фактичного вирівнювання він зникає, а не лишається шумом.
+  useEffect(() => {
+    let cancelled = false;
+    let timer: number | undefined;
+    const poll = async () => {
+      try {
+        const response = await fetch('/api/journal-sync/activity');
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const activity = await response.json();
+        if (cancelled) return;
+        if (activity.state === 'idle') {
+          taskManager.remove('journal-sync-global');
+        } else {
+          const status = activity.state === 'error'
+            ? 'error'
+            : activity.state === 'delayed'
+              ? 'waiting'
+              : 'running';
+          taskManager.setExternal(
+            'journal-sync-global',
+            activity.state === 'delayed' ? 'Синхронізація очікує' : 'Синхронізація з журналом',
+            status,
+            activity.detail || undefined,
+          );
+        }
+      } catch {
+        // Недоступність самого індикатора не створює фальшиву помилку даних.
+      } finally {
+        if (!cancelled) timer = window.setTimeout(poll, 3000);
+      }
+    };
+    poll();
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, []);
 
   // Оновлювати «N с тому» поки панель відкрита.
   useEffect(() => {
@@ -43,6 +85,8 @@ const TaskCenter: React.FC = () => {
   const dot = (t: Task) =>
     t.status === 'running'
       ? <span className="w-3.5 h-3.5 border-2 border-gray-300 border-t-gray-600 rounded-full animate-spin shrink-0" />
+      : t.status === 'waiting'
+        ? <span className="w-3.5 h-3.5 rounded-full border border-amber-400 text-amber-600 text-[9px] leading-[12px] text-center shrink-0">…</span>
       : t.status === 'success'
         ? <span className="text-green-600 shrink-0">✓</span>
         : t.status === 'partial'
@@ -51,6 +95,19 @@ const TaskCenter: React.FC = () => {
 
   return (
     <div className="fixed bottom-4 right-4 z-[200] flex flex-col items-end gap-2 select-none">
+      {!open && journalTask && (
+        <div className={`max-w-xs rounded-lg border px-3 py-2 text-[11px] shadow-lg flex items-center gap-2
+          ${journalTask.status === 'error'
+            ? 'bg-red-50 text-red-700 border-red-200 dark:bg-red-900/40 dark:text-red-200 dark:border-red-800'
+            : journalTask.status === 'waiting'
+              ? 'bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-900/40 dark:text-amber-200 dark:border-amber-800'
+              : 'bg-white text-gray-700 border-gray-200 dark:bg-gray-800 dark:text-gray-200 dark:border-gray-700'}`}>
+          {journalTask.status === 'running' && (
+            <span className="w-3.5 h-3.5 border-2 border-gray-300 border-t-gray-700 dark:border-t-gray-200 rounded-full animate-spin shrink-0" />
+          )}
+          <span>{journalTask.detail || journalTask.label}</span>
+        </div>
+      )}
       {open && (
         <div className="w-80 max-h-[60vh] overflow-auto rounded-xl bg-white dark:bg-gray-800 shadow-2xl border border-gray-200 dark:border-gray-700">
           <div className="flex items-center justify-between px-3 py-2 border-b border-gray-100 dark:border-gray-700 sticky top-0 bg-white dark:bg-gray-800">
@@ -71,11 +128,11 @@ const TaskCenter: React.FC = () => {
                   <span className="mt-0.5">{dot(t)}</span>
                   <div className="min-w-0 flex-1">
                     <div className="text-gray-800 dark:text-gray-100 truncate">{t.label}</div>
-                    {(t.status === 'error' || t.status === 'partial') && t.detail && (
-                      <div className={`${t.status === 'partial' ? 'text-amber-600 dark:text-amber-400' : 'text-red-500'} text-[11px] break-words`}>{t.detail}</div>
+                    {(t.status === 'error' || t.status === 'partial' || t.status === 'waiting') && t.detail && (
+                      <div className={`${t.status === 'partial' || t.status === 'waiting' ? 'text-amber-600 dark:text-amber-400' : 'text-red-500'} text-[11px] break-words`}>{t.detail}</div>
                     )}
                     <div className="text-gray-400 text-[10px]">
-                      {t.status === 'running' ? 'виконується…' : ago(t.endedAt)}
+                      {t.status === 'running' ? 'виконується…' : t.status === 'waiting' ? 'очікує…' : ago(t.endedAt)}
                     </div>
                   </div>
                 </li>
@@ -91,14 +148,15 @@ const TaskCenter: React.FC = () => {
           ${errors > 0 ? 'bg-red-50 dark:bg-red-900/30 border-red-200 dark:border-red-800'
             : partial > 0 ? 'bg-amber-50 dark:bg-amber-900/30 border-amber-200 dark:border-amber-800'
             : running > 0 ? 'bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700'
+              : waiting > 0 ? 'bg-amber-50 dark:bg-amber-900/30 border-amber-200 dark:border-amber-800'
               : 'bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700'}`}>
         {running > 0
           ? <span className="w-5 h-5 border-2 border-gray-300 border-t-gray-700 rounded-full animate-spin" />
           : <span className="text-lg">🔔</span>}
-        {(running > 0 || errors > 0 || partial > 0) && (
+        {(running > 0 || waiting > 0 || errors > 0 || partial > 0) && (
           <span className={`absolute -top-1 -right-1 min-w-[18px] h-[18px] px-1 rounded-full text-[10px] font-semibold text-white flex items-center justify-center
             ${errors > 0 ? 'bg-red-500' : partial > 0 ? 'bg-amber-500' : 'bg-gray-700'}`}>
-            {running > 0 ? running : errors || partial}
+            {running > 0 ? running : waiting > 0 ? waiting : errors || partial}
           </span>
         )}
       </button>

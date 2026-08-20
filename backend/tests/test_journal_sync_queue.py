@@ -18,7 +18,7 @@ class _FakeDB:
 
     def execute(self, stmt, params=None):
         self.calls.append((str(stmt), params or {}))
-        return SimpleNamespace(rowcount=1)
+        return SimpleNamespace(rowcount=1, first=lambda: None)
 
     def commit(self):
         pass
@@ -37,10 +37,10 @@ class _RowsDB(_FakeDB):
         return self.rows
 
 
-def _row(attempts=0):
+def _row(attempts=0, status="pending"):
     return SimpleNamespace(id=1, product_id=10, productnumber="#Ф1",
                            sheet_title="01.05.2025(Андрій)", field="model",
-                           value="Nartilla", attempts=attempts)
+                           value="Nartilla", attempts=attempts, status=status)
 
 
 def _with_result(monkeypatch, result=None, exc=None):
@@ -65,9 +65,11 @@ def test_network_failure_is_retried_not_lost(monkeypatch):
     _with_result(monkeypatch, exc=OSError("SSL: no certificate or crl found"))
     db = _FakeDB()
     assert journal_sync._process_one(db, _row()) == "retry"
-    sql, params = db.calls[0]
+    sql, params = next((sql, params) for sql, params in db.calls
+                       if "SET status='pending', attempts" in sql)
     assert params["a"] == 1
     assert params["delay"] == str(journal_sync.BACKOFF_SECONDS[0])
+    assert "status='pending'" in sql
 
 
 def test_retries_run_out_into_failed(monkeypatch):
@@ -75,7 +77,7 @@ def test_retries_run_out_into_failed(monkeypatch):
     db = _FakeDB()
     last = journal_sync.MAX_ATTEMPTS - 1
     assert journal_sync._process_one(db, _row(attempts=last)) == "failed"
-    assert "status='failed'" in db.calls[0][0]
+    assert any("status='failed'" in sql for sql, _ in db.calls)
 
 
 def test_missing_column_is_not_retried_forever(monkeypatch):
@@ -99,23 +101,29 @@ def test_classify_treats_unknown_errors_as_transient():
 
 
 def test_fresh_pending_write_is_not_shown_as_stuck():
-    db = _RowsDB([SimpleNamespace(product_id=10, pending=2, stale=0,
-                                  failed=0, skipped=0)])
+    db = _RowsDB([SimpleNamespace(product_id=10, pending=2, processing=0,
+                                  retrying=0, stale=0, failed=0,
+                                  blocked=0, ignored=0)])
 
     state = journal_sync.sync_state_by_product(db, [10])[10]
 
-    assert state == {"pending": 2, "stale": 0, "failed": 0, "skipped": 0,
-                     "unsynced": 0, "stuck": False}
+    assert state == {"pending": 2, "processing": 0, "active": 2,
+                     "retrying": 0, "stale": 0, "failed": 0,
+                     "blocked": 0, "ignored": 0, "skipped": 0,
+                     "unsynced": 2, "stuck": False, "state": "syncing"}
 
 
 def test_failed_skipped_and_stale_writes_are_shown_as_stuck():
-    db = _RowsDB([SimpleNamespace(product_id=10, pending=2, stale=1,
-                                  failed=2, skipped=3)])
+    db = _RowsDB([SimpleNamespace(product_id=10, pending=2, processing=1,
+                                  retrying=1, stale=1, failed=2,
+                                  blocked=3, ignored=4)])
 
     state = journal_sync.sync_state_by_product(db, [10])[10]
 
-    assert state["unsynced"] == 6
+    assert state["unsynced"] == 8
     assert state["stuck"] is True
+    assert state["state"] == "error"
+    assert state["ignored"] == 4
 
 
 def test_retry_can_be_limited_to_one_product_and_include_skipped():
@@ -126,3 +134,55 @@ def test_retry_can_be_limited_to_one_product_and_include_skipped():
     sql, params = db.calls[0]
     assert "product_id = :pid" in sql
     assert params == {"st": ["failed", "skipped"], "pid": 10}
+
+
+class _TargetDB(_FakeDB):
+    def execute(self, stmt, params=None):
+        sql = str(stmt)
+        self.calls.append((sql, params or {}))
+        if "SELECT p.productnumber, d.deliveryname" in sql:
+            return SimpleNamespace(fetchone=lambda: ("#Ф1", "02.05.2025(Андрій)"))
+        return SimpleNamespace(rowcount=1)
+
+
+def test_processing_task_is_retargeted_to_current_delivery():
+    db = _TargetDB()
+    row = _row(status="processing")
+
+    prepared, outcome = journal_sync._resolve_current_target(db, row)
+
+    assert outcome is None
+    assert prepared.sheet_title == "02.05.2025(Андрій)"
+    assert prepared.productnumber == "#Ф1"
+    assert any("SET productnumber=:pnum, sheet_title=:sheet" in sql
+               for sql, _ in db.calls)
+
+
+def test_processing_result_only_finishes_claimed_version(monkeypatch):
+    _with_result(monkeypatch, result={"ok": True, "rows_updated": 1})
+    db = _FakeDB()
+
+    assert journal_sync._process_one(db, _row(status="processing")) == "done"
+
+    sql, params = db.calls[0]
+    assert "status=:expected" in sql
+    assert params["expected"] == "processing"
+
+
+class _NewerEditDB(_FakeDB):
+    def execute(self, stmt, params=None):
+        sql = str(stmt)
+        self.calls.append((sql, params or {}))
+        if "SELECT 1 FROM journal_writeback_queue" in sql:
+            return SimpleNamespace(first=lambda: (1,))
+        return SimpleNamespace(rowcount=1, first=lambda: None)
+
+
+def test_failed_old_processing_version_yields_to_newer_edit(monkeypatch):
+    _with_result(monkeypatch, exc=OSError("temporary network failure"))
+    db = _NewerEditDB()
+
+    assert journal_sync._process_one(db, _row(status="processing")) == "superseded"
+
+    assert any("superseded by newer edit" in sql for sql, _ in db.calls)
+    assert not any("SET status='pending', attempts" in sql for sql, _ in db.calls)
