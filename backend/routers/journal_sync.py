@@ -41,10 +41,12 @@ def get_status(db: Session = Depends(get_db)):
 
 
 @router.post("/api/journal-sync/retry")
-def retry(include_skipped: bool = Query(False, description="Повторити й ті, що пропущені як безнадійні"),
+def retry(include_skipped: bool = Query(True, description="Повторити й ті, що пропущені як безнадійні"),
+          product_id: Optional[int] = Query(None, description="Лише задачі цієї картки"),
           db: Session = Depends(get_db)):
     """Повернути провалені задачі в роботу негайно."""
-    n = journal_sync.retry_failed(db, include_skipped=include_skipped)
+    n = journal_sync.retry_failed(db, include_skipped=include_skipped,
+                                  product_id=product_id)
     journal_sync.kick()
     return {"requeued": n}
 

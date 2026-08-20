@@ -201,27 +201,77 @@ def status_counts(db: Session) -> Dict[str, int]:
     return {r.status: int(r.c) for r in rows}
 
 
-def pending_by_product(db: Session, product_ids: Iterable[int]) -> Dict[int, int]:
-    """{product_id: скільки полів ще не лягло в журнал} — для значка в картці."""
+# Скільки чекати, поки «щойно поставлено в чергу» стане «застрягло».
+# Воркер драйнить чергу раз на хвилину, тож нормальний запис живе в черзі
+# секунди. Все, що висить довше, — це вже не «в дорозі», а проблема.
+STALE_PENDING_MINUTES = 5
+
+
+def sync_state_by_product(db: Session, product_ids: Iterable[int]) -> Dict[int, Dict[str, Any]]:
+    """Стан запису в журнал по товарах — для значка в картці.
+
+    Значок має спрацьовувати лише тоді, коли є про що казати. Свіжа задача в
+    черзі — це нормальна робота, а не аварія: якби чіп світився на кожну
+    правку, він став би шумом, який перестають читати. Тому окремо рахуємо:
+
+      pending  — у дорозі (мовчимо, поки не застаріло);
+      stale    — висить довше за STALE_PENDING_MINUTES (черга не рухається);
+      failed   — спроби вичерпані;
+      skipped  — писати нікуди (нема колонки/завозу, per-item поле ростовки).
+
+    ``stuck`` = чи є що показувати людині; ``unsynced`` = скільки саме полів.
+    """
     ids = [int(i) for i in product_ids if i]
     if not ids:
         return {}
-    rows = db.execute(text("""
-        SELECT product_id, count(*) AS c
+    rows = db.execute(text(f"""
+        SELECT product_id,
+               count(*) FILTER (WHERE status = 'pending') AS pending,
+               count(*) FILTER (WHERE status = 'pending'
+                                  AND created_at < now() - interval '{STALE_PENDING_MINUTES} minutes') AS stale,
+               count(*) FILTER (WHERE status = 'failed')  AS failed,
+               count(*) FILTER (WHERE status = 'skipped') AS skipped
         FROM journal_writeback_queue
-        WHERE status IN ('pending', 'failed') AND product_id = ANY(:ids)
+        WHERE status IN ('pending', 'failed', 'skipped') AND product_id = ANY(:ids)
         GROUP BY product_id
     """), {"ids": ids}).fetchall()
-    return {int(r.product_id): int(r.c) for r in rows}
+    out: Dict[int, Dict[str, Any]] = {}
+    for r in rows:
+        unsynced = int(r.stale) + int(r.failed) + int(r.skipped)
+        out[int(r.product_id)] = {
+            "pending": int(r.pending),
+            "stale": int(r.stale),
+            "failed": int(r.failed),
+            "skipped": int(r.skipped),
+            "unsynced": unsynced,
+            "stuck": unsynced > 0,
+        }
+    return out
 
 
-def retry_failed(db: Session, include_skipped: bool = False) -> int:
-    """Повернути 'failed' (за бажанням і 'skipped') у роботу негайно."""
+def pending_by_product(db: Session, product_ids: Iterable[int]) -> Dict[int, int]:
+    """Сумісний вигляд: {product_id: скільки полів реально застрягло}."""
+    return {pid: st["unsynced"] for pid, st in sync_state_by_product(db, product_ids).items()}
+
+
+def retry_failed(db: Session, include_skipped: bool = False,
+                 product_id: Optional[int] = None) -> int:
+    """Повернути 'failed' (за бажанням і 'skipped') у роботу негайно.
+
+    ``product_id`` звужує повтор до однієї картки — саме це робить значок
+    «не в журналі»: людина бачить проблему там, де вона виникла, і лагодить
+    її звідти ж, не шукаючи окремий екран.
+    """
     statuses = ["failed", "skipped"] if include_skipped else ["failed"]
-    res = db.execute(text("""
+    sql = """
         UPDATE journal_writeback_queue
         SET status='pending', attempts=0, next_attempt_at=now(), updated_at=now()
         WHERE status = ANY(:st)
-    """), {"st": statuses})
+    """
+    params: Dict[str, Any] = {"st": statuses}
+    if product_id is not None:
+        sql += " AND product_id = :pid"
+        params["pid"] = int(product_id)
+    res = db.execute(text(sql), params)
     db.commit()
     return res.rowcount or 0

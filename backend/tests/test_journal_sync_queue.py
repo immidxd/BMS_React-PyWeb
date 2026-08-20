@@ -24,6 +24,19 @@ class _FakeDB:
         pass
 
 
+class _RowsDB(_FakeDB):
+    def __init__(self, rows):
+        super().__init__()
+        self.rows = rows
+
+    def execute(self, stmt, params=None):
+        self.calls.append((str(stmt), params or {}))
+        return self
+
+    def fetchall(self):
+        return self.rows
+
+
 def _row(attempts=0):
     return SimpleNamespace(id=1, product_id=10, productnumber="#Ф1",
                            sheet_title="01.05.2025(Андрій)", field="model",
@@ -83,3 +96,33 @@ def test_rostovka_per_item_guard_is_permanent(monkeypatch):
 def test_classify_treats_unknown_errors_as_transient():
     assert journal_sync._classify("exception: Max retries exceeded") == "retry"
     assert journal_sync._classify("no sheet_title (product has no delivery)") == "skipped"
+
+
+def test_fresh_pending_write_is_not_shown_as_stuck():
+    db = _RowsDB([SimpleNamespace(product_id=10, pending=2, stale=0,
+                                  failed=0, skipped=0)])
+
+    state = journal_sync.sync_state_by_product(db, [10])[10]
+
+    assert state == {"pending": 2, "stale": 0, "failed": 0, "skipped": 0,
+                     "unsynced": 0, "stuck": False}
+
+
+def test_failed_skipped_and_stale_writes_are_shown_as_stuck():
+    db = _RowsDB([SimpleNamespace(product_id=10, pending=2, stale=1,
+                                  failed=2, skipped=3)])
+
+    state = journal_sync.sync_state_by_product(db, [10])[10]
+
+    assert state["unsynced"] == 6
+    assert state["stuck"] is True
+
+
+def test_retry_can_be_limited_to_one_product_and_include_skipped():
+    db = _FakeDB()
+
+    assert journal_sync.retry_failed(db, include_skipped=True, product_id=10) == 1
+
+    sql, params = db.calls[0]
+    assert "product_id = :pid" in sql
+    assert params == {"st": ["failed", "skipped"], "pid": 10}

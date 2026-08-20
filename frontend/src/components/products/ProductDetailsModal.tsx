@@ -62,6 +62,25 @@ interface GalleryImage {
   kind?: GalleryKind;
 }
 
+type JournalSyncState = {
+  pending?: number;
+  stale?: number;
+  failed?: number;
+  skipped?: number;
+  unsynced?: number;
+  stuck?: boolean;
+};
+
+/** Людське пояснення, чому картка ще не збігається з журналом. */
+function journalTooltip(state?: JournalSyncState): string {
+  const details: string[] = [];
+  if ((state?.stale ?? 0) > 0) details.push(`${state!.stale} давно очікує в черзі`);
+  if ((state?.failed ?? 0) > 0) details.push(`${state!.failed} не записалося після повторів`);
+  if ((state?.skipped ?? 0) > 0) details.push(`${state!.skipped} було пропущено`);
+  const reason = details.length ? details.join('; ') : 'Є незаписані зміни';
+  return `${reason}. Натисніть, щоб повторити запис зараз.`;
+}
+
 // Панелька «завантажити/копіювати» в тулбарі повноекранного прев'ю — той самий
 // темний напівпрозорий вигляд, що й рідні кнопки antd (zoom/rotate).
 const PREVIEW_ACTIONS_BAR: React.CSSProperties = {
@@ -201,6 +220,8 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
   const [editingField, setEditingField] = useState<string | null>(null);
   const [fieldDraft, setFieldDraft] = useState('');
   const [savingField, setSavingField] = useState(false);
+  // Повтор запису саме цієї картки в Google-журнал.
+  const [journalRetrying, setJournalRetrying] = useState(false);
   // Менеджер фото (в editMode): додати/видалити/перейменувати(порядок)/замінити
   const [photoBusy, setPhotoBusy] = useState(false);
   const [dragIdx, setDragIdx] = useState<number | null>(null);
@@ -867,6 +888,41 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
         .catch(() => { /* best-effort */ });
     }
   }, [productId]);
+
+  const retryJournalSync = React.useCallback(async () => {
+    if (!productId || journalRetrying) return;
+    const pid = productId;
+    setJournalRetrying(true);
+    try {
+      const response = await fetch(
+        `/api/journal-sync/retry?include_skipped=true&product_id=${encodeURIComponent(pid)}`,
+        { method: 'POST' },
+      );
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
+
+      const requeued = Number(data.requeued || 0);
+      if (requeued > 0) {
+        notify.success({
+          message: requeued === 1 ? 'Повтор запису запущено' : `Повторюємо ${requeued} записів`,
+          description: 'BMS ще раз передає зміни цієї картки в журнал.',
+          duration: 4,
+        });
+      } else {
+        notify.info({ message: 'Задач для повтору вже немає', duration: 3 });
+      }
+      // Endpoint уже повернув задачі у pending, тому чіп має одразу показати
+      // актуальний стан. Guard усередині loadProduct захищає швидку навігацію.
+      await loadProduct(false);
+    } catch (e: any) {
+      notify.error({
+        message: 'Не вдалося повторити запис у журнал',
+        description: e?.message || 'Спробуйте ще раз.',
+      });
+    } finally {
+      setJournalRetrying(false);
+    }
+  }, [productId, journalRetrying, loadProduct]);
 
   // «Прийняти у завіз»: відкрити панель + підвантажити список завозів (для дропдауна).
   const openAdopt = React.useCallback(async () => {
@@ -2134,6 +2190,29 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                     </span>
                   )}
 
+                  {/* «Не в журналі» — не індикатор процесу, а сигнал проблеми.
+                      Свіжа правка живе в черзі секунди, і чіп на неї НЕ
+                      реагує: інакше він блимав би при кожному збереженні й
+                      його перестали б читати. Тут світиться лише те, що
+                      справді не доїхало (спроби вичерпані, писати нікуди, або
+                      черга стоїть довше 5 хв). Клік — повторити зараз.
+                      Сенс: журнал — те, за чим працюють люди; якщо правка туди
+                      не дійшла, вони діють за старим числом і не знають про це. */}
+                  {(p as any)?.journal_sync?.stuck && (
+                    <button
+                      type="button"
+                      onClick={retryJournalSync}
+                      disabled={journalRetrying}
+                      title={journalTooltip((p as any).journal_sync)}
+                      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold border transition-colors disabled:opacity-50
+                                 bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100
+                                 dark:bg-amber-900/30 dark:text-amber-300 dark:border-amber-700 dark:hover:bg-amber-900/50"
+                    >
+                      <SyncOutlined className="text-[11px]" spin={journalRetrying} />
+                      <span>Не в журналі{((p as any).journal_sync.unsynced > 1) ? `·${(p as any).journal_sync.unsynced}` : ''}</span>
+                    </button>
+                  )}
+
                   {/* Публікація в публічний інтернет-каталог (Telegram Mini App) */}
                   {catalogStatus && (
                     <>
@@ -2337,20 +2416,6 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                   >
                     <TableOutlined style={{ fontSize: 14 }} /><span>Таблиця</span>
                   </button>
-                )}
-
-                {/* Значок «не в журналі»: скільки полів цієї картки ще чекають
-                    запису в аркуш (або впали). Без нього розсинхрон був
-                    невидимий — правка зберігалась у БД, запис падав мовчки. */}
-                {((p as any)?.journal_pending ?? 0) > 0 && (
-                  <Tooltip title={`${(p as any).journal_pending} правк(и) ще не потрапили в журнал — застосунок повторює спроби`}>
-                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium
-                                     bg-amber-50 text-amber-700 border border-amber-200
-                                     dark:bg-amber-900/30 dark:text-amber-300 dark:border-amber-800">
-                      <SyncOutlined style={{ fontSize: 11 }} />
-                      не в журналі · {(p as any).journal_pending}
-                    </span>
-                  </Tooltip>
                 )}
 
                 {/* «Прийняти у завіз» — лише для орфанів (нема deliveryid: воркспейс/

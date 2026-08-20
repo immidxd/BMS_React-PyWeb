@@ -875,15 +875,19 @@ def get_product(
         if not product:
             raise HTTPException(status_code=404, detail=f"Товар з ID {product_id} не знайдено")
         
-        # Скільки правок цієї картки ще не лягло в журнал (черга + провалені).
-        # Без цього числа розсинхрон картки й аркуша був невидимий: правка
-        # зберігалась у БД, запис в аркуш падав, і дізнатись про це було ніяк.
+        # Стан запису цієї картки в журнал. Без нього розсинхрон був невидимий:
+        # правка зберігалась у БД, запис в аркуш падав, і дізнатись було ніяк.
+        # Свіжу задачу в черзі за стан «не в журналі» НЕ рахуємо — див.
+        # journal_sync.sync_state_by_product.
         try:
-            product["journal_pending"] = journal_sync.pending_by_product(
-                db, [product_id]).get(product_id, 0)
+            product["journal_sync"] = journal_sync.sync_state_by_product(
+                db, [product_id]).get(product_id) or {
+                    "pending": 0, "stale": 0, "failed": 0, "skipped": 0,
+                    "unsynced": 0, "stuck": False}
         except Exception as _e:  # noqa: BLE001
-            logger.warning(f"journal_pending failed for {product_id}: {_e}")
-            product["journal_pending"] = 0
+            logger.warning(f"journal_sync state failed for {product_id}: {_e}")
+            product["journal_sync"] = {"pending": 0, "stale": 0, "failed": 0,
+                                       "skipped": 0, "unsynced": 0, "stuck": False}
         return product
     except HTTPException:
         raise
