@@ -13,6 +13,11 @@ from dotenv import load_dotenv
 try:
     from .brand_utils import upsert_brand_and_get_id
     from ..services.brand_normalization import normalize_brand_fields
+    from ..services.product_taxonomy_normalization import (
+        canonicalize_subtype_name,
+        canonicalize_type_name,
+        split_reviewed_combined_type,
+    )
 except Exception:
     # fallback for direct script execution
     sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -21,6 +26,18 @@ except Exception:
        from services.brand_normalization import normalize_brand_fields
     except ImportError:
        from backend.services.brand_normalization import normalize_brand_fields
+    try:
+       from services.product_taxonomy_normalization import (
+           canonicalize_subtype_name,
+           canonicalize_type_name,
+           split_reviewed_combined_type,
+       )
+    except ImportError:
+       from backend.services.product_taxonomy_normalization import (
+           canonicalize_subtype_name,
+           canonicalize_type_name,
+           split_reviewed_combined_type,
+       )
 
 load_dotenv()
 
@@ -200,6 +217,7 @@ def get_or_create_delivery(cursor, delivery_name, delivery_date, conn):
 
 
 def get_or_create_type(cursor, type_name, conn):
+   type_name = canonicalize_type_name(type_name)
    if not type_name:
        return None
    cursor.execute("SELECT id FROM types WHERE typename=%s", (type_name,))
@@ -213,6 +231,7 @@ def get_or_create_type(cursor, type_name, conn):
 
 
 def get_or_create_subtype(cursor, subtype_name, conn):
+   subtype_name = canonicalize_subtype_name(subtype_name)
    if not subtype_name:
        return None
    cursor.execute("SELECT id FROM subtypes WHERE subtypename=%s", (subtype_name,))
@@ -932,6 +951,12 @@ def process_sheet_data(data, wtitle, all_product_numbers):
          normalized_brand_fields = normalize_brand_fields(brand, model)
          brand = normalized_brand_fields.brand
          model = normalized_brand_fields.model
+
+         # The same reviewed pair rules as the current parser.  Even this
+         # legacy importer must not recreate a combined value in ``types``.
+         reviewed_taxonomy = split_reviewed_combined_type(type_name)
+         if reviewed_taxonomy:
+            type_name, subtype_name = reviewed_taxonomy
 
          # Очищаємо номер товару (без додавання символу #)
          product_number = sanitize_product_number(p_num_) if p_num_ else ''

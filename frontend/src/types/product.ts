@@ -1,6 +1,10 @@
 export interface ReferenceItem {
     id: number;
     name: string;
+    /** Legacy primary parent for subtype reference rows. */
+    typeid?: number | null;
+    /** Every type with which this subtype is actually used by current products. */
+    typeids?: number[];
 }
 
 export type MaterialPosition = 'upper' | 'middle' | 'insole' | 'sole' | 'midsole' | 'membrane';

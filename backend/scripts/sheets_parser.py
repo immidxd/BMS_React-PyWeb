@@ -44,6 +44,19 @@ except ImportError:
         normalize_brand_fields,
     )
 
+try:
+    from services.product_taxonomy_normalization import (
+        canonicalize_subtype_name,
+        canonicalize_type_name,
+        split_reviewed_combined_type,
+    )
+except ImportError:
+    from backend.services.product_taxonomy_normalization import (
+        canonicalize_subtype_name,
+        canonicalize_type_name,
+        split_reviewed_combined_type,
+    )
+
 
 def get_credentials_path() -> str:
     """Resolve Google credentials for every Sheets parser mode.
@@ -2437,8 +2450,12 @@ def _get_or_create(session: Session, model, unique_field: str, value: str):
         except ImportError:
             pass
 
-    # Capitalize first letter for types
+    # Reviewed exact aliases first: a corrected Journal value can never recreate
+    # an old typo/homoglyph in the reference tables.
     if model is Type:
+        value = canonicalize_type_name(value) or ""
+        if not value:
+            return None
         value = _normalize_ref_name(value)
 
     # ── Brand: check blocklist → aliases → normalized comparison ──
@@ -2887,7 +2904,10 @@ def _parse_products_sheet(
 
         # ── Resolve FK refs ────────────────────────────────────────────────
         # Guard: split combined types ("Туфлі/кросівки", "Ботинки-челсі") → Type + Subtype
-        if type_val:
+        reviewed_pair = split_reviewed_combined_type(type_val) if type_val else None
+        if reviewed_pair:
+            type_val, sub_val = reviewed_pair
+        elif type_val:
             t_part, st_part = _split_combined_type(type_val)
             type_val = t_part
             if st_part and not sub_val:
@@ -3798,7 +3818,9 @@ def _get_or_create_subtype(session: Session, name: str, type_id: Optional[int]) 
     if not name or not name.strip():
         return None
     from sqlalchemy import text
-    name = name.strip()
+    name = canonicalize_subtype_name(name) or ""
+    if not name:
+        return None
     # Reject numeric garbage, empty, and '?' markers
     if _is_garbage_ref_value(name):
         return None
@@ -5289,7 +5311,10 @@ def _parse_workspace_sheet(
 
         # Resolve FK refs
         # Guard: split combined types ("Туфлі/кросівки", "Ботинки-челсі") → Type + Subtype
-        if type_val:
+        reviewed_pair = split_reviewed_combined_type(type_val) if type_val else None
+        if reviewed_pair:
+            type_val, sub_val = reviewed_pair
+        elif type_val:
             t_part, st_part = _split_combined_type(type_val)
             type_val = t_part
             if st_part and not sub_val:

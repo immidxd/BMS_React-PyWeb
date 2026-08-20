@@ -1957,7 +1957,11 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
       : null;
     if (tid == null) return all;
     const curSub = (p as any)?.subtypeid;
-    return all.filter((s) => s.typeid === tid || s.id === curSub);
+    return all.filter((s) =>
+      s.typeid === tid
+      || (Array.isArray(s.typeids) && s.typeids.includes(tid))
+      || s.id === curSub
+    );
   })();
 
   // Заповнити ЛИШЕ порожні поля значеннями профілю моделі (драфти; в БД нічого

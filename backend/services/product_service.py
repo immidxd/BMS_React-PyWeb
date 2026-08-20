@@ -17,6 +17,19 @@ except ImportError:
     from utils.order_status_logic import real_order_sql
     from utils.productnumber_normalizer import effective_product_number
 
+try:
+    from backend.services.product_taxonomy_normalization import (
+        canonicalize_subtype_name,
+        canonicalize_type_name,
+        split_reviewed_combined_type,
+    )
+except ImportError:
+    from services.product_taxonomy_normalization import (
+        canonicalize_subtype_name,
+        canonicalize_type_name,
+        split_reviewed_combined_type,
+    )
+
 logger = logging.getLogger(__name__)
 
 def get_product(db: Session, product_id: int) -> Optional[models.Product]:
@@ -1260,6 +1273,10 @@ def _resolve_lookup_id_by_name(db: Session, table: str, name_col: str, value: st
     val = (value or "").strip()
     if not val:
         return None
+    if table == "types":
+        val = canonicalize_type_name(val) or ""
+        if not val:
+            return None
     # Стать — рівно 3 канонічні значення. Канонізуємо ввід («Жіночі»→«Жіноча»),
     # щоб редагування в картці не плодило дубль-стать. Незнане → None (не створюємо).
     if table == "genders":
@@ -1301,7 +1318,7 @@ def _resolve_subtype_id_by_name(db: Session, value: str, typeid: Optional[int]) 
     """subtype_name → subtypeid з typeid-контекстом. subtypename УНІКАЛЬНИЙ глобально,
     тож наявна назва переюзається (її typeid не чіпаємо — вона вже комусь належить);
     НОВА створюється з typeid поточного товару, щоб не плодити «сирітських» підтипів."""
-    val = (value or "").strip()
+    val = canonicalize_subtype_name(value) or ""
     if not val:
         return None
     folded = val.lower()
@@ -1525,6 +1542,18 @@ def update_product(db: Session, product_id: int, product: schemas.ProductUpdate)
             update_data.pop("materials", None)
             measurements_edit = update_data.pop("measurements_edit", None)
 
+            # A reviewed legacy combined label represents an explicit pair.
+            # Resolve both fields together before either lookup can recreate a
+            # combined value in the reference table or write it back to Sheets.
+            raw_type_name = update_data.get("type_name")
+            reviewed_pair = (
+                split_reviewed_combined_type(raw_type_name)
+                if raw_type_name
+                else None
+            )
+            if reviewed_pair:
+                update_data["type_name"], update_data["subtype_name"] = reviewed_pair
+
             # Inline-edit by NAME: translate typed lookup names → FK id columns
             # (get-or-create, case-insensitive). "" / null clears the FK.
             for name_key, (fk_field, table, name_col) in LOOKUP_NAME_FIELDS.items():
@@ -1664,7 +1693,24 @@ def get_product_filters(db: Session) -> Dict[str, Any]:
 
         # Exclude '?'-only placeholder entries (user marks unknown with ?, ??, ???)
         types = fetch_pairs("SELECT id, typename FROM types WHERE typename IS NOT NULL AND btrim(typename) !~ '^[?]+$' ORDER BY typename")
-        subtypes_rows = db.execute(text("SELECT id, subtypename, typeid FROM subtypes WHERE subtypename IS NOT NULL AND btrim(subtypename) !~ '^[?]+$' ORDER BY subtypename")).fetchall()
+        # ``subtypes.typeid`` is a legacy single-parent hint, while real BMS
+        # data legitimately reuses some subtype labels across several types.
+        # Return every currently observed type association as well, so the UI
+        # does not hide a valid subtype just because its old parent points at a
+        # different type.
+        subtypes_rows = db.execute(text("""
+            SELECT s.id, s.subtypename, s.typeid,
+                   ARRAY_REMOVE(
+                       ARRAY_AGG(DISTINCT p.typeid ORDER BY p.typeid),
+                       NULL
+                   ) AS typeids
+            FROM subtypes s
+            LEFT JOIN products p ON p.subtypeid = s.id
+            WHERE s.subtypename IS NOT NULL
+              AND btrim(s.subtypename) !~ '^[?]+$'
+            GROUP BY s.id, s.subtypename, s.typeid
+            ORDER BY s.subtypename
+        """)).fetchall()
         # У товарному фільтрі показуємо лише бренди, які реально мають товари.
         # Осиротілі/службові записи лишаються доступними на сторінці «Бренди»
         # для аудиту, але більше не засмічують щоденний пошук товарів.
@@ -1740,7 +1786,15 @@ def get_product_filters(db: Session) -> Dict[str, Any]:
 
         result = {
             "types": [{"id": t[0], "name": t[1]} for t in types],
-            "subtypes": [{"id": s[0], "name": s[1], "typeid": s[2]} for s in subtypes_rows],
+            "subtypes": [
+                {
+                    "id": s[0],
+                    "name": s[1],
+                    "typeid": s[2],
+                    "typeids": list(s[3] or []),
+                }
+                for s in subtypes_rows
+            ],
             "brands": [{"id": b[0], "name": b[1]} for b in brands],
             "genders": [{"id": g[0], "name": g[1]} for g in genders],
             "colors": [{"id": c[0], "name": c[1]} for c in colors],
