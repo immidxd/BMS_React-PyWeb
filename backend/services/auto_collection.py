@@ -326,5 +326,10 @@ def create_preview_draft(
             "no_photo_skipped": len(no_photo),
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "selection_key": hashlib.sha256(signature.encode("utf-8")).hexdigest()[:24],
+            # Built inside BMS, so stock and sales come straight from the live
+            # database.  The cloud Worker instead reads a mirrored snapshot and
+            # marks its drafts "cloud_snapshot" with the snapshot's age.
+            "data_source": "live",
+            "snapshot_stale": False,
         },
     }

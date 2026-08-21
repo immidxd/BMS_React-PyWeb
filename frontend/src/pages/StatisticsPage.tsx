@@ -59,7 +59,16 @@ type AutoCollectionDraft = {
   reserves: Array<{ productnumber: string; popularity_score: number }>;
   warnings: string[];
   policy: { count: number; period_days: number; cooldown_days: number };
-  audit: { eligible_pool: number; cooldown_skipped: number; no_photo_skipped: number; selection_key: string };
+  audit: {
+    eligible_pool: number;
+    cooldown_skipped: number;
+    no_photo_skipped: number;
+    selection_key: string;
+    // Present on drafts built by the Cloudflare contour, absent on older rows.
+    data_source?: 'live' | 'cloud_snapshot';
+    snapshot_stale?: boolean;
+    snapshot_age_hours?: number | null;
+  };
 };
 type AutoCollectionConfig = {
   platform: CollectionPlatform;
@@ -884,6 +893,15 @@ const StatisticsPage: React.FC<StatisticsPageProps> = () => {
                                     <span className="text-[10px] text-gray-400">{draft.source === 'scheduled' ? 'За розкладом' : 'Створено вручну'} · {formatDateTime(draft.scheduled_for)}</span>
                                   </div>
                                   <div className="mt-1 max-w-3xl truncate font-mono text-[10px] text-gray-500">{numbers.join(', ')}</div>
+                                  {!!draft.warnings?.length && (
+                                    <ul className="mt-1 max-w-3xl space-y-0.5">
+                                      {draft.warnings.map((warning, index) => (
+                                        <li key={index} className="text-[10px] leading-snug text-amber-700 dark:text-amber-300">
+                                          ⚠ {warning}
+                                        </li>
+                                      ))}
+                                    </ul>
+                                  )}
                                 </div>
                                 <div className="flex gap-2">
                                   <button type="button" onClick={() => setAutoCollectionDraft(draft)}

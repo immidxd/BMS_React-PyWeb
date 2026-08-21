@@ -8,6 +8,37 @@ export const WEIGHTS = Object.freeze({
   sold_count: 12,
 });
 
+// BMS refreshes `auto_collection_product_snapshot` roughly hourly, but only
+// while it is running. This Worker deliberately keeps generating drafts when
+// BMS is closed, so stock and sales here can silently age. Past this limit the
+// draft still gets created — a silently skipped week is worse — but it carries
+// an explicit warning and a machine-readable audit flag for the reviewer.
+export const MAX_SNAPSHOT_AGE_HOURS = 12;
+
+export function snapshotFreshness(snapshotAt, now = new Date(), maxAgeHours = MAX_SNAPSHOT_AGE_HOURS) {
+  const stamp = snapshotAt ? new Date(snapshotAt) : null;
+  if (!stamp || Number.isNaN(stamp.getTime())) {
+    return { snapshot_at: null, age_hours: null, stale: true };
+  }
+  const ageHours = Math.max(0, (now.getTime() - stamp.getTime()) / 3600000);
+  return {
+    snapshot_at: stamp.toISOString(),
+    age_hours: Math.round(ageHours * 10) / 10,
+    stale: ageHours > maxAgeHours,
+  };
+}
+
+export function snapshotWarning(freshness) {
+  if (!freshness.stale) return null;
+  if (freshness.age_hours === null) {
+    return 'Знімок каталогу відсутній — залишки й продажі не перевірені. Обовʼязково звірте наявність вручну.';
+  }
+  const age = freshness.age_hours >= 48
+    ? `${Math.round(freshness.age_hours / 24)} дн.`
+    : `${Math.round(freshness.age_hours)} год`;
+  return `Знімок каталогу застарів на ${age} — BMS давно не запускалася. Залишки й продажі могли змінитися: звірте наявність перед публікацією.`;
+}
+
 export function popularityScore(row) {
   return Object.entries(WEIGHTS).reduce(
     (total, [key, weight]) => total + Number(row[key] || 0) * weight,
@@ -168,12 +199,22 @@ async function candidateRows(sql, config) {
 }
 
 async function createDraft(sql, config) {
+  const [snapshotRow] = await sql`
+    SELECT MAX(synced_at) AS snapshot_at FROM auto_collection_product_snapshot
+  `;
+  const freshness = snapshotFreshness(snapshotRow?.snapshot_at);
   const candidates = await candidateRows(sql, config);
   const ranked = rankCandidates(candidates, config.item_count);
   if (ranked.selected.length < 2) {
     throw new Error(`Знайдено лише ${ranked.selected.length} безпечних товарів із фото`);
   }
   const warnings = [];
+  // The staleness warning leads: it changes how carefully everything below it
+  // should be read.
+  const staleWarning = snapshotWarning(freshness);
+  if (staleWarning) {
+    warnings.push(staleWarning);
+  }
   if (ranked.selected.length < Number(config.item_count)) {
     warnings.push(`Знайдено лише ${ranked.selected.length} із ${config.item_count} безпечних товарів із фото.`);
   }
@@ -194,12 +235,20 @@ async function createDraft(sql, config) {
     requires_catalog_publication: true,
     requires_photo: true,
     revalidate_before_publish: true,
+    max_snapshot_age_hours: MAX_SNAPSHOT_AGE_HOURS,
   };
   const audit = {
     eligible_pool: candidates.length,
     generated_at: new Date().toISOString(),
     selection_key: key,
     execution: 'cloudflare-neon-draft-only',
+    // Unlike a draft built inside BMS, this one reads a mirrored snapshot
+    // rather than the live catalogue. A future publisher must treat
+    // `snapshot_stale` as a hard blocker instead of a hint.
+    data_source: 'cloud_snapshot',
+    snapshot_at: freshness.snapshot_at,
+    snapshot_age_hours: freshness.age_hours,
+    snapshot_stale: freshness.stale,
   };
   const inserted = await sql`
     INSERT INTO auto_collection_drafts (
@@ -272,7 +321,15 @@ async function health(env) {
              MAX(synced_at) AS snapshot_at
       FROM auto_collection_product_snapshot
     `;
-    return { ...base, database: 'connected', ...row };
+    const freshness = snapshotFreshness(row?.snapshot_at);
+    return {
+      ...base,
+      database: 'connected',
+      snapshot_products: row?.snapshot_products ?? 0,
+      snapshot_at: freshness.snapshot_at,
+      snapshot_age_hours: freshness.age_hours,
+      snapshot_stale: freshness.stale,
+    };
   } catch (error) {
     return { ...base, ok: false, database: 'unavailable' };
   }
