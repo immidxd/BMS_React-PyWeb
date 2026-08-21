@@ -404,6 +404,101 @@ def generate_due_drafts(db: Session, *, now: Optional[datetime] = None) -> Dict[
     return {"ok": not errors, "created": created, "skipped": skipped, "errors": errors}
 
 
+def load_draft(db: Session, draft_id: int) -> Optional[Dict[str, Any]]:
+    row = db.execute(text(_DRAFT_SELECT + " WHERE id=:id"), {"id": int(draft_id)}).mappings().first()
+    return _serialize_draft(row) if row else None
+
+
+def revalidate_draft(db: Session, draft: Dict[str, Any]) -> Dict[str, Any]:
+    """Свіжий стан складу безпосередньо перед відправленням.
+
+    Між створенням чернетки і натисканням «Опублікувати» минає час: пару могли
+    продати, зняти з вітрини або показати в іншій підбірці. Політика чернетки
+    обіцяє `revalidate_before_publish`, і виконується ця обіцянка саме тут —
+    проти ЖИВОЇ бази, а не проти знімка, з якого чернетку зібрали. Тому
+    хмарна чернетка зі застарілим знімком не небезпечна: склад однаково
+    перевіряється заново перед відправленням.
+
+    Випалі позиції заміщуються з резерву тієї ж чернетки — так тижнева
+    підбірка лишається повною, замість того щоб їхати діркою.
+    """
+    policy = draft.get("policy") or {}
+    period_days = int(policy.get("period_days") or 30)
+    cooldown_days = int(policy.get("cooldown_days") or 14)
+    target = int(policy.get("count") or len(draft.get("selected") or []) or 9)
+
+    fresh = auto_collection._candidate_rows(db, period_days, pool=5000)
+    eligible = {auto_collection.normalize_number(row["productnumber"]) for row in fresh}
+    blocked = {
+        auto_collection.normalize_number(value)
+        for value in auto_collection._cooldown_numbers(
+            db, cooldown_days, draft.get("scheduled_for"),
+        )
+    }
+
+    def usable(row: Dict[str, Any]) -> bool:
+        key = auto_collection.normalize_number(row.get("productnumber"))
+        return bool(key) and key in eligible and key not in blocked
+
+    kept: List[Dict[str, Any]] = []
+    dropped: List[Dict[str, Any]] = []
+    for row in draft.get("selected") or []:
+        (kept if usable(row) else dropped).append(row)
+
+    taken = {auto_collection.normalize_number(row.get("productnumber")) for row in kept}
+    promoted: List[Dict[str, Any]] = []
+    for row in draft.get("reserves") or []:
+        if len(kept) >= target:
+            break
+        key = auto_collection.normalize_number(row.get("productnumber"))
+        if key in taken or not usable(row):
+            continue
+        kept.append(row)
+        promoted.append(row)
+        taken.add(key)
+
+    warnings: List[str] = []
+    if dropped:
+        numbers = ", ".join(f"#{row.get('productnumber')}" for row in dropped)
+        warnings.append(f"Уже недоступні, тому прибрані з підбірки: {numbers}.")
+    if promoted:
+        numbers = ", ".join(f"#{row.get('productnumber')}" for row in promoted)
+        warnings.append(f"Замість них із резерву додані: {numbers}.")
+    if len(kept) < target:
+        warnings.append(f"У підбірці {len(kept)} із {target} позицій: резерв вичерпано.")
+
+    return {
+        "ok": len(kept) >= 2,
+        "selected": kept,
+        "product_ids": [int(row["product_id"]) for row in kept if row.get("product_id")],
+        "dropped": dropped,
+        "promoted": promoted,
+        "warnings": warnings,
+    }
+
+
+def mark_approved(db: Session, draft_id: int, *, dispatch: Dict[str, Any],
+                  note: Optional[str] = None) -> Dict[str, Any]:
+    """Позначити чернетку відправленою. Викликається ЛИШЕ після успіху диспетчера."""
+    row = db.execute(text("""
+        UPDATE auto_collection_drafts
+           SET status='approved', reviewed_at=now(), review_note=:note,
+               audit_json = COALESCE(audit_json, '{}'::jsonb) || CAST(:dispatch AS jsonb),
+               updated_at=now()
+         WHERE id=:id AND status=:status
+         RETURNING id
+    """), {
+        "id": int(draft_id),
+        "status": REVIEW_STATUS,
+        "note": str(note or "").strip()[:1000] or None,
+        "dispatch": json.dumps({"dispatch": dispatch}, ensure_ascii=False, default=str),
+    }).mappings().first()
+    if not row:
+        raise ValueError("Чернетку не знайдено або її вже опрацьовано")
+    db.commit()
+    return {"ok": True, "id": int(row["id"]), "status": "approved"}
+
+
 def reject_draft(db: Session, draft_id: int, note: Optional[str] = None) -> Dict[str, Any]:
     row = db.execute(text("""
         UPDATE auto_collection_drafts

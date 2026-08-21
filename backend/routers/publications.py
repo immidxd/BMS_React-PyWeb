@@ -2380,6 +2380,68 @@ def collection_automation_run_due(db: Session = Depends(get_db)):
     return _auto_collection_scheduler().generate_due_drafts(db)
 
 
+@router.post("/api/publications/collections/automation/drafts/{draft_id}/approve")
+async def collection_automation_approve_draft(
+    draft_id: int,
+    payload: Optional[Dict[str, Any]] = Body(None),
+    db: Session = Depends(get_db),
+):
+    """Затвердити чернетку й віддати її тому самому диспетчеру, що й ручну підбірку.
+
+    Порядок навмисний: спершу склад перевіряється проти ЖИВОЇ бази, потім
+    рендериться банер, і лише після успішної відповіді диспетчера чернетка
+    стає `approved`. Якщо відправлення впаде, чернетка лишиться на перевірці —
+    краще повторна спроба, ніж чернетка, позначена відправленою даремно.
+    """
+    body = payload or {}
+    scheduler = _auto_collection_scheduler()
+    draft = scheduler.load_draft(db, draft_id)
+    if not draft:
+        raise HTTPException(status_code=404, detail="Чернетку не знайдено")
+    if draft.get("status") != scheduler.REVIEW_STATUS:
+        raise HTTPException(status_code=409, detail="Цю чернетку вже опрацьовано")
+
+    checked = scheduler.revalidate_draft(db, draft)
+    if not checked["ok"]:
+        raise HTTPException(
+            status_code=409,
+            detail="Після перевірки лишилось замало доступних товарів: "
+                   + " ".join(checked["warnings"]),
+        )
+    if body.get("dry_run"):
+        return {"ok": True, "dry_run": True, "draft_id": draft_id, **checked}
+
+    platform = str(draft.get("platform") or "")
+    collection = _collection_collage()
+    preview = collection.preview_collection(db, checked["product_ids"], platform, ranked=True)
+    if not preview.get("ok"):
+        raise HTTPException(status_code=400, detail=preview.get("error", "Не вдалося зібрати банер"))
+
+    request = {
+        **preview["spec"],
+        "caption": str(body.get("caption") or preview["caption"]),
+        "publish_at": body.get("publish_at"),
+        # Ключ прив'язаний до чернетки, тому повторне натискання не створить
+        # другий пост: диспетчер віддасть уже наявний.
+        "idempotency_key": f"auto-collection:{draft_id}:{draft.get('selection_key')}",
+        **({"page_ids": body["page_ids"]} if body.get("page_ids") else {}),
+    }
+    publisher = _viber_pub() if platform == "viber" else _facebook_pub()
+    result = await publisher.create_collection_post(db, request)
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("error", "Підбірку не відправлено"))
+
+    scheduler.mark_approved(db, draft_id, dispatch=result, note=body.get("note"))
+    result["draft_id"] = draft_id
+    result["revalidation"] = {
+        "warnings": checked["warnings"],
+        "dropped": [row.get("productnumber") for row in checked["dropped"]],
+        "promoted": [row.get("productnumber") for row in checked["promoted"]],
+    }
+    result["cloud_sync_queued"] = _trigger_auto_collection_cloud_sync(f"approve-draft:{draft_id}")
+    return result
+
+
 @router.post("/api/publications/collections/automation/drafts/{draft_id}/reject")
 def collection_automation_reject_draft(
     draft_id: int,

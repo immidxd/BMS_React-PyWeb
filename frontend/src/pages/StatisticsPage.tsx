@@ -513,6 +513,44 @@ const StatisticsPage: React.FC<StatisticsPageProps> = () => {
     }
   };
 
+  // Публікація незворотна, тому кнопка спрацьовує лише з другого натискання:
+  // перше переводить її в стан підтвердження, і воно саме спадає через 6 секунд.
+  const [autoApproveArmed, setAutoApproveArmed] = useState<number | null>(null);
+
+  const approveSavedAutoDraft = async (draftId: number) => {
+    if (autoApproveArmed !== draftId) {
+      setAutoApproveArmed(draftId);
+      window.setTimeout(
+        () => setAutoApproveArmed(current => (current === draftId ? null : current)),
+        6000,
+      );
+      return;
+    }
+    setAutoApproveArmed(null);
+    const busyKey = `approve:${draftId}`;
+    setAutoAutomationBusy(busyKey);
+    setAutoAutomationError(null);
+    try {
+      const response = await fetch(`/api/publications/collections/automation/drafts/${draftId}/approve`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.detail || 'Не вдалося відправити підбірку');
+      await loadAutoAutomation(true);
+      const notes: string[] = result.revalidation?.warnings || [];
+      setAutoAutomationMessage([
+        result.scheduled_at
+          ? `Підбірку заплановано на ${formatDateTime(result.scheduled_at)}.`
+          : 'Підбірку передано у захищену чергу — диспетчер відправить її найближчим циклом.',
+        ...notes,
+      ].join(' '));
+    } catch (error: any) {
+      setAutoAutomationError(error.message || 'Не вдалося відправити підбірку');
+    } finally {
+      setAutoAutomationBusy(null);
+    }
+  };
+
   const rejectSavedAutoDraft = async (draftId: number) => {
     const busyKey = `reject:${draftId}`;
     setAutoAutomationBusy(busyKey);
@@ -1344,11 +1382,26 @@ const StatisticsPage: React.FC<StatisticsPageProps> = () => {
                                       Перевірити сітку
                                     </button>
                                     {waiting && draft.id && (
-                                      <button type="button" disabled={autoAutomationBusy !== null}
-                                        onClick={() => void rejectSavedAutoDraft(draft.id!)}
-                                        className="rounded-lg border border-red-200 px-2.5 py-1.5 text-[11px] text-red-600 disabled:opacity-50 dark:border-red-800 dark:text-red-300">
-                                        {autoAutomationBusy === `reject:${draft.id}` ? 'Відхиляю…' : 'Відхилити'}
-                                      </button>
+                                      <>
+                                        <button type="button" disabled={autoAutomationBusy !== null}
+                                          onClick={() => void approveSavedAutoDraft(draft.id!)}
+                                          className={`rounded-lg px-2.5 py-1.5 text-[11px] font-medium disabled:opacity-50 ${
+                                            autoApproveArmed === draft.id
+                                              ? 'bg-red-600 text-white'
+                                              : 'bg-gray-900 text-white dark:bg-gray-100 dark:text-gray-900'
+                                          }`}>
+                                          {autoAutomationBusy === `approve:${draft.id}`
+                                            ? 'Відправляю…'
+                                            : autoApproveArmed === draft.id
+                                              ? 'Точно опублікувати?'
+                                              : 'Опублікувати'}
+                                        </button>
+                                        <button type="button" disabled={autoAutomationBusy !== null}
+                                          onClick={() => void rejectSavedAutoDraft(draft.id!)}
+                                          className="rounded-lg border border-red-200 px-2.5 py-1.5 text-[11px] text-red-600 disabled:opacity-50 dark:border-red-800 dark:text-red-300">
+                                          {autoAutomationBusy === `reject:${draft.id}` ? 'Відхиляю…' : 'Відхилити'}
+                                        </button>
+                                      </>
                                     )}
                                   </div>
                                 </div>
