@@ -212,6 +212,21 @@ const AppContent: React.FC = () => {
     return () => window.removeEventListener('bms:switch-to-orders', onSwitchToOrders);
   }, []);
 
+  // Крос-вкладкова навігація: «Статистика» → «Публікації». Деталь події несе
+  // цільову підвкладку, щоб перехід вів одразу до потрібного розділу.
+  useEffect(() => {
+    const onSwitchToPublications = (event: Event) => {
+      const tab = (event as CustomEvent).detail?.tab;
+      setActiveTab('publications');
+      setTimeout(
+        () => window.dispatchEvent(new CustomEvent('bms:publications-open-tab', { detail: { tab } })),
+        50,
+      );
+    };
+    window.addEventListener('bms:switch-to-publications', onSwitchToPublications);
+    return () => window.removeEventListener('bms:switch-to-publications', onSwitchToPublications);
+  }, []);
+
   // Крос-вкладкова навігація: картка товару → «Поставка». Той самий патерн:
   // deliveryid у localStorage (bms:pendingDeliveryCard) → перемикаємо таб →
   // подія-поштовх для вже змонтованої таблиці поставок.

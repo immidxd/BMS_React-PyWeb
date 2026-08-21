@@ -1,3 +1,5 @@
+import CatalogAnalyticsPanel from '../components/publications/CatalogAnalyticsPanel';
+import StoryAutomationPanel from '../components/publications/StoryAutomationPanel';
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   SendOutlined, WarningOutlined, MinusCircleOutlined, DisconnectOutlined,
@@ -645,7 +647,31 @@ const DetailModal: React.FC<{
 
 /* ── Main Page ─────────────────────────────────────────────────────── */
 
+// Підвкладки «Публікацій». Автопостинг живе тут, а не в «Статистиці»: там
+// лишились самі цифри, бо це різні заняття — дивитись і публікувати.
+const PUB_TABS = [
+  { key: 'list', label: 'Усі публікації' },
+  { key: 'catalog', label: 'Інтернет-вітрина' },
+  { key: 'stories', label: 'Сторіс' },
+] as const;
+
+type PubTab = typeof PUB_TABS[number]['key'];
+
 const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }) => {
+  const [pubTab, setPubTab] = useState<PubTab>('list');
+
+  // Крос-вкладкова навігація зі «Статистики»: той самий патерн, що
+  // «Товар → Перейти до замовлення» — App перемикає верхню вкладку й
+  // підштовхує вже змонтовану сторінку відкрити потрібний розділ.
+  useEffect(() => {
+    const onOpenTab = (event: Event) => {
+      const target = (event as CustomEvent).detail?.tab;
+      if (PUB_TABS.some(tab => tab.key === target)) setPubTab(target as PubTab);
+    };
+    window.addEventListener('bms:publications-open-tab', onOpenTab);
+    return () => window.removeEventListener('bms:publications-open-tab', onOpenTab);
+  }, []);
+
   const [items, setItems] = useState<PublicationItem[]>([]);
   const [total, setTotal] = useState(0);
   const [pages, setPages] = useState(1);
@@ -1656,7 +1682,25 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
 
   return (
     <MainLayout
-      filterPanelContent={
+      filterPanelContent={pubTab !== 'list' ? (
+        // Фільтри звужують СПИСОК публікацій і ні на що інше не впливають.
+        // Показувати їх над вітриною чи сторіс — значить пропонувати дію, яка
+        // мовчки перебудує сусідню підвкладку.
+        <div className="space-y-3">
+          <h3 className="text-md font-semibold text-gray-700 dark:text-gray-200">Фільтри пошуку</h3>
+          <p className="text-xs leading-relaxed text-gray-400 dark:text-gray-500">
+            Фільтри стосуються лише вкладки «Усі публікації». Тут вони нічого не змінюють —
+            вітрина й сторіс мають власні критерії.
+          </p>
+          <button
+            type="button"
+            onClick={() => setPubTab('list')}
+            className="text-xs text-gray-500 underline decoration-dotted underline-offset-4 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-200"
+          >
+            Перейти до списку публікацій →
+          </button>
+        </div>
+      ) : (
         <PublicationsFilterPanel
           filterMode={filterMode}
           onFilterChange={(m) => {
@@ -1669,10 +1713,12 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
           onPlatformChange={(nextPlatform) => { setPlatform(nextPlatform); setSelectedIds(new Set()); setPage(1); }}
           stats={stats}
         />
-      }
+      )}
       onRefresh={handleRefresh}
       isRefreshing={isRefreshing}
-      onResetFilters={handleResetFilters}
+      // Скидання теж належить списку: поза ним кнопка не має нишком
+      // перебудовувати вибірку, якої зараз не видно.
+      onResetFilters={pubTab === 'list' ? handleResetFilters : () => undefined}
     >
       <div className="p-4 pb-24 bg-white dark:bg-gray-800 shadow-md rounded-lg w-full">
         <div className="sticky top-0 z-20 bg-white/90 dark:bg-gray-800/90 backdrop-blur px-2 py-2 -mx-2 border-b border-gray-100 dark:border-gray-700 flex justify-between items-center mb-3">
@@ -1695,6 +1741,24 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
             </button>
           </div>
         </div>
+
+        {/* ── Підвкладки ────────────────────────────────────────────── */}
+        <div className="bms-subtabs" role="tablist" aria-label="Розділи публікацій">
+          {PUB_TABS.map(tab => (
+            <button
+              key={tab.key}
+              type="button"
+              role="tab"
+              aria-selected={pubTab === tab.key}
+              onClick={() => setPubTab(tab.key)}
+              className={`bms-subtab ${pubTab === tab.key ? 'is-active' : ''}`}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+
+        {pubTab === 'list' && (<>
 
         {/* Банер: токен Prom спливає скоро → нагадати замінити */}
         {promStatus?.token_expiring_soon && (
@@ -2161,6 +2225,11 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
           </div>
           </>
         )}
+        </>)}
+
+        {pubTab === 'catalog' && <CatalogAnalyticsPanel showAutomation />}
+        {pubTab === 'stories' && <StoryAutomationPanel />}
+
       </div>
 
       {/* Контекстне меню керування колонками */}
@@ -2197,7 +2266,8 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
         </div>
       )}
 
-      {/* Pagination */}
+      {/* Pagination — лише для списку: на вкладках вітрини й сторіс гортати нічого */}
+      {pubTab === 'list' && (
       <div className="fixed bottom-0 left-0 right-0 px-4 py-3 bg-white/95 dark:bg-gray-800/95 backdrop-blur border-t border-gray-200 dark:border-gray-700 z-30">
         <div className="w-full grid grid-cols-[1fr_auto_1fr] items-center gap-4 max-w-screen-2xl mx-auto px-2">
           <div className="justify-self-start flex items-center gap-6">
@@ -2235,6 +2305,7 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
           <span />
         </div>
       </div>
+      )}
 
       <SyncModal
         open={syncOpen}
