@@ -48,14 +48,47 @@ const COLORS = {
 type PeriodType = 'month' | 'quarter' | 'year';
 type CatalogSort = 'popular' | 'views' | 'favorites' | 'sales';
 type AutoCollectionDraft = {
+  id?: number;
   platform: CollectionPlatform;
+  source?: 'scheduled' | 'manual';
+  status?: 'awaiting_review' | 'approved' | 'rejected' | 'expired';
+  scheduled_for?: string;
   product_ids: number[];
+  product_numbers?: string[];
   selected: Array<{ productnumber: string; popularity_score: number }>;
   reserves: Array<{ productnumber: string; popularity_score: number }>;
   warnings: string[];
   policy: { count: number; period_days: number; cooldown_days: number };
   audit: { eligible_pool: number; cooldown_skipped: number; no_photo_skipped: number; selection_key: string };
 };
+type AutoCollectionConfig = {
+  platform: CollectionPlatform;
+  enabled: boolean;
+  weekday: number;
+  local_time: string;
+  timezone: string;
+  period_days: number;
+  cooldown_days: number;
+  item_count: number;
+  enabled_at?: string | null;
+  next_run_at?: string | null;
+  last_generated_at?: string | null;
+  last_error?: string | null;
+  manual_review_required: true;
+  automatic_publishing: false;
+};
+type AutoCollectionAutomation = {
+  configs: AutoCollectionConfig[];
+  drafts: AutoCollectionDraft[];
+  pending_count: number;
+  safety: { manual_review_required: true; automatic_publishing: false; media_uploads: false };
+};
+
+const WEEKDAYS = ['Понеділок', 'Вівторок', 'Середа', 'Четвер', 'П’ятниця', 'Субота', 'Неділя'];
+const platformLabel = (platform: CollectionPlatform) => platform === 'viber' ? 'Viber' : 'Facebook';
+const formatDateTime = (value?: string | null) => value
+  ? new Date(value).toLocaleString('uk-UA', { dateStyle: 'medium', timeStyle: 'short' })
+  : '—';
 
 // ── Period Selector ──────────────────────────────────────────────────────────
 const PeriodSelector: React.FC<{
@@ -201,6 +234,11 @@ const StatisticsPage: React.FC<StatisticsPageProps> = () => {
   const [autoCollectionDraft, setAutoCollectionDraft] = useState<AutoCollectionDraft | null>(null);
   const [autoCollectionLoading, setAutoCollectionLoading] = useState<CollectionPlatform | null>(null);
   const [autoCollectionError, setAutoCollectionError] = useState<string | null>(null);
+  const [autoAutomation, setAutoAutomation] = useState<AutoCollectionAutomation | null>(null);
+  const [autoAutomationLoading, setAutoAutomationLoading] = useState(false);
+  const [autoAutomationBusy, setAutoAutomationBusy] = useState<string | null>(null);
+  const [autoAutomationMessage, setAutoAutomationMessage] = useState<string | null>(null);
+  const [autoAutomationError, setAutoAutomationError] = useState<string | null>(null);
   const salesRequestRef = useRef(0);
   const shipmentsRequestRef = useRef(0);
   const suppliersRequestRef = useRef(0);
@@ -355,6 +393,96 @@ const StatisticsPage: React.FC<StatisticsPageProps> = () => {
       setAutoCollectionError(error.message || 'Не вдалося сформувати автоматичну чернетку');
     } finally {
       setAutoCollectionLoading(null);
+    }
+  };
+
+  const loadAutoAutomation = useCallback(async (quiet = false) => {
+    if (!quiet) setAutoAutomationLoading(true);
+    try {
+      const response = await fetch('/api/publications/collections/automation?draft_limit=20');
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.detail || 'Не вдалося завантажити розклад чернеток');
+      setAutoAutomation(result);
+      setAutoAutomationError(null);
+    } catch (error: any) {
+      setAutoAutomationError(error.message || 'Не вдалося завантажити розклад чернеток');
+    } finally {
+      if (!quiet) setAutoAutomationLoading(false);
+    }
+  }, []);
+  useEffect(() => { void loadAutoAutomation(); }, [loadAutoAutomation]);
+
+  const editAutoConfig = (platform: CollectionPlatform, patch: Partial<AutoCollectionConfig>) => {
+    setAutoAutomation(current => current ? {
+      ...current,
+      configs: current.configs.map(config => config.platform === platform ? { ...config, ...patch } : config),
+    } : current);
+    setAutoAutomationMessage(null);
+  };
+
+  const saveAutoConfig = async (config: AutoCollectionConfig) => {
+    const busyKey = `save:${config.platform}`;
+    setAutoAutomationBusy(busyKey);
+    setAutoAutomationError(null);
+    setAutoAutomationMessage(null);
+    try {
+      const response = await fetch(`/api/publications/collections/automation/${config.platform}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          enabled: config.enabled, weekday: config.weekday, local_time: config.local_time,
+          timezone: config.timezone, period_days: config.period_days,
+          cooldown_days: config.cooldown_days, item_count: 9,
+        }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.detail || 'Не вдалося зберегти налаштування');
+      setAutoAutomation(current => current ? {
+        ...current,
+        configs: current.configs.map(row => row.platform === config.platform ? result.config : row),
+      } : current);
+      setAutoAutomationMessage(`${platformLabel(config.platform)}: налаштування збережено.`);
+    } catch (error: any) {
+      setAutoAutomationError(error.message || 'Не вдалося зберегти налаштування');
+    } finally {
+      setAutoAutomationBusy(null);
+    }
+  };
+
+  const createSavedAutoDraft = async (platform: CollectionPlatform) => {
+    const busyKey = `draft:${platform}`;
+    setAutoAutomationBusy(busyKey);
+    setAutoAutomationError(null);
+    setAutoAutomationMessage(null);
+    try {
+      const response = await fetch(`/api/publications/collections/automation/${platform}/drafts`, { method: 'POST' });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.detail || 'Не вдалося створити чернетку');
+      await loadAutoAutomation(true);
+      if (result.draft) setAutoCollectionDraft(result.draft);
+      setAutoAutomationMessage(`${platformLabel(platform)}: чернетку створено й залишено на ручній перевірці.`);
+    } catch (error: any) {
+      setAutoAutomationError(error.message || 'Не вдалося створити чернетку');
+    } finally {
+      setAutoAutomationBusy(null);
+    }
+  };
+
+  const rejectSavedAutoDraft = async (draftId: number) => {
+    const busyKey = `reject:${draftId}`;
+    setAutoAutomationBusy(busyKey);
+    setAutoAutomationError(null);
+    try {
+      const response = await fetch(`/api/publications/collections/automation/drafts/${draftId}/reject`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.detail || 'Не вдалося відхилити чернетку');
+      await loadAutoAutomation(true);
+      setAutoAutomationMessage('Чернетку відхилено. Її товари знову доступні для наступних відборів.');
+    } catch (error: any) {
+      setAutoAutomationError(error.message || 'Не вдалося відхилити чернетку');
+    } finally {
+      setAutoAutomationBusy(null);
     }
   };
 
@@ -592,6 +720,172 @@ const StatisticsPage: React.FC<StatisticsPageProps> = () => {
                     {autoCollectionError}
                   </div>
                 )}
+              </div>
+
+              <div className="rounded-xl border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-800/60">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Щотижневі Top‑9 чернетки</h3>
+                    <p className="mt-1 max-w-3xl text-xs leading-relaxed text-gray-500 dark:text-gray-400">
+                      У заданий день BMS лише фіксує склад підбірки для ручної перевірки. JPEG не створюється,
+                      файли нікуди не завантажуються, автоматична публікація структурно вимкнена.
+                      Після першого ввімкнення минулі дати не надолужуються.
+                    </p>
+                  </div>
+                  {autoAutomation?.pending_count ? (
+                    <span className="rounded-full bg-amber-100 px-2.5 py-1 text-[11px] font-semibold text-amber-700 dark:bg-amber-900/30 dark:text-amber-300">
+                      Чекають перевірки: {autoAutomation.pending_count}
+                    </span>
+                  ) : null}
+                </div>
+
+                {autoAutomationLoading ? (
+                  <div className="py-8 text-center text-xs text-gray-400">Завантаження налаштувань…</div>
+                ) : autoAutomation ? (
+                  <>
+                    <div className="mt-4 grid gap-3 xl:grid-cols-2">
+                      {autoAutomation.configs.map(config => {
+                        const accent = config.platform === 'viber' ? '#7360F2' : '#1877F2';
+                        return (
+                          <div key={config.platform} className="rounded-xl border border-gray-200 p-3 dark:border-gray-700">
+                            <div className="flex items-center justify-between gap-3">
+                              <div className="flex items-center gap-2">
+                                <span className="flex h-7 w-7 items-center justify-center rounded-lg text-xs font-black text-white" style={{ backgroundColor: accent }}>
+                                  {config.platform === 'viber' ? 'V' : 'f'}
+                                </span>
+                                <div>
+                                  <div className="text-sm font-semibold text-gray-800 dark:text-gray-100">{platformLabel(config.platform)}</div>
+                                  <div className="text-[10px] text-gray-400">Top‑9 · лише ручна перевірка</div>
+                                </div>
+                              </div>
+                              <label className="flex items-center gap-2 text-xs text-gray-600 dark:text-gray-300">
+                                <input type="checkbox" checked={config.enabled}
+                                  onChange={event => editAutoConfig(config.platform, { enabled: event.target.checked })} />
+                                {config.enabled ? 'Увімкнено' : 'Вимкнено'}
+                              </label>
+                            </div>
+
+                            <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
+                              <label className="text-[10px] font-medium text-gray-500">День
+                                <select value={config.weekday}
+                                  onChange={event => editAutoConfig(config.platform, { weekday: Number(event.target.value) })}
+                                  className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-2 py-1.5 text-xs text-gray-700 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200">
+                                  {WEEKDAYS.map((day, index) => <option key={day} value={index}>{day}</option>)}
+                                </select>
+                              </label>
+                              <label className="text-[10px] font-medium text-gray-500">Час Києва
+                                <input type="time" value={config.local_time}
+                                  onChange={event => editAutoConfig(config.platform, { local_time: event.target.value })}
+                                  className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-2 py-1.5 text-xs text-gray-700 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200" />
+                              </label>
+                              <label className="text-[10px] font-medium text-gray-500">Рейтинг
+                                <select value={config.period_days}
+                                  onChange={event => editAutoConfig(config.platform, { period_days: Number(event.target.value) })}
+                                  className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-2 py-1.5 text-xs text-gray-700 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200">
+                                  <option value={7}>7 днів</option><option value={30}>30 днів</option>
+                                  <option value={90}>90 днів</option><option value={0}>Увесь чистий період</option>
+                                </select>
+                              </label>
+                              <label className="text-[10px] font-medium text-gray-500">Без повтору
+                                <select value={config.cooldown_days}
+                                  onChange={event => editAutoConfig(config.platform, { cooldown_days: Number(event.target.value) })}
+                                  className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-2 py-1.5 text-xs text-gray-700 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200">
+                                  {[14, 21, 28, 35, 42].map(days => <option key={days} value={days}>{days} днів</option>)}
+                                </select>
+                              </label>
+                            </div>
+
+                            <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-gray-100 pt-3 dark:border-gray-700">
+                              <div className="text-[10px] text-gray-400">
+                                {config.enabled ? <>Наступна чернетка: <b className="text-gray-600 dark:text-gray-300">{formatDateTime(config.next_run_at)}</b></> : 'Розклад неактивний'}
+                              </div>
+                              <div className="flex flex-wrap gap-2">
+                                <button type="button" disabled={autoAutomationBusy !== null}
+                                  onClick={() => void createSavedAutoDraft(config.platform)}
+                                  className="rounded-lg border border-gray-200 px-2.5 py-1.5 text-[11px] font-medium text-gray-600 disabled:opacity-50 dark:border-gray-600 dark:text-gray-300">
+                                  {autoAutomationBusy === `draft:${config.platform}` ? 'Формую…' : 'Створити чернетку зараз'}
+                                </button>
+                                <button type="button" disabled={autoAutomationBusy !== null}
+                                  onClick={() => void saveAutoConfig(config)}
+                                  className="rounded-lg px-2.5 py-1.5 text-[11px] font-semibold text-white disabled:opacity-50"
+                                  style={{ backgroundColor: accent }}>
+                                  {autoAutomationBusy === `save:${config.platform}` ? 'Зберігаю…' : 'Зберегти'}
+                                </button>
+                              </div>
+                            </div>
+                            {config.last_error && (
+                              <div className="mt-2 rounded-lg bg-red-50 px-2.5 py-2 text-[10px] text-red-700 dark:bg-red-900/20 dark:text-red-300">
+                                Остання перевірка розкладу: {config.last_error}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    {(autoAutomationMessage || autoAutomationError) && (
+                      <div className={`mt-3 rounded-lg px-3 py-2 text-xs ${autoAutomationError
+                        ? 'bg-red-50 text-red-700 dark:bg-red-900/20 dark:text-red-300'
+                        : 'bg-green-50 text-green-700 dark:bg-green-900/20 dark:text-green-300'}`}>
+                        {autoAutomationError || autoAutomationMessage}
+                      </div>
+                    )}
+
+                    <div className="mt-4 border-t border-gray-100 pt-3 dark:border-gray-700">
+                      <div className="mb-2 flex items-center justify-between gap-2">
+                        <h4 className="text-xs font-semibold text-gray-700 dark:text-gray-200">Журнал чернеток</h4>
+                        <span className="text-[10px] text-gray-400">Жодна з них не є публікацією</span>
+                      </div>
+                      {autoAutomation.drafts.length ? (
+                        <div className="space-y-2">
+                          {autoAutomation.drafts.slice(0, 10).map(draft => {
+                            const numbers = draft.product_numbers || draft.selected.map(row => row.productnumber);
+                            const waiting = draft.status === 'awaiting_review';
+                            return (
+                              <div key={draft.id || draft.audit.selection_key}
+                                className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-gray-100 px-3 py-2 dark:border-gray-700">
+                                <div className="min-w-0">
+                                  <div className="flex flex-wrap items-center gap-2 text-xs">
+                                    <b>{platformLabel(draft.platform)}</b>
+                                    <span className={`rounded-full px-2 py-0.5 text-[10px] ${waiting
+                                      ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300'
+                                      : 'bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400'}`}>
+                                      {waiting ? 'Чекає ручної перевірки' : draft.status === 'rejected' ? 'Відхилено' : draft.status}
+                                    </span>
+                                    <span className="text-[10px] text-gray-400">{draft.source === 'scheduled' ? 'За розкладом' : 'Створено вручну'} · {formatDateTime(draft.scheduled_for)}</span>
+                                  </div>
+                                  <div className="mt-1 max-w-3xl truncate font-mono text-[10px] text-gray-500">{numbers.join(', ')}</div>
+                                </div>
+                                <div className="flex gap-2">
+                                  <button type="button" onClick={() => setAutoCollectionDraft(draft)}
+                                    className="rounded-lg border border-gray-200 px-2.5 py-1.5 text-[11px] text-gray-600 dark:border-gray-600 dark:text-gray-300">
+                                    Перевірити сітку
+                                  </button>
+                                  {waiting && draft.id && (
+                                    <button type="button" disabled={autoAutomationBusy !== null}
+                                      onClick={() => void rejectSavedAutoDraft(draft.id!)}
+                                      className="rounded-lg border border-red-200 px-2.5 py-1.5 text-[11px] text-red-600 disabled:opacity-50 dark:border-red-800 dark:text-red-300">
+                                      {autoAutomationBusy === `reject:${draft.id}` ? 'Відхиляю…' : 'Відхилити'}
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      ) : (
+                        <div className="rounded-lg bg-gray-50 px-3 py-5 text-center text-xs text-gray-400 dark:bg-gray-800">Чернеток ще немає</div>
+                      )}
+                    </div>
+
+                    <p className="mt-3 text-[10px] leading-relaxed text-gray-400">
+                      На цьому етапі розклад перевіряє сервер BMS, поки він працює. Постійний автономний контур Cloudflare
+                      підключатиметься окремо лише після перевірки цих чернеток.
+                    </p>
+                  </>
+                ) : autoAutomationError ? (
+                  <div className="mt-3 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700 dark:bg-red-900/20 dark:text-red-300">{autoAutomationError}</div>
+                ) : null}
               </div>
             </div>
           ) : (
@@ -1214,7 +1508,7 @@ const StatisticsPage: React.FC<StatisticsPageProps> = () => {
           platform={autoCollectionDraft.platform}
           productIds={autoCollectionDraft.product_ids}
           previewOnly
-          selectionNote={`Top‑9 сформовано за ${autoCollectionDraft.policy.period_days ? `${autoCollectionDraft.policy.period_days} днів` : 'весь чистий період'}; повтори заблоковані на ${autoCollectionDraft.policy.cooldown_days} днів. Резерв: ${autoCollectionDraft.reserves.length}.`}
+          selectionNote={`${autoCollectionDraft.id ? 'Це збережена чернетка на ручній перевірці. ' : ''}Top‑9 сформовано за ${autoCollectionDraft.policy.period_days ? `${autoCollectionDraft.policy.period_days} днів` : 'весь чистий період'}; повтори заблоковані на ${autoCollectionDraft.policy.cooldown_days} днів. Резерв: ${autoCollectionDraft.reserves.length}.`}
           onCancel={() => setAutoCollectionDraft(null)}
           onPublish={() => undefined}
         />

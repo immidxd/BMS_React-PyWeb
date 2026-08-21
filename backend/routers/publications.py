@@ -2288,7 +2288,7 @@ def collection_auto_draft(
     """Read-only automatic Top-9 candidate draft.
 
     No DB row, schedule, upload or external platform call is created here. This is
-    intentionally the first reviewable phase before any automation is enabled.
+    the standalone preview path; saved weekly review drafts use separate endpoints.
     """
     try:
         from backend.services import auto_collection
@@ -2310,6 +2310,73 @@ def collection_auto_draft(
             detail=(result.get("warnings") or ["Недостатньо безпечних товарів для підбірки"])[0],
         )
     return result
+
+
+def _auto_collection_scheduler():
+    try:
+        from backend.services import auto_collection_scheduler
+    except ImportError:
+        from services import auto_collection_scheduler
+    return auto_collection_scheduler
+
+
+@router.get("/api/publications/collections/automation")
+def collection_automation_dashboard(
+    draft_limit: int = Query(20, ge=1, le=100),
+    db: Session = Depends(get_db),
+):
+    """Saved weekly settings and review drafts; never invokes a publisher."""
+    return _auto_collection_scheduler().dashboard(db, draft_limit=draft_limit)
+
+
+@router.put("/api/publications/collections/automation/{platform}")
+def collection_automation_update(
+    platform: str,
+    payload: Dict[str, Any] = Body(...),
+    db: Session = Depends(get_db),
+):
+    try:
+        config = _auto_collection_scheduler().update_config(db, platform, payload)
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"ok": True, "config": config}
+
+
+@router.post("/api/publications/collections/automation/{platform}/drafts")
+def collection_automation_create_manual_draft(
+    platform: str,
+    db: Session = Depends(get_db),
+):
+    """Persist a review-only snapshot now. No render, upload or dispatch."""
+    try:
+        return {"ok": True, **_auto_collection_scheduler().create_draft(
+            db, platform=platform, source="manual",
+        )}
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc))
+
+
+@router.post("/api/publications/collections/automation/run-due")
+def collection_automation_run_due(db: Session = Depends(get_db)):
+    """Safe scheduler tick: it can only create manual-review DB snapshots."""
+    return _auto_collection_scheduler().generate_due_drafts(db)
+
+
+@router.post("/api/publications/collections/automation/drafts/{draft_id}/reject")
+def collection_automation_reject_draft(
+    draft_id: int,
+    payload: Optional[Dict[str, Any]] = Body(None),
+    db: Session = Depends(get_db),
+):
+    try:
+        return _auto_collection_scheduler().reject_draft(
+            db, draft_id, note=(payload or {}).get("note"),
+        )
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc))
 
 
 # ─────────────────────────────────────────────────────────────────────────────

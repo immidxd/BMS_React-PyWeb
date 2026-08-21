@@ -1,15 +1,14 @@
-"""Read-only Top-9 selection for future automated social collections.
+"""Read-only Top-9 selection for automatic social collection drafts.
 
-This phase only creates a deterministic preview draft. It never writes a schedule,
-uploads media or calls Viber/Facebook. Publication-time revalidation will be added
-with the scheduler in a separate guarded phase.
+Selection itself never writes, uploads media or calls Viber/Facebook. The guarded
+scheduler may persist its returned snapshot in a separate manual-review table.
 """
 
 from __future__ import annotations
 
 import hashlib
 from datetime import datetime, timezone
-from typing import Any, Dict, Iterable, List, Sequence
+from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -194,15 +193,37 @@ def _candidate_rows(db: Session, period_days: int) -> List[Dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
-def _cooldown_numbers(db: Session, cooldown_days: int) -> List[str]:
+def _cooldown_numbers(
+    db: Session,
+    cooldown_days: int,
+    scheduled_for: Optional[datetime] = None,
+) -> List[str]:
     rows = db.execute(text("""
-        SELECT DISTINCT value
-        FROM social_collection_posts sc
-        CROSS JOIN LATERAL jsonb_array_elements_text(sc.product_numbers) AS value
-        WHERE sc.status NOT IN ('failed','error','cancelled')
-          AND COALESCE(sc.published_at,sc.scheduled_at,sc.created_at)
-              >= now() - (:cooldown_days || ' days')::interval
-    """), {"cooldown_days": cooldown_days}).scalars().all()
+        SELECT DISTINCT blocked.value
+        FROM (
+            SELECT item.value
+            FROM social_collection_posts sc
+            CROSS JOIN LATERAL jsonb_array_elements_text(sc.product_numbers) AS item(value)
+            WHERE sc.status NOT IN ('failed','error','cancelled')
+              AND COALESCE(sc.published_at,sc.scheduled_at,sc.created_at)
+                  > now() - (:cooldown_days || ' days')::interval
+            UNION ALL
+            SELECT item.value
+            FROM auto_collection_drafts draft
+            CROSS JOIN LATERAL jsonb_array_elements_text(draft.product_numbers) AS item(value)
+            WHERE draft.status IN ('awaiting_review','approved')
+              AND draft.scheduled_for > now() - (:cooldown_days || ' days')::interval
+              -- Viber і Facebook одного тижневого слота мають право отримати
+              -- ту саму детерміновану Top-9. Минулі/ручні чернетки блокують повтор.
+              AND (
+                  CAST(:scheduled_for AS timestamptz) IS NULL
+                  OR draft.scheduled_for <> CAST(:scheduled_for AS timestamptz)
+              )
+        ) blocked
+    """), {
+        "cooldown_days": cooldown_days,
+        "scheduled_for": scheduled_for,
+    }).scalars().all()
     return [str(row) for row in rows]
 
 
@@ -213,6 +234,7 @@ def create_preview_draft(
     count: int = DEFAULT_COUNT,
     period_days: int = DEFAULT_PERIOD_DAYS,
     cooldown_days: int = DEFAULT_COOLDOWN_DAYS,
+    scheduled_for: Optional[datetime] = None,
 ) -> Dict[str, Any]:
     collection = _collection_service()
     config = collection.platform_config(platform)
@@ -223,7 +245,7 @@ def create_preview_draft(
         raise ValueError("Період рейтингу має бути 7, 30, 90 днів або весь чистий період")
 
     raw = _candidate_rows(db, period_days)
-    cooldown = _cooldown_numbers(db, cooldown_days)
+    cooldown = _cooldown_numbers(db, cooldown_days, scheduled_for)
     first_pass = rank_candidates(raw, cooldown, count=DEFAULT_COUNT, reserve_count=MAX_POOL)
 
     # Check actual source photos before final selection. This is read-only and uses

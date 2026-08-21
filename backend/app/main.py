@@ -743,6 +743,31 @@ async def _prom_sync_cycle() -> None:
         logger.warning(f"Prom-sync failed: {e}")
 
 
+async def _auto_collection_draft_cycle() -> None:
+    """Create due Top-9 review snapshots only; never render or publish."""
+    import asyncio
+
+    def _run():
+        try:
+            from services import auto_collection_scheduler
+            from models.database import SessionLocal
+        except ImportError:
+            from backend.services import auto_collection_scheduler
+            from backend.models.database import SessionLocal
+        db = SessionLocal()
+        try:
+            result = auto_collection_scheduler.generate_due_drafts(db)
+            if result.get("created") or result.get("errors"):
+                logger.info("Auto-collection draft cycle: %s", result)
+        finally:
+            db.close()
+
+    try:
+        await asyncio.get_event_loop().run_in_executor(None, _run)
+    except Exception as e:
+        logger.warning("Auto-collection draft cycle failed: %s", e)
+
+
 @app.on_event("startup")
 async def _auto_startup_publications_refresh():
     """Initial sync at startup + periodic loop every N seconds."""
@@ -788,6 +813,31 @@ async def _auto_startup_publications_refresh():
 
     asyncio.create_task(_initial_then_periodic())
     asyncio.create_task(_prom_periodic())
+
+
+@app.on_event("startup")
+async def _auto_collection_draft_scheduler():
+    """Periodic local safety net for enabled weekly review drafts.
+
+    Defaults to five minutes and is cheap while both platform configs remain
+    disabled. Setting AUTO_COLLECTION_DRAFT_CHECK_SEC=0 disables the loop.
+    The cycle has no code path to R2, Meta, Viber or publication dispatchers.
+    """
+    import asyncio
+    import os
+
+    period_sec = int(os.getenv("AUTO_COLLECTION_DRAFT_CHECK_SEC", "300"))
+    if period_sec <= 0:
+        return
+    period_sec = max(60, period_sec)
+
+    async def _loop():
+        await asyncio.sleep(20)
+        while True:
+            await _auto_collection_draft_cycle()
+            await asyncio.sleep(period_sec)
+
+    asyncio.create_task(_loop())
 
 
 if __name__ == "__main__":

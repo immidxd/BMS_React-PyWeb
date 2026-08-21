@@ -76,6 +76,43 @@ const TaskCenter: React.FC = () => {
     };
   }, []);
 
+  // Запланована Top-9 свідомо зупиняється на ручній перевірці. Це очікування
+  // має бути видно глобально, навіть якщо вкладка «Статистика» зараз закрита.
+  useEffect(() => {
+    let cancelled = false;
+    let timer: number | undefined;
+    const poll = async () => {
+      try {
+        const response = await fetch('/api/publications/collections/automation?draft_limit=1');
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const result = await response.json();
+        if (cancelled) return;
+        const pending = Number(result.pending_count || 0);
+        if (pending > 0) {
+          taskManager.setExternal(
+            'auto-collection-review',
+            'Top‑9 чернетки чекають перевірки',
+            'waiting',
+            pending === 1
+              ? '1 чернетка чекає ручної перевірки у «Статистиці»'
+              : `Чернеток на ручній перевірці у «Статистиці»: ${pending}`,
+          );
+        } else {
+          taskManager.remove('auto-collection-review');
+        }
+      } catch {
+        // Недоступність допоміжного індикатора не є помилкою публікації.
+      } finally {
+        if (!cancelled) timer = window.setTimeout(poll, 60000);
+      }
+    };
+    poll();
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, []);
+
   // Оновлювати «N с тому» поки панель відкрита.
   useEffect(() => {
     if (!open) return;
