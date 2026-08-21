@@ -37,7 +37,7 @@ STORY_SPECS_RE = re.compile(
     re.IGNORECASE | re.UNICODE,
 )
 STORY_CTA_RE = re.compile(
-    r"\b(?:пиши|напиши|написати|замов\w*|direct|директ|приватн\w*)",
+    r"\b(?:пиши|пишіть|напиши|написати|замов\w*|direct|директ|приватн\w*)",
     re.IGNORECASE | re.UNICODE,
 )
 HASHTAG_LIMIT = 30
@@ -70,6 +70,12 @@ STORY_PRESET = {"label": "Stories / Reels 9:16", "width": 1080, "height": 1920}
 # до reply/share UI, який відрізняється між телефонами.
 STORY_CONTENT_OFFSET_Y = 42
 STORY_PRODUCT_BOX = (54, 662, 1026, 1517)
+# Заклик під товаром. Порожній рядок (INSTAGRAM_STORY_CTA="") прибирає його з
+# усіх нових Story; в окремій Story його досить стерти в полі тексту.
+STORY_CTA_LINE = os.getenv("INSTAGRAM_STORY_CTA", "Пишіть нам за деталями").strip()
+# Смуга між нижнім краєм товару (1517) і службовим UI Instagram. 1566 лишає
+# понад 300 px запасу донизу, бо reply/share панель різна на різних телефонах.
+STORY_CTA_Y = 1566
 # Поля навколо товару у слайді Reel — щоб кадр не виглядав «впритул».
 REEL_MARGIN_RATIO = 0.06
 PUBLISH_TYPES = {
@@ -254,7 +260,13 @@ def build_story_text(bms: dict, sizes: Sequence[dict]) -> str:
         lines.append(f"Ціна: {price} грн")
     product_number = str(bms.get("productnumber") or "").lstrip("#")
     lines.append(f"#{product_number}")
-    return "\n".join(lines)[:STORY_TEXT_LIMIT].strip()
+    body = "\n".join(lines)[:STORY_TEXT_LIMIT].strip()
+    # Заклик додається ПІСЛЯ обрізання, інакше довга назва моделі могла б
+    # лишити від нього огризок на кадрі. Артикул при цьому лишається окремим
+    # рядком і в заклик не вклеюється — у капсулі він читається краще.
+    if STORY_CTA_LINE and len(body) + len(STORY_CTA_LINE) + 1 <= STORY_TEXT_LIMIT:
+        body = f"{body}\n{STORY_CTA_LINE}"
+    return body
 
 
 def validate_caption(caption: str) -> Optional[str]:
@@ -785,6 +797,24 @@ def _render_story_text(image: Image.Image, raw_text: Any) -> Image.Image:
         number_y = pill_top + (pill_bottom - pill_top - number_height) / 2 - number_bbox[1]
         draw.text((number_x, number_y), number, font=number_font,
                   fill=(103, 47, 116, 255))
+
+    # Заклик під товаром. Єдиний елемент у нижній третині, тому він
+    # центрується, а не тримає ліву колонку інформаційного блоку — інакше
+    # рядок висів би збоку від порожнього кадру. Колір той самий, що в
+    # артикулі: тихіший за ціну-героя, але все ще голос крамниці, а не
+    # службовий сірий підпис. Плашок і рамок тут немає свідомо, як і вгорі.
+    # Артикул уже стоїть у власній капсулі, тому зі старих закликів на кшталт
+    # «Пиши #Ф4329 нам в приватні» він прибирається: інакше той самий номер
+    # з'явився б у кадрі двічі.
+    cta_text = re.sub(r"\s{2,}", " ", STORY_PRODUCT_NUMBER_RE.sub("", cta_line))
+    cta_text = cta_text.strip(" •—–-,")
+    if cta_text:
+        cta_lines, cta_font = _fit_story_lines(
+            draw, cta_text, max_width=content_width, start_size=38,
+            min_size=26, max_lines=1, bold=False, font_factory=_story_display_font,
+        )
+        draw.text((image.width / 2, STORY_CTA_Y), cta_lines[0], font=cta_font,
+                  fill=(103, 47, 116, 255), anchor="ma")
     return layer.convert("RGB")
 
 

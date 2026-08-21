@@ -67,8 +67,11 @@ def test_story_text_separates_model_tagline_and_plain_product_number(monkeypatch
 
     assert value.splitlines()[0] == "HOKA Kawana Mid"
     assert value.splitlines()[1] == "чоловічі кросівки"
-    assert value.splitlines()[-1] == "#Ф3914"
-    assert "Пиши" not in value
+    # Заклик закриває кадр, але артикул лишається СВОЇМ рядком і в заклик не
+    # вклеюється — у капсулі він читається краще, ніж усередині речення.
+    assert "#Ф3914" in value.splitlines()
+    assert value.splitlines()[-1] == ip.STORY_CTA_LINE
+    assert "Пиши #Ф3914" not in value
 
 
 def test_feed_presets_stay_inside_official_aspect_ratio_range():
@@ -339,7 +342,11 @@ def test_story_renderer_parses_emoji_price_and_keeps_number_out_of_details(monke
     assert result.size == (1080, 1920)
     assert ip.STORY_PRICE_RE.search("🛒 Ціна: 2100 грн")
     assert ip.STORY_CTA_RE.search("Пиши #Ф4329 нам в приватні")
-    assert captured["values"] == ["GUESS Shaida", "📐 Заміри: 28 × 16 × 12"]
+    # Заклик тепер малюється під товаром, а не відкидається — але без артикула,
+    # бо той уже стоїть у капсулі й задвоївся б у кадрі.
+    assert captured["values"] == [
+        "GUESS Shaida", "📐 Заміри: 28 × 16 × 12", "Пиши нам в приватні",
+    ]
 
 
 def test_story_article_label_is_right_aligned(monkeypatch):
@@ -370,6 +377,63 @@ def test_story_article_label_is_right_aligned(monkeypatch):
     ip._render_story_text(source, "GUESS Shaida\nЦіна: 2100 грн\n#Ф4329")
 
     assert round(positions["label_x"] + positions["label_width"]) == 1002
+
+
+def test_story_cta_is_centred_below_the_product(monkeypatch):
+    """Заклик закриває кадр знизу по центру, нижче товару й вище UI Instagram."""
+    seen = {}
+    original_draw = ip.ImageDraw.Draw
+
+    class _RecordingDraw:
+        def __init__(self, delegate):
+            self._delegate = delegate
+
+        def __getattr__(self, name):
+            return getattr(self._delegate, name)
+
+        def text(self, xy, value, *args, **kwargs):
+            if "деталями" in str(value):
+                seen["xy"] = xy
+                seen["anchor"] = kwargs.get("anchor")
+            return self._delegate.text(xy, value, *args, **kwargs)
+
+    monkeypatch.setattr(
+        ip.ImageDraw, "Draw",
+        lambda image, *args, **kwargs: _RecordingDraw(original_draw(image, *args, **kwargs)),
+    )
+    source = ip.Image.new("RGB", (1080, 1920), (255, 255, 255))
+    ip._render_story_text(source, f"GUESS Shaida\nЦіна: 2100 грн\n#Ф4329\n{ip.STORY_CTA_LINE}")
+
+    assert seen["anchor"] == "ma", "заклик має бути центрований, а не вирівняний вліво"
+    assert seen["xy"][0] == 540
+    # Нижче товару (1517) і з великим запасом до reply/share панелі знизу.
+    assert ip.STORY_PRODUCT_BOX[3] < seen["xy"][1] < 1700
+
+
+def test_story_without_a_cta_line_draws_nothing_extra(monkeypatch):
+    drawn = []
+    original_draw = ip.ImageDraw.Draw
+
+    class _RecordingDraw:
+        def __init__(self, delegate):
+            self._delegate = delegate
+
+        def __getattr__(self, name):
+            return getattr(self._delegate, name)
+
+        def text(self, xy, value, *args, **kwargs):
+            drawn.append(str(value))
+            return self._delegate.text(xy, value, *args, **kwargs)
+
+    monkeypatch.setattr(
+        ip.ImageDraw, "Draw",
+        lambda image, *args, **kwargs: _RecordingDraw(original_draw(image, *args, **kwargs)),
+    )
+    source = ip.Image.new("RGB", (1080, 1920), (255, 255, 255))
+    ip._render_story_text(source, "GUESS Shaida\nЦіна: 2100 грн\n#Ф4329")
+
+    # Стерти рядок у полі тексту — і заклику в кадрі немає.
+    assert not any("деталями" in line for line in drawn)
 
 
 def test_batch_dry_run_deduplicates_productnumber_and_never_calls_external(monkeypatch):
