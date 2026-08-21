@@ -810,8 +810,8 @@ def _render_story_text(image: Image.Image, raw_text: Any) -> Image.Image:
     cta_text = cta_text.strip(" •—–-,")
     if cta_text:
         cta_lines, cta_font = _fit_story_lines(
-            draw, cta_text, max_width=content_width, start_size=38,
-            min_size=26, max_lines=1, bold=False, font_factory=_story_display_font,
+            draw, cta_text, max_width=content_width, start_size=46,
+            min_size=30, max_lines=1, bold=False, font_factory=_story_display_font,
         )
         draw.text((image.width / 2, STORY_CTA_Y), cta_lines[0], font=cta_font,
                   fill=(103, 47, 116, 255), anchor="ma")
