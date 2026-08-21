@@ -594,14 +594,17 @@ def _draw_cell_label(canvas: Image.Image, box: Tuple[int, int, int, int], *,
         def detail_metrics(size: int) -> dict:
             font = _label_font(size)
             number_width = draw.textlength(number_text, font=font) if number_text else 0
-            pill_width = number_width + round(size * 0.72) * 2 if number_text else 0
+            pill_width = number_width + round(size * 0.66) * 2 if number_text else 0
             gap = round(size * 0.62) if (number_text and measurement) else 0
             measure_width = draw.textlength(measurement, font=font) if measurement else 0
             return {
                 "font": font,
                 "size": size,
                 "pill_width": pill_width,
-                "pill_height": round(size * 1.85),
+                # Капсула щільніше облягає текст, ніж раніше: смуга підпису має
+                # лише 72 px на комірку 342 px, і саме її «повітря» — той запас,
+                # за рахунок якого артикул став читабельним.
+                "pill_height": round(size * 1.62),
                 "gap": gap,
                 "total": pill_width + gap + measure_width,
             }
@@ -610,12 +613,12 @@ def _draw_cell_label(canvas: Image.Image, box: Tuple[int, int, int, int], *,
         # читабельні, а не службовим дрібним рядком під ціною. Кегль підбираємо
         # згори вниз: у вузькій комірці довгий номер із заміром інакше виліз би
         # за край, а мовчки обрізати артикул не можна.
-        detail = detail_metrics(max(11, round(price_size * 0.52)))
+        detail = detail_metrics(max(11, round(price_size * 0.62)))
         while detail["total"] > available and detail["size"] > 11:
             detail = detail_metrics(detail["size"] - 1)
 
         cursor = x + (width - detail["total"]) / 2
-        detail_y = price_top + round(price_size * 1.16) + detail["pill_height"] / 2
+        detail_y = price_top + round(price_size * 1.08) + detail["pill_height"] / 2
         if number_text:
             _draw_pill(
                 draw,
