@@ -217,6 +217,47 @@ body {
   border-color: var(--bms-border);
 }
 
+/* Навігація 2-го рівня (підвкладки всередині сторінки).  Свідомо НЕ повторює
+   метафору «папки» з .bms-tab: та примикає до вмісту впритул, а підвкладки
+   стоять над карткою з відступом, тож підрізана рамка висіла б у повітрі.
+   Підкреслення також тримає другий рівень візуально легшим за перший. */
+.bms-subtabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  border-bottom: 1px solid var(--bms-border);
+}
+.bms-subtab {
+  position: relative;
+  padding: 7px 14px 9px;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.2;
+  color: var(--bms-fg-subtle);
+  background: transparent;
+  border: none;
+  border-radius: 6px 6px 0 0;
+  cursor: pointer;
+  transition: color var(--bms-dur-fast) var(--bms-ease),
+              background-color var(--bms-dur-fast) var(--bms-ease);
+}
+.bms-subtab::after {
+  content: '';
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: -1px;
+  height: 2px;
+  border-radius: 2px 2px 0 0;
+  background: transparent;
+  transition: background-color var(--bms-dur-fast) var(--bms-ease);
+}
+.bms-subtab:hover { color: var(--bms-fg); background: var(--bms-hover); }
+.bms-subtab.is-active { color: var(--bms-fg); font-weight: 600; }
+.bms-subtab.is-active::after { background: var(--bms-accent); }
+.bms-subtab:focus-visible { outline: 2px solid var(--bms-accent); outline-offset: -3px; }
+
 /* keep-alive: неактивна вкладка лишається змонтованою, але прихована (стан зберігається). */
 .bms-tab-hidden { display: none !important; }
 
