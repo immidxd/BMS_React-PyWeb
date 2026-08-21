@@ -29,6 +29,7 @@ try:
     from backend.services.product_taxonomy_normalization import (
         BLOCKED_TAXONOMY_NAMES,
         COMBINED_TYPE_SUBTYPE,
+        FORCE_STYLE_FROM_TAXONOMY_NAMES,
         PACKAGING_FROM_TAXONOMY,
         SEASON_TAXONOMY_ALIASES,
         STYLE_FROM_TAXONOMY,
@@ -43,10 +44,13 @@ try:
         season_from_taxonomy_name,
         split_reviewed_combined_type,
         style_from_taxonomy_name,
+        style_from_taxonomy_overrides_existing,
     )
     from backend.services.product_style_normalization import (
+        SUBTYPE_FROM_STYLE,
         STYLE_ALIASES,
         canonicalize_style_name,
+        subtype_from_style_name,
     )
     from backend.utils.productnumber_normalizer import normalize as normalize_productnumber
 except ImportError:  # direct execution with PYTHONPATH=backend
@@ -61,6 +65,7 @@ except ImportError:  # direct execution with PYTHONPATH=backend
     from services.product_taxonomy_normalization import (
         BLOCKED_TAXONOMY_NAMES,
         COMBINED_TYPE_SUBTYPE,
+        FORCE_STYLE_FROM_TAXONOMY_NAMES,
         PACKAGING_FROM_TAXONOMY,
         SEASON_TAXONOMY_ALIASES,
         STYLE_FROM_TAXONOMY,
@@ -75,17 +80,20 @@ except ImportError:  # direct execution with PYTHONPATH=backend
         season_from_taxonomy_name,
         split_reviewed_combined_type,
         style_from_taxonomy_name,
+        style_from_taxonomy_overrides_existing,
     )
     from services.product_style_normalization import (
+        SUBTYPE_FROM_STYLE,
         STYLE_ALIASES,
         canonicalize_style_name,
+        subtype_from_style_name,
     )
     from utils.productnumber_normalizer import normalize as normalize_productnumber
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 BACKUP_DIR = PROJECT_ROOT / "manual_cleanup_backups"
-BACKUP_VERSION = 3
+BACKUP_VERSION = 4
 # One legacy row has no useful subtype, but its source data (Skechers, EU 39.5,
 # shoe measurement) makes the intended concrete class unambiguous enough for
 # this reviewed one-off repair. After the source is fixed the override is no
@@ -133,6 +141,8 @@ def _rules_payload() -> dict[str, Any]:
         "seasonal": SEASON_TAXONOMY_ALIASES,
         "styles": STYLE_ALIASES,
         "style_from_taxonomy": STYLE_FROM_TAXONOMY,
+        "force_style_from_taxonomy": sorted(FORCE_STYLE_FROM_TAXONOMY_NAMES),
+        "subtype_from_style": SUBTYPE_FROM_STYLE,
         "packaging_from_taxonomy": PACKAGING_FROM_TAXONOMY,
         "blocked": sorted(BLOCKED_TAXONOMY_NAMES),
         "pair_relocations": {
@@ -165,6 +175,7 @@ def _scan_workbook(spreadsheet_id: str, label: str) -> dict[str, Any]:
     unmigrated_seasonal: list[dict[str, Any]] = []
     unmigrated_cross_field: list[dict[str, Any]] = []
     cross_field_conflicts: list[dict[str, Any]] = []
+    cross_field_overwrites: list[dict[str, Any]] = []
     summaries: list[dict[str, Any]] = []
 
     for worksheet_chunk in _chunks(worksheets, 40):
@@ -205,8 +216,55 @@ def _scan_workbook(spreadsheet_id: str, label: str) -> dict[str, Any]:
                 if "type" in indexes or "subtype" in indexes:
                     raw_type = old_values.get("type", "").strip()
                     raw_subtype = old_values.get("subtype", "").strip()
+                    taxonomy_subtype = raw_subtype
+                    moved_subtype = subtype_from_style_name(
+                        old_values.get("style", "")
+                    )
+                    if moved_subtype:
+                        if "subtype" not in indexes:
+                            unmigrated_cross_field.append(
+                                {
+                                    "workbook": label,
+                                    "spreadsheet_id": spreadsheet_id,
+                                    "sheet_id": worksheet.id,
+                                    "sheet_title": worksheet.title,
+                                    "row": row_number,
+                                    "productnumber": productnumber,
+                                    "destination": "subtype",
+                                    "target": moved_subtype,
+                                    "source_values": {
+                                        "style": old_values.get("style", "")
+                                    },
+                                }
+                            )
+                        else:
+                            current_subtype = raw_subtype
+                            subtype_matches = (
+                                canonicalize_subtype_name(current_subtype)
+                                == moved_subtype
+                            )
+                            if current_subtype and not subtype_matches:
+                                cross_field_overwrites.append(
+                                    {
+                                        "workbook": label,
+                                        "spreadsheet_id": spreadsheet_id,
+                                        "sheet_id": worksheet.id,
+                                        "sheet_title": worksheet.title,
+                                        "row": row_number,
+                                        "productnumber": productnumber,
+                                        "destination": "subtype",
+                                        "current": current_subtype,
+                                        "target": moved_subtype,
+                                        "source_values": {
+                                            "style": old_values.get("style", "")
+                                        },
+                                        "reason": "approved_style_to_subtype",
+                                    }
+                                )
+                            taxonomy_subtype = moved_subtype
+                            desired_values["style"] = ""
                     normalized_type, normalized_subtype, moved_seasons = (
-                        normalize_taxonomy_pair(raw_type, raw_subtype)
+                        normalize_taxonomy_pair(raw_type, taxonomy_subtype)
                     )
                     style_sources = {
                         field: style_from_taxonomy_name(old_values.get(field, ""))
@@ -265,7 +323,20 @@ def _scan_workbook(spreadsheet_id: str, label: str) -> dict[str, Any]:
                             if destination == "style"
                             else current_destination.casefold() == target.casefold()
                         )
-                        if current_destination and not destination_matches:
+                        force_destination = bool(
+                            destination == "style"
+                            and any(
+                                style_from_taxonomy_overrides_existing(
+                                    old_values.get(field, "")
+                                )
+                                for field in sources
+                            )
+                        )
+                        if (
+                            current_destination
+                            and not destination_matches
+                            and not force_destination
+                        ):
                             cross_field_conflicts.append(
                                 {
                                     "workbook": label,
@@ -283,6 +354,26 @@ def _scan_workbook(spreadsheet_id: str, label: str) -> dict[str, Any]:
                             )
                             preserve_sources.update(sources)
                             continue
+                        if (
+                            current_destination
+                            and not destination_matches
+                            and force_destination
+                        ):
+                            cross_field_overwrites.append(
+                                {
+                                    "workbook": label,
+                                    "spreadsheet_id": spreadsheet_id,
+                                    "sheet_id": worksheet.id,
+                                    "sheet_title": worksheet.title,
+                                    "row": row_number,
+                                    "productnumber": productnumber,
+                                    "destination": destination,
+                                    "current": current_destination,
+                                    "target": target,
+                                    "source_values": sources,
+                                    "reason": "approved_taxonomy_to_style",
+                                }
+                            )
                         desired_values[destination] = target
 
                     normalized_number = normalize_productnumber(productnumber) or ""
@@ -386,6 +477,7 @@ def _scan_workbook(spreadsheet_id: str, label: str) -> dict[str, Any]:
         "unmigrated_seasonal": unmigrated_seasonal,
         "unmigrated_cross_field": unmigrated_cross_field,
         "cross_field_conflicts": cross_field_conflicts,
+        "cross_field_overwrites": cross_field_overwrites,
         "sheet_summaries": summaries,
         "fingerprint": _fingerprint(edits),
     }
@@ -468,6 +560,7 @@ def _database_snapshot(extra_productnumbers: Iterable[str] = ()) -> dict[str, An
             row["id"]
             for row in styles
             if canonicalize_style_name(row["stylename"]) != row["stylename"]
+            or subtype_from_style_name(row["stylename"])
         ]
         extra_numbers = sorted({value for value in extra_productnumbers if value})
         affected_products = _rows(
@@ -687,6 +780,10 @@ def scan(
                 ),
                 "cross_field_conflicts": sum(
                     len(workbook.get("cross_field_conflicts", []))
+                    for workbook in google.values()
+                ),
+                "cross_field_overwrites": sum(
+                    len(workbook.get("cross_field_overwrites", []))
                     for workbook in google.values()
                 ),
                 "type_merges": len(db_plan["type_merges"]),
@@ -1045,6 +1142,7 @@ def _relocate_cross_field_references(connection) -> dict[str, int]:
     """Move reviewed Style/Packaging labels out of Type/Subtype atomically."""
     updated_style_products = 0
     updated_packaging_products = 0
+    overwritten_style_products = 0
     cleared_type_refs = 0
     cleared_subtype_refs = 0
     deleted_types = 0
@@ -1084,11 +1182,17 @@ def _relocate_cross_field_references(connection) -> dict[str, int]:
                 ),
                 {"source_id": ref["id"], "target_id": target_id},
             ).fetchall()
-            if conflicts:
+            force_style_relocation = bool(
+                target_style
+                and style_from_taxonomy_overrides_existing(source_name)
+            )
+            if conflicts and not force_style_relocation:
                 raise RuntimeError(
                     f"Refusing cross-field relocation for {source_name!r}; "
                     f"destination conflict on {[row[0] for row in conflicts]}"
                 )
+            if conflicts and force_style_relocation:
+                overwritten_style_products += len(conflicts)
             updated = int(
                 connection.execute(
                     text(
@@ -1121,6 +1225,7 @@ def _relocate_cross_field_references(connection) -> dict[str, int]:
 
     return {
         "updated_style_products": updated_style_products,
+        "overwritten_style_products": overwritten_style_products,
         "updated_packaging_products": updated_packaging_products,
         "cleared_type_refs": cleared_type_refs,
         "cleared_subtype_refs": cleared_subtype_refs,
@@ -1185,6 +1290,54 @@ def _lookup_reference_id(connection, table: str, name_column: str, value: str) -
         if str(row[1]).strip().casefold() == wanted:
             return int(row[0])
     raise RuntimeError(f"Missing canonical {table} value: {value}")
+
+
+def _relocate_style_references_to_subtype(connection) -> dict[str, int]:
+    """Move the four explicitly reviewed subtype labels out of Style.
+
+    The source style wins over an existing subtype by user decision.  The full
+    pre-change product row is already present in the versioned audit snapshot.
+    """
+    updated_products = 0
+    overwritten_subtypes = 0
+    deleted_styles = 0
+
+    for ref in _fetch_styles(connection):
+        target_subtype = subtype_from_style_name(ref["stylename"])
+        if not target_subtype:
+            continue
+        target_subtype_id = _lookup_reference_id(
+            connection, "subtypes", "subtypename", target_subtype
+        )
+        overwritten_subtypes += int(
+            connection.execute(
+                text(
+                    "SELECT COUNT(*) FROM products "
+                    "WHERE styleid = :styleid "
+                    "AND subtypeid IS NOT NULL AND subtypeid <> :subtypeid"
+                ),
+                {"styleid": ref["id"], "subtypeid": target_subtype_id},
+            ).scalar()
+        )
+        updated_products += int(
+            connection.execute(
+                text(
+                    "UPDATE products SET subtypeid = :subtypeid, styleid = NULL, "
+                    "updated_at = now() WHERE styleid = :styleid"
+                ),
+                {"styleid": ref["id"], "subtypeid": target_subtype_id},
+            ).rowcount
+        )
+        connection.execute(
+            text("DELETE FROM styles WHERE id = :id"), {"id": ref["id"]}
+        )
+        deleted_styles += 1
+
+    return {
+        "updated_products": updated_products,
+        "overwritten_subtypes": overwritten_subtypes,
+        "deleted_styles": deleted_styles,
+    }
 
 
 def _apply_combined_products(connection, plans: list[dict[str, Any]]) -> dict[str, Any]:
@@ -1256,6 +1409,7 @@ def apply_db(backup_path: Path) -> None:
         type_result = _merge_types(connection)
         subtype_result = _merge_subtypes(connection)
         style_result = _merge_styles(connection)
+        style_to_subtype_result = _relocate_style_references_to_subtype(connection)
         combined_result = _apply_combined_products(connection, combined_plans)
         if combined_result["missing_numbers"]:
             raise RuntimeError(
@@ -1276,6 +1430,8 @@ def apply_db(backup_path: Path) -> None:
                    WHERE subtypename = ANY(:subtype_aliases)) AS subtype_aliases,
                   (SELECT COUNT(*) FROM styles
                    WHERE stylename = ANY(:style_aliases)) AS style_aliases,
+                  (SELECT COUNT(*) FROM styles
+                   WHERE stylename = ANY(:subtype_from_style)) AS misplaced_subtype_styles,
                   (SELECT COUNT(*) FROM types
                    WHERE typename = ANY(:forbidden_types)) AS forbidden_types,
                   (SELECT COUNT(*) FROM subtypes
@@ -1290,6 +1446,7 @@ def apply_db(backup_path: Path) -> None:
                 "type_aliases": list(TYPE_ALIASES),
                 "subtype_aliases": list(SUBTYPE_ALIASES),
                 "style_aliases": list(STYLE_ALIASES),
+                "subtype_from_style": list(SUBTYPE_FROM_STYLE),
                 "forbidden_types": list(SEASON_TAXONOMY_ALIASES)
                 + list(BLOCKED_TAXONOMY_NAMES)
                 + ["Взуття"]
@@ -1317,6 +1474,7 @@ def apply_db(backup_path: Path) -> None:
         "type_result": type_result,
         "subtype_result": subtype_result,
         "style_result": style_result,
+        "style_to_subtype_result": style_to_subtype_result,
         "combined_result": combined_result,
         "semantic_result": semantic_result,
         "seasonal_result": seasonal_result,

@@ -7,6 +7,7 @@ from backend.services.product_taxonomy_normalization import (
     season_from_taxonomy_name,
     split_reviewed_combined_type,
     style_from_taxonomy_name,
+    style_from_taxonomy_overrides_existing,
     taxonomy_comparison_key,
 )
 
@@ -127,6 +128,12 @@ def test_season_merge_is_stable_and_preserves_existing_values():
 def test_cross_field_taxonomy_values_have_exact_destinations():
     assert style_from_taxonomy_name("Спорт") == "Спортивний"
     assert style_from_taxonomy_name("Святкові") == "Святковий"
+    assert style_from_taxonomy_name("Повсякдений") == "Повсякденний"
+    assert style_from_taxonomy_name("Повсякденні") == "Повсякденний"
+    assert style_from_taxonomy_name("Спортивний") == "Спортивний"
+    assert style_from_taxonomy_overrides_existing("Повсякденні")
+    assert style_from_taxonomy_overrides_existing("Спортивний")
+    assert not style_from_taxonomy_overrides_existing("Святкові")
     assert packaging_from_taxonomy_name("У футлярі") == "Футляр"
     assert canonicalize_type_name("Святкові") is None
     assert canonicalize_subtype_name("У футлярі") is None

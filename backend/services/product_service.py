@@ -25,6 +25,7 @@ try:
         normalize_taxonomy_pair,
         packaging_from_taxonomy_name,
         style_from_taxonomy_name,
+        style_from_taxonomy_overrides_existing,
     )
 except ImportError:
     from services.product_taxonomy_normalization import (
@@ -34,12 +35,19 @@ except ImportError:
         normalize_taxonomy_pair,
         packaging_from_taxonomy_name,
         style_from_taxonomy_name,
+        style_from_taxonomy_overrides_existing,
     )
 
 try:
-    from backend.services.product_style_normalization import canonicalize_style_name
+    from backend.services.product_style_normalization import (
+        canonicalize_style_name,
+        subtype_from_style_name,
+    )
 except ImportError:
-    from services.product_style_normalization import canonicalize_style_name
+    from services.product_style_normalization import (
+        canonicalize_style_name,
+        subtype_from_style_name,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -1557,6 +1565,15 @@ def update_product(db: Session, product_id: int, product: schemas.ProductUpdate)
             update_data.pop("materials", None)
             measurements_edit = update_data.pop("measurements_edit", None)
 
+            # These exact labels were reviewed as subtypes, not styles.  A
+            # direct edit must obey the same cross-column rule as both parsers,
+            # including replacement of a previously populated subtype.
+            if "style_name" in update_data:
+                moved_subtype = subtype_from_style_name(update_data["style_name"])
+                if moved_subtype:
+                    update_data["subtype_name"] = moved_subtype
+                    update_data["style_name"] = ""
+
             # Resolve Type/Subtype together. This moves misplaced season words
             # into ``season``, splits reviewed combined labels and prevents a
             # subtype that merely repeats the type from being written back.
@@ -1595,6 +1612,10 @@ def update_product(db: Session, product_id: int, product: schemas.ProductUpdate)
                 )
                 current_style = resolve_lookup_name(db, "styleid", db_product.styleid)
                 requested_style = update_data.get("style_name", current_style)
+                force_style_relocation = any(
+                    style_from_taxonomy_overrides_existing(value)
+                    for value in (requested_type, requested_subtype)
+                )
                 current_packaging = resolve_lookup_name(
                     db, "packagingid", db_product.packagingid
                 )
@@ -1605,6 +1626,7 @@ def update_product(db: Session, product_id: int, product: schemas.ProductUpdate)
                     moved_style
                     and requested_style
                     and canonicalize_style_name(requested_style) != moved_style
+                    and not force_style_relocation
                 )
                 packaging_conflict = bool(
                     moved_packaging
@@ -1612,7 +1634,7 @@ def update_product(db: Session, product_id: int, product: schemas.ProductUpdate)
                     and str(requested_packaging).strip().casefold()
                     != moved_packaging.casefold()
                 )
-                if moved_style and not style_conflict:
+                if moved_style and (force_style_relocation or not style_conflict):
                     update_data["style_name"] = moved_style
                 if moved_packaging and not packaging_conflict:
                     update_data["packaging_name"] = moved_packaging

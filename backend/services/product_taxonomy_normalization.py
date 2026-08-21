@@ -231,8 +231,19 @@ BLOCKED_TAXONOMY_NAMES: Final[frozenset[str]] = frozenset({"Бренд не вк
 # accepted the value (the parser/cleanup script explicitly checks conflicts).
 STYLE_FROM_TAXONOMY: Final[dict[str, str]] = {
     "Спорт": "Спортивний",
+    "Спортзал": "Спортивний",
+    "Спортивний": "Спортивний",
+    "Спортивні": "Спортивний",
+    "Спортивный": "Спортивний",
+    "Повсякдений": "Повсякденний",
+    "Повсякденне": "Повсякденний",
+    "Повсякденний": "Повсякденний",
+    "Повсякденні": "Повсякденний",
     "Святкові": "Святковий",
 }
+FORCE_STYLE_FROM_TAXONOMY_NAMES: Final[frozenset[str]] = frozenset(
+    set(STYLE_FROM_TAXONOMY) - {"Святкові"}
+)
 PACKAGING_FROM_TAXONOMY: Final[dict[str, str]] = {
     "У футлярі": "Футляр",
 }
@@ -275,6 +286,9 @@ _PACKAGING_FROM_TAXONOMY_LOOKUP: Final = {
     taxonomy_comparison_key(alias): target
     for alias, target in PACKAGING_FROM_TAXONOMY.items()
 }
+_FORCE_STYLE_FROM_TAXONOMY_KEYS: Final = {
+    taxonomy_comparison_key(value) for value in FORCE_STYLE_FROM_TAXONOMY_NAMES
+}
 _BLOCKED_KEYS: Final = {
     taxonomy_comparison_key(value) for value in BLOCKED_TAXONOMY_NAMES
 }
@@ -296,6 +310,13 @@ def style_from_taxonomy_name(value: str | None) -> str | None:
     if value is None:
         return None
     return _STYLE_FROM_TAXONOMY_LOOKUP.get(taxonomy_comparison_key(value))
+
+
+def style_from_taxonomy_overrides_existing(value: str | None) -> bool:
+    """Whether an approved taxonomy→Style move replaces a current style."""
+    if value is None:
+        return False
+    return taxonomy_comparison_key(value) in _FORCE_STYLE_FROM_TAXONOMY_KEYS
 
 
 def packaging_from_taxonomy_name(value: str | None) -> str | None:

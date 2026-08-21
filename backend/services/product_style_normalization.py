@@ -34,6 +34,16 @@ STYLE_ALIASES: Final[dict[str, str]] = {
     "Святкові": "Святковий",
 }
 
+# User-approved cross-column moves. These labels are product subtypes, not
+# styles. They intentionally replace an already populated subtype because the
+# source classification was explicitly prioritized during the audit.
+SUBTYPE_FROM_STYLE: Final[dict[str, str]] = {
+    "Гумові": "Гумові",
+    "Кросбоді": "Кросбоді",
+    "Танкетка": "Танкетка",
+    "Футзалки": "Футзалки",
+}
+
 
 def _build_lookup() -> dict[str, str]:
     lookup: dict[str, str] = {}
@@ -51,6 +61,10 @@ def _build_lookup() -> dict[str, str]:
 
 
 _STYLE_LOOKUP: Final = _build_lookup()
+_SUBTYPE_FROM_STYLE_LOOKUP: Final = {
+    taxonomy_comparison_key(alias): target
+    for alias, target in SUBTYPE_FROM_STYLE.items()
+}
 
 
 def canonicalize_style_name(value: str | None) -> str | None:
@@ -60,3 +74,9 @@ def canonicalize_style_name(value: str | None) -> str | None:
     if not cleaned:
         return None
     return _STYLE_LOOKUP.get(taxonomy_comparison_key(cleaned), cleaned)
+
+
+def subtype_from_style_name(value: str | None) -> str | None:
+    if value is None:
+        return None
+    return _SUBTYPE_FROM_STYLE_LOOKUP.get(taxonomy_comparison_key(value))

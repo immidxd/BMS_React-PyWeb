@@ -1,4 +1,7 @@
-from backend.services.product_style_normalization import canonicalize_style_name
+from backend.services.product_style_normalization import (
+    canonicalize_style_name,
+    subtype_from_style_name,
+)
 
 
 def test_user_visible_style_duplicates_have_one_canonical_value():
@@ -22,3 +25,8 @@ def test_user_visible_style_duplicates_have_one_canonical_value():
 
 def test_unreviewed_style_is_preserved_without_fuzzy_guessing():
     assert canonicalize_style_name("Пляжний") == "Пляжний"
+
+
+def test_user_approved_styles_relocate_to_subtype():
+    for value in ("Танкетка", "Футзалки", "Гумові", "Кросбоді"):
+        assert subtype_from_style_name(value) == value

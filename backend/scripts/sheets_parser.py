@@ -53,6 +53,7 @@ try:
         packaging_from_taxonomy_name,
         split_reviewed_combined_type,
         style_from_taxonomy_name,
+        style_from_taxonomy_overrides_existing,
     )
 except ImportError:
     from backend.services.product_taxonomy_normalization import (
@@ -63,12 +64,19 @@ except ImportError:
         packaging_from_taxonomy_name,
         split_reviewed_combined_type,
         style_from_taxonomy_name,
+        style_from_taxonomy_overrides_existing,
     )
 
 try:
-    from services.product_style_normalization import canonicalize_style_name
+    from services.product_style_normalization import (
+        canonicalize_style_name,
+        subtype_from_style_name,
+    )
 except ImportError:
-    from backend.services.product_style_normalization import canonicalize_style_name
+    from backend.services.product_style_normalization import (
+        canonicalize_style_name,
+        subtype_from_style_name,
+    )
 
 
 def get_credentials_path() -> str:
@@ -2819,12 +2827,16 @@ def _parse_products_sheet(
         packaging_val    = col(row, "Пакування").strip() if "Пакування" in header else ""
         taxonomy_source_type = type_val
         taxonomy_source_subtype = sub_val
+        subtype_from_style = subtype_from_style_name(style_val)
+        if subtype_from_style:
+            sub_val = subtype_from_style
+            style_val = ""
         taxonomy_style = next(
             (
                 value
                 for value in (
-                    style_from_taxonomy_name(type_val),
-                    style_from_taxonomy_name(sub_val),
+                    style_from_taxonomy_name(taxonomy_source_type),
+                    style_from_taxonomy_name(taxonomy_source_subtype),
                 )
                 if value
             ),
@@ -2841,10 +2853,15 @@ def _parse_products_sheet(
             ),
             None,
         )
+        taxonomy_style_force = any(
+            style_from_taxonomy_overrides_existing(value)
+            for value in (taxonomy_source_type, taxonomy_source_subtype)
+        )
         style_relocation_conflict = bool(
             taxonomy_style
             and style_val
             and canonicalize_style_name(style_val) != taxonomy_style
+            and not taxonomy_style_force
         )
         packaging_relocation_conflict = bool(
             taxonomy_packaging
@@ -5273,12 +5290,16 @@ def _parse_workspace_sheet(
         packaging_val    = col(row, "Пакування").strip() if "Пакування" in header else ""
         taxonomy_source_type = type_val
         taxonomy_source_subtype = sub_val
+        subtype_from_style = subtype_from_style_name(style_val)
+        if subtype_from_style:
+            sub_val = subtype_from_style
+            style_val = ""
         taxonomy_style = next(
             (
                 value
                 for value in (
-                    style_from_taxonomy_name(type_val),
-                    style_from_taxonomy_name(sub_val),
+                    style_from_taxonomy_name(taxonomy_source_type),
+                    style_from_taxonomy_name(taxonomy_source_subtype),
                 )
                 if value
             ),
@@ -5295,10 +5316,15 @@ def _parse_workspace_sheet(
             ),
             None,
         )
+        taxonomy_style_force = any(
+            style_from_taxonomy_overrides_existing(value)
+            for value in (taxonomy_source_type, taxonomy_source_subtype)
+        )
         style_relocation_conflict = bool(
             taxonomy_style
             and style_val
             and canonicalize_style_name(style_val) != taxonomy_style
+            and not taxonomy_style_force
         )
         packaging_relocation_conflict = bool(
             taxonomy_packaging
