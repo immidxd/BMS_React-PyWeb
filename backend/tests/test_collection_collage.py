@@ -246,6 +246,37 @@ def test_measurement_falls_back_to_the_product_row_when_no_sizes_are_available(m
     assert cc.measurement_label(None, {"productnumber": "#Ф2", "measurementscm": 0}) is None
 
 
+def test_third_sizes_are_shown_the_way_the_brand_writes_them():
+    """«45.3» — це 45⅓, а не 45,3: так розмірять HOKA, Adidas і Nike."""
+    from backend.services.telegram_publisher import fmt_size_display
+
+    assert fmt_size_display("45.3") == "45⅓"
+    assert fmt_size_display("42.6") == "42⅔"
+    assert fmt_size_display("36,3") == "36⅓"
+    # Половинки вже звичні, а цілі не чіпаємо взагалі.
+    assert fmt_size_display("46.5") == "46.5"
+    assert fmt_size_display("42") == "42"
+    assert fmt_size_display(None) == ""
+
+
+def test_only_a_ranked_collection_may_promise_a_weekly_top():
+    items = [
+        {"productnumber": "Ф1", "brand": "HOKA", "sizes": ["42"],
+         "measurement": "26,5 см", "price": "2600"},
+        {"productnumber": "Ф2", "brand": "Adidas", "sizes": ["41⅓"],
+         "measurement": "26 см", "price": "1400"},
+    ]
+    ranked = cc.build_caption(items, "viber", ranked=True)
+    manual = cc.build_caption(items, "viber")
+
+    assert ranked.splitlines()[0] == "*Топ тижня 🔥*"
+    # Ручну підбірку ніхто не впорядковував за популярністю, тож обіцяти топ
+    # над нею було б неправдою.
+    assert manual.splitlines()[0] == "*Свіжа підбірка 🔥*"
+    # Замір стоїть поруч із розміром: EU-число в різних брендів — різна нога.
+    assert "42 · 26,5 см · 2600 грн" in ranked
+
+
 def test_measurement_range_falls_back_to_its_lower_bound():
     """«23.5-24» has to survive: 8% of filled measurements are written that way.
 

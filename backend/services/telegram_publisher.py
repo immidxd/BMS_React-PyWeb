@@ -158,6 +158,29 @@ def _load_product(db: Session, product_id: int) -> Optional[dict]:
     return d
 
 
+# HOKA, Adidas і Nike розмірять третинами, і в БД це лежить як «45.3» / «44.6».
+# Це не десяткові дроби, а 45⅓ і 44⅔ — 489 товарів станом на 2026-08-21.
+_THIRD_SIZES = {"3": "⅓", "6": "⅔"}
+_THIRD_SIZE_RE = re.compile(r"^(\d+)[.,]([36])$")
+
+
+def fmt_size_display(value: Any) -> str:
+    """EU-розмір у вигляді, звичному покупцеві: «45.3» → «45⅓».
+
+    Клієнт читає «45.3» як одруківку — ноги такого розміру не буває, а «41.3»
+    ще й легко сплутати з 41,5, хоча 41⅓ менший. Половинки («46.5») лишаються
+    як є: ця форма вже звична й ні з чим не плутається.
+
+    ⚠️ Формат ЛИШЕ для показу людині. Сире `sizeeu` пишеться в
+    `telegram_posts.sizes_in_post` і там звіряється з `products.sizeeu`
+    (`publications.py`, Stage 1 матчингу) — підмінити його в джерелі означало б
+    тихо зламати звʼязування постів із товарами.
+    """
+    text_value = str(value or "").strip()
+    match = _THIRD_SIZE_RE.match(text_value)
+    return f"{match.group(1)}{_THIRD_SIZES[match.group(2)]}" if match else text_value
+
+
 def _available_sizes(db: Session, productnumber: str) -> List[dict]:
     """Розміри цього номера, які РЕАЛЬНО є в наявності, кожен зі своїм заміром.
 

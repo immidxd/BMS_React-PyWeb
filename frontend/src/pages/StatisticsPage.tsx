@@ -1661,6 +1661,7 @@ const StatisticsPage: React.FC<StatisticsPageProps> = () => {
           platform={autoCollectionDraft.platform}
           productIds={autoCollectionDraft.product_ids}
           previewOnly
+          ranked
           selectionNote={`${autoCollectionDraft.id ? 'Це збережена чернетка на ручній перевірці. ' : ''}Top‑9 сформовано за ${autoCollectionDraft.policy.period_days ? `${autoCollectionDraft.policy.period_days} днів` : 'весь чистий період'}; повтори заблоковані на ${autoCollectionDraft.policy.cooldown_days} днів. Резерв: ${autoCollectionDraft.reserves.length}.`}
           onCancel={() => setAutoCollectionDraft(null)}
           onPublish={() => undefined}

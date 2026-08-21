@@ -306,7 +306,12 @@ def _load_items(db: Session, product_ids: Sequence[int]) -> Tuple[List[dict], Li
             "model": bms.get("model"),
             "type": bms.get("typename"),
             "price": tg._fmt_price(bms.get("price")),
-            "sizes": [str(row.get("size") or "").strip() for row in sizes if row.get("size")],
+            "sizes": [
+                tg.fmt_size_display(row.get("size")) for row in sizes if row.get("size")
+            ],
+            # Саме за заміром обирають взуття онлайн: EU-число в різних брендів
+            # означає різну ногу, тому в підписі воно стоїть поруч із розміром.
+            "measurement": measurement_label(db, bms),
             "image_kind": image_kind,
             "image_count": len(photos),
             "image_urls": [getattr(photo, "url", "") for photo in photos],
@@ -315,21 +320,25 @@ def _load_items(db: Session, product_ids: Sequence[int]) -> Tuple[List[dict], Li
     return list(grouped.values()), missing
 
 
-def build_caption(items: Sequence[dict], platform: str) -> str:
+def build_caption(items: Sequence[dict], platform: str, *, ranked: bool = False) -> str:
     """Чернетка підпису: рядок на товар. Її завжди можна переписати вручну.
 
     Ліміт Viber — 768 символів, і 16 позицій із брендом, розмірами та ціною в
-    нього не влазять. Тому підпис не ріжеться посеред слова: спершу зникають
-    розміри, потім назви, і лише в найгіршому разі лишається рядок номерів.
-    Так людина завжди отримує цілий, придатний до відправки текст.
+    нього не влазять. Тому підпис не ріжеться посеред слова: спершу зникає
+    замір, потім розміри, потім назви, і лише в найгіршому разі лишається рядок
+    номерів. Так людина завжди отримує цілий, придатний до відправки текст.
+
+    `ranked` каже, що склад зібрано автоматично за переглядами, лайками й
+    продажами. Тільки тоді заголовок обіцяє топ: над підбіркою, зібраною
+    руками, така обіцянка була б неправдою.
     """
     config = platform_config(platform)
     bold = (lambda value: f"*{value}*") if config["markdown"] else (lambda value: value)
     limit = int(config["caption_limit"])
-    header = bold("Свіжа підбірка 🔥")
+    header = bold("Топ тижня 🔥" if ranked else "Свіжа підбірка 🔥")
     footer = "📲 Напишіть номер товару — і ми його відкладемо."
 
-    def compose(*, with_title: bool, with_sizes: bool) -> str:
+    def compose(*, with_title: bool, with_sizes: bool, with_measurement: bool) -> str:
         lines = [header, ""]
         for position, item in enumerate(items, 1):
             parts = [f"{position}. #{item['productnumber']}"]
@@ -340,13 +349,19 @@ def build_caption(items: Sequence[dict], platform: str) -> str:
                 parts.append(title)
             if with_sizes and item.get("sizes"):
                 parts.append(", ".join(item["sizes"][:6]))
+            if with_measurement and item.get("measurement"):
+                parts.append(str(item["measurement"]))
             if item.get("price"):
                 parts.append(f"{item['price']} грн")
             lines.append(" · ".join(parts))
         return "\n".join([*lines, "", footer]).strip()
 
-    for with_title, with_sizes in ((True, True), (True, False), (False, False)):
-        caption = compose(with_title=with_title, with_sizes=with_sizes)
+    for with_title, with_sizes, with_measurement in (
+        (True, True, True), (True, True, False), (True, False, False), (False, False, False),
+    ):
+        caption = compose(
+            with_title=with_title, with_sizes=with_sizes, with_measurement=with_measurement,
+        )
         if len(caption) <= limit:
             return caption
 
@@ -355,7 +370,8 @@ def build_caption(items: Sequence[dict], platform: str) -> str:
     return caption if len(caption) <= limit else caption[: limit - 1].rstrip() + "…"
 
 
-def preview_collection(db: Session, product_ids: Sequence[int], platform: str) -> dict:
+def preview_collection(db: Session, product_ids: Sequence[int], platform: str,
+                       *, ranked: bool = False) -> dict:
     config = platform_config(platform)
     items, missing = _load_items(db, product_ids)
     usable = [item for item in items if item["image_count"] > 0]
@@ -389,7 +405,7 @@ def preview_collection(db: Session, product_ids: Sequence[int], platform: str) -
         "spec": spec,
         "layouts": [{"key": key, **value} for key, value in GRID_LAYOUTS.items()],
         "backgrounds": BACKGROUNDS,
-        "caption": build_caption(usable, config["key"]),
+        "caption": build_caption(usable, config["key"], ranked=ranked),
         "caption_limit": int(config["caption_limit"]),
         "max_items": MAX_ITEMS,
         "min_items": MIN_ITEMS,

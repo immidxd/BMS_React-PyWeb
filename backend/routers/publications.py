@@ -2194,7 +2194,12 @@ async def collection_preview(body: Dict[str, Any] = Body(...), db: Session = Dep
         raise HTTPException(status_code=400, detail="Не вибрано товари")
     collection = _collection_collage()
     try:
-        result = collection.preview_collection(db, product_ids, body.get("platform"))
+        result = collection.preview_collection(
+            db, product_ids, body.get("platform"),
+            # Тільки автоматичний Top-9 має право на заголовок «Топ тижня»:
+            # склад ручної підбірки не впорядкований за популярністю.
+            ranked=bool(body.get("ranked")),
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     if not result.get("ok"):

@@ -90,6 +90,8 @@ interface Props {
   productIds: number[];
   busy?: boolean;
   previewOnly?: boolean;
+  /** Склад упорядковано за популярністю — підпис має право обіцяти «Топ тижня». */
+  ranked?: boolean;
   selectionNote?: string;
   onCancel: () => void;
   onPublish: (request: CollectionPublishRequest, itemCount: number) => void;
@@ -125,7 +127,8 @@ function asLocal(iso: string | null | undefined): string {
 /** Підбірка — банер каналу, а не публікація товару: статуси товарів вона не чіпає.
  *  Тому діалог свідомо не показує «вже опубліковано» і не питає підтвердження стану. */
 const CollectionCollageDialog: React.FC<Props> = ({
-  platform, productIds, busy = false, previewOnly = false, selectionNote, onCancel, onPublish,
+  platform, productIds, busy = false, previewOnly = false, ranked = false,
+  selectionNote, onCancel, onPublish,
 }) => {
   const [data, setData] = useState<CollectionPreview | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -159,7 +162,7 @@ const CollectionCollageDialog: React.FC<Props> = ({
       try {
         const response = await fetch('/api/publications/collections/preview', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ product_ids: productIds, platform }),
+          body: JSON.stringify({ product_ids: productIds, platform, ranked }),
         });
         const result = await response.json().catch(() => ({}));
         if (!response.ok) throw new Error(result.detail || 'Не вдалося зібрати підбірку');
@@ -178,7 +181,7 @@ const CollectionCollageDialog: React.FC<Props> = ({
       }
     })();
     return () => { cancelled = true; };
-  }, [productIds, platform]);
+  }, [productIds, platform, ranked]);
 
   const capacity = useMemo(() => {
     const preset = (data?.layouts || []).find(row => row.key === layout);
