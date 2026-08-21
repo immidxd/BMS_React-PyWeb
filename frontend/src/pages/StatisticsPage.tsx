@@ -3,6 +3,7 @@ import MainLayout from '../layouts/MainLayout';
 import ProductDetailsModal from '../components/products/ProductDetailsModal';
 import ProductNumberLink from '../components/products/ProductNumberLink';
 import CollectionCollageDialog, { type CollectionPlatform } from '../components/products/CollectionCollageDialog';
+import StoryAutomationPanel from '../components/publications/StoryAutomationPanel';
 import {
   statisticsService,
   type SalesStatsResponse,
@@ -205,6 +206,7 @@ const STAT_TABS = [
   { key: 'clients', label: 'Клієнти' },
   { key: 'products', label: 'Товари' },
   { key: 'channels', label: 'Канали продажу' },
+  { key: 'stories', label: 'Сторіс' },
 ] as const;
 
 type StatTab = typeof STAT_TABS[number]['key'];
@@ -1628,6 +1630,13 @@ const StatisticsPage: React.FC<StatisticsPageProps> = () => {
             ) : (
               <div className="h-40 flex items-center justify-center text-gray-400 text-sm">Немає даних</div>
             )}
+          </Section>
+        )}
+
+        {/* ── Recurring Stories ─────────────────────────────────────── */}
+        {activeTab === 'stories' && (
+          <Section title="Автоматичні Stories">
+            <StoryAutomationPanel />
           </Section>
         )}
 
