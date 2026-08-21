@@ -225,6 +225,9 @@ body {
   display: flex;
   flex-wrap: wrap;
   gap: 2px;
+  /* .content-area has no vertical padding, so without this the bar sits flush
+     against the header. Other pages open with a card and never show it. */
+  padding-top: 10px;
   border-bottom: 1px solid var(--bms-border);
 }
 .bms-subtab {
