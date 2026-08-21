@@ -1,5 +1,5 @@
 from typing import Optional, Dict, Any, List
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 import logging
@@ -26,6 +26,227 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+def _catalog_period_sql(days: int, column: str = "received_at") -> str:
+    return "TRUE" if days == 0 else f"{column} >= now() - (:catalog_days || ' days')::interval"
+
+
+@router.get("/api/statistics/catalog")
+def get_catalog_stats(
+    days: int = Query(30),
+    limit: int = Query(30, ge=1, le=100),
+    db: Session = Depends(get_db),
+) -> Dict[str, Any]:
+    """Clean public-catalog engagement plus BMS sales, ready for Top-9 decisions.
+
+    Product views come only from explicit active-card events. The historical GET
+    counter is returned solely as a labelled audit value and never affects ranking.
+    """
+    if days not in (0, 7, 30, 90):
+        raise HTTPException(status_code=400, detail="Період має бути 7, 30, 90 днів або весь час")
+    from datetime import datetime, timezone
+    try:
+        from backend.services import catalog_analytics_sync_service
+    except ImportError:
+        from services import catalog_analytics_sync_service
+
+    params: Dict[str, Any] = {"catalog_days": days, "limit": limit}
+    event_where = _catalog_period_sql(days, "received_at")
+    sales_where = _catalog_period_sql(days, "o.order_date")
+
+    try:
+        state = db.execute(text("""
+            SELECT last_synced_at, last_received_at, rows_synced, last_error,
+                   (last_synced_at IS NULL OR last_synced_at < now() - interval '5 minutes') AS stale
+            FROM catalog_analytics_sync_state WHERE source='catalog_cloud'
+        """)).mappings().first()
+    except Exception:
+        db.rollback()
+        state = None
+
+    if not state or state["stale"]:
+        catalog_analytics_sync_service.trigger("statistics page")
+    syncing = catalog_analytics_sync_service.is_running()
+
+    try:
+        summary = db.execute(text(f"""
+            SELECT
+                COUNT(*) FILTER (WHERE event_type='catalog_open')::int AS sessions,
+                COUNT(DISTINCT visitor_key) FILTER (WHERE event_type='catalog_open')::int AS visitors,
+                COUNT(*) FILTER (WHERE event_type='product_view')::int AS product_views,
+                COUNT(DISTINCT productnumber) FILTER (WHERE event_type='product_view')::int AS viewed_products,
+                COUNT(*) FILTER (WHERE event_type='favorite_add')::int AS favorite_adds,
+                COUNT(*) FILTER (WHERE event_type='favorite_remove')::int AS favorite_removes,
+                COUNT(*) FILTER (WHERE event_type='contact_click')::int AS contact_clicks,
+                MIN(received_at) AS period_first_event
+            FROM catalog_events WHERE {event_where}
+        """), params).mappings().one()
+
+        totals = db.execute(text("""
+            SELECT COALESCE(SUM(active_favorites), 0)::int AS active_favorites,
+                   COALESCE(SUM(legacy_views), 0)::int AS legacy_views
+            FROM catalog_analytics_product_snapshot
+        """)).mappings().one()
+
+        tracking_started_at = db.execute(text(
+            "SELECT MIN(received_at) FROM catalog_events"
+        )).scalar()
+
+        trend = [dict(r) for r in db.execute(text(f"""
+            SELECT received_at::date AS date,
+                   COUNT(DISTINCT visitor_key) FILTER (WHERE event_type='catalog_open')::int AS visitors,
+                   COUNT(*) FILTER (WHERE event_type='catalog_open')::int AS sessions,
+                   COUNT(*) FILTER (WHERE event_type='product_view')::int AS views,
+                   COUNT(*) FILTER (WHERE event_type='favorite_add')::int AS favorite_adds,
+                   COUNT(*) FILTER (WHERE event_type='contact_click')::int AS contact_clicks
+            FROM catalog_events WHERE {event_where}
+            GROUP BY received_at::date ORDER BY received_at::date
+        """), params).mappings().all()]
+
+        event_rows = db.execute(text(f"""
+            SELECT productnumber,
+                   COUNT(*) FILTER (WHERE event_type='product_view')::int AS views,
+                   COUNT(DISTINCT visitor_key) FILTER (WHERE event_type='product_view')::int AS unique_viewers,
+                   COUNT(*) FILTER (WHERE event_type='favorite_add')::int AS favorite_adds,
+                   COUNT(*) FILTER (WHERE event_type='favorite_remove')::int AS favorite_removes,
+                   COUNT(*) FILTER (WHERE event_type='contact_click')::int AS contact_clicks
+            FROM catalog_events
+            WHERE productnumber IS NOT NULL AND {event_where}
+            GROUP BY productnumber
+        """), params).mappings().all()
+
+        favorite_rows = db.execute(text("""
+            SELECT productnumber, active_favorites, legacy_views
+            FROM catalog_analytics_product_snapshot
+        """)).mappings().all()
+
+        sales_rows = db.execute(text(f"""
+            SELECT p.productnumber,
+                   COALESCE(SUM(oi.quantity), 0)::int AS sold_count,
+                   COALESCE(SUM(oi.price * oi.quantity)
+                       FILTER (WHERE {PAID_REVENUE}), 0)::float AS revenue
+            FROM order_items oi
+            JOIN orders o ON o.id=oi.order_id
+            JOIN products p ON p.id=oi.product_id
+            WHERE p.productnumber IS NOT NULL
+              AND o.order_status_id IN {CONFIRMED_SOLD_SQL}
+              AND {sales_where}
+            GROUP BY p.productnumber
+        """), params).mappings().all()
+
+        product_rows = db.execute(text(f"""
+            WITH sold AS (
+                SELECT oi.product_id, COALESCE(SUM(oi.quantity), 0)::int AS sold_count
+                FROM order_items oi JOIN orders o ON o.id=oi.order_id
+                WHERE o.order_status_id IN {CONFIRMED_SOLD_SQL}
+                GROUP BY oi.product_id
+            )
+            SELECT p.productnumber, MAX(p.id)::int AS product_id,
+                   MAX(b.brandname) AS brand, MAX(p.model) AS model,
+                   MAX(t.typename) AS type,
+                   MIN(p.price)::float AS price,
+                   SUM(GREATEST(COALESCE(p.quantity,0)-COALESCE(sold.sold_count,0),0))::int AS available,
+                   BOOL_OR(COALESCE(cl.is_published, false)) AS published,
+                   BOOL_OR(COALESCE(p.is_lost, false)) AS has_lost_row
+            FROM products p
+            LEFT JOIN brands b ON b.id=p.brandid
+            LEFT JOIN types t ON t.id=p.typeid
+            LEFT JOIN sold ON sold.product_id=p.id
+            LEFT JOIN catalog_listings cl ON cl.productnumber=p.productnumber
+            WHERE p.productnumber IS NOT NULL AND BTRIM(p.productnumber) <> ''
+            GROUP BY p.productnumber
+        """)).mappings().all()
+    except Exception as exc:
+        db.rollback()
+        logger.warning("Catalog statistics unavailable: %s", exc)
+        return {
+            "period_days": days,
+            "summary": {"visitors": 0, "sessions": 0, "product_views": 0,
+                        "viewed_products": 0, "active_favorites": 0, "favorite_adds": 0,
+                        "favorite_removes": 0, "contact_clicks": 0,
+                        "like_rate": 0, "contact_rate": 0},
+            "trend": [], "top_products": [], "tracking_started_at": None,
+            "sync": {"syncing": syncing, "last_synced_at": None,
+                     "last_received_at": None, "last_error": str(exc)},
+            "legacy": {"total_views": 0, "used_in_rankings": False},
+        }
+
+    metrics: Dict[str, Dict[str, Any]] = {}
+    for row in event_rows:
+        metrics.setdefault(row["productnumber"], {}).update(dict(row))
+    for row in favorite_rows:
+        metrics.setdefault(row["productnumber"], {}).update(dict(row))
+    for row in sales_rows:
+        metrics.setdefault(row["productnumber"], {}).update(dict(row))
+    product_map = {r["productnumber"]: dict(r) for r in product_rows}
+
+    top_products = []
+    for pnum, metric in metrics.items():
+        product = product_map.get(pnum, {})
+        views = int(metric.get("views") or 0)
+        unique_viewers = int(metric.get("unique_viewers") or 0)
+        favorite_adds = int(metric.get("favorite_adds") or 0)
+        active_favorites = int(metric.get("active_favorites") or 0)
+        contacts = int(metric.get("contact_clicks") or 0)
+        sold_count = int(metric.get("sold_count") or 0)
+        # Transparent, deterministic interest score. Components stay visible and
+        # independently sortable; this score is only a convenient first ranking.
+        score = unique_viewers + 3 * active_favorites + 4 * favorite_adds + 8 * contacts + 12 * sold_count
+        available = int(product.get("available") or 0)
+        published = bool(product.get("published"))
+        top_products.append({
+            "productnumber": pnum,
+            "product_id": product.get("product_id"),
+            "brand": product.get("brand"),
+            "model": product.get("model"),
+            "type": product.get("type"),
+            "price": float(product.get("price") or 0),
+            "views": views,
+            "unique_viewers": unique_viewers,
+            "active_favorites": active_favorites,
+            "favorite_adds": favorite_adds,
+            "contact_clicks": contacts,
+            "sold_count": sold_count,
+            "revenue": round(float(metric.get("revenue") or 0), 2),
+            "popularity_score": score,
+            "available": available,
+            "published": published,
+            "eligible_for_autopost": published and available > 0 and not bool(product.get("has_lost_row")),
+        })
+    top_products.sort(key=lambda x: (-x["popularity_score"], -x["views"], x["productnumber"]))
+    top_products = top_products[:limit]
+
+    product_views = int(summary["product_views"] or 0)
+    clean_summary = {
+        "visitors": int(summary["visitors"] or 0),
+        "sessions": int(summary["sessions"] or 0),
+        "product_views": product_views,
+        "viewed_products": int(summary["viewed_products"] or 0),
+        "active_favorites": int(totals["active_favorites"] or 0),
+        "favorite_adds": int(summary["favorite_adds"] or 0),
+        "favorite_removes": int(summary["favorite_removes"] or 0),
+        "contact_clicks": int(summary["contact_clicks"] or 0),
+        "like_rate": round((int(summary["favorite_adds"] or 0) / product_views * 100), 1) if product_views else 0,
+        "contact_rate": round((int(summary["contact_clicks"] or 0) / product_views * 100), 1) if product_views else 0,
+    }
+    state_dict = dict(state) if state else {}
+    return {
+        "period_days": days,
+        "summary": clean_summary,
+        "trend": trend,
+        "top_products": top_products,
+        "tracking_started_at": tracking_started_at,
+        "sync": {
+            "syncing": syncing,
+            "last_synced_at": state_dict.get("last_synced_at"),
+            "last_received_at": state_dict.get("last_received_at"),
+            "last_error": state_dict.get("last_error"),
+            "is_stale": bool(state_dict.get("stale", True)),
+        },
+        "legacy": {"total_views": int(totals["legacy_views"] or 0), "used_in_rankings": False},
+        "generated_at": datetime.now(timezone.utc),
+    }
 
 
 # ── Semantic SQL fragments ───────────────────────────────────────────────────

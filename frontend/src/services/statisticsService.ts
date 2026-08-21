@@ -172,6 +172,60 @@ export interface ProductsStatsResponse {
   };
 }
 
+export interface CatalogProductStat {
+  productnumber: string;
+  product_id: number | null;
+  brand: string | null;
+  model: string | null;
+  type: string | null;
+  price: number;
+  views: number;
+  unique_viewers: number;
+  active_favorites: number;
+  favorite_adds: number;
+  contact_clicks: number;
+  sold_count: number;
+  revenue: number;
+  popularity_score: number;
+  available: number;
+  published: boolean;
+  eligible_for_autopost: boolean;
+}
+
+export interface CatalogStatsResponse {
+  period_days: number;
+  summary: {
+    visitors: number;
+    sessions: number;
+    product_views: number;
+    viewed_products: number;
+    active_favorites: number;
+    favorite_adds: number;
+    favorite_removes: number;
+    contact_clicks: number;
+    like_rate: number;
+    contact_rate: number;
+  };
+  trend: {
+    date: string;
+    visitors: number;
+    sessions: number;
+    views: number;
+    favorite_adds: number;
+    contact_clicks: number;
+  }[];
+  top_products: CatalogProductStat[];
+  tracking_started_at: string | null;
+  sync: {
+    syncing: boolean;
+    last_synced_at: string | null;
+    last_received_at: string | null;
+    last_error: string | null;
+    is_stale?: boolean;
+  };
+  legacy: { total_views: number; used_in_rankings: boolean };
+}
+
 export const statisticsService = {
   async getSalesStats(period: string = 'month', year?: number, supplierId?: number): Promise<SalesStatsResponse> {
     const params = new URLSearchParams({ period });
@@ -232,6 +286,11 @@ export const statisticsService = {
 
   async getProductsStats(limit = 15): Promise<ProductsStatsResponse> {
     const res = await axios.get(`/api/statistics/products?limit=${limit}`);
+    return res.data;
+  },
+
+  async getCatalogStats(days = 30, limit = 100): Promise<CatalogStatsResponse> {
+    const res = await axios.get(`/api/statistics/catalog?days=${days}&limit=${limit}`);
     return res.data;
   },
 };

@@ -14,6 +14,8 @@ import {
   type SupplierDetailStats,
   type ClientsStatsResponse,
   type ProductsStatsResponse,
+  type CatalogStatsResponse,
+  type CatalogProductStat,
 } from '../services/statisticsService';
 import {
   BarChart, Bar, LineChart, Line, AreaChart, Area,
@@ -43,6 +45,7 @@ const COLORS = {
 };
 
 type PeriodType = 'month' | 'quarter' | 'year';
+type CatalogSort = 'popular' | 'views' | 'favorites' | 'sales';
 
 // ── Period Selector ──────────────────────────────────────────────────────────
 const PeriodSelector: React.FC<{
@@ -181,10 +184,15 @@ const StatisticsPage: React.FC<StatisticsPageProps> = () => {
   // Products statistics state
   const [productStats, setProductStats] = useState<ProductsStatsResponse | null>(null);
   const [productStatsLoading, setProductStatsLoading] = useState(false);
+  const [catalogDays, setCatalogDays] = useState(30);
+  const [catalogStats, setCatalogStats] = useState<CatalogStatsResponse | null>(null);
+  const [catalogStatsLoading, setCatalogStatsLoading] = useState(false);
+  const [catalogSort, setCatalogSort] = useState<CatalogSort>('popular');
   const salesRequestRef = useRef(0);
   const shipmentsRequestRef = useRef(0);
   const suppliersRequestRef = useRef(0);
   const deliveriesRequestRef = useRef(0);
+  const catalogRequestRef = useRef(0);
 
   // Load years + summary
   useEffect(() => {
@@ -286,6 +294,38 @@ const StatisticsPage: React.FC<StatisticsPageProps> = () => {
   }, []);
   useEffect(() => { loadProductStats(); }, [loadProductStats]);
 
+  const loadCatalogStats = useCallback(async () => {
+    const requestId = ++catalogRequestRef.current;
+    setCatalogStatsLoading(true);
+    try {
+      const res = await statisticsService.getCatalogStats(catalogDays, 100);
+      if (requestId === catalogRequestRef.current) setCatalogStats(res);
+    } catch (e) { console.error(e); }
+    finally { if (requestId === catalogRequestRef.current) setCatalogStatsLoading(false); }
+  }, [catalogDays]);
+  useEffect(() => { loadCatalogStats(); }, [loadCatalogStats]);
+
+  // Перший запит може лише запустити фонове повернення даних із Neon. Короткий
+  // повтор підхоплює свіжий зріз без блокування всієї сторінки статистики.
+  useEffect(() => {
+    if (!catalogStats?.sync.syncing) return;
+    const timer = window.setInterval(loadCatalogStats, 2500);
+    return () => window.clearInterval(timer);
+  }, [catalogStats?.sync.syncing, loadCatalogStats]);
+
+  const sortedCatalogProducts = React.useMemo(() => {
+    if (!catalogStats) return [];
+    const key: Record<CatalogSort, keyof CatalogProductStat> = {
+      popular: 'popularity_score', views: 'views',
+      favorites: 'active_favorites', sales: 'sold_count',
+    };
+    return [...catalogStats.top_products].sort((a, b) =>
+      Number(b[key[catalogSort]]) - Number(a[key[catalogSort]])
+      || b.views - a.views
+      || a.productnumber.localeCompare(b.productnumber)
+    );
+  }, [catalogStats, catalogSort]);
+
   const shipMetrics = [
     { key: 'total_cost', label: 'Вартість завозу' },
     { key: 'avg_price', label: 'Сер. ціна пари' },
@@ -308,12 +348,13 @@ const StatisticsPage: React.FC<StatisticsPageProps> = () => {
           </p>
         </div>
       }
-      onRefresh={() => { loadSales(); loadShipments(); loadSuppliers(); loadDeliveries(); loadClientStats(); loadProductStats(); statisticsService.getSummary().then(setSummary); }}
-      isRefreshing={salesLoading || shipLoading || supLoading || delLoading || clientStatsLoading || productStatsLoading}
+      onRefresh={() => { loadSales(); loadShipments(); loadSuppliers(); loadDeliveries(); loadClientStats(); loadProductStats(); loadCatalogStats(); statisticsService.getSummary().then(setSummary); }}
+      isRefreshing={salesLoading || shipLoading || supLoading || delLoading || clientStatsLoading || productStatsLoading || catalogStatsLoading}
       onResetFilters={() => {
         setSalesPeriod('month'); setSalesYear(undefined);
         setShipPeriod('month'); setShipYear(undefined);
         setSupPeriod('total'); setSupYear(undefined);
+        setCatalogDays(30); setCatalogSort('popular');
       }}
     >
       <div className="space-y-6">
@@ -359,6 +400,142 @@ const StatisticsPage: React.FC<StatisticsPageProps> = () => {
             </div>
           </div>
         )}
+
+        {/* ── Public catalog analytics ─────────────────────────────── */}
+        <Section
+          title="Інтернет-вітрина"
+          controls={
+            <div className="flex bg-gray-100 dark:bg-gray-700 rounded-lg p-0.5">
+              {[
+                { days: 7, label: '7 днів' },
+                { days: 30, label: '30 днів' },
+                { days: 90, label: '90 днів' },
+                { days: 0, label: 'Весь чистий період' },
+              ].map(p => (
+                <button key={p.days} onClick={() => setCatalogDays(p.days)}
+                  className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${catalogDays === p.days
+                    ? 'bg-white dark:bg-gray-600 text-gray-900 dark:text-white shadow-sm'
+                    : 'text-gray-500 dark:text-gray-400 hover:text-gray-700'}`}>
+                  {p.label}
+                </button>
+              ))}
+            </div>
+          }
+        >
+          {catalogStatsLoading && !catalogStats ? (
+            <div className="h-48 flex items-center justify-center text-gray-400">Завантаження...</div>
+          ) : catalogStats ? (
+            <div className="space-y-6">
+              <div className={`rounded-lg border px-3 py-2 text-xs ${catalogStats.sync.last_error
+                ? 'border-amber-200 bg-amber-50 text-amber-800 dark:bg-amber-900/20 dark:border-amber-800 dark:text-amber-300'
+                : 'border-blue-100 bg-blue-50 text-blue-700 dark:bg-blue-900/20 dark:border-blue-800 dark:text-blue-300'}`}>
+                {catalogStats.sync.syncing
+                  ? 'Оновлюю дані з вітрини… Поточний зріз уже можна переглядати.'
+                  : catalogStats.tracking_started_at
+                    ? `Чиста статистика рахується з ${new Date(catalogStats.tracking_started_at).toLocaleString('uk-UA')}. Остання синхронізація: ${catalogStats.sync.last_synced_at ? new Date(catalogStats.sync.last_synced_at).toLocaleString('uk-UA') : 'очікується'}.`
+                    : 'Чистий підрахунок увімкнено. Перші реальні відвідування з’являться після оновлення вітрини.'}
+                {catalogStats.legacy.total_views > 0 && (
+                  <span className="ml-1">Старі {fmtNum(catalogStats.legacy.total_views)} технічних переглядів збережені для аудиту, але рейтинг не спотворюють.</span>
+                )}
+              </div>
+
+              <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
+                <KpiCard label="Відвідувачі" value={fmtNum(catalogStats.summary.visitors)} sub="унікальні" />
+                <KpiCard label="Сесії" value={fmtNum(catalogStats.summary.sessions)} sub="відкриття вітрини" />
+                <KpiCard label="Перегляди товарів" value={fmtNum(catalogStats.summary.product_views)} sub={`${fmtNum(catalogStats.summary.viewed_products)} товарів`} />
+                <KpiCard label="Активні лайки" value={fmtNum(catalogStats.summary.active_favorites)} sub={`+${fmtNum(catalogStats.summary.favorite_adds)} за період`} color="text-rose-600" />
+                <KpiCard label="Звернення" value={fmtNum(catalogStats.summary.contact_clicks)} sub={`${catalogStats.summary.contact_rate}% від переглядів`} color="text-blue-600" />
+                <KpiCard label="Частка лайків" value={`${catalogStats.summary.like_rate}%`} sub="додавань / переглядів" color="text-indigo-600" />
+              </div>
+
+              {catalogStats.trend.length > 0 && (
+                <div>
+                  <h3 className="text-sm font-medium text-gray-600 dark:text-gray-300 mb-2">Динаміка інтересу</h3>
+                  <ResponsiveContainer width="100%" height={260}>
+                    <ComposedChart data={catalogStats.trend} margin={{ top: 5, right: 20, bottom: 5, left: 0 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                      <XAxis dataKey="date" tick={{ fontSize: 10 }} tickFormatter={(v) => new Date(v).toLocaleDateString('uk-UA', { day: '2-digit', month: '2-digit' })} />
+                      <YAxis tick={{ fontSize: 10 }} allowDecimals={false} />
+                      <Tooltip labelFormatter={(v) => new Date(v).toLocaleDateString('uk-UA')} />
+                      <Legend wrapperStyle={{ fontSize: 12 }} />
+                      <Bar dataKey="views" name="Перегляди товарів" fill="#6366f1" radius={[3, 3, 0, 0]} />
+                      <Line dataKey="visitors" name="Відвідувачі" stroke="#10b981" strokeWidth={2} dot={{ r: 2 }} />
+                      <Line dataKey="favorite_adds" name="Нові лайки" stroke="#ec4899" strokeWidth={2} dot={{ r: 2 }} />
+                      <Line dataKey="contact_clicks" name="Звернення" stroke="#f59e0b" strokeWidth={2} dot={{ r: 2 }} />
+                    </ComposedChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
+
+              <div>
+                <div className="flex items-center justify-between gap-3 mb-3 flex-wrap">
+                  <div>
+                    <h3 className="text-sm font-medium text-gray-700 dark:text-gray-200">Топ товарів</h3>
+                    <p className="text-[11px] text-gray-400">Продані товари лишаються у статистиці, але позначаються непридатними для майбутнього автопосту.</p>
+                  </div>
+                  <div className="flex bg-gray-100 dark:bg-gray-700 rounded-lg p-0.5">
+                    {[
+                      ['popular', 'Популярні'], ['views', 'Перегляди'],
+                      ['favorites', 'Лайки'], ['sales', 'Продажі'],
+                    ].map(([key, label]) => (
+                      <button key={key} onClick={() => setCatalogSort(key as CatalogSort)}
+                        className={`px-2.5 py-1 text-xs rounded-md ${catalogSort === key
+                          ? 'bg-white dark:bg-gray-600 shadow-sm text-gray-900 dark:text-white'
+                          : 'text-gray-500 dark:text-gray-400'}`}>
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                {sortedCatalogProducts.length > 0 ? (
+                  <div className="overflow-x-auto rounded-lg border border-gray-100 dark:border-gray-700">
+                    <table className="w-full text-xs">
+                      <thead className="bg-gray-50 dark:bg-gray-700 text-gray-500 dark:text-gray-300">
+                        <tr>
+                          <th className="px-3 py-2 text-left">#</th>
+                          <th className="px-3 py-2 text-left">Товар</th>
+                          <th className="px-3 py-2 text-right">Перегляди</th>
+                          <th className="px-3 py-2 text-right">Лайки</th>
+                          <th className="px-3 py-2 text-right">Звернення</th>
+                          <th className="px-3 py-2 text-right">Продано</th>
+                          <th className="px-3 py-2 text-right">Залишок</th>
+                          <th className="px-3 py-2 text-left">Автопідбірка</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {sortedCatalogProducts.slice(0, 30).map((p, i) => (
+                          <tr key={p.productnumber} className="border-t border-gray-100 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700/60">
+                            <td className="px-3 py-2 text-gray-400">{i + 1}</td>
+                            <td className="px-3 py-2 min-w-[190px]">
+                              <ProductNumberLink productNumber={p.productnumber} onOpen={setCardProductId} />
+                              <div className="text-[10px] text-gray-400 truncate max-w-[240px]">{[p.brand, p.model, p.type].filter(Boolean).join(' · ') || 'Без назви'}</div>
+                            </td>
+                            <td className="px-3 py-2 text-right font-medium">{fmtNum(p.views)} <span className="text-[9px] text-gray-400">({fmtNum(p.unique_viewers)} ос.)</span></td>
+                            <td className="px-3 py-2 text-right text-rose-600 font-medium">{fmtNum(p.active_favorites)}</td>
+                            <td className="px-3 py-2 text-right">{fmtNum(p.contact_clicks)}</td>
+                            <td className="px-3 py-2 text-right">{fmtNum(p.sold_count)}</td>
+                            <td className="px-3 py-2 text-right">{fmtNum(p.available)}</td>
+                            <td className="px-3 py-2">
+                              <span className={`px-2 py-0.5 rounded-full text-[10px] ${p.eligible_for_autopost
+                                ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300'
+                                : 'bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400'}`}>
+                                {p.eligible_for_autopost ? 'Можна' : p.available <= 0 ? 'Продано' : !p.published ? 'Не у вітрині' : 'Не можна'}
+                              </span>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  <div className="h-32 flex items-center justify-center text-gray-400 text-sm">Ще немає чистих даних за цей період</div>
+                )}
+              </div>
+            </div>
+          ) : (
+            <div className="h-40 flex items-center justify-center text-gray-400">Статистика вітрини тимчасово недоступна</div>
+          )}
+        </Section>
 
         {/* ── 1. Sales / Revenue ────────────────────────────────────── */}
         <Section
