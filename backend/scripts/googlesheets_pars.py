@@ -16,7 +16,8 @@ try:
     from ..services.product_taxonomy_normalization import (
         canonicalize_subtype_name,
         canonicalize_type_name,
-        split_reviewed_combined_type,
+        merge_season_values,
+        normalize_taxonomy_pair,
     )
 except Exception:
     # fallback for direct script execution
@@ -30,13 +31,15 @@ except Exception:
        from services.product_taxonomy_normalization import (
            canonicalize_subtype_name,
            canonicalize_type_name,
-           split_reviewed_combined_type,
+           merge_season_values,
+           normalize_taxonomy_pair,
        )
     except ImportError:
        from backend.services.product_taxonomy_normalization import (
            canonicalize_subtype_name,
            canonicalize_type_name,
-           split_reviewed_combined_type,
+           merge_season_values,
+           normalize_taxonomy_pair,
        )
 
 load_dotenv()
@@ -954,9 +957,11 @@ def process_sheet_data(data, wtitle, all_product_numbers):
 
          # The same reviewed pair rules as the current parser.  Even this
          # legacy importer must not recreate a combined value in ``types``.
-         reviewed_taxonomy = split_reviewed_combined_type(type_name)
-         if reviewed_taxonomy:
-            type_name, subtype_name = reviewed_taxonomy
+         type_name, subtype_name, moved_seasons = normalize_taxonomy_pair(
+             type_name,
+             subtype_name,
+         )
+         moved_season = merge_season_values(*moved_seasons)
 
          # Очищаємо номер товару (без додавання символу #)
          product_number = sanitize_product_number(p_num_) if p_num_ else ''
@@ -990,6 +995,8 @@ def process_sheet_data(data, wtitle, all_product_numbers):
             'dateadded': import_date or datetime.now().date(),
             'statusid': default_status_id
          }
+         if moved_season:
+            product_data['season'] = moved_season
 
          # Отримуємо або створюємо зв'язані об'єкти
          if brand:
@@ -1009,6 +1016,11 @@ def process_sheet_data(data, wtitle, all_product_numbers):
             type_id = get_or_create_type(cursor, type_name, conn)
             product_data['typeid'] = type_id
             product_data['_t_name'] = type_name
+         elif moved_season:
+            # The source value was a season adjective, not a product type.
+            # Clear a previously leaked FK instead of replacing it with another
+            # placeholder reference.
+            product_data['typeid'] = None
          else:
             # Якщо тип не вказано, створюємо default тип
             default_type_id = get_or_create_type(cursor, 'Невизначено', conn)

@@ -21,14 +21,25 @@ try:
     from backend.services.product_taxonomy_normalization import (
         canonicalize_subtype_name,
         canonicalize_type_name,
-        split_reviewed_combined_type,
+        merge_season_values,
+        normalize_taxonomy_pair,
+        packaging_from_taxonomy_name,
+        style_from_taxonomy_name,
     )
 except ImportError:
     from services.product_taxonomy_normalization import (
         canonicalize_subtype_name,
         canonicalize_type_name,
-        split_reviewed_combined_type,
+        merge_season_values,
+        normalize_taxonomy_pair,
+        packaging_from_taxonomy_name,
+        style_from_taxonomy_name,
     )
+
+try:
+    from backend.services.product_style_normalization import canonicalize_style_name
+except ImportError:
+    from services.product_style_normalization import canonicalize_style_name
 
 logger = logging.getLogger(__name__)
 
@@ -1277,6 +1288,10 @@ def _resolve_lookup_id_by_name(db: Session, table: str, name_col: str, value: st
         val = canonicalize_type_name(val) or ""
         if not val:
             return None
+    if table == "styles":
+        val = canonicalize_style_name(val) or ""
+        if not val:
+            return None
     # Стать — рівно 3 канонічні значення. Канонізуємо ввід («Жіночі»→«Жіноча»),
     # щоб редагування в картці не плодило дубль-стать. Незнане → None (не створюємо).
     if table == "genders":
@@ -1542,17 +1557,93 @@ def update_product(db: Session, product_id: int, product: schemas.ProductUpdate)
             update_data.pop("materials", None)
             measurements_edit = update_data.pop("measurements_edit", None)
 
-            # A reviewed legacy combined label represents an explicit pair.
-            # Resolve both fields together before either lookup can recreate a
-            # combined value in the reference table or write it back to Sheets.
-            raw_type_name = update_data.get("type_name")
-            reviewed_pair = (
-                split_reviewed_combined_type(raw_type_name)
-                if raw_type_name
-                else None
-            )
-            if reviewed_pair:
-                update_data["type_name"], update_data["subtype_name"] = reviewed_pair
+            # Resolve Type/Subtype together. This moves misplaced season words
+            # into ``season``, splits reviewed combined labels and prevents a
+            # subtype that merely repeats the type from being written back.
+            if "type_name" in update_data or "subtype_name" in update_data:
+                type_was_supplied = "type_name" in update_data
+                subtype_was_supplied = "subtype_name" in update_data
+                current_type_name = resolve_lookup_name(
+                    db, "typeid", db_product.typeid
+                )
+                current_subtype_name = resolve_lookup_name(
+                    db, "subtypeid", db_product.subtypeid
+                )
+                requested_type = update_data.get("type_name", current_type_name)
+                requested_subtype = update_data.get("subtype_name", current_subtype_name)
+                moved_style = next(
+                    (
+                        value
+                        for value in (
+                            style_from_taxonomy_name(requested_type),
+                            style_from_taxonomy_name(requested_subtype),
+                        )
+                        if value
+                    ),
+                    None,
+                )
+                moved_packaging = next(
+                    (
+                        value
+                        for value in (
+                            packaging_from_taxonomy_name(requested_type),
+                            packaging_from_taxonomy_name(requested_subtype),
+                        )
+                        if value
+                    ),
+                    None,
+                )
+                current_style = resolve_lookup_name(db, "styleid", db_product.styleid)
+                requested_style = update_data.get("style_name", current_style)
+                current_packaging = resolve_lookup_name(
+                    db, "packagingid", db_product.packagingid
+                )
+                requested_packaging = update_data.get(
+                    "packaging_name", current_packaging
+                )
+                style_conflict = bool(
+                    moved_style
+                    and requested_style
+                    and canonicalize_style_name(requested_style) != moved_style
+                )
+                packaging_conflict = bool(
+                    moved_packaging
+                    and requested_packaging
+                    and str(requested_packaging).strip().casefold()
+                    != moved_packaging.casefold()
+                )
+                if moved_style and not style_conflict:
+                    update_data["style_name"] = moved_style
+                if moved_packaging and not packaging_conflict:
+                    update_data["packaging_name"] = moved_packaging
+                normalized_type, normalized_subtype, moved_seasons = (
+                    normalize_taxonomy_pair(
+                        requested_type,
+                        requested_subtype,
+                    )
+                )
+                # Never clear the only copy when the destination already holds
+                # a different value; retain the taxonomy source for review.
+                if style_conflict or packaging_conflict:
+                    if (
+                        style_from_taxonomy_name(requested_type)
+                        or packaging_from_taxonomy_name(requested_type)
+                    ):
+                        normalized_type = requested_type
+                    if (
+                        style_from_taxonomy_name(requested_subtype)
+                        or packaging_from_taxonomy_name(requested_subtype)
+                    ):
+                        normalized_subtype = requested_subtype
+                if type_was_supplied or normalized_type != current_type_name:
+                    update_data["type_name"] = normalized_type or ""
+                if subtype_was_supplied or normalized_subtype != current_subtype_name:
+                    update_data["subtype_name"] = normalized_subtype or ""
+                if moved_seasons:
+                    update_data["season"] = merge_season_values(
+                        update_data.get("season", db_product.season),
+                        *moved_seasons,
+                    )
 
             # Inline-edit by NAME: translate typed lookup names → FK id columns
             # (get-or-create, case-insensitive). "" / null clears the FK.
@@ -1692,7 +1783,14 @@ def get_product_filters(db: Session) -> Dict[str, Any]:
             return db.execute(text(sql)).fetchall()
 
         # Exclude '?'-only placeholder entries (user marks unknown with ?, ??, ???)
-        types = fetch_pairs("SELECT id, typename FROM types WHERE typename IS NOT NULL AND btrim(typename) !~ '^[?]+$' ORDER BY typename")
+        types = fetch_pairs("""
+            SELECT t.id, t.typename
+            FROM types t
+            WHERE t.typename IS NOT NULL
+              AND btrim(t.typename) !~ '^[?]+$'
+              AND EXISTS (SELECT 1 FROM products p WHERE p.typeid = t.id)
+            ORDER BY t.typename
+        """)
         # ``subtypes.typeid`` is a legacy single-parent hint, while real BMS
         # data legitimately reuses some subtype labels across several types.
         # Return every currently observed type association as well, so the UI
@@ -1705,7 +1803,7 @@ def get_product_filters(db: Session) -> Dict[str, Any]:
                        NULL
                    ) AS typeids
             FROM subtypes s
-            LEFT JOIN products p ON p.subtypeid = s.id
+            JOIN products p ON p.subtypeid = s.id
             WHERE s.subtypename IS NOT NULL
               AND btrim(s.subtypename) !~ '^[?]+$'
             GROUP BY s.id, s.subtypename, s.typeid
@@ -1749,7 +1847,12 @@ def get_product_filters(db: Session) -> Dict[str, Any]:
             )
             ORDER BY c.conditionname
         """)
-        styles = fetch_pairs("SELECT id, stylename FROM styles ORDER BY stylename")
+        styles = fetch_pairs("""
+            SELECT s.id, s.stylename
+            FROM styles s
+            WHERE EXISTS (SELECT 1 FROM products p WHERE p.styleid = s.id)
+            ORDER BY s.stylename
+        """)
         # Унікальні значення для нових текстових полів (для випадаючих фільтрів)
         seasons_rows = db.execute(text("SELECT DISTINCT TRIM(season) FROM products WHERE season IS NOT NULL AND season != ''")).fetchall()
         widths_rows = db.execute(text("SELECT DISTINCT TRIM(width) FROM products WHERE width IS NOT NULL AND width != '' ORDER BY 1")).fetchall()

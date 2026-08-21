@@ -27,12 +27,26 @@ try:
         get_gc,
     )
     from backend.services.product_taxonomy_normalization import (
+        BLOCKED_TAXONOMY_NAMES,
         COMBINED_TYPE_SUBTYPE,
+        PACKAGING_FROM_TAXONOMY,
+        SEASON_TAXONOMY_ALIASES,
+        STYLE_FROM_TAXONOMY,
         SUBTYPE_ALIASES,
         TYPE_ALIASES,
+        TYPE_SUBTYPE_RELOCATIONS,
         canonicalize_subtype_name,
         canonicalize_type_name,
+        merge_season_values,
+        normalize_taxonomy_pair,
+        packaging_from_taxonomy_name,
+        season_from_taxonomy_name,
         split_reviewed_combined_type,
+        style_from_taxonomy_name,
+    )
+    from backend.services.product_style_normalization import (
+        STYLE_ALIASES,
+        canonicalize_style_name,
     )
     from backend.utils.productnumber_normalizer import normalize as normalize_productnumber
 except ImportError:  # direct execution with PYTHONPATH=backend
@@ -45,24 +59,47 @@ except ImportError:  # direct execution with PYTHONPATH=backend
         get_gc,
     )
     from services.product_taxonomy_normalization import (
+        BLOCKED_TAXONOMY_NAMES,
         COMBINED_TYPE_SUBTYPE,
+        PACKAGING_FROM_TAXONOMY,
+        SEASON_TAXONOMY_ALIASES,
+        STYLE_FROM_TAXONOMY,
         SUBTYPE_ALIASES,
         TYPE_ALIASES,
+        TYPE_SUBTYPE_RELOCATIONS,
         canonicalize_subtype_name,
         canonicalize_type_name,
+        merge_season_values,
+        normalize_taxonomy_pair,
+        packaging_from_taxonomy_name,
+        season_from_taxonomy_name,
         split_reviewed_combined_type,
+        style_from_taxonomy_name,
+    )
+    from services.product_style_normalization import (
+        STYLE_ALIASES,
+        canonicalize_style_name,
     )
     from utils.productnumber_normalizer import normalize as normalize_productnumber
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 BACKUP_DIR = PROJECT_ROOT / "manual_cleanup_backups"
-BACKUP_VERSION = 1
+BACKUP_VERSION = 3
+# One legacy row has no useful subtype, but its source data (Skechers, EU 39.5,
+# shoe measurement) makes the intended concrete class unambiguous enough for
+# this reviewed one-off repair. After the source is fixed the override is no
+# longer needed by normal parsing.
+PRODUCT_TAXONOMY_OVERRIDES: dict[str, tuple[str, str | None]] = {
+    "#Н800": ("Кросівки", None),
+}
 FIELD_RULES: dict[str, tuple[tuple[str, ...], Callable[[str | None], str | None]]] = {
     # The live Journal/Workspace use Вид/Підвид; the older Тип/Підтип spellings
     # are kept as read compatibility for historic copies.
     "type": (("Вид", "Тип"), canonicalize_type_name),
     "subtype": (("Підвид", "Підтип"), canonicalize_subtype_name),
+    "style": (("Стиль",), canonicalize_style_name),
+    "packaging": (("Пакування",), lambda value: value),
 }
 
 
@@ -88,6 +125,25 @@ def _fingerprint(value: Any) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def _rules_payload() -> dict[str, Any]:
+    return {
+        "types": TYPE_ALIASES,
+        "subtypes": SUBTYPE_ALIASES,
+        "combined": COMBINED_TYPE_SUBTYPE,
+        "seasonal": SEASON_TAXONOMY_ALIASES,
+        "styles": STYLE_ALIASES,
+        "style_from_taxonomy": STYLE_FROM_TAXONOMY,
+        "packaging_from_taxonomy": PACKAGING_FROM_TAXONOMY,
+        "blocked": sorted(BLOCKED_TAXONOMY_NAMES),
+        "pair_relocations": {
+            f"{type_name}\u0000{subtype_name}": [target_type, target_subtype]
+            for (type_name, subtype_name), (target_type, target_subtype)
+            in TYPE_SUBTYPE_RELOCATIONS.items()
+        },
+        "product_overrides": PRODUCT_TAXONOMY_OVERRIDES,
+    }
+
+
 def _column_letter(column_1_based: int) -> str:
     result = ""
     number = column_1_based
@@ -106,6 +162,9 @@ def _scan_workbook(spreadsheet_id: str, label: str) -> dict[str, Any]:
     worksheets = spreadsheet.worksheets()
     edits: list[dict[str, Any]] = []
     combined_values: list[dict[str, Any]] = []
+    unmigrated_seasonal: list[dict[str, Any]] = []
+    unmigrated_cross_field: list[dict[str, Any]] = []
+    cross_field_conflicts: list[dict[str, Any]] = []
     summaries: list[dict[str, Any]] = []
 
     for worksheet_chunk in _chunks(worksheets, 40):
@@ -120,6 +179,8 @@ def _scan_workbook(spreadsheet_id: str, label: str) -> dict[str, Any]:
                 matched = next((name for name in header_names if name in header), None)
                 if matched is not None:
                     indexes[field] = header.index(matched)
+            if "Сезон" in header:
+                indexes["season"] = header.index("Сезон")
             if not indexes:
                 continue
             sheet_edits = 0
@@ -131,19 +192,149 @@ def _scan_workbook(spreadsheet_id: str, label: str) -> dict[str, Any]:
                     field: str(row[column_index]) if column_index < len(row) else ""
                     for field, column_index in indexes.items()
                 }
-                desired_values = {
-                    field: FIELD_RULES[field][1](old_value) or ""
-                    for field, old_value in old_values.items()
-                }
-                if "type" in indexes and "subtype" in indexes:
+                desired_values = dict(old_values)
+                for field in ("type", "subtype", "style"):
+                    if field in old_values:
+                        desired_values[field] = FIELD_RULES[field][1](
+                            old_values[field]
+                        ) or ""
+                if "season" in old_values:
+                    desired_values["season"] = merge_season_values(
+                        old_values["season"]
+                    )
+                if "type" in indexes or "subtype" in indexes:
                     raw_type = old_values.get("type", "").strip()
                     raw_subtype = old_values.get("subtype", "").strip()
-                    reviewed_pair = (
-                        split_reviewed_combined_type(raw_type) if raw_type else None
+                    normalized_type, normalized_subtype, moved_seasons = (
+                        normalize_taxonomy_pair(raw_type, raw_subtype)
                     )
-                    if reviewed_pair:
-                        desired_values["type"], desired_values["subtype"] = reviewed_pair
-                    elif raw_type and ("/" in raw_type or "-" in raw_type):
+                    style_sources = {
+                        field: style_from_taxonomy_name(old_values.get(field, ""))
+                        for field in ("type", "subtype")
+                        if style_from_taxonomy_name(old_values.get(field, ""))
+                    }
+                    packaging_sources = {
+                        field: packaging_from_taxonomy_name(old_values.get(field, ""))
+                        for field in ("type", "subtype")
+                        if packaging_from_taxonomy_name(old_values.get(field, ""))
+                    }
+                    preserve_sources: set[str] = set()
+                    for destination, sources in (
+                        ("style", style_sources),
+                        ("packaging", packaging_sources),
+                    ):
+                        if not sources:
+                            continue
+                        targets = list(dict.fromkeys(sources.values()))
+                        if len(targets) != 1:
+                            cross_field_conflicts.append(
+                                {
+                                    "workbook": label,
+                                    "spreadsheet_id": spreadsheet_id,
+                                    "sheet_id": worksheet.id,
+                                    "sheet_title": worksheet.title,
+                                    "row": row_number,
+                                    "productnumber": productnumber,
+                                    "destination": destination,
+                                    "source_values": sources,
+                                    "reason": "multiple_targets",
+                                }
+                            )
+                            preserve_sources.update(sources)
+                            continue
+                        target = targets[0]
+                        if destination not in indexes:
+                            unmigrated_cross_field.append(
+                                {
+                                    "workbook": label,
+                                    "spreadsheet_id": spreadsheet_id,
+                                    "sheet_id": worksheet.id,
+                                    "sheet_title": worksheet.title,
+                                    "row": row_number,
+                                    "productnumber": productnumber,
+                                    "destination": destination,
+                                    "target": target,
+                                    "source_values": sources,
+                                }
+                            )
+                            preserve_sources.update(sources)
+                            continue
+                        current_destination = old_values.get(destination, "").strip()
+                        destination_matches = (
+                            canonicalize_style_name(current_destination) == target
+                            if destination == "style"
+                            else current_destination.casefold() == target.casefold()
+                        )
+                        if current_destination and not destination_matches:
+                            cross_field_conflicts.append(
+                                {
+                                    "workbook": label,
+                                    "spreadsheet_id": spreadsheet_id,
+                                    "sheet_id": worksheet.id,
+                                    "sheet_title": worksheet.title,
+                                    "row": row_number,
+                                    "productnumber": productnumber,
+                                    "destination": destination,
+                                    "current": current_destination,
+                                    "target": target,
+                                    "source_values": sources,
+                                    "reason": "occupied_destination",
+                                }
+                            )
+                            preserve_sources.update(sources)
+                            continue
+                        desired_values[destination] = target
+
+                    normalized_number = normalize_productnumber(productnumber) or ""
+                    override = PRODUCT_TAXONOMY_OVERRIDES.get(normalized_number)
+                    if override:
+                        normalized_type, normalized_subtype = override
+
+                    if moved_seasons and "season" not in indexes:
+                        unmigrated_seasonal.append(
+                            {
+                                "workbook": label,
+                                "spreadsheet_id": spreadsheet_id,
+                                "sheet_id": worksheet.id,
+                                "sheet_title": worksheet.title,
+                                "row": row_number,
+                                "productnumber": productnumber,
+                                "type": raw_type,
+                                "subtype": raw_subtype,
+                                "seasons": list(moved_seasons),
+                            }
+                        )
+                        # Never clear the only source value if the destination
+                        # column is absent; report it for manual schema repair.
+                        normalized_type, normalized_subtype = raw_type, raw_subtype
+                        if "type" in indexes:
+                            desired_values["type"] = raw_type
+                        if "subtype" in indexes:
+                            desired_values["subtype"] = raw_subtype
+                    else:
+                        if "type" in indexes:
+                            desired_values["type"] = (
+                                raw_type
+                                if "type" in preserve_sources
+                                else normalized_type or ""
+                            )
+                        if "subtype" in indexes:
+                            desired_values["subtype"] = (
+                                raw_subtype
+                                if "subtype" in preserve_sources
+                                else normalized_subtype or ""
+                            )
+                        if moved_seasons:
+                            desired_values["season"] = merge_season_values(
+                                old_values.get("season", ""),
+                                *moved_seasons,
+                            )
+
+                    if (
+                        raw_type
+                        and not split_reviewed_combined_type(raw_type)
+                        and ("/" in raw_type or "-" in raw_type)
+                    ):
                         combined_values.append(
                             {
                                 "workbook": label,
@@ -160,7 +351,7 @@ def _scan_workbook(spreadsheet_id: str, label: str) -> dict[str, Any]:
                 for field, column_index in indexes.items():
                     old_value = old_values[field]
                     new_value = desired_values[field]
-                    if not new_value or old_value == new_value:
+                    if old_value == new_value:
                         continue
                     edits.append(
                         {
@@ -192,6 +383,9 @@ def _scan_workbook(spreadsheet_id: str, label: str) -> dict[str, Any]:
         "worksheet_count": len(worksheets),
         "edits": edits,
         "combined_values": combined_values,
+        "unmigrated_seasonal": unmigrated_seasonal,
+        "unmigrated_cross_field": unmigrated_cross_field,
+        "cross_field_conflicts": cross_field_conflicts,
         "sheet_summaries": summaries,
         "fingerprint": _fingerprint(edits),
     }
@@ -232,21 +426,48 @@ def _fetch_subtypes(connection) -> list[dict[str, Any]]:
     )
 
 
+def _fetch_styles(connection) -> list[dict[str, Any]]:
+    return _rows(
+        connection.execute(
+            text(
+                """
+                SELECT s.id, s.stylename, COUNT(p.id)::int AS product_count
+                FROM styles s
+                LEFT JOIN products p ON p.styleid = s.id
+                GROUP BY s.id, s.stylename
+                ORDER BY s.id
+                """
+            )
+        ).mappings()
+    )
+
+
 def _database_snapshot(extra_productnumbers: Iterable[str] = ()) -> dict[str, Any]:
     with engine.connect() as connection:
         transaction = connection.begin()
         connection.execute(text("SET TRANSACTION READ ONLY"))
         types = _fetch_types(connection)
         subtypes = _fetch_subtypes(connection)
+        styles = _fetch_styles(connection)
         affected_type_ids = [
             row["id"]
             for row in types
             if canonicalize_type_name(row["typename"]) != row["typename"]
+            or split_reviewed_combined_type(row["typename"])
         ]
+        affected_type_ids.extend(
+            row["id"] for row in types if row["typename"] == "Взуття"
+        )
+        affected_type_ids = sorted(set(affected_type_ids))
         affected_subtype_ids = [
             row["id"]
             for row in subtypes
             if canonicalize_subtype_name(row["subtypename"]) != row["subtypename"]
+        ]
+        affected_style_ids = [
+            row["id"]
+            for row in styles
+            if canonicalize_style_name(row["stylename"]) != row["stylename"]
         ]
         extra_numbers = sorted({value for value in extra_productnumbers if value})
         affected_products = _rows(
@@ -254,12 +475,18 @@ def _database_snapshot(extra_productnumbers: Iterable[str] = ()) -> dict[str, An
                 text(
                     """
                     SELECT p.id, p.productnumber, p.typeid, t.typename,
-                           p.subtypeid, s.subtypename, p.updated_at
+                           p.subtypeid, s.subtypename,
+                           p.styleid, sty.stylename,
+                           p.packagingid, pk.packagingname,
+                           p.season, p.updated_at
                     FROM products p
                     LEFT JOIN types t ON t.id = p.typeid
                     LEFT JOIN subtypes s ON s.id = p.subtypeid
+                    LEFT JOIN styles sty ON sty.id = p.styleid
+                    LEFT JOIN packaging_types pk ON pk.id = p.packagingid
                     WHERE p.typeid = ANY(:type_ids)
                        OR p.subtypeid = ANY(:subtype_ids)
+                       OR p.styleid = ANY(:style_ids)
                        OR p.productnumber = ANY(:productnumbers)
                     ORDER BY p.id
                     """
@@ -267,6 +494,7 @@ def _database_snapshot(extra_productnumbers: Iterable[str] = ()) -> dict[str, An
                 {
                     "type_ids": affected_type_ids or [-1],
                     "subtype_ids": affected_subtype_ids or [-1],
+                    "style_ids": affected_style_ids or [-1],
                     "productnumbers": extra_numbers or ["__no_product__"],
                 },
             ).mappings()
@@ -290,7 +518,9 @@ def _database_snapshot(extra_productnumbers: Iterable[str] = ()) -> dict[str, An
                     """
                     SELECT (SELECT COUNT(*) FROM products)::int AS products,
                            (SELECT COUNT(*) FROM types)::int AS types,
-                           (SELECT COUNT(*) FROM subtypes)::int AS subtypes
+                           (SELECT COUNT(*) FROM subtypes)::int AS subtypes,
+                           (SELECT COUNT(*) FROM styles)::int AS styles,
+                           (SELECT COUNT(*) FROM packaging_types)::int AS packaging_types
                     """
                 )
             ).mappings().one()
@@ -301,6 +531,7 @@ def _database_snapshot(extra_productnumbers: Iterable[str] = ()) -> dict[str, An
         "counts": counts,
         "types": types,
         "subtypes": subtypes,
+        "styles": styles,
         "affected_products": affected_products,
         "affected_subtype_parents": affected_subtype_parents,
     }
@@ -310,6 +541,7 @@ def _database_snapshot(extra_productnumbers: Iterable[str] = ()) -> dict[str, An
             for key in (
                 "types",
                 "subtypes",
+                "styles",
                 "affected_products",
                 "affected_subtype_parents",
             )
@@ -400,7 +632,10 @@ def scan(
             )
         combined_by_number[carried["productnumber"]] = carried
     combined_plan = [combined_by_number[key] for key in sorted(combined_by_number)]
-    database = _database_snapshot(row["productnumber"] for row in combined_plan)
+    audit_numbers = {
+        row["productnumber"] for row in combined_plan
+    } | set(PRODUCT_TAXONOMY_OVERRIDES)
+    database = _database_snapshot(audit_numbers)
     present_numbers = {
         row["productnumber"] for row in database["affected_products"]
     }
@@ -416,18 +651,16 @@ def scan(
         "subtype_merges": _build_merge_plan(
             database["subtypes"], "subtypename", canonicalize_subtype_name
         ),
+        "style_merges": _build_merge_plan(
+            database["styles"], "stylename", canonicalize_style_name
+        ),
         "combined_products": combined_plan,
         "missing_combined_productnumbers": missing_combined_numbers,
-    }
-    rules = {
-        "types": TYPE_ALIASES,
-        "subtypes": SUBTYPE_ALIASES,
-        "combined": COMBINED_TYPE_SUBTYPE,
     }
     payload = {
         "version": BACKUP_VERSION,
         "created_at": datetime.now(timezone.utc).isoformat(),
-        "rules_fingerprint": _fingerprint(rules),
+        "rules_fingerprint": _fingerprint(_rules_payload()),
         "google": google,
         "database": database,
         "db_plan": db_plan,
@@ -444,8 +677,21 @@ def scan(
                 "combined_values": sum(
                     len(workbook.get("combined_values", [])) for workbook in google.values()
                 ),
+                "unmigrated_seasonal": sum(
+                    len(workbook.get("unmigrated_seasonal", []))
+                    for workbook in google.values()
+                ),
+                "unmigrated_cross_field": sum(
+                    len(workbook.get("unmigrated_cross_field", []))
+                    for workbook in google.values()
+                ),
+                "cross_field_conflicts": sum(
+                    len(workbook.get("cross_field_conflicts", []))
+                    for workbook in google.values()
+                ),
                 "type_merges": len(db_plan["type_merges"]),
                 "subtype_merges": len(db_plan["subtype_merges"]),
+                "style_merges": len(db_plan["style_merges"]),
                 "affected_products": len(database["affected_products"]),
                 "combined_products": len(combined_plan),
                 "missing_combined_products": missing_combined_numbers,
@@ -547,6 +793,389 @@ def _merge_subtypes(connection) -> dict[str, int]:
     }
 
 
+def _merge_styles(connection) -> dict[str, int]:
+    moved_products = 0
+    deleted = 0
+    rows = _fetch_styles(connection)
+    plans = _build_merge_plan(rows, "stylename", canonicalize_style_name)
+    for plan in plans:
+        target_id = int(plan["target_id"])
+        source_ids = [int(value) for value in plan["source_ids"]]
+        if source_ids:
+            moved_products += int(
+                connection.execute(
+                    text("UPDATE products SET styleid = :target WHERE styleid = ANY(:sources)"),
+                    {"target": target_id, "sources": source_ids},
+                ).rowcount
+            )
+            connection.execute(
+                text("DELETE FROM styles WHERE id = ANY(:sources)"),
+                {"sources": source_ids},
+            )
+            deleted += len(source_ids)
+        connection.execute(
+            text("UPDATE styles SET stylename = :name WHERE id = :id"),
+            {"name": plan["canonical"], "id": target_id},
+        )
+    return {
+        "moved_products": moved_products,
+        "deleted_styles": deleted,
+    }
+
+
+def _find_reference_id(
+    connection,
+    table: str,
+    name_column: str,
+    value: str,
+) -> int | None:
+    wanted = value.strip().casefold()
+    for row in connection.execute(
+        text(f"SELECT id, {name_column} FROM {table} ORDER BY id")
+    ).fetchall():
+        if str(row[1] or "").strip().casefold() == wanted:
+            return int(row[0])
+    return None
+
+
+def _apply_semantic_taxonomy_repairs(connection) -> dict[str, int]:
+    """Apply reviewed cross-column/product repairs after ordinary merges."""
+    updated_generic_pairs = 0
+    updated_overrides = 0
+    cleared_redundant_subtypes = 0
+
+    for (source_type, source_subtype), (target_type, target_subtype) in (
+        TYPE_SUBTYPE_RELOCATIONS.items()
+    ):
+        source_type_id = _find_reference_id(
+            connection, "types", "typename", source_type
+        )
+        source_subtype_id = _find_reference_id(
+            connection, "subtypes", "subtypename", source_subtype
+        )
+        target_type_id = _lookup_reference_id(
+            connection, "types", "typename", target_type
+        )
+        target_subtype_id = (
+            _lookup_reference_id(
+                connection, "subtypes", "subtypename", target_subtype
+            )
+            if target_subtype
+            else None
+        )
+        if source_type_id is None or source_subtype_id is None:
+            continue
+        updated_generic_pairs += int(
+            connection.execute(
+                text(
+                    """
+                    UPDATE products
+                    SET typeid = :target_typeid,
+                        subtypeid = :target_subtypeid,
+                        updated_at = now()
+                    WHERE typeid = :source_typeid
+                      AND subtypeid = :source_subtypeid
+                    """
+                ),
+                {
+                    "target_typeid": target_type_id,
+                    "target_subtypeid": target_subtype_id,
+                    "source_typeid": source_type_id,
+                    "source_subtypeid": source_subtype_id,
+                },
+            ).rowcount
+        )
+
+    for productnumber, (target_type, target_subtype) in (
+        PRODUCT_TAXONOMY_OVERRIDES.items()
+    ):
+        target_type_id = _lookup_reference_id(
+            connection, "types", "typename", target_type
+        )
+        target_subtype_id = (
+            _lookup_reference_id(
+                connection, "subtypes", "subtypename", target_subtype
+            )
+            if target_subtype
+            else None
+        )
+        updated_overrides += int(
+            connection.execute(
+                text(
+                    """
+                    UPDATE products
+                    SET typeid = :typeid,
+                        subtypeid = :subtypeid,
+                        updated_at = now()
+                    WHERE productnumber = :productnumber
+                      AND (typeid IS DISTINCT FROM :typeid
+                           OR subtypeid IS DISTINCT FROM :subtypeid)
+                    """
+                ),
+                {
+                    "typeid": target_type_id,
+                    "subtypeid": target_subtype_id,
+                    "productnumber": productnumber,
+                },
+            ).rowcount
+        )
+
+    cleared_redundant_subtypes += int(
+        connection.execute(
+            text(
+                """
+                UPDATE products p
+                SET subtypeid = NULL,
+                    updated_at = now()
+                FROM types t, subtypes s
+                WHERE p.typeid = t.id
+                  AND p.subtypeid = s.id
+                  AND lower(btrim(t.typename)) = lower(btrim(s.subtypename))
+                """
+            )
+        ).rowcount
+    )
+    return {
+        "updated_generic_pairs": updated_generic_pairs,
+        "updated_overrides": updated_overrides,
+        "cleared_redundant_subtypes": cleared_redundant_subtypes,
+    }
+
+
+def _relocate_seasonal_references(connection) -> dict[str, int]:
+    """Move exact season labels out of Type/Subtype and remove their refs."""
+    updated_products = 0
+    cleared_type_refs = 0
+    cleared_subtype_refs = 0
+    deleted_types = 0
+    deleted_subtypes = 0
+
+    seasonal_types = [
+        row
+        for row in _fetch_types(connection)
+        if season_from_taxonomy_name(row["typename"])
+    ]
+    seasonal_subtypes = [
+        row
+        for row in _fetch_subtypes(connection)
+        if season_from_taxonomy_name(row["subtypename"])
+    ]
+
+    for ref in seasonal_types:
+        season = season_from_taxonomy_name(ref["typename"])
+        products = connection.execute(
+            text("SELECT id, season FROM products WHERE typeid = :id FOR UPDATE"),
+            {"id": ref["id"]},
+        ).fetchall()
+        for product_id, current_season in products:
+            connection.execute(
+                text(
+                    "UPDATE products SET season = :season, typeid = NULL, "
+                    "updated_at = now() WHERE id = :id"
+                ),
+                {
+                    "season": merge_season_values(current_season, season),
+                    "id": product_id,
+                },
+            )
+            updated_products += 1
+            cleared_type_refs += 1
+        connection.execute(
+            text("UPDATE subtypes SET typeid = NULL WHERE typeid = :id"),
+            {"id": ref["id"]},
+        )
+        connection.execute(text("DELETE FROM types WHERE id = :id"), {"id": ref["id"]})
+        deleted_types += 1
+
+    for ref in seasonal_subtypes:
+        season = season_from_taxonomy_name(ref["subtypename"])
+        products = connection.execute(
+            text("SELECT id, season FROM products WHERE subtypeid = :id FOR UPDATE"),
+            {"id": ref["id"]},
+        ).fetchall()
+        for product_id, current_season in products:
+            connection.execute(
+                text(
+                    "UPDATE products SET season = :season, subtypeid = NULL, "
+                    "updated_at = now() WHERE id = :id"
+                ),
+                {
+                    "season": merge_season_values(current_season, season),
+                    "id": product_id,
+                },
+            )
+            updated_products += 1
+            cleared_subtype_refs += 1
+        connection.execute(
+            text("DELETE FROM subtypes WHERE id = :id"), {"id": ref["id"]}
+        )
+        deleted_subtypes += 1
+
+    return {
+        "updated_products": updated_products,
+        "cleared_type_refs": cleared_type_refs,
+        "cleared_subtype_refs": cleared_subtype_refs,
+        "deleted_types": deleted_types,
+        "deleted_subtypes": deleted_subtypes,
+    }
+
+
+def _ensure_reference_id(
+    connection,
+    table: str,
+    name_column: str,
+    value: str,
+) -> int:
+    existing = _find_reference_id(connection, table, name_column, value)
+    if existing is not None:
+        return existing
+    row = connection.execute(
+        text(
+            f"INSERT INTO {table} ({name_column}) VALUES (:value) "
+            f"RETURNING id"
+        ),
+        {"value": value},
+    ).fetchone()
+    if not row:
+        raise RuntimeError(f"Could not create canonical {table} value {value!r}")
+    return int(row[0])
+
+
+def _relocate_cross_field_references(connection) -> dict[str, int]:
+    """Move reviewed Style/Packaging labels out of Type/Subtype atomically."""
+    updated_style_products = 0
+    updated_packaging_products = 0
+    cleared_type_refs = 0
+    cleared_subtype_refs = 0
+    deleted_types = 0
+    deleted_subtypes = 0
+
+    source_specs = (
+        ("types", "typename", "typeid", _fetch_types(connection)),
+        ("subtypes", "subtypename", "subtypeid", _fetch_subtypes(connection)),
+    )
+    for table, name_column, source_fk, rows in source_specs:
+        for ref in rows:
+            source_name = ref[name_column]
+            target_style = style_from_taxonomy_name(source_name)
+            target_packaging = packaging_from_taxonomy_name(source_name)
+            if not target_style and not target_packaging:
+                continue
+            if target_style:
+                target_fk = "styleid"
+                target_id = _ensure_reference_id(
+                    connection, "styles", "stylename", target_style
+                )
+            else:
+                target_fk = "packagingid"
+                target_id = _ensure_reference_id(
+                    connection,
+                    "packaging_types",
+                    "packagingname",
+                    target_packaging,
+                )
+
+            conflicts = connection.execute(
+                text(
+                    f"SELECT productnumber FROM products "
+                    f"WHERE {source_fk} = :source_id "
+                    f"AND {target_fk} IS NOT NULL AND {target_fk} <> :target_id "
+                    f"ORDER BY productnumber"
+                ),
+                {"source_id": ref["id"], "target_id": target_id},
+            ).fetchall()
+            if conflicts:
+                raise RuntimeError(
+                    f"Refusing cross-field relocation for {source_name!r}; "
+                    f"destination conflict on {[row[0] for row in conflicts]}"
+                )
+            updated = int(
+                connection.execute(
+                    text(
+                        f"UPDATE products SET {target_fk} = :target_id, "
+                        f"{source_fk} = NULL, updated_at = now() "
+                        f"WHERE {source_fk} = :source_id"
+                    ),
+                    {"target_id": target_id, "source_id": ref["id"]},
+                ).rowcount
+            )
+            if target_style:
+                updated_style_products += updated
+            else:
+                updated_packaging_products += updated
+            if table == "types":
+                connection.execute(
+                    text("UPDATE subtypes SET typeid = NULL WHERE typeid = :id"),
+                    {"id": ref["id"]},
+                )
+                cleared_type_refs += updated
+            else:
+                cleared_subtype_refs += updated
+            connection.execute(
+                text(f"DELETE FROM {table} WHERE id = :id"), {"id": ref["id"]}
+            )
+            if table == "types":
+                deleted_types += 1
+            else:
+                deleted_subtypes += 1
+
+    return {
+        "updated_style_products": updated_style_products,
+        "updated_packaging_products": updated_packaging_products,
+        "cleared_type_refs": cleared_type_refs,
+        "cleared_subtype_refs": cleared_subtype_refs,
+        "deleted_types": deleted_types,
+        "deleted_subtypes": deleted_subtypes,
+    }
+
+
+def _delete_unused_taxonomy_noise(connection) -> dict[str, int]:
+    """Delete only exact reviewed garbage rows after proving zero references."""
+    deleted_types = 0
+    deleted_subtypes = 0
+    type_names = set(BLOCKED_TAXONOMY_NAMES) | {"Взуття"} | set(
+        COMBINED_TYPE_SUBTYPE
+    )
+    subtype_names = set(BLOCKED_TAXONOMY_NAMES) | {"Білизна"}
+
+    for table, name_column, fk_column, names in (
+        ("types", "typename", "typeid", type_names),
+        ("subtypes", "subtypename", "subtypeid", subtype_names),
+    ):
+        for row_id, name in connection.execute(
+            text(f"SELECT id, {name_column} FROM {table} ORDER BY id")
+        ).fetchall():
+            if name not in names:
+                continue
+            product_count = int(
+                connection.execute(
+                    text(f"SELECT COUNT(*) FROM products WHERE {fk_column} = :id"),
+                    {"id": row_id},
+                ).scalar()
+            )
+            if product_count:
+                raise RuntimeError(
+                    f"Refusing to delete used {table} row {name!r}: "
+                    f"{product_count} products"
+                )
+            if table == "types":
+                connection.execute(
+                    text("UPDATE subtypes SET typeid = NULL WHERE typeid = :id"),
+                    {"id": row_id},
+                )
+            connection.execute(
+                text(f"DELETE FROM {table} WHERE id = :id"), {"id": row_id}
+            )
+            if table == "types":
+                deleted_types += 1
+            else:
+                deleted_subtypes += 1
+    return {
+        "deleted_types": deleted_types,
+        "deleted_subtypes": deleted_subtypes,
+    }
+
+
 def _lookup_reference_id(connection, table: str, name_column: str, value: str) -> int:
     wanted = value.strip().casefold()
     rows = connection.execute(
@@ -599,31 +1228,44 @@ def _apply_combined_products(connection, plans: list[dict[str, Any]]) -> dict[st
 
 def apply_db(backup_path: Path) -> None:
     payload = json.loads(backup_path.read_text(encoding="utf-8"))
-    rules = {
-        "types": TYPE_ALIASES,
-        "subtypes": SUBTYPE_ALIASES,
-        "combined": COMBINED_TYPE_SUBTYPE,
-    }
     if payload.get("version") != BACKUP_VERSION:
         raise RuntimeError("Unsupported backup version")
-    if payload.get("rules_fingerprint") != _fingerprint(rules):
+    if payload.get("rules_fingerprint") != _fingerprint(_rules_payload()):
         raise RuntimeError("Rules changed since snapshot; create a fresh scan")
+    unsafe_google_rows = [
+        row
+        for workbook in payload.get("google", {}).values()
+        for key in ("unmigrated_seasonal", "unmigrated_cross_field", "cross_field_conflicts")
+        for row in workbook.get(key, [])
+    ]
+    if unsafe_google_rows:
+        raise RuntimeError(
+            f"Google source has {len(unsafe_google_rows)} unresolved relocation rows; "
+            "database apply is blocked"
+        )
 
     with engine.begin() as connection:
         combined_plans = payload["db_plan"].get("combined_products", [])
         current = _database_snapshot(
-            row["productnumber"] for row in combined_plans
+            {
+                row["productnumber"] for row in combined_plans
+            } | set(PRODUCT_TAXONOMY_OVERRIDES)
         )
         if current["fingerprint"] != payload["database"]["fingerprint"]:
             raise RuntimeError("Affected database rows changed since backup; rescan required")
         type_result = _merge_types(connection)
         subtype_result = _merge_subtypes(connection)
+        style_result = _merge_styles(connection)
         combined_result = _apply_combined_products(connection, combined_plans)
         if combined_result["missing_numbers"]:
             raise RuntimeError(
                 f"Combined taxonomy products missing from DB: "
                 f"{combined_result['missing_productnumbers']}"
             )
+        semantic_result = _apply_semantic_taxonomy_repairs(connection)
+        seasonal_result = _relocate_seasonal_references(connection)
+        cross_field_result = _relocate_cross_field_references(connection)
+        noise_result = _delete_unused_taxonomy_noise(connection)
         leftovers = connection.execute(
             text(
                 """
@@ -631,22 +1273,56 @@ def apply_db(backup_path: Path) -> None:
                   (SELECT COUNT(*) FROM types
                    WHERE typename = ANY(:type_aliases)) AS type_aliases,
                   (SELECT COUNT(*) FROM subtypes
-                   WHERE subtypename = ANY(:subtype_aliases)) AS subtype_aliases
+                   WHERE subtypename = ANY(:subtype_aliases)) AS subtype_aliases,
+                  (SELECT COUNT(*) FROM styles
+                   WHERE stylename = ANY(:style_aliases)) AS style_aliases,
+                  (SELECT COUNT(*) FROM types
+                   WHERE typename = ANY(:forbidden_types)) AS forbidden_types,
+                  (SELECT COUNT(*) FROM subtypes
+                   WHERE subtypename = ANY(:forbidden_subtypes)) AS forbidden_subtypes,
+                  (SELECT COUNT(*) FROM types
+                   WHERE typename = ANY(:cross_field_names)) AS cross_field_types,
+                  (SELECT COUNT(*) FROM subtypes
+                   WHERE subtypename = ANY(:cross_field_names)) AS cross_field_subtypes
                 """
             ),
             {
                 "type_aliases": list(TYPE_ALIASES),
                 "subtype_aliases": list(SUBTYPE_ALIASES),
+                "style_aliases": list(STYLE_ALIASES),
+                "forbidden_types": list(SEASON_TAXONOMY_ALIASES)
+                + list(BLOCKED_TAXONOMY_NAMES)
+                + ["Взуття"]
+                + list(COMBINED_TYPE_SUBTYPE),
+                "forbidden_subtypes": list(SEASON_TAXONOMY_ALIASES)
+                + list(BLOCKED_TAXONOMY_NAMES),
+                "cross_field_names": list(STYLE_FROM_TAXONOMY)
+                + list(PACKAGING_FROM_TAXONOMY),
             },
         ).mappings().one()
-        if leftovers["type_aliases"] or leftovers["subtype_aliases"]:
+        if any(leftovers.values()):
             raise RuntimeError(f"Canonicalization leftovers: {dict(leftovers)}")
+
+        final_product_count = int(
+            connection.execute(text("SELECT COUNT(*) FROM products")).scalar()
+        )
+        if final_product_count != int(payload["database"]["counts"]["products"]):
+            raise RuntimeError(
+                "Product count changed during taxonomy cleanup: "
+                f"{payload['database']['counts']['products']} -> {final_product_count}"
+            )
 
     result = {
         "applied_at": datetime.now(timezone.utc).isoformat(),
         "type_result": type_result,
         "subtype_result": subtype_result,
+        "style_result": style_result,
         "combined_result": combined_result,
+        "semantic_result": semantic_result,
+        "seasonal_result": seasonal_result,
+        "cross_field_result": cross_field_result,
+        "noise_result": noise_result,
+        "product_count": final_product_count,
     }
     result_path = backup_path.with_name(backup_path.stem + "_db_result.json")
     result_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")

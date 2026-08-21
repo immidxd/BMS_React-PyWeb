@@ -48,14 +48,27 @@ try:
     from services.product_taxonomy_normalization import (
         canonicalize_subtype_name,
         canonicalize_type_name,
+        merge_season_values,
+        normalize_taxonomy_pair,
+        packaging_from_taxonomy_name,
         split_reviewed_combined_type,
+        style_from_taxonomy_name,
     )
 except ImportError:
     from backend.services.product_taxonomy_normalization import (
         canonicalize_subtype_name,
         canonicalize_type_name,
+        merge_season_values,
+        normalize_taxonomy_pair,
+        packaging_from_taxonomy_name,
         split_reviewed_combined_type,
+        style_from_taxonomy_name,
     )
+
+try:
+    from services.product_style_normalization import canonicalize_style_name
+except ImportError:
+    from backend.services.product_style_normalization import canonicalize_style_name
 
 
 def get_credentials_path() -> str:
@@ -1686,28 +1699,7 @@ def normalize_season_csv(value: str) -> str:
     """Canonicalize a season value (from Sheet or DB): trim parts, dedupe,
     apply canonical ordering. Unknown tokens are preserved as-is (after trim)
     to avoid silently dropping legacy or custom values."""
-    if not value:
-        return ''
-    parts = [p.strip() for p in value.split(',') if p.strip()]
-    if not parts:
-        return ''
-    # Case-fold map for canonicals: 'літо' / 'ЛІТО' / 'Літо' → 'Літо'
-    canon_by_lower = {c.lower(): c for c in SEASON_CANONICAL_ORDER}
-    seen: set[str] = set()
-    known: list[str] = []
-    unknown: list[str] = []
-    for p in parts:
-        canon = canon_by_lower.get(p.lower())
-        key = canon or p
-        if key in seen:
-            continue
-        seen.add(key)
-        if canon:
-            known.append(canon)
-        else:
-            unknown.append(p)
-    ordered = [s for s in SEASON_CANONICAL_ORDER if s in known]
-    return ', '.join(ordered + unknown)
+    return merge_season_values(value)
 
 
 def _normalize_gender(val: str) -> str:
@@ -2419,7 +2411,7 @@ def _get_or_create(session: Session, model, unique_field: str, value: str):
     We load all rows and compare via Python lower() instead.
     Reference tables are tiny (< 100 rows) so this is safe.
     """
-    from backend.models.models import Color, Type, Subtype, Brand
+    from backend.models.models import Color, Type, Subtype, Brand, Style
     value = value.strip()
     if not value:
         return None
@@ -2457,6 +2449,11 @@ def _get_or_create(session: Session, model, unique_field: str, value: str):
         if not value:
             return None
         value = _normalize_ref_name(value)
+
+    if model is Style:
+        value = canonicalize_style_name(value) or ""
+        if not value:
+            return None
 
     # ── Brand: check blocklist → aliases → normalized comparison ──
     if model is Brand:
@@ -2819,6 +2816,45 @@ def _parse_products_sheet(
         # Опційні розширені колонки (старі аркуші можуть їх не мати)
         season_val       = col(row, "Сезон").strip() if "Сезон" in header else ""
         style_val        = col(row, "Стиль").strip() if "Стиль" in header else ""
+        packaging_val    = col(row, "Пакування").strip() if "Пакування" in header else ""
+        taxonomy_source_type = type_val
+        taxonomy_source_subtype = sub_val
+        taxonomy_style = next(
+            (
+                value
+                for value in (
+                    style_from_taxonomy_name(type_val),
+                    style_from_taxonomy_name(sub_val),
+                )
+                if value
+            ),
+            None,
+        )
+        taxonomy_packaging = next(
+            (
+                value
+                for value in (
+                    packaging_from_taxonomy_name(type_val),
+                    packaging_from_taxonomy_name(sub_val),
+                )
+                if value
+            ),
+            None,
+        )
+        style_relocation_conflict = bool(
+            taxonomy_style
+            and style_val
+            and canonicalize_style_name(style_val) != taxonomy_style
+        )
+        packaging_relocation_conflict = bool(
+            taxonomy_packaging
+            and packaging_val
+            and packaging_val.strip().casefold() != taxonomy_packaging.casefold()
+        )
+        if taxonomy_style and not style_relocation_conflict:
+            style_val = taxonomy_style
+        if taxonomy_packaging and not packaging_relocation_conflict:
+            packaging_val = taxonomy_packaging
         current_cond_val = col(row, "Поточний стан").strip() if "Поточний стан" in header else ""
         # Нові колонки замірів (одяг: довжина, ПОГ, ПОБ, ПОТ, рукав; взуття: висота, товщина підошви)
         length_val          = col(row, "Довжина").strip()         if "Довжина" in header else ""
@@ -2846,7 +2882,13 @@ def _parse_products_sheet(
         for sheet_col, (tbl, name_col, fk_col) in SHOE_LOOKUP_COLUMNS.items():
             if sheet_col not in header:
                 continue
-            raw_val = technology_val if sheet_col == "Технології" else col(row, sheet_col).strip()
+            raw_val = (
+                technology_val
+                if sheet_col == "Технології"
+                else packaging_val
+                if sheet_col == "Пакування"
+                else col(row, sheet_col).strip()
+            )
             if not raw_val:
                 continue
             rid = _resolve_shoe_lookup_id(session, tbl, name_col, raw_val)
@@ -2912,6 +2954,26 @@ def _parse_products_sheet(
             type_val = t_part
             if st_part and not sub_val:
                 sub_val = st_part
+
+        # Type/Subtype can contain misplaced season adjectives. Move those to
+        # the canonical Season field and clear the taxonomy value before any
+        # reference row can be created. Exact cross-column repairs (e.g.
+        # Взуття + Кросівки) are resolved here as well.
+        type_val, sub_val, taxonomy_seasons = normalize_taxonomy_pair(
+            type_val,
+            sub_val,
+        )
+        if style_relocation_conflict:
+            if style_from_taxonomy_name(taxonomy_source_type):
+                type_val = taxonomy_source_type.strip()
+            if style_from_taxonomy_name(taxonomy_source_subtype):
+                sub_val = taxonomy_source_subtype.strip()
+        if packaging_relocation_conflict:
+            if packaging_from_taxonomy_name(taxonomy_source_type):
+                type_val = taxonomy_source_type.strip()
+            if packaging_from_taxonomy_name(taxonomy_source_subtype):
+                sub_val = taxonomy_source_subtype.strip()
+        season_val = merge_season_values(season_val, *taxonomy_seasons)
 
         # Auto-detect style from description if Sheet "Стиль" is empty.
         # Strict pattern (adjective + "стиль", or quoted form), щоб не зачепити сміття.
@@ -5208,6 +5270,45 @@ def _parse_workspace_sheet(
         season_val_sheet = col(row, "Сезон") if "Сезон" in header else ""
         dimensions_val   = col(row, "Габарити") if "Габарити" in header else ""
         style_val        = col(row, "Стиль") if "Стиль" in header else ""
+        packaging_val    = col(row, "Пакування").strip() if "Пакування" in header else ""
+        taxonomy_source_type = type_val
+        taxonomy_source_subtype = sub_val
+        taxonomy_style = next(
+            (
+                value
+                for value in (
+                    style_from_taxonomy_name(type_val),
+                    style_from_taxonomy_name(sub_val),
+                )
+                if value
+            ),
+            None,
+        )
+        taxonomy_packaging = next(
+            (
+                value
+                for value in (
+                    packaging_from_taxonomy_name(type_val),
+                    packaging_from_taxonomy_name(sub_val),
+                )
+                if value
+            ),
+            None,
+        )
+        style_relocation_conflict = bool(
+            taxonomy_style
+            and style_val
+            and canonicalize_style_name(style_val) != taxonomy_style
+        )
+        packaging_relocation_conflict = bool(
+            taxonomy_packaging
+            and packaging_val
+            and packaging_val.strip().casefold() != taxonomy_packaging.casefold()
+        )
+        if taxonomy_style and not style_relocation_conflict:
+            style_val = taxonomy_style
+        if taxonomy_packaging and not packaging_relocation_conflict:
+            packaging_val = taxonomy_packaging
         current_cond_val = col(row, "Поточний стан") if "Поточний стан" in header else ""
         width_val        = col(row, "Ширина") if "Ширина" in header else ""
         # Колонки 2026-06-10 (Колекція/GTIN/Геометрична форма) — вставлені й у Воркспейс.
@@ -5251,7 +5352,13 @@ def _parse_workspace_sheet(
         for sheet_col, (tbl, name_col, fk_col) in SHOE_LOOKUP_COLUMNS.items():
             if sheet_col not in header:
                 continue
-            raw_val = technology_val if sheet_col == "Технології" else col(row, sheet_col).strip()
+            raw_val = (
+                technology_val
+                if sheet_col == "Технології"
+                else packaging_val
+                if sheet_col == "Пакування"
+                else col(row, sheet_col).strip()
+            )
             if not raw_val:
                 continue
             rid = _resolve_shoe_lookup_id(session, tbl, name_col, raw_val)
@@ -5319,6 +5426,26 @@ def _parse_workspace_sheet(
             type_val = t_part
             if st_part and not sub_val:
                 sub_val = st_part
+
+
+        type_val, sub_val, taxonomy_seasons = normalize_taxonomy_pair(
+            type_val,
+            sub_val,
+        )
+        if style_relocation_conflict:
+            if style_from_taxonomy_name(taxonomy_source_type):
+                type_val = taxonomy_source_type.strip()
+            if style_from_taxonomy_name(taxonomy_source_subtype):
+                sub_val = taxonomy_source_subtype.strip()
+        if packaging_relocation_conflict:
+            if packaging_from_taxonomy_name(taxonomy_source_type):
+                type_val = taxonomy_source_type.strip()
+            if packaging_from_taxonomy_name(taxonomy_source_subtype):
+                sub_val = taxonomy_source_subtype.strip()
+        season_val_sheet = merge_season_values(
+            season_val_sheet,
+            *taxonomy_seasons,
+        )
 
         # Auto-detect style from description if Sheet "Стиль" is empty.
         if (not style_val or not style_val.strip()) and desc_val:
