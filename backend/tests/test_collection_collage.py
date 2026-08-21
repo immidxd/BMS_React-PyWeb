@@ -246,6 +246,26 @@ def test_measurement_falls_back_to_the_product_row_when_no_sizes_are_available(m
     assert cc.measurement_label(None, {"productnumber": "#Ф2", "measurementscm": 0}) is None
 
 
+def test_measurement_range_falls_back_to_its_lower_bound():
+    """«23.5-24» has to survive: 8% of filled measurements are written that way.
+
+    A single float() used to raise on these and the label silently vanished
+    from the grid. The lower bound is the safe end — the buyer measures their
+    own insole and must not receive something shorter than promised.
+    """
+    assert cc._fmt_cm("23.5-24") == "23,5"
+    assert cc._fmt_cm("29-29.5") == "29"
+    assert cc._fmt_cm("25") == "25"
+    assert cc._fmt_cm("24,5") == "24,5"
+    # Shapes that actually occur in the live table: a stray dot, a non-breaking
+    # hyphen, and free text with no measurement in it at all.
+    assert cc._fmt_cm("23.5.-24") == "23,5"
+    assert cc._fmt_cm("30\u201130.5") == "30"
+    assert cc._fmt_cm("Новий") is None
+    assert cc._fmt_cm("0") is None
+    assert cc._fmt_cm(None) is None
+
+
 def test_labels_shrink_the_photo_but_stay_on_by_default(monkeypatch):
     _fake_photos(monkeypatch)
     spec = cc.normalize_spec({"platform": "viber", "items": _items(4)})

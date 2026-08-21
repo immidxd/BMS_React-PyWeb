@@ -19,6 +19,7 @@ import hashlib
 import io
 import json
 import math
+import re
 from collections import OrderedDict
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -473,14 +474,30 @@ def _label_font(size: int, *, bold: bool = False):
     return instagram_publisher._story_display_font(size, bold=bold)
 
 
+# Замір пишуть і одним числом («25»), і діапазоном («23.5-24»). Дефіси в базі
+# трапляються різні, а поодинокі рядки мають зайву крапку («23.5.-24»), тож
+# витягуємо всі числа й не покладаємось на форму запису.
+_CM_NUMBER = re.compile(r"\d+(?:[.,]\d+)?")
+
+
 def _fmt_cm(value: Any) -> Optional[str]:
-    try:
-        number = float(str(value).replace(",", "."))
-    except (TypeError, ValueError):
+    """Замір у сантиметрах; із діапазону береться НИЖНЯ межа.
+
+    Один `float()` на «23.5-24» падав, і замір мовчки зникав із сітки — так
+    робили 751 товар (8.3% усіх заповнених замірів). Нижня межа безпечніша за
+    верхню: покупець міряє свою устілку, і взуття не має виявитись коротшим за
+    обіцяне.
+    """
+    numbers = []
+    for match in _CM_NUMBER.findall(str(value or "")):
+        try:
+            numbers.append(float(match.replace(",", ".")))
+        except ValueError:
+            continue
+    positives = [number for number in numbers if number > 0]
+    if not positives:
         return None
-    if number <= 0:
-        return None
-    text = f"{number:.1f}".rstrip("0").rstrip(".")
+    text = f"{min(positives):.1f}".rstrip("0").rstrip(".")
     return text.replace(".", ",")
 
 
@@ -569,32 +586,46 @@ def _draw_cell_label(canvas: Image.Image, box: Tuple[int, int, int, int], *,
         # Блок вирівнюється від ВЕРХУ смуги, а не по її центру: увесь вільний
         # запас має лишитися знизу, інакше підпис зорово прилипає до фото
         # наступного ряду й читається як його заголовок.
-        pad_top = max(5, round(height * 0.09))
+        pad_top = max(3, round(height * 0.05))
         price_top = y + pad_top
         draw.text((x + width / 2, price_top), price_text,
                   font=_label_font(price_size, bold=True), fill=colors["price"], anchor="ma")
 
-        detail_size = max(11, round(price_size * 0.46))
-        detail_font = _label_font(detail_size)
-        pill_height = round(detail_size * 1.85)
-        pill_pad = round(detail_size * 0.72)
-        number_width = draw.textlength(number_text, font=detail_font) if number_text else 0
-        pill_width = number_width + pill_pad * 2 if number_text else 0
-        gap = round(detail_size * 0.62) if (number_text and measurement) else 0
-        measure_width = draw.textlength(measurement, font=detail_font) if measurement else 0
-        total = pill_width + gap + measure_width
-        cursor = x + (width - total) / 2
-        detail_y = price_top + round(price_size * 1.16) + pill_height / 2
+        def detail_metrics(size: int) -> dict:
+            font = _label_font(size)
+            number_width = draw.textlength(number_text, font=font) if number_text else 0
+            pill_width = number_width + round(size * 0.72) * 2 if number_text else 0
+            gap = round(size * 0.62) if (number_text and measurement) else 0
+            measure_width = draw.textlength(measurement, font=font) if measurement else 0
+            return {
+                "font": font,
+                "size": size,
+                "pill_width": pill_width,
+                "pill_height": round(size * 1.85),
+                "gap": gap,
+                "total": pill_width + gap + measure_width,
+            }
+
+        # Артикул і замір — те, за чим товар шукають далі, тому вони мають бути
+        # читабельні, а не службовим дрібним рядком під ціною. Кегль підбираємо
+        # згори вниз: у вузькій комірці довгий номер із заміром інакше виліз би
+        # за край, а мовчки обрізати артикул не можна.
+        detail = detail_metrics(max(11, round(price_size * 0.52)))
+        while detail["total"] > available and detail["size"] > 11:
+            detail = detail_metrics(detail["size"] - 1)
+
+        cursor = x + (width - detail["total"]) / 2
+        detail_y = price_top + round(price_size * 1.16) + detail["pill_height"] / 2
         if number_text:
             _draw_pill(
                 draw,
-                (cursor, detail_y - pill_height / 2,
-                 cursor + pill_width, detail_y + pill_height / 2),
-                number_text, detail_font, colors,
+                (cursor, detail_y - detail["pill_height"] / 2,
+                 cursor + detail["pill_width"], detail_y + detail["pill_height"] / 2),
+                number_text, detail["font"], colors,
             )
-            cursor += pill_width + gap
+            cursor += detail["pill_width"] + detail["gap"]
         if measurement:
-            draw.text((cursor, detail_y), measurement, font=detail_font,
+            draw.text((cursor, detail_y), measurement, font=detail["font"],
                       fill=colors["muted"], anchor="lm")
         return
 
