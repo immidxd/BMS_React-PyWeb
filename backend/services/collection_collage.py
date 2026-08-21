@@ -81,7 +81,10 @@ MARGIN_RATIO = 0.0167  # 18px на полотні 1080 — той самий в�
 # Артикул і ціна живуть у власній смузі під фото, а не поверх кадру: на живих
 # фото (полиця, руки, інтер'єр) напис поверх зображення нечитабельний, а
 # півпрозора плашка під ним перетворює мінімалістичну сітку на строкату.
-LABEL_BAND_RATIO = 0.21
+# Смуга трохи вища за пропорцію самого фото: саме її верхній край задає, де
+# починається ціна, тож підняти підпис можна лише піднявши межу. Товар при
+# цьому втрачає ~10 px, яких на ньому не видно — фото й так із власними полями.
+LABEL_BAND_RATIO = 0.235
 LABEL_BAND_MIN = 44
 # Нижче цього кегля ціна в стрічці вже не читається — тоді замість двох рядів
 # збираємо один компактний.
@@ -611,7 +614,10 @@ def _draw_cell_label(canvas: Image.Image, box: Tuple[int, int, int, int], *,
             font = _label_font(size)
             number_width = draw.textlength(number_text, font=font) if number_text else 0
             pill_width = number_width + round(size * 0.66) * 2 if number_text else 0
-            gap = round(size * 0.62) if (number_text and measurement) else 0
+            # Проміжок мусить бути БІЛЬШИЙ за власний відступ капсули (0.66),
+            # інакше око склеює капсулу із заміром в одну пляму: відстань між
+            # двома елементами не може бути меншою за відстань усередині одного.
+            gap = round(size * 1.15) if (number_text and measurement) else 0
             measure_width = draw.textlength(measurement, font=font) if measurement else 0
             return {
                 "font": font,
