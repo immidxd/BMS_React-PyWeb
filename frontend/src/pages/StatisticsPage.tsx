@@ -1599,6 +1599,14 @@ const StatisticsPage: React.FC<StatisticsPageProps> = () => {
                   ))}
                 </div>
 
+                {/* Ad spend is only trustworthy as a total: it is booked against
+                    one channel while covering several, so the per-channel table
+                    below deliberately leaves it out. */}
+                <p className="text-[11px] text-gray-400 dark:text-gray-500 -mt-2">
+                  Витрати на рекламу показані лише загальною сумою — вони покривають кілька
+                  каналів одразу, тому в розрізі каналів не рознесені.
+                </p>
+
                 <div className="overflow-x-auto">
                   <table className="min-w-full text-xs">
                     <thead>
@@ -1607,8 +1615,6 @@ const StatisticsPage: React.FC<StatisticsPageProps> = () => {
                         <th className="px-2 py-1.5 text-right font-medium">Замовлень</th>
                         <th className="px-2 py-1.5 text-right font-medium">Виторг</th>
                         <th className="px-2 py-1.5 text-left font-medium w-1/3">Частка виторгу</th>
-                        <th className="px-2 py-1.5 text-right font-medium">Реклама</th>
-                        <th className="px-2 py-1.5 text-right font-medium">Після реклами</th>
                         <th className="px-2 py-1.5 text-right font-medium">Сер. чек</th>
                       </tr>
                     </thead>
@@ -1630,10 +1636,6 @@ const StatisticsPage: React.FC<StatisticsPageProps> = () => {
                               <span className="text-[10px] text-gray-400 w-9 text-right">{ch.share}%</span>
                             </div>
                           </td>
-                          <td className="px-2 py-1.5 text-right text-orange-700">
-                            {ch.advertising_cost > 0 ? `−${fmtShort(ch.advertising_cost)}₴` : '—'}
-                          </td>
-                          <td className="px-2 py-1.5 text-right font-semibold text-emerald-700">{fmtShort(ch.net_revenue)}₴</td>
                           <td className="px-2 py-1.5 text-right text-gray-500">
                             {ch.orders_count > 0 ? `${fmtShort(ch.revenue / ch.orders_count)}₴` : '—'}
                           </td>
