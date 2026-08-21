@@ -2277,6 +2277,41 @@ def collection_history(platform: Optional[str] = None, limit: int = 50, db: Sess
         raise HTTPException(status_code=400, detail=str(exc))
 
 
+@router.get("/api/publications/collections/auto-draft")
+def collection_auto_draft(
+    platform: str = Query("viber"),
+    count: int = Query(9, ge=2, le=9),
+    period_days: int = Query(30),
+    cooldown_days: int = Query(14, ge=14, le=90),
+    db: Session = Depends(get_db),
+):
+    """Read-only automatic Top-9 candidate draft.
+
+    No DB row, schedule, upload or external platform call is created here. This is
+    intentionally the first reviewable phase before any automation is enabled.
+    """
+    try:
+        from backend.services import auto_collection
+    except ImportError:
+        from services import auto_collection
+    try:
+        result = auto_collection.create_preview_draft(
+            db,
+            platform=platform,
+            count=count,
+            period_days=period_days,
+            cooldown_days=cooldown_days,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if not result.get("ok"):
+        raise HTTPException(
+            status_code=409,
+            detail=(result.get("warnings") or ["Недостатньо безпечних товарів для підбірки"])[0],
+        )
+    return result
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # OLX (read-only v1) — офіційний OLX API, OAuth2. Дзеркало Telegram-флоу.
 # ─────────────────────────────────────────────────────────────────────────────

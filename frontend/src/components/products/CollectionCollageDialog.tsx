@@ -89,6 +89,8 @@ interface Props {
   platform: CollectionPlatform;
   productIds: number[];
   busy?: boolean;
+  previewOnly?: boolean;
+  selectionNote?: string;
   onCancel: () => void;
   onPublish: (request: CollectionPublishRequest, itemCount: number) => void;
 }
@@ -122,7 +124,9 @@ function asLocal(iso: string | null | undefined): string {
 
 /** Підбірка — банер каналу, а не публікація товару: статуси товарів вона не чіпає.
  *  Тому діалог свідомо не показує «вже опубліковано» і не питає підтвердження стану. */
-const CollectionCollageDialog: React.FC<Props> = ({ platform, productIds, busy = false, onCancel, onPublish }) => {
+const CollectionCollageDialog: React.FC<Props> = ({
+  platform, productIds, busy = false, previewOnly = false, selectionNote, onCancel, onPublish,
+}) => {
   const [data, setData] = useState<CollectionPreview | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [items, setItems] = useState<CollectionItem[]>([]);
@@ -253,7 +257,7 @@ const CollectionCollageDialog: React.FC<Props> = ({ platform, productIds, busy =
   const focusedFrame = frames.find(frame => frame.product_id === focused) || null;
   const focusedItem = focusedFrame ? itemById.get(focusedFrame.product_id) : null;
 
-  const canPublish = liveReady && !busy && frames.length >= (data?.min_items ?? 2)
+  const canPublish = !previewOnly && liveReady && !busy && frames.length >= (data?.min_items ?? 2)
     && !overCapacity && !captionTooLong && (!captionRequired || caption.trim().length > 0)
     && (platform !== 'facebook' || pages.length === 0 || pageIds.length > 0);
 
@@ -309,7 +313,7 @@ const CollectionCollageDialog: React.FC<Props> = ({ platform, productIds, busy =
               style={{ backgroundColor: accent }}>{platform === 'viber' ? 'V' : 'f'}</span>
             <div className="min-w-0">
               <h2 className="truncate text-base font-semibold text-gray-900 dark:text-gray-50">
-                Підбірка · {frames.length} {plural(frames.length, ['товар', 'товари', 'товарів'])}
+                {previewOnly ? 'Автоматична чернетка' : 'Підбірка'} · {frames.length} {plural(frames.length, ['товар', 'товари', 'товарів'])}
               </h2>
               <p className="truncate text-xs text-gray-500 dark:text-gray-400">
                 {data?.platform_label || (platform === 'viber' ? 'Viber-канал' : 'Сторінка Facebook')}
@@ -340,8 +344,13 @@ const CollectionCollageDialog: React.FC<Props> = ({ platform, productIds, busy =
           <>
             <div className="overflow-y-auto p-4 sm:p-5">
               <div className="mb-4 rounded-xl border border-gray-200 bg-gray-50 px-3 py-2.5 text-xs leading-relaxed text-gray-600 dark:border-gray-700 dark:bg-gray-800/60 dark:text-gray-300">
-                Підбірка — рекламний банер каналу. Вона <b>не змінює статус опублікованості</b> жодного
-                товару із сітки: кожен із них і далі можна окремо опублікувати як звичайний пост.
+                {previewOnly ? (
+                  <><b>Режим перевірки:</b> ця автоматична чернетка не має кнопки публікації, не створює розклад
+                    і нічого не надсилає. {selectionNote || 'Можна перевірити склад, порядок і точний вигляд сітки.'}</>
+                ) : (
+                  <>Підбірка — рекламний банер каналу. Вона <b>не змінює статус опублікованості</b> жодного
+                    товару із сітки: кожен із них і далі можна окремо опублікувати як звичайний пост.</>
+                )}
               </div>
 
               <div className="grid gap-5 lg:grid-cols-[minmax(300px,1fr)_minmax(360px,1fr)]">
@@ -531,7 +540,7 @@ const CollectionCollageDialog: React.FC<Props> = ({ platform, productIds, busy =
                     </div>
                   </div>
 
-                  {platform === 'facebook' && pages.length > 1 && (
+                  {!previewOnly && platform === 'facebook' && pages.length > 1 && (
                     <div>
                       <div className="mb-2 flex items-center justify-between">
                         <label className="text-xs font-semibold text-gray-700 dark:text-gray-200">Сторінки</label>
@@ -557,7 +566,7 @@ const CollectionCollageDialog: React.FC<Props> = ({ platform, productIds, busy =
                     </div>
                   )}
 
-                  <div className="grid gap-3 sm:grid-cols-2">
+                  {!previewOnly && <div className="grid gap-3 sm:grid-cols-2">
                     <label className="text-xs font-semibold text-gray-700 dark:text-gray-200">Коли публікувати
                       <select value={publishAt ? 'scheduled' : 'now'} disabled={!liveReady}
                         onChange={event => setPublishAt(event.target.value === 'scheduled' ? data.default_publish_at : null)}
@@ -573,14 +582,14 @@ const CollectionCollageDialog: React.FC<Props> = ({ platform, productIds, busy =
                           className="mt-1.5 w-full rounded-lg border border-gray-200 bg-white px-2.5 py-2 text-sm font-normal dark:border-gray-700 dark:bg-gray-800" />
                       </label>
                     )}
-                  </div>
+                  </div>}
 
                   {(data.warnings || []).map((warning, index) => (
                     <div key={index} className="flex gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-200">
                       <WarningOutlined className="mt-0.5" />{warning}
                     </div>
                   ))}
-                  {!liveReady && (
+                  {!previewOnly && !liveReady && (
                     <div className="flex gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-200">
                       <WarningOutlined className="mt-0.5" />
                       Надсилання заблоковане до підключення {platform === 'viber' ? 'Viber-диспетчера' : 'Сторінки Facebook'}
@@ -613,12 +622,14 @@ const CollectionCollageDialog: React.FC<Props> = ({ platform, productIds, busy =
                   {saving ? <LoadingOutlined /> : <DownloadOutlined />}
                   Зберегти картинку
                 </button>
-                <button type="button" onClick={submit} disabled={!canPublish}
-                  className="inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold text-white shadow-sm disabled:cursor-not-allowed disabled:opacity-40"
-                  style={{ backgroundColor: accent }}>
-                  {busy ? <LoadingOutlined /> : publishAt ? <ClockCircleOutlined /> : <SendOutlined />}
-                  {publishAt ? 'Запланувати підбірку' : 'Опублікувати підбірку'}
-                </button>
+                {!previewOnly && (
+                  <button type="button" onClick={submit} disabled={!canPublish}
+                    className="inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold text-white shadow-sm disabled:cursor-not-allowed disabled:opacity-40"
+                    style={{ backgroundColor: accent }}>
+                    {busy ? <LoadingOutlined /> : publishAt ? <ClockCircleOutlined /> : <SendOutlined />}
+                    {publishAt ? 'Запланувати підбірку' : 'Опублікувати підбірку'}
+                  </button>
+                )}
               </div>
             </div>
           </>

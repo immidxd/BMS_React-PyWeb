@@ -8,14 +8,14 @@ try:
     from backend.models.database import get_db
     from backend.utils.order_status_logic import (
         REVENUE_GENERATING, CONFIRMED_SOLD, CANCELLED_OR_RETURNED, sql_in_list,
-        PAID_STATUS_ID, real_order_sql,
+        PAID_STATUS_ID, STATUS_CONFIRMED, STATUS_GIFT, STATUS_RETURNED, real_order_sql,
     )
     from backend.utils.cost_allocation import COST_RATIO_CTE, PRODUCT_COST_CTE
 except ImportError:
     from models.database import get_db
     from utils.order_status_logic import (
         REVENUE_GENERATING, CONFIRMED_SOLD, CANCELLED_OR_RETURNED, sql_in_list,
-        PAID_STATUS_ID, real_order_sql,
+        PAID_STATUS_ID, STATUS_CONFIRMED, STATUS_GIFT, STATUS_RETURNED, real_order_sql,
     )
     from utils.cost_allocation import COST_RATIO_CTE, PRODUCT_COST_CTE
 
@@ -122,25 +122,52 @@ def get_catalog_stats(
         """)).mappings().all()
 
         sales_rows = db.execute(text(f"""
-            SELECT p.productnumber,
-                   COALESCE(SUM(oi.quantity), 0)::int AS sold_count,
-                   COALESCE(SUM(oi.price * oi.quantity)
-                       FILTER (WHERE {PAID_REVENUE}), 0)::float AS revenue
-            FROM order_items oi
-            JOIN orders o ON o.id=oi.order_id
-            JOIN products p ON p.id=oi.product_id
-            WHERE p.productnumber IS NOT NULL
-              AND o.order_status_id IN {CONFIRMED_SOLD_SQL}
-              AND {sales_where}
-            GROUP BY p.productnumber
+            WITH per_client AS (
+                SELECT p.productnumber, o.client_id,
+                       COALESCE(SUM(oi.quantity) FILTER (
+                           WHERE o.order_status_id={STATUS_GIFT}
+                              OR (o.order_status_id={STATUS_CONFIRMED}
+                                  AND o.payment_status_id={PAID_STATUS_ID})
+                       ),0) AS paid_sold,
+                       COALESCE(SUM(oi.quantity) FILTER (
+                           WHERE o.order_status_id={STATUS_RETURNED}
+                       ),0) AS returns,
+                       COALESCE(SUM(oi.price*oi.quantity) FILTER (
+                           WHERE o.order_status_id={STATUS_CONFIRMED}
+                             AND o.payment_status_id={PAID_STATUS_ID}
+                       ),0)::float AS revenue
+                FROM order_items oi
+                JOIN orders o ON o.id=oi.order_id
+                JOIN products p ON p.id=oi.product_id
+                WHERE p.productnumber IS NOT NULL
+                  AND o.order_status_id IN ({STATUS_CONFIRMED},{STATUS_GIFT},{STATUS_RETURNED})
+                  AND {sales_where}
+                GROUP BY p.productnumber,o.client_id
+            )
+            SELECT productnumber,
+                   GREATEST(SUM(paid_sold)-SUM(LEAST(paid_sold,returns)),0)::int AS sold_count,
+                   COALESCE(SUM(revenue),0)::float AS revenue
+            FROM per_client GROUP BY productnumber
         """), params).mappings().all()
 
         product_rows = db.execute(text(f"""
-            WITH sold AS (
-                SELECT oi.product_id, COALESCE(SUM(oi.quantity), 0)::int AS sold_count
+            WITH sold_per_client AS (
+                SELECT oi.product_id,o.client_id,
+                       COALESCE(SUM(oi.quantity) FILTER (
+                           WHERE o.order_status_id={STATUS_GIFT}
+                              OR (o.order_status_id={STATUS_CONFIRMED}
+                                  AND o.payment_status_id={PAID_STATUS_ID})
+                       ),0) AS paid_sold,
+                       COALESCE(SUM(oi.quantity) FILTER (
+                           WHERE o.order_status_id={STATUS_RETURNED}
+                       ),0) AS returns
                 FROM order_items oi JOIN orders o ON o.id=oi.order_id
-                WHERE o.order_status_id IN {CONFIRMED_SOLD_SQL}
-                GROUP BY oi.product_id
+                WHERE o.order_status_id IN ({STATUS_CONFIRMED},{STATUS_GIFT},{STATUS_RETURNED})
+                GROUP BY oi.product_id,o.client_id
+            ), sold AS (
+                SELECT product_id,
+                       GREATEST(SUM(paid_sold)-SUM(LEAST(paid_sold,returns)),0)::int AS sold_count
+                FROM sold_per_client GROUP BY product_id
             )
             SELECT p.productnumber, MAX(p.id)::int AS product_id,
                    MAX(b.brandname) AS brand, MAX(p.model) AS model,

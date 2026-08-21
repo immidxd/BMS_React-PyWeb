@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import MainLayout from '../layouts/MainLayout';
 import ProductDetailsModal from '../components/products/ProductDetailsModal';
 import ProductNumberLink from '../components/products/ProductNumberLink';
+import CollectionCollageDialog, { type CollectionPlatform } from '../components/products/CollectionCollageDialog';
 import {
   statisticsService,
   type SalesStatsResponse,
@@ -46,6 +47,15 @@ const COLORS = {
 
 type PeriodType = 'month' | 'quarter' | 'year';
 type CatalogSort = 'popular' | 'views' | 'favorites' | 'sales';
+type AutoCollectionDraft = {
+  platform: CollectionPlatform;
+  product_ids: number[];
+  selected: Array<{ productnumber: string; popularity_score: number }>;
+  reserves: Array<{ productnumber: string; popularity_score: number }>;
+  warnings: string[];
+  policy: { count: number; period_days: number; cooldown_days: number };
+  audit: { eligible_pool: number; cooldown_skipped: number; no_photo_skipped: number; selection_key: string };
+};
 
 // ── Period Selector ──────────────────────────────────────────────────────────
 const PeriodSelector: React.FC<{
@@ -188,6 +198,9 @@ const StatisticsPage: React.FC<StatisticsPageProps> = () => {
   const [catalogStats, setCatalogStats] = useState<CatalogStatsResponse | null>(null);
   const [catalogStatsLoading, setCatalogStatsLoading] = useState(false);
   const [catalogSort, setCatalogSort] = useState<CatalogSort>('popular');
+  const [autoCollectionDraft, setAutoCollectionDraft] = useState<AutoCollectionDraft | null>(null);
+  const [autoCollectionLoading, setAutoCollectionLoading] = useState<CollectionPlatform | null>(null);
+  const [autoCollectionError, setAutoCollectionError] = useState<string | null>(null);
   const salesRequestRef = useRef(0);
   const shipmentsRequestRef = useRef(0);
   const suppliersRequestRef = useRef(0);
@@ -325,6 +338,25 @@ const StatisticsPage: React.FC<StatisticsPageProps> = () => {
       || a.productnumber.localeCompare(b.productnumber)
     );
   }, [catalogStats, catalogSort]);
+
+  const openAutoCollectionDraft = async (platform: CollectionPlatform) => {
+    if (autoCollectionLoading) return;
+    setAutoCollectionLoading(platform);
+    setAutoCollectionError(null);
+    try {
+      const params = new URLSearchParams({
+        platform, count: '9', period_days: String(catalogDays), cooldown_days: '14',
+      });
+      const response = await fetch(`/api/publications/collections/auto-draft?${params}`);
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.detail || 'Не вдалося сформувати автоматичну чернетку');
+      setAutoCollectionDraft(result);
+    } catch (error: any) {
+      setAutoCollectionError(error.message || 'Не вдалося сформувати автоматичну чернетку');
+    } finally {
+      setAutoCollectionLoading(null);
+    }
+  };
 
   const shipMetrics = [
     { key: 'total_cost', label: 'Вартість завозу' },
@@ -529,6 +561,36 @@ const StatisticsPage: React.FC<StatisticsPageProps> = () => {
                   </div>
                 ) : (
                   <div className="h-32 flex items-center justify-center text-gray-400 text-sm">Ще немає чистих даних за цей період</div>
+                )}
+              </div>
+
+              <div className="rounded-xl border border-indigo-100 bg-indigo-50/60 p-4 dark:border-indigo-900 dark:bg-indigo-950/20">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <h3 className="text-sm font-semibold text-indigo-900 dark:text-indigo-200">Автоматична Top‑9 · перевірка відбору</h3>
+                    <p className="mt-1 max-w-3xl text-xs leading-relaxed text-indigo-700/80 dark:text-indigo-300/80">
+                      Рейтинг за обраний вище період, тільки опубліковані товари в наявності з фото.
+                      Товар із будь-якої підбірки за останні 14 днів пропускається, наступний кандидат займає його місце.
+                      На цьому етапі доступні лише точний preview та збереження JPEG — публікація вимкнена.
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <button type="button" onClick={() => void openAutoCollectionDraft('viber')}
+                      disabled={autoCollectionLoading !== null}
+                      className="rounded-lg bg-[#7360F2] px-3 py-2 text-xs font-semibold text-white disabled:opacity-50">
+                      {autoCollectionLoading === 'viber' ? 'Формую…' : 'Preview Top‑9 для Viber'}
+                    </button>
+                    <button type="button" onClick={() => void openAutoCollectionDraft('facebook')}
+                      disabled={autoCollectionLoading !== null}
+                      className="rounded-lg bg-[#1877F2] px-3 py-2 text-xs font-semibold text-white disabled:opacity-50">
+                      {autoCollectionLoading === 'facebook' ? 'Формую…' : 'Preview Top‑9 для Facebook'}
+                    </button>
+                  </div>
+                </div>
+                {autoCollectionError && (
+                  <div className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700 dark:border-red-800 dark:bg-red-900/20 dark:text-red-300">
+                    {autoCollectionError}
+                  </div>
                 )}
               </div>
             </div>
@@ -1147,6 +1209,16 @@ const StatisticsPage: React.FC<StatisticsPageProps> = () => {
         open={cardProductId !== null}
         onClose={() => setCardProductId(null)}
       />
+      {autoCollectionDraft && (
+        <CollectionCollageDialog
+          platform={autoCollectionDraft.platform}
+          productIds={autoCollectionDraft.product_ids}
+          previewOnly
+          selectionNote={`Top‑9 сформовано за ${autoCollectionDraft.policy.period_days ? `${autoCollectionDraft.policy.period_days} днів` : 'весь чистий період'}; повтори заблоковані на ${autoCollectionDraft.policy.cooldown_days} днів. Резерв: ${autoCollectionDraft.reserves.length}.`}
+          onCancel={() => setAutoCollectionDraft(null)}
+          onPublish={() => undefined}
+        />
+      )}
     </MainLayout>
   );
 };
