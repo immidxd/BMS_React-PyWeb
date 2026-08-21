@@ -84,7 +84,7 @@ MARGIN_RATIO = 0.0167  # 18px на полотні 1080 — той самий в�
 # Смуга трохи вища за пропорцію самого фото: саме її верхній край задає, де
 # починається ціна, тож підняти підпис можна лише піднявши межу. Товар при
 # цьому втрачає ~10 px, яких на ньому не видно — фото й так із власними полями.
-LABEL_BAND_RATIO = 0.235
+LABEL_BAND_RATIO = 0.29
 LABEL_BAND_MIN = 44
 # Нижче цього кегля ціна в стрічці вже не читається — тоді замість двох рядів
 # збираємо один компактний.
@@ -595,8 +595,11 @@ def _draw_cell_label(canvas: Image.Image, box: Tuple[int, int, int, int], *,
     if not price_text and not number_text and not measurement:
         return
 
+    # Кегль ціни свідомо НЕ прив'язаний до висоти смуги один-в-один: смуга дає
+    # повітря, а не більший шрифт. Інакше вийшла б петля — вища смуга давала б
+    # більшу ціну, довший хвіст «р» у «грн» і знову зімкнений підпис.
     _price_font, price_size = _fit_font(
-        draw, price_text or "0 грн", round(height * 0.42), 13, available, bold=True,
+        draw, price_text or "0 грн", round(height * 0.345), 13, available, bold=True,
     )
     stacked = (price_size >= LABEL_PRICE_MIN_STACKED and bool(price_text)
                and bool(number_text or measurement))
@@ -605,19 +608,26 @@ def _draw_cell_label(canvas: Image.Image, box: Tuple[int, int, int, int], *,
         # Блок вирівнюється від ВЕРХУ смуги, а не по її центру: увесь вільний
         # запас має лишитися знизу, інакше підпис зорово прилипає до фото
         # наступного ряду й читається як його заголовок.
-        pad_top = max(3, round(height * 0.05))
+        pad_top = max(3, round(height * 0.03))
         price_top = y + pad_top
+        price_font = _label_font(price_size, bold=True)
         draw.text((x + width / 2, price_top), price_text,
-                  font=_label_font(price_size, bold=True), fill=colors["price"], anchor="ma")
+                  font=price_font, fill=colors["price"], anchor="ma")
+        # Справжній низ намальованої ціни, а не кегль: у «грн» хвіст «р»
+        # опускається нижче цифр, і саме в нього впиралася рамка капсули.
+        # Міряємо те, що реально лягло на полотно, замість множника «на око».
+        price_ink_bottom = price_top + draw.textbbox(
+            (0, 0), price_text or "0 грн", font=price_font, anchor="ma",
+        )[3]
 
         def detail_metrics(size: int) -> dict:
             font = _label_font(size)
             number_width = draw.textlength(number_text, font=font) if number_text else 0
             pill_width = number_width + round(size * 0.66) * 2 if number_text else 0
-            # Проміжок мусить бути БІЛЬШИЙ за власний відступ капсули (0.66),
-            # інакше око склеює капсулу із заміром в одну пляму: відстань між
-            # двома елементами не може бути меншою за відстань усередині одного.
-            gap = round(size * 1.15) if (number_text and measurement) else 0
+            # Трохи більший за власний відступ капсули (0.66), щоб око не
+            # склеювало її із заміром — але не більше: артикул і замір читаються
+            # як одна характеристика товару, а не як дві окремі колонки.
+            gap = round(size * 0.78) if (number_text and measurement) else 0
             measure_width = draw.textlength(measurement, font=font) if measurement else 0
             return {
                 "font": font,
@@ -640,7 +650,10 @@ def _draw_cell_label(canvas: Image.Image, box: Tuple[int, int, int, int], *,
             detail = detail_metrics(detail["size"] - 1)
 
         cursor = x + (width - detail["total"]) / 2
-        detail_y = price_top + round(price_size * 1.08) + detail["pill_height"] / 2
+        # Просвіт відлічується від чорнила ціни, тож він однаковий незалежно
+        # від того, чи має ціна хвіст, і не з'їдається зі зростанням кегля.
+        breath = max(8, round(price_size * 0.36))
+        detail_y = price_ink_bottom + breath + detail["pill_height"] / 2
         if number_text:
             _draw_pill(
                 draw,
