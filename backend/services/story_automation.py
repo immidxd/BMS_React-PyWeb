@@ -58,6 +58,10 @@ RANGE_FILTERS = {
 }
 
 
+def normalize_number(value: Any) -> str:
+    return str(value or "").strip().lstrip("#").casefold()
+
+
 def normalize_filters(raw: Any) -> Dict[str, Any]:
     """Лишити тільки відомі критерії й привести їх до безпечних типів.
 
@@ -130,12 +134,19 @@ def candidate_rows(
     cooldown_days: int,
     *,
     pool: int = CANDIDATE_POOL,
+    exclude_draft_id: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
-    """Придатні товари в порядку ротації. Тільки читання."""
+    """Придатні товари в порядку ротації. Тільки читання.
+
+    `exclude_draft_id` потрібен під час перевірки перед відправленням: чернетка
+    вже тримає свій товар зайнятим, і без цього вона визнала б його непридатним
+    сама через себе.
+    """
     conditions: List[str] = []
     params: Dict[str, Any] = {
         "cooldown_days": int(cooldown_days),
-        "pool": max(1, min(int(pool), 2000)),
+        "pool": max(1, min(int(pool), 5000)),
+        "exclude_draft_id": int(exclude_draft_id) if exclude_draft_id else -1,
     }
     for key, clause in {**LIST_FILTERS, **RANGE_FILTERS}.items():
         if key in filters:
@@ -182,6 +193,7 @@ def candidate_rows(
                        scheduled_for AS occurred_at
                 FROM story_automation_drafts
                 WHERE status IN ('awaiting_review','approved')
+                  AND id <> :exclude_draft_id
             ) events
             WHERE productnumber IS NOT NULL
             GROUP BY productnumber

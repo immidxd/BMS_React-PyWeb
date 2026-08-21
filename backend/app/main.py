@@ -858,6 +858,56 @@ async def _auto_collection_draft_scheduler():
     asyncio.create_task(_loop())
 
 
+async def _story_automation_cycle() -> None:
+    """Create due Story review drafts only; never render or publish."""
+    import asyncio
+
+    def _run():
+        try:
+            from services import story_automation_scheduler
+            from models.database import SessionLocal
+        except ImportError:
+            from backend.services import story_automation_scheduler
+            from backend.models.database import SessionLocal
+        db = SessionLocal()
+        try:
+            result = story_automation_scheduler.generate_due_drafts(db)
+            if result.get("created") or result.get("errors"):
+                logger.info("Story automation cycle: %s", result)
+        finally:
+            db.close()
+
+    try:
+        await asyncio.get_event_loop().run_in_executor(None, _run)
+    except Exception as e:
+        logger.warning("Story automation cycle failed: %s", e)
+
+
+@app.on_event("startup")
+async def _story_automation_scheduler_loop():
+    """Local safety net for enabled Story schedules.
+
+    Story selection touches the products table and the filesystem (photos), so
+    it runs in an executor rather than the event loop. STORY_AUTOMATION_CHECK_SEC=0
+    disables it. The cycle has no path to R2, Meta or a dispatcher.
+    """
+    import asyncio
+    import os
+
+    period_sec = int(os.getenv("STORY_AUTOMATION_CHECK_SEC", "300"))
+    if period_sec <= 0:
+        return
+    period_sec = max(60, period_sec)
+
+    async def _loop():
+        await asyncio.sleep(35)   # не змагатись за старт із циклом підбірок
+        while True:
+            await _story_automation_cycle()
+            await asyncio.sleep(period_sec)
+
+    asyncio.create_task(_loop())
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)

@@ -2380,6 +2380,131 @@ def collection_automation_run_due(db: Session = Depends(get_db)):
     return _auto_collection_scheduler().generate_due_drafts(db)
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Регулярні Stories. Розклад створює чернетку; відправлення — окрема дія, і за
+# замовчуванням її робить людина (`auto_publish=false` у налаштуваннях).
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _story_automation():
+    try:
+        from backend.services import story_automation_scheduler
+    except ImportError:
+        from services import story_automation_scheduler
+    return story_automation_scheduler
+
+
+@router.get("/api/publications/stories/automation")
+def story_automation_dashboard(
+    draft_limit: int = Query(20, ge=1, le=100),
+    db: Session = Depends(get_db),
+):
+    """Налаштування добору й черга Stories. Жодного виклику публікатора."""
+    return _story_automation().dashboard(db, draft_limit=draft_limit)
+
+
+@router.put("/api/publications/stories/automation/{platform}")
+def story_automation_update(
+    platform: str,
+    payload: Dict[str, Any] = Body(...),
+    db: Session = Depends(get_db),
+):
+    try:
+        return {"ok": True, "config": _story_automation().update_config(db, platform, payload)}
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.post("/api/publications/stories/automation/{platform}/drafts")
+def story_automation_create_manual_draft(
+    platform: str,
+    payload: Optional[Dict[str, Any]] = Body(None),
+    db: Session = Depends(get_db),
+):
+    """Зібрати чергову Story просто зараз — щоб побачити, що дає добір."""
+    try:
+        return {"ok": True, **_story_automation().create_draft(
+            db, platform=platform, source="manual",
+        )}
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.post("/api/publications/stories/automation/run-due")
+def story_automation_run_due(db: Session = Depends(get_db)):
+    """Тік розкладу: може створити лише чернетку на перевірку."""
+    return _story_automation().generate_due_drafts(db)
+
+
+@router.post("/api/publications/stories/automation/drafts/{draft_id}/reject")
+def story_automation_reject_draft(
+    draft_id: int,
+    payload: Optional[Dict[str, Any]] = Body(None),
+    db: Session = Depends(get_db),
+):
+    try:
+        return _story_automation().reject_draft(db, draft_id, note=(payload or {}).get("note"))
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc))
+
+
+@router.post("/api/publications/stories/automation/drafts/{draft_id}/approve")
+async def story_automation_approve_draft(
+    draft_id: int,
+    payload: Optional[Dict[str, Any]] = Body(None),
+    db: Session = Depends(get_db),
+):
+    """Відправити Story тим самим шляхом, що й ручна публікація.
+
+    Порядок такий самий, як у підбірок: спершу товар перевіряється проти живої
+    бази, потім іде в диспетчер, і лише після його підтвердження чернетка стає
+    `approved`. Невдале відправлення лишає її на перевірці — краще повтор, ніж
+    чернетка, позначена відправленою даремно.
+    """
+    body = payload or {}
+    scheduler = _story_automation()
+    draft = scheduler.load_draft(db, draft_id)
+    if not draft:
+        raise HTTPException(status_code=404, detail="Чернетку не знайдено")
+    if draft.get("status") != scheduler.REVIEW_STATUS:
+        raise HTTPException(status_code=409, detail="Цю чернетку вже опрацьовано")
+
+    checked = scheduler.revalidate_draft(db, draft)
+    if not checked["ok"]:
+        raise HTTPException(status_code=409, detail=" ".join(checked["warnings"]))
+    if body.get("dry_run"):
+        return {"ok": True, "dry_run": True, "draft_id": draft_id, **checked}
+
+    product = checked["product"]
+    platform = str(draft.get("platform") or "")
+    request = {
+        "publish_type": "story",
+        "image_idx": [0],
+        "story_text": str(body.get("story_text") or draft.get("story_text") or ""),
+        "publish_at": body.get("publish_at"),
+        # Ключ прив'язаний до чернетки й товару: повторне натискання поверне вже
+        # створене завдання, а не опублікує Story вдруге.
+        "idempotency_key": f"auto-story:{draft_id}:{product['productnumber']}",
+        **({"page_ids": body["page_ids"]} if body.get("page_ids") else {}),
+    }
+    publisher = _instagram_pub() if platform == "instagram" else _facebook_pub()
+    result = await publisher.create_post(db, int(product["product_id"]), request)
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("error", "Story не відправлено"))
+
+    scheduler.mark_approved(db, draft_id, dispatch=result, product=product,
+                            note=body.get("note"))
+    result["draft_id"] = draft_id
+    result["revalidation"] = {
+        "warnings": checked["warnings"],
+        "productnumber": product["productnumber"],
+        "replaced_from": checked["replaced_from"],
+    }
+    return result
+
+
 @router.post("/api/publications/collections/automation/drafts/{draft_id}/approve")
 async def collection_automation_approve_draft(
     draft_id: int,

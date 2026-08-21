@@ -401,6 +401,82 @@ def generate_due_drafts(db: Session, *, now: Optional[datetime] = None) -> Dict[
     return {"ok": not errors, "created": created, "skipped": skipped, "errors": errors}
 
 
+def load_draft(db: Session, draft_id: int) -> Optional[Dict[str, Any]]:
+    row = db.execute(text(_DRAFT_SELECT + " WHERE id=:id"), {"id": int(draft_id)}).mappings().first()
+    return _serialize_draft(row) if row else None
+
+
+def revalidate_draft(db: Session, draft: Dict[str, Any]) -> Dict[str, Any]:
+    """Свіжа перевірка товару безпосередньо перед відправленням.
+
+    Між створенням чернетки і публікацією товар могли продати або показати
+    вручну в іншій Story. Перевірка йде проти ЖИВОЇ бази; якщо основний товар
+    випав, його місце займає перший придатний із запасу тієї ж чернетки — черга
+    не має мовчки зупинятись через одну продану пару.
+    """
+    policy = draft.get("policy") or {}
+    filters = policy.get("filters") or {}
+    cooldown_days = int(policy.get("cooldown_days") or story_automation.DEFAULT_COOLDOWN_DAYS)
+    fresh = story_automation.candidate_rows(
+        db, filters, cooldown_days, pool=5000, exclude_draft_id=draft.get("id"),
+    )
+    eligible = {story_automation.normalize_number(row["productnumber"]): row for row in fresh}
+
+    def pick(number: Any) -> Optional[Dict[str, Any]]:
+        row = eligible.get(story_automation.normalize_number(number))
+        return row if row and story_automation._photo_ready(row) else None
+
+    warnings: List[str] = []
+    chosen = pick(draft.get("productnumber"))
+    replaced_from = None
+    if chosen is None:
+        warnings.append(f"#{str(draft.get('productnumber')).lstrip('#')} уже недоступний.")
+        for reserve in draft.get("reserves") or []:
+            chosen = pick(reserve.get("productnumber"))
+            if chosen is not None:
+                replaced_from = reserve.get("productnumber")
+                warnings.append(f"Замість нього з резерву: #{str(replaced_from).lstrip('#')}.")
+                break
+    if chosen is None and not warnings:
+        warnings.append("Товар більше не підходить під добір.")
+    if chosen is None:
+        warnings.append("Запас теж вичерпано — Story не відправлено.")
+
+    return {
+        "ok": chosen is not None,
+        "product": chosen,
+        "replaced_from": replaced_from,
+        "warnings": warnings,
+    }
+
+
+def mark_approved(db: Session, draft_id: int, *, dispatch: Dict[str, Any],
+                  product: Optional[Dict[str, Any]] = None,
+                  note: Optional[str] = None) -> Dict[str, Any]:
+    """Позначити чернетку відправленою. Тільки ПІСЛЯ успіху диспетчера."""
+    row = db.execute(text("""
+        UPDATE story_automation_drafts
+           SET status='approved', reviewed_at=now(), review_note=:note,
+               product_id=COALESCE(:product_id, product_id),
+               productnumber=COALESCE(:productnumber, productnumber),
+               audit_json = COALESCE(audit_json, '{}'::jsonb) || CAST(:dispatch AS jsonb),
+               updated_at=now()
+         WHERE id=:id AND status=:status
+         RETURNING id
+    """), {
+        "id": int(draft_id),
+        "status": REVIEW_STATUS,
+        "note": str(note or "").strip()[:1000] or None,
+        "product_id": int(product["product_id"]) if product else None,
+        "productnumber": str(product["productnumber"]) if product else None,
+        "dispatch": json.dumps({"dispatch": dispatch}, ensure_ascii=False, default=str),
+    }).mappings().first()
+    if not row:
+        raise ValueError("Чернетку не знайдено або її вже опрацьовано")
+    db.commit()
+    return {"ok": True, "id": int(row["id"]), "status": "approved"}
+
+
 def reject_draft(db: Session, draft_id: int, note: Optional[str] = None) -> Dict[str, Any]:
     row = db.execute(text("""
         UPDATE story_automation_drafts
