@@ -2320,6 +2320,14 @@ def _auto_collection_scheduler():
     return auto_collection_scheduler
 
 
+def _trigger_auto_collection_cloud_sync(reason: str) -> bool:
+    try:
+        from backend.services import auto_collection_cloud_sync
+    except ImportError:
+        from services import auto_collection_cloud_sync
+    return auto_collection_cloud_sync.trigger(reason)
+
+
 @router.get("/api/publications/collections/automation")
 def collection_automation_dashboard(
     draft_limit: int = Query(20, ge=1, le=100),
@@ -2340,7 +2348,8 @@ def collection_automation_update(
     except ValueError as exc:
         db.rollback()
         raise HTTPException(status_code=400, detail=str(exc))
-    return {"ok": True, "config": config}
+    cloud_sync_queued = _trigger_auto_collection_cloud_sync(f"config:{platform}")
+    return {"ok": True, "config": config, "cloud_sync_queued": cloud_sync_queued}
 
 
 @router.post("/api/publications/collections/automation/{platform}/drafts")
@@ -2350,9 +2359,11 @@ def collection_automation_create_manual_draft(
 ):
     """Persist a review-only snapshot now. No render, upload or dispatch."""
     try:
-        return {"ok": True, **_auto_collection_scheduler().create_draft(
+        result = {"ok": True, **_auto_collection_scheduler().create_draft(
             db, platform=platform, source="manual",
         )}
+        result["cloud_sync_queued"] = _trigger_auto_collection_cloud_sync(f"manual-draft:{platform}")
+        return result
     except ValueError as exc:
         db.rollback()
         raise HTTPException(status_code=409, detail=str(exc))
@@ -2371,9 +2382,11 @@ def collection_automation_reject_draft(
     db: Session = Depends(get_db),
 ):
     try:
-        return _auto_collection_scheduler().reject_draft(
+        result = _auto_collection_scheduler().reject_draft(
             db, draft_id, note=(payload or {}).get("note"),
         )
+        result["cloud_sync_queued"] = _trigger_auto_collection_cloud_sync(f"reject-draft:{draft_id}")
+        return result
     except ValueError as exc:
         db.rollback()
         raise HTTPException(status_code=409, detail=str(exc))

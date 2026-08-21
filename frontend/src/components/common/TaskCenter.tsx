@@ -87,6 +87,24 @@ const TaskCenter: React.FC = () => {
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const result = await response.json();
         if (cancelled) return;
+        const cloud = result.cloud_sync || {};
+        if (cloud.last_error) {
+          taskManager.setExternal(
+            'auto-collection-cloud-sync',
+            'Хмарна синхронізація Top‑9 затримана',
+            'error',
+            String(cloud.last_error),
+          );
+        } else if (cloud.running || cloud.pending) {
+          taskManager.setExternal(
+            'auto-collection-cloud-sync',
+            'Синхронізація Top‑9 з хмарою',
+            'running',
+            'Налаштування й чернетки вирівнюються між BMS та Neon',
+          );
+        } else {
+          taskManager.remove('auto-collection-cloud-sync');
+        }
         const pending = Number(result.pending_count || 0);
         if (pending > 0) {
           taskManager.setExternal(

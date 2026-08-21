@@ -1,0 +1,13 @@
+name = "bms-auto-collection-drafts"
+main = "src/index.js"
+compatibility_date = "2026-08-21"
+workers_dev = true
+
+[observability]
+enabled = true
+
+[vars]
+DRAFT_ONLY = "true"
+
+[triggers]
+crons = ["*/5 * * * *"]

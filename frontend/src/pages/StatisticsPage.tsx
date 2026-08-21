@@ -82,6 +82,16 @@ type AutoCollectionAutomation = {
   drafts: AutoCollectionDraft[];
   pending_count: number;
   safety: { manual_review_required: true; automatic_publishing: false; media_uploads: false };
+  cloud_sync?: {
+    configured: boolean;
+    autonomous: boolean;
+    running: boolean;
+    pending: boolean;
+    last_success_at?: string | null;
+    last_error?: string | null;
+    last_error_at?: string | null;
+    draft_only: true;
+  };
 };
 
 const WEEKDAYS = ['Понеділок', 'Вівторок', 'Середа', 'Четвер', 'П’ятниця', 'Субота', 'Неділя'];
@@ -732,11 +742,30 @@ const StatisticsPage: React.FC<StatisticsPageProps> = () => {
                       Після першого ввімкнення минулі дати не надолужуються.
                     </p>
                   </div>
-                  {autoAutomation?.pending_count ? (
-                    <span className="rounded-full bg-amber-100 px-2.5 py-1 text-[11px] font-semibold text-amber-700 dark:bg-amber-900/30 dark:text-amber-300">
-                      Чекають перевірки: {autoAutomation.pending_count}
-                    </span>
-                  ) : null}
+                  <div className="flex flex-wrap gap-2">
+                    {autoAutomation?.cloud_sync?.configured && (
+                      <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${autoAutomation.cloud_sync.last_error
+                        ? 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300'
+                        : autoAutomation.cloud_sync.running || autoAutomation.cloud_sync.pending
+                          ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300'
+                          : autoAutomation.cloud_sync.autonomous
+                            ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300'
+                            : 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300'}`}>
+                        {autoAutomation.cloud_sync.last_error
+                          ? 'Хмарна синхронізація затримана'
+                          : autoAutomation.cloud_sync.running || autoAutomation.cloud_sync.pending
+                            ? 'Синхронізація з хмарою…'
+                            : autoAutomation.cloud_sync.autonomous
+                              ? 'Хмарні чернетки 24/7'
+                              : 'Neon синхронізовано'}
+                      </span>
+                    )}
+                    {autoAutomation?.pending_count ? (
+                      <span className="rounded-full bg-amber-100 px-2.5 py-1 text-[11px] font-semibold text-amber-700 dark:bg-amber-900/30 dark:text-amber-300">
+                        Чекають перевірки: {autoAutomation.pending_count}
+                      </span>
+                    ) : null}
+                  </div>
                 </div>
 
                 {autoAutomationLoading ? (
@@ -879,8 +908,9 @@ const StatisticsPage: React.FC<StatisticsPageProps> = () => {
                     </div>
 
                     <p className="mt-3 text-[10px] leading-relaxed text-gray-400">
-                      На цьому етапі розклад перевіряє сервер BMS, поки він працює. Постійний автономний контур Cloudflare
-                      підключатиметься окремо лише після перевірки цих чернеток.
+                      {autoAutomation.cloud_sync?.autonomous
+                        ? 'Розклад дублюється у захищеному Cloudflare-контурі й може створити чернетку навіть із вимкненою програмою. Після відкриття BMS вона автоматично з’явиться тут. Контур не має доступу до публікації, фото-сховища чи токенів соцмереж.'
+                        : 'Налаштування, кандидати й чернетки вже синхронізуються з Neon. Автономний запуск 24/7 буде позначений тут окремо після підтвердженого розгортання Cloudflare Worker; до того часу BMS не прикидається, що працює у вимкненому стані.'}
                     </p>
                   </>
                 ) : autoAutomationError ? (

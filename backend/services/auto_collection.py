@@ -97,10 +97,18 @@ def _period_clause(days: int, column: str) -> str:
     return "TRUE" if days == 0 else f"{column} >= now() - (:period_days || ' days')::interval"
 
 
-def _candidate_rows(db: Session, period_days: int) -> List[Dict[str, Any]]:
+def _candidate_rows(
+    db: Session,
+    period_days: int,
+    *,
+    pool: int = MAX_POOL,
+) -> List[Dict[str, Any]]:
     event_period = _period_clause(period_days, "ce.received_at")
     sales_period = _period_clause(period_days, "o.order_date")
-    params = {"period_days": period_days, "pool": MAX_POOL}
+    # The interactive preview only needs a small ranked pool.  The cloud
+    # draft-only mirror deliberately asks for a broader eligibility snapshot
+    # so a product that becomes popular while BMS is closed can still rise.
+    params = {"period_days": period_days, "pool": max(1, min(int(pool), 5000))}
     rows = db.execute(text(f"""
         WITH sold_per_client AS (
             SELECT oi.product_id, o.client_id,

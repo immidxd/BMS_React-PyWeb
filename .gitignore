@@ -1,4 +1,5 @@
 node_modules/
+.pnpm-store/
 .env
 .cache/
 backend/scripts/full_parsing_fixed.log
@@ -36,6 +37,7 @@ backend/scripts/temporary/*.json
 
 # Cloudflare local configuration and secrets (templates are *.example.toml)
 cloudflare/**/wrangler.toml
+!cloudflare/auto-collection-drafts/wrangler.toml
 cloudflare/**/.dev.vars
 cloudflare/**/.wrangler/
 

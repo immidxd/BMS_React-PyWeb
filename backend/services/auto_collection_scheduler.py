@@ -187,6 +187,10 @@ def dashboard(db: Session, *, draft_limit: int = 20) -> Dict[str, Any]:
     pending_count = int(db.execute(text("""
         SELECT COUNT(*) FROM auto_collection_drafts WHERE status = :status
     """), {"status": REVIEW_STATUS}).scalar() or 0)
+    try:
+        from backend.services import auto_collection_cloud_sync
+    except ImportError:
+        from services import auto_collection_cloud_sync
     return {
         "ok": True,
         "configs": configs,
@@ -197,6 +201,7 @@ def dashboard(db: Session, *, draft_limit: int = 20) -> Dict[str, Any]:
             "automatic_publishing": False,
             "media_uploads": False,
         },
+        "cloud_sync": auto_collection_cloud_sync.status(),
     }
 
 

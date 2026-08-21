@@ -750,15 +750,32 @@ async def _auto_collection_draft_cycle() -> None:
     def _run():
         try:
             from services import auto_collection_scheduler
+            from services import auto_collection_cloud_sync
             from models.database import SessionLocal
         except ImportError:
             from backend.services import auto_collection_scheduler
+            from backend.services import auto_collection_cloud_sync
             from backend.models.database import SessionLocal
         db = SessionLocal()
         try:
+            # First pull any draft created by Cloudflare while this BMS process
+            # was offline.  A cloud outage never prevents the local safety net.
+            try:
+                cloud_before = auto_collection_cloud_sync.sync_once()
+            except Exception as exc:
+                cloud_before = {"ok": False, "error": str(exc)}
             result = auto_collection_scheduler.generate_due_drafts(db)
+            cloud_after = None
+            if result.get("created"):
+                try:
+                    cloud_after = auto_collection_cloud_sync.sync_once()
+                except Exception as exc:
+                    cloud_after = {"ok": False, "error": str(exc)}
             if result.get("created") or result.get("errors"):
-                logger.info("Auto-collection draft cycle: %s", result)
+                logger.info(
+                    "Auto-collection draft cycle: local=%s cloud_before=%s cloud_after=%s",
+                    result, cloud_before, cloud_after,
+                )
         finally:
             db.close()
 
@@ -819,9 +836,10 @@ async def _auto_startup_publications_refresh():
 async def _auto_collection_draft_scheduler():
     """Periodic local safety net for enabled weekly review drafts.
 
-    Defaults to five minutes and is cheap while both platform configs remain
-    disabled. Setting AUTO_COLLECTION_DRAFT_CHECK_SEC=0 disables the loop.
-    The cycle has no code path to R2, Meta, Viber or publication dispatchers.
+    Defaults to five minutes. It mirrors cloud review drafts even while both
+    platform configs remain disabled. Setting AUTO_COLLECTION_DRAFT_CHECK_SEC=0
+    disables the loop. The cycle has no code path to R2, Meta, Viber or
+    publication dispatchers.
     """
     import asyncio
     import os

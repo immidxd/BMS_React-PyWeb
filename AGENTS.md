@@ -163,8 +163,11 @@
 - Канали продажу розпізнаються з опису замовлення: `PROM` → Prom; `MONO`/`МОНО` без урахування регістру → MONO; `Catalog`, `CT` або `CG` як окремі маркери → «Каталог». Не допускай хибних збігів усередині інших слів.
 - Витрати на рекламу беруться з окремої комірки/секції аркуша «Замовлення», зберігаються в `advertising_expenses` і віднімаються від чистого виторгу у всіх релевантних підсумках, графіках і розрізах каналів.
 - Базова формула: чистий виторг = виторг − собівартість − доставка − реклама. Якщо метрика використовує іншу базу, її назва й підказка мають це прямо пояснювати.
+- Щотижнева Top‑9 автоматизація зупиняється ТІЛЬКИ на `awaiting_review`: вона не рендерить JPEG, не вантажить R2 і не створює job у Viber/Facebook Worker. Конфігурації та знімки живуть у `auto_collection_configs`/`auto_collection_drafts`; повтор заборонено щонайменше на 14 днів і за попередніми підбірками, і за чернетками, крім спільного Viber/Facebook-слота тієї самої дати.
+- BMS↔Neon міст зберігає лише конфігурації, review-чернетки, недавні номери та компактний знімок метрик/наявності. Окремий `bms-auto-collection-drafts` має тільки Neon `DATABASE_URL`, cron раз на 5 хвилин і жорсткий `DRAFT_ONLY=true`; у нього структурно немає токенів соцмереж, R2 або publication endpoint.
+- Станом на 2026-08-21 Neon-схема застосована, 235 безпечних кандидатів синхронізовано, реальні ручні чернетки Viber/Facebook створено, обидва розклади лишаються `enabled=false`. Код Worker пройшов dry-run, але live deployment ще НЕ підтверджений через прострочену Wrangler OAuth-сесію. Не показуй «24/7», доки успішний deploy+health не запише ignored `AUTO_COLLECTION_DRAFT_WORKER_URL`; до того UI чесно показує лише підключений Neon.
 
-Ключові файли: `backend/routers/statistics.py`, парсер аркуша замовлень, `backend/models/models.py`, `frontend/src/pages/StatisticsPage.tsx`, міграція `backend/migrations/2026_08_11_001_create_advertising_expenses.sql`.
+Ключові файли: `backend/routers/statistics.py`, `backend/services/auto_collection.py`, `backend/services/auto_collection_scheduler.py`, `backend/services/auto_collection_cloud_sync.py`, `cloudflare/auto-collection-drafts/`, парсер аркуша замовлень, `backend/models/models.py`, `frontend/src/pages/StatisticsPage.tsx`, міграції `backend/migrations/2026_08_11_001_create_advertising_expenses.sql` та `backend/migrations/2026_08_21_003_create_auto_collection_drafts.sql`.
 
 ## Мінімальна перевірка релевантних змін
 
@@ -175,6 +178,7 @@
 - Instagram dispatcher: `npm test` у `cloudflare/instagram-dispatcher`.
 - Фото: `PYTHONDONTWRITEBYTECODE=1 ./venv/bin/python -m pytest backend/tests/test_photo_manager_transform.py -q`
 - Статистика: `PYTHONDONTWRITEBYTECODE=1 ./venv/bin/python -m pytest backend/tests/test_sales_channel_detection.py backend/tests/test_advertising_expense_parser.py -q`
+- Top‑9: `PYTHONDONTWRITEBYTECODE=1 ./venv/bin/python -m pytest backend/tests/test_auto_collection.py backend/tests/test_auto_collection_scheduler.py backend/tests/test_auto_collection_cloud_sync.py -q`; Worker — `pnpm test` і Wrangler `deploy --dry-run` у `cloudflare/auto-collection-drafts`.
 - Frontend: `npm run build` у `frontend` (або коренева команда, якщо вона проксіює цей build).
 - Після змін перевір `git diff --check` і чистоту обох репозиторіїв.
 
