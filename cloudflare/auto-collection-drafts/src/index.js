@@ -107,6 +107,10 @@ async function dueConfigs(sql) {
   `;
 }
 
+// ⚠️ Кожен числовий параметр іде з явним `::int`. Драйвер Neon передає
+// значення як текст, і без касту `${periodDays}=0` перетворюється на
+// `text = integer` — Postgres такого оператора не має. Помилка чекала саме
+// цього моменту: доки розклади були вимкнені, запит жодного разу не виконався.
 async function candidateRows(sql, config) {
   const periodDays = Number(config.period_days);
   const cooldownDays = Number(config.cooldown_days);
@@ -121,7 +125,7 @@ async function candidateRows(sql, config) {
              COUNT(*) FILTER (WHERE ce.event_type='contact_click')::int AS contact_clicks
       FROM catalog_events ce
       WHERE ce.productnumber IS NOT NULL
-        AND (${periodDays}=0 OR ce.received_at >= now() - make_interval(days => ${periodDays}))
+        AND (${periodDays}::int = 0 OR ce.received_at >= now() - make_interval(days => ${periodDays}::int))
       GROUP BY ce.productnumber
     ), favorites AS (
       SELECT productnumber, COUNT(*)::int AS active_favorites
@@ -132,12 +136,12 @@ async function candidateRows(sql, config) {
       FROM auto_collection_drafts d
       CROSS JOIN LATERAL jsonb_array_elements_text(d.product_numbers) item(value)
       WHERE d.status IN ('awaiting_review','approved')
-        AND d.scheduled_for > now() - make_interval(days => ${cooldownDays})
+        AND d.scheduled_for > now() - make_interval(days => ${cooldownDays}::int)
         AND d.scheduled_for <> ${scheduledFor}::timestamptz
       UNION ALL
       SELECT productnumber
       FROM auto_collection_recent_posts
-      WHERE occurred_at > now() - make_interval(days => ${cooldownDays})
+      WHERE occurred_at > now() - make_interval(days => ${cooldownDays}::int)
         AND status NOT IN ('failed','error','cancelled')
     ), candidates AS (
       SELECT s.productnumber, s.product_id, s.brand, s.model, s.type,
@@ -147,7 +151,7 @@ async function candidateRows(sql, config) {
              COALESCE(f.active_favorites,0)::int AS active_favorites,
              COALESCE(e.favorite_adds,0)::int AS favorite_adds,
              COALESCE(e.contact_clicks,0)::int AS contact_clicks,
-             CASE ${periodDays}
+             CASE ${periodDays}::int
                WHEN 7 THEN s.sold_7
                WHEN 30 THEN s.sold_30
                WHEN 90 THEN s.sold_90
@@ -335,9 +339,66 @@ async function health(env) {
   }
 }
 
+/**
+ * Суха перевірка добору: виконує ТОЙ САМИЙ запит, що й нічний цикл, але нічого
+ * не вставляє. Потрібна, щоб побачити, що контур справді працює, не чекаючи
+ * тижневого слота — і щоб зловити помилку запиту, доки вона не з'їла слот.
+ */
+async function preview(env) {
+  const sql = neon(env.DATABASE_URL, { fetchOptions: { signal: AbortSignal.timeout(20000) } });
+  const [snapshotRow] = await sql`
+    SELECT MAX(synced_at) AS snapshot_at FROM auto_collection_product_snapshot
+  `;
+  const configs = await sql`
+    SELECT platform, weekday, local_time, timezone, period_days, cooldown_days,
+           item_count, enabled, enabled_at,
+           (
+             date_trunc('week', now() AT TIME ZONE timezone)
+             + weekday * interval '1 day'
+             + (local_time - time '00:00')
+           ) AT TIME ZONE timezone AS this_week_slot
+    FROM auto_collection_configs ORDER BY platform
+  `;
+  const results = [];
+  for (const config of configs) {
+    const slot = new Date(config.this_week_slot) > new Date()
+      ? new Date(new Date(config.this_week_slot).getTime() - 7 * 86400000).toISOString()
+      : new Date(config.this_week_slot).toISOString();
+    const row = {
+      platform: config.platform,
+      enabled: config.enabled,
+      slot,
+      pool: null,
+      would_select: [],
+      error: null,
+    };
+    try {
+      const candidates = await candidateRows(sql, { ...config, scheduled_for: slot });
+      const ranked = rankCandidates(candidates, config.item_count);
+      row.pool = candidates.length;
+      row.would_select = ranked.selected.map((item) => item.productnumber);
+    } catch (error) {
+      row.error = String(error?.message || error).slice(0, 400);
+    }
+    results.push(row);
+  }
+  return {
+    ok: results.every((row) => !row.error),
+    dry_run: true,
+    inserted_nothing: true,
+    ...snapshotFreshness(snapshotRow?.snapshot_at),
+    platforms: results,
+  };
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
+    if (request.method === 'GET' && url.pathname === '/preview') {
+      if (!env.DATABASE_URL) return Response.json({ ok: false, database: 'not_configured' }, { status: 503 });
+      const result = await preview(env);
+      return Response.json(result, { status: result.ok ? 200 : 500 });
+    }
     if (request.method === 'GET' && (url.pathname === '/' || url.pathname === '/health')) {
       const result = await health(env);
       return Response.json(result, { status: result.ok ? 200 : 503 });
