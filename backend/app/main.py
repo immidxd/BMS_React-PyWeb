@@ -56,6 +56,10 @@ try:
 except Exception:
     merge_candidates = None
 try:
+    from routers import studio  # optional — майстерня публікацій (галерея, шрифти, пости)
+except Exception:
+    studio = None
+try:
     from routers import content_plan  # optional — контент-план з Obsidian TaskNotes
 except Exception:
     content_plan = None
@@ -221,6 +225,8 @@ if merge_candidates:
     app.include_router(merge_candidates.router, tags=["merge-candidates"])  # routes already prefixed with /api
 if content_plan:
     app.include_router(content_plan.router, tags=["content-plan"])  # routes already prefixed with /api
+if studio:
+    app.include_router(studio.router, tags=["studio"])  # routes already prefixed with /api
 
 # Mount product images directory (local + Google Drive overlay; abstraction in services/product_images.py)
 try:

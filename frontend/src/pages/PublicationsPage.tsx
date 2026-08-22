@@ -1,5 +1,6 @@
 import CatalogAnalyticsPanel from '../components/publications/CatalogAnalyticsPanel';
 import StoryAutomationPanel from '../components/publications/StoryAutomationPanel';
+import StudioPanel from '../components/publications/studio/StudioPanel';
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   SendOutlined, WarningOutlined, MinusCircleOutlined, DisconnectOutlined,
@@ -653,6 +654,7 @@ const PUB_TABS = [
   { key: 'list', label: 'Усі публікації' },
   { key: 'catalog', label: 'Інтернет-вітрина' },
   { key: 'stories', label: 'Сторіс' },
+  { key: 'studio', label: 'Майстерня' },
 ] as const;
 
 type PubTab = typeof PUB_TABS[number]['key'];
@@ -2229,6 +2231,7 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
 
         {pubTab === 'catalog' && <CatalogAnalyticsPanel showAutomation />}
         {pubTab === 'stories' && <StoryAutomationPanel />}
+        {pubTab === 'studio' && <StudioPanel />}
 
       </div>
 
