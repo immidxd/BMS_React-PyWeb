@@ -526,14 +526,22 @@ def _writeback_field_to_journal_locked(sheet_title: str, productnumber: str, fie
 
     target = _canon_pnum_for_match(productnumber)
 
+    matching_rows = sum(
+        1 for row in all_values[1:]
+        if _canon_pnum_for_match(row[num_idx] if num_idx < len(row) else "") == target
+    )
+    # Номера взагалі немає в аркуші — писати нікуди. Раніше такий випадок
+    # доходив до `not updates` і повертав ok:True, тож черга ставила 'done':
+    # правки картки фантома #В51-2 «успішно» летіли в порожнечу. Тепер це явний
+    # permanent-reason ('not found') → задача стає 'skipped' з видимою причиною.
+    if matching_rows == 0:
+        return {"ok": False,
+                "reason": f"row '{productnumber}' not found in sheet '{sheet_title}'"}
+
     # Guard ростовки: per-item поле (розмір/СМ/габарити) безпечно писати лише
     # коли номер займає ОДИН рядок. Інакше write-to-all-rows затер би сусідні
     # розміри. У такому разі правка лишається в БД (lock), аркуш не чіпаємо.
     if field in PER_ITEM_WRITEBACK_FIELDS:
-        matching_rows = sum(
-            1 for row in all_values[1:]
-            if _canon_pnum_for_match(row[num_idx] if num_idx < len(row) else "") == target
-        )
         if matching_rows > 1:
             return {"ok": False, "reason": f"per-item field '{field}' skipped: "
                     f"{matching_rows} rostovka rows share number {target} "
@@ -553,7 +561,7 @@ def _writeback_field_to_journal_locked(sheet_title: str, productnumber: str, fie
         backups.append({"a1": a1, "row": r_i, "old": old, "new": cell_new})
 
     if not updates:
-        return {"ok": True, "rows_updated": 0, "note": "no matching rows or already current"}
+        return {"ok": True, "rows_updated": 0, "note": "already current"}
 
     backup_path = _save_writeback_backup(sheet_title, productnumber, field, backups)
     value_input = "USER_ENTERED" if field not in WRITEBACK_TEXT_FIELDS else "RAW"
@@ -2658,6 +2666,91 @@ def _next_suffix_pnum(session: Session, base_pnum: str) -> str:
         n += 1
 
 
+def _number_affinity(db_pnum: str, sheet_pnum: str) -> tuple:
+    """Ключ сортування: наскільки номер запису «свій» для рядка аркуша.
+
+    БД повертає записи в довільному порядку, а `existing_base` містить усю родину
+    номера (X, X-2, X-3, з '#' і без). Без сортування `next(... if id_match ...)`
+    брав ПЕРШИЙ-ЛІПШИЙ — і рядок аркуша чіплявся до суфіксованого двійника
+    замість власного запису. Саме так #В51 віддав усі свої оновлення фантому
+    #В51-2, а pnum-sync кожні 10 хвилин безуспішно намагався повернути йому номер.
+
+    0 — точний збіг, 1 — той самий номер без/з '#', 2+N — суфікс -N.
+    """
+    a = (db_pnum or "").strip()
+    b = (sheet_pnum or "").strip()
+    if a == b:
+        return (0, 0)
+    if a.lstrip("#") == b.lstrip("#"):
+        return (1, 0)
+    m = re.fullmatch(re.escape(b.lstrip("#")) + r"\s*-\s*(\d+)", a.lstrip("#"))
+    if m:
+        return (2, int(m.group(1)))
+    return (3, 0)
+
+
+def _updatable_twins(candidates, seen_in_run: dict,
+                     sheet_pnum: Optional[str] = None,
+                     protected=None) -> list:
+    """Записи, які поточний рядок аркуша має право оновити.
+
+    Виключені:
+      • чужий «слот» номера. Суфікс у журналі — НЕ синонім помилки: #В37-2,
+        #В38-3 — це реальні окремі товари, які веде сам журнал. Рядок '#В37-2'
+        сміє правити лише запис '#В37-2', а рядок '#В37' — лише '#В37'. Інакше
+        гард проти фантомів сам би затирав живі варіанти;
+      • вже зайняті іншим рядком цього прогону (два рядки не пишуть в один запис);
+      • ті, що `protected(p)` визнав недоторканними (див. `_sold_guard` у парсері).
+    """
+    pool = candidates
+    if sheet_pnum is not None:
+        pool = [p for p in pool
+                if _number_affinity(p.productnumber, sheet_pnum)[0] <= 1]
+    return [
+        p for p in pool
+        if p.id not in seen_in_run
+        and not (protected is not None and protected(p))
+    ]
+
+
+def _free_pnum_for_row(session: Session, sheet_pnum: str, existing_base) -> str:
+    """Номер для НОВОГО запису цього рядка.
+
+    Суфікс має означати «мій номер уже зайнятий». Якщо власний номер рядка
+    вільний — беремо саме його, а не вигадуємо -N: інакше рядок '#В51', чий
+    запис хтось прибрав, отримував би '#В51-3' при живому вільному '#В51'.
+    """
+    if not any(_number_affinity(p.productnumber, sheet_pnum)[0] <= 1
+               for p in existing_base):
+        return sheet_pnum
+    return _next_suffix_pnum(session, sheet_pnum)
+
+
+def _suffix_block_reason(candidates, seen_in_run: dict,
+                         sheet_pnum: Optional[str] = None,
+                         protected=None) -> Optional[str]:
+    """Чому суфікс -N створювати НЕ можна (або None, якщо можна).
+
+    Джерело істини про «два різні товари під одним номером» — АРКУШ, а не
+    розбіжність аркуша з базою. Якщо рядок аркуша єдиний на цей номер, а в базі
+    є вільний (ще не зайнятий іншим рядком цього прогону) запис — це той самий
+    товар, якому просто відредагували бренд/колір/вид. Його треба ОНОВИТИ.
+    Створення двійника тут і плодило фантоми (#В51-2, #Ф3321-2, #Ф3322-2 — цей
+    останній народжувався по колу 17 разів).
+
+    Суфікс лишається дозволеним рівно у двох випадках:
+      • всі записи цього номера вже розібрані попередніми рядками прогону —
+        отже номер справді ділять кілька рядків аркуша;
+      • всі записи, що лишились, недоторканні за `protected` (продані під чужим
+        рядком — див. `_sold_guard`).
+    """
+    free = _updatable_twins(candidates, seen_in_run, sheet_pnum, protected)
+    if not free:
+        return None
+    return (f"аркуш тримає цей номер в одному рядку, вільний запис id={free[0].id} "
+            f"('{free[0].productnumber}')")
+
+
 def _fields_match(a, b) -> bool:
     """Compare two values for duplication check.
     
@@ -3084,6 +3177,25 @@ def _parse_products_sheet(
                 and _fields_match(p.sizeeu,  size_val)
             )
 
+        def _sold_guard(p: "Product") -> bool:
+            """Чи заборонено правити цей запис через продаж.
+
+            Продане саме по собі не є табу: журнал — джерело істини, і уточнення
+            бренду ('Sprandi' → 'sprandi OUTDOOR PERFOMANCE', 'Calvin Klein Jeans'
+            → 'Calvin Klein') мусить лягти в той самий запис, а не плодити
+            двійника — посилання замовлень тримаються за product_id і від правки
+            назви не страждають.
+
+            Табу спрацьовує, коли продаж міг належати ІНШІЙ речі: рядок аркуша
+            живий (не «Продано») або не збігається розміром. Тоді найімовірніше
+            номер перевикористали під новий товар — старий запис лишаємо як є,
+            а рядок отримує окремий запис із суфіксом.
+            """
+            if sold_status_id is None or p.statusid != sold_status_id:
+                return False
+            return not (status_id == sold_status_id
+                        and _fields_match(p.sizeeu, size_val))
+
         def base_match(p: "Product") -> bool:
             """Same brand/type/condition/color but ANY size (ростовка check)."""
             return (
@@ -3114,6 +3226,10 @@ def _parse_products_sheet(
                 or bool(re.fullmatch(re.escape(base_no_hash) + r"\s*-\s*\d+", p_stripped))
             )
         existing_base = [p for p in existing_all if _is_base_match(p.productnumber)]
+        # Спершу «свій» запис (точний номер), потім суфіксовані двійники — щоб
+        # рядок аркуша не чіплявся до фантома замість власного запису. Див.
+        # _number_affinity: без цього #В51 віддавав оновлення фантому #В51-2.
+        existing_base.sort(key=lambda p: _number_affinity(p.productnumber, pnum))
 
         # ── Decision logic ─────────────────────────────────────────────────
         full_match = next((p for p in existing_base if id_match(p)), None)
@@ -3507,6 +3623,8 @@ def _parse_products_sheet(
                 # change due to edits, multi-sheet descriptions, or refinement
                 # (e.g. "Ботинки" → "Ботинки-уггі", "ліловий" → "бузковий").
 
+                row_handled = False   # True, щойно рядок став окремим записом
+
                 # Find records with compatible brand.
                 # Compare by NORMALIZED brand name (not just ID) so that
                 # "GoSoft" matches "Go Soft", "ECCO" matches "Ecco", etc.
@@ -3576,8 +3694,21 @@ def _parse_products_sheet(
                     brand_compat_updatable = [p for p in brand_compat if not _is_color_variant(p)]
 
                     # If all brand_compat records are color variants → create new record
+                    _cv_block = (
+                        _suffix_block_reason(brand_compat, seen_in_run, pnum, _sold_guard)
+                        if not brand_compat_updatable else None
+                    )
+                    if _cv_block:
+                        # Аркуш тримає номер в одному рядку → це правка кольору,
+                        # а не окремий товар. Оновлюємо наявний запис.
+                        brand_compat_updatable = _updatable_twins(
+                            brand_compat, seen_in_run, pnum, _sold_guard
+                        )
+                        logger.info(
+                            f"[dup-guard] {base_pnum}: колірний варіант не створюю — {_cv_block}"
+                        )
                     if not brand_compat_updatable:
-                        target_pnum = _next_suffix_pnum(session, base_pnum)
+                        target_pnum = _free_pnum_for_row(session, pnum, existing_base)
                         logger.info(
                             f"[color-variant] Same brand+size, different color → new record: "
                             f"{base_pnum} → {target_pnum} (color={color_id})"
@@ -3674,8 +3805,27 @@ def _parse_products_sheet(
                                 skipped += 1
                         # Skip the update block below
                         brand_compat = []  # signal that we're done for this row
+                        row_handled = True
 
-                if brand_compat and brand_compat_updatable:
+                # ── Останній запобіжник перед суфіксом ──────────────────
+                # Сюди падають рядки, чий бренд не збігся з жодним записом
+                # (напр. бренд уточнили в аркуші). Раніше це БЕЗУМОВНО плодило
+                # '-2'. Тепер: якщо аркуш тримає номер в одному рядку і в базі є
+                # вільний непроданий запис — це той самий товар, оновлюємо його.
+                if not row_handled and not (brand_compat and brand_compat_updatable):
+                    _dup_block = _suffix_block_reason(existing_base, seen_in_run, pnum, _sold_guard)
+                    if _dup_block:
+                        _free = _updatable_twins(existing_base, seen_in_run, pnum, _sold_guard)
+                        if _free:
+                            logger.info(
+                                f"[dup-guard] {base_pnum}: суфікс не створюю — {_dup_block}"
+                            )
+                            brand_compat = _free
+                            brand_compat_updatable = _free
+
+                if row_handled:
+                    pass                      # рядок уже втілено у новий запис вище
+                elif brand_compat and brand_compat_updatable:
                     # ── Same brand → UPDATE the closest existing record ──
                     # Pick record with fewest genuine field conflicts.
                     def _conflict_score(p):
@@ -3725,7 +3875,7 @@ def _parse_products_sheet(
                     updated += 1
                 else:
                     # ── Brand genuinely differs → create -2 suffix ───────
-                    target_pnum = _next_suffix_pnum(session, base_pnum)
+                    target_pnum = _free_pnum_for_row(session, pnum, existing_base)
                     logger.info(
                         f"[dup-number] Genuine duplicate (brand differs): "
                         f"{base_pnum} → {target_pnum} "
@@ -3823,6 +3973,26 @@ def _parse_products_sheet(
                             skipped += 1
 
     # ── Apply deferred productnumber renames (two-phase for swap safety) ──
+    if pending_renames:
+        # ── Номер, який тримає ЧУЖИЙ нерухомий запис, не відвойовуємо ────────
+        # Двофазний swap потрібен лише коли обидва записи їдуть (A↔B). Якщо ж
+        # бажаний номер займає запис, який нікуди не переїжджає, спроба
+        # приречена: Phase 2 ловить IntegrityError і відкочується назад — і так
+        # КОЖЕН прогін (id=348923 '#В51-2'→'#В51' крутився кожні 10 хвилин).
+        # Замість шуму — один зрозумілий warning з обома id.
+        movers = set(pending_renames)
+        for pid, desired in list(pending_renames.items()):
+            holder = session.query(Product).filter(
+                Product.productnumber == desired
+            ).first()
+            if holder is not None and holder.id != pid and holder.id not in movers:
+                pending_renames.pop(pid, None)
+                logger.warning(
+                    f"[pnum-sync] id={pid} не може стати '{desired}' — номер тримає "
+                    f"id={holder.id}, який нікуди не їде. Перейменування пропущено: "
+                    f"у БД двійник одного номера, розбирати вручну."
+                )
+
     if pending_renames:
         logger.info(f"[pnum-sync] Applying {len(pending_renames)} deferred renames")
         # Phase 1: rename affected records to temporary unique names,

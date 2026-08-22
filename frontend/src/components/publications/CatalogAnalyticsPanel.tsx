@@ -87,14 +87,15 @@ type AutoCollectionConfig = {
   next_run_at?: string | null;
   last_generated_at?: string | null;
   last_error?: string | null;
-  manual_review_required: true;
+  auto_publish: boolean;
+  manual_review_required: boolean;
   automatic_publishing: false;
 };
 type AutoCollectionAutomation = {
   configs: AutoCollectionConfig[];
   drafts: AutoCollectionDraft[];
   pending_count: number;
-  safety: { manual_review_required: true; automatic_publishing: false; media_uploads: false };
+  safety: { manual_review_required: boolean; automatic_publishing: boolean; media_uploads: false };
   cloud_sync?: {
     configured: boolean;
     autonomous: boolean;
@@ -220,6 +221,7 @@ const CatalogAnalyticsPanel: React.FC<PanelProps> = ({
           enabled: config.enabled, weekday: config.weekday, local_time: config.local_time,
           timezone: config.timezone, period_days: config.period_days,
           cooldown_days: config.cooldown_days, item_count: 9,
+          auto_publish: config.auto_publish,
         }),
       });
       const result = await response.json().catch(() => ({}));
@@ -585,6 +587,15 @@ const CatalogAnalyticsPanel: React.FC<PanelProps> = ({
                                     </select>
                                   </label>
                                 </div>
+
+                                <label className="mt-3 flex items-start gap-2 rounded-lg bg-amber-50 px-3 py-2 text-[11px] text-amber-800 dark:bg-amber-900/20 dark:text-amber-200">
+                                  <input type="checkbox" className="mt-0.5" checked={!!config.auto_publish}
+                                    onChange={event => editAutoConfig(config.platform, { auto_publish: event.target.checked })} />
+                                  <span>
+                                    <b>Публікувати без затвердження.</b> У вказаний день підбірка піде в канал сама.
+                                    Склад усе одно перевіряється проти живої бази, а продане заміщується з резерву.
+                                  </span>
+                                </label>
 
                                 <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-gray-100 pt-3 dark:border-gray-700">
                                   <div className="text-[10px] text-gray-400">

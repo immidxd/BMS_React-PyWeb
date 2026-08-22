@@ -743,6 +743,34 @@ async def _prom_sync_cycle() -> None:
         logger.warning(f"Prom-sync failed: {e}")
 
 
+async def _publish_due(kind: str, result: dict) -> None:
+    """Відправити щойно створені чернетки там, де вимкнено ручну перевірку.
+
+    Свідомо ОКРЕМИЙ крок після створення: чернетка має існувати в базі раніше,
+    ніж хтось спробує її відправити. Тоді збій відправлення лишає чернетку на
+    перевірці — її видно й можна відправити вручну, а не втратити слот мовчки.
+    """
+    created = (result or {}).get("created") or []
+    if not created:
+        return
+    try:
+        try:
+            from services.auto_publish import publish_due_drafts
+            from models.database import SessionLocal
+        except ImportError:
+            from backend.services.auto_publish import publish_due_drafts
+            from backend.models.database import SessionLocal
+        db = SessionLocal()
+        try:
+            outcome = await publish_due_drafts(db, created, kind=kind)
+        finally:
+            db.close()
+        if outcome["sent"] or outcome["refused"] or outcome["failed"]:
+            logger.info("Auto-publish (%s): %s", kind, outcome)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Auto-publish step failed (%s): %s", kind, e)
+
+
 async def _auto_collection_draft_cycle() -> None:
     """Create due Top-9 review snapshots only; never render or publish."""
     import asyncio
@@ -776,13 +804,19 @@ async def _auto_collection_draft_cycle() -> None:
                     "Auto-collection draft cycle: local=%s cloud_before=%s cloud_after=%s",
                     result, cloud_before, cloud_after,
                 )
+            return result
         finally:
             db.close()
 
     try:
-        await asyncio.get_event_loop().run_in_executor(None, _run)
+        result = await asyncio.get_event_loop().run_in_executor(None, _run)
     except Exception as e:
         logger.warning("Auto-collection draft cycle failed: %s", e)
+        return
+    # Відправлення — окремим кроком і вже в циклі подій: рендер і диспетчер
+    # асинхронні, а створення чернетки навмисно лишається синхронним і
+    # самодостатнім. Якщо перевірку не вимкнено, крок нічого не робить.
+    await _publish_due("collection", result)
 
 
 @app.on_event("startup")
@@ -874,13 +908,16 @@ async def _story_automation_cycle() -> None:
             result = story_automation_scheduler.generate_due_drafts(db)
             if result.get("created") or result.get("errors"):
                 logger.info("Story automation cycle: %s", result)
+            return result
         finally:
             db.close()
 
     try:
-        await asyncio.get_event_loop().run_in_executor(None, _run)
+        result = await asyncio.get_event_loop().run_in_executor(None, _run)
     except Exception as e:
         logger.warning("Story automation cycle failed: %s", e)
+        return
+    await _publish_due("story", result)
 
 
 @app.on_event("startup")

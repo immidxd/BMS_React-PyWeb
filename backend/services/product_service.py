@@ -1117,7 +1117,15 @@ def get_products(
                 'published_shafa': bool(m.get('published_shafa', False)),
                 'shafa_status': m.get('shafa_status'),
                 'published_catalog': bool(m.get('published_catalog', False)),
-                'has_photo': product_has_photo(m.get('productnumber'), _photo_set),
+                # Позичені студійні фото теж «є фото». Донор (official_photos_from)
+                # — це той самий черевик під іншим номером у наступному завозі;
+                # картка показує його кадри, тож і маркер у списку, і прев'ю на
+                # ховері мусять про них знати. Без цього рядок з донором виглядав
+                # як «Без фото», хоча в картці фото було (напр. #Ф4350 ← Ф4336).
+                'has_photo': (
+                    product_has_photo(m.get('productnumber'), _photo_set)
+                    or product_has_photo(m.get('official_photos_from'), _photo_set)
+                ),
             }
             items.append(product_dict)
         

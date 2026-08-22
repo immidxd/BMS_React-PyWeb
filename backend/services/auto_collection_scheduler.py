@@ -65,8 +65,12 @@ def validate_config(payload: Dict[str, Any], current: Optional[Dict[str, Any]] =
     item_count = int(source.get("item_count", 9))
     if item_count < 2 or item_count > 9:
         raise ValueError("Підбірка має містити від 2 до 9 товарів")
+    auto_publish = source.get("auto_publish", False)
+    if not isinstance(auto_publish, bool):
+        raise ValueError("Режим публікації має бути увімкнено або вимкнено")
     return {
         "enabled": enabled,
+        "auto_publish": auto_publish,
         "weekday": weekday,
         "local_time": local_time,
         "timezone": timezone_name,
@@ -128,13 +132,18 @@ def due_slot(config: Dict[str, Any], now: datetime) -> Optional[datetime]:
 
 def _config_rows(db: Session) -> List[Dict[str, Any]]:
     rows = db.execute(text("""
-        SELECT platform, enabled, weekday, local_time, timezone, period_days,
-               cooldown_days, item_count, enabled_at, last_generated_at,
+        SELECT platform, enabled, auto_publish, weekday, local_time, timezone,
+               period_days, cooldown_days, item_count, enabled_at, last_generated_at,
                last_error, last_error_at, updated_at
         FROM auto_collection_configs
         ORDER BY CASE platform WHEN 'viber' THEN 1 ELSE 2 END
     """)).mappings().all()
     return [dict(row) for row in rows]
+
+
+def config_rows(db: Session) -> List[Dict[str, Any]]:
+    """Публічний доступ для автопублікації: їй треба знати, де вимкнено перевірку."""
+    return _config_rows(db)
 
 
 def _serialize_config(row: Dict[str, Any], now: Optional[datetime] = None) -> Dict[str, Any]:
@@ -149,8 +158,8 @@ def _serialize_config(row: Dict[str, Any], now: Optional[datetime] = None) -> Di
             timezone_name=str(value["timezone"]),
         ) if value.get("enabled") else None
     )
-    value["manual_review_required"] = True
-    value["automatic_publishing"] = False
+    value["manual_review_required"] = not bool(value.get("auto_publish"))
+    value["automatic_publishing"] = bool(value.get("auto_publish"))
     return value
 
 
@@ -230,14 +239,14 @@ def update_config(db: Session, platform: str, payload: Dict[str, Any]) -> Dict[s
     )
     row = db.execute(text("""
         UPDATE auto_collection_configs
-           SET enabled=:enabled, weekday=:weekday,
+           SET enabled=:enabled, auto_publish=:auto_publish, weekday=:weekday,
                local_time=CAST(:local_time AS time), timezone=:timezone,
                period_days=:period_days, cooldown_days=:cooldown_days,
                item_count=:item_count, enabled_at=:enabled_at,
                last_error=NULL, last_error_at=NULL, updated_at=now()
          WHERE platform=:platform
-         RETURNING platform, enabled, weekday, local_time, timezone, period_days,
-                   cooldown_days, item_count, enabled_at, last_generated_at,
+         RETURNING platform, enabled, auto_publish, weekday, local_time, timezone,
+                   period_days, cooldown_days, item_count, enabled_at, last_generated_at,
                    last_error, last_error_at, updated_at
     """), {
         "platform": platform,
