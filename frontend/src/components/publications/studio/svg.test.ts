@@ -8,10 +8,11 @@
  * стає арифметикою, а не залежністю від шрифтів машини.
  */
 
-import { buildSvg, textBlockHeight, wrapLines } from './svg';
+import { adjustOverscan, buildSvg, textBlockHeight, wrapLines } from './svg';
 import {
-  CanvasFormat, DEFAULT_EXTRUDE, DEFAULT_GRADIENT, DEFAULT_PHOTO_FILTER,
-  DEFAULT_SHADOW, DEFAULT_STROKE, PostSpec, TextLayer, normalizeSpec,
+  CanvasFormat, DEFAULT_ADJUST, DEFAULT_EXTRUDE, DEFAULT_GRADIENT,
+  DEFAULT_PHOTO_FILTER, DEFAULT_SCRIM, DEFAULT_SHADOW, DEFAULT_STROKE,
+  DEFAULT_VIGNETTE, PostSpec, TextLayer, normalizeSpec,
 } from './types';
 
 beforeAll(() => {
@@ -43,6 +44,9 @@ const specWith = (layer: TextLayer): PostSpec => ({
     type: 'color', color: '#FFFFFF', assetId: null, fit: 'cover', scale: 1,
     offsetX: 0, offsetY: 0, overlay: '#000000', overlayOpacity: 0,
     filter: { ...DEFAULT_PHOTO_FILTER },
+    adjust: { ...DEFAULT_ADJUST },
+    vignette: { ...DEFAULT_VIGNETTE },
+    scrim: { ...DEFAULT_SCRIM },
   },
   layers: [layer],
 });
@@ -153,4 +157,86 @@ test('макет без полів ефектів відкривається і 
   expect(spec.layers[0]).toMatchObject({ fillType: 'solid' });
   expect((spec.layers[0] as TextLayer).shadow.enabled).toBe(false);
   expect(() => buildSvg(spec, FORMAT, resources)).not.toThrow();
+});
+
+/* ── Фото: геометрія, віньєтка, затемнення ──────────────────────────────── */
+
+const withBackground = (patch: Record<string, unknown>): PostSpec => ({
+  ...specWith(textLayer()),
+  background: {
+    type: 'asset', color: '#FFFFFF', assetId: 7, fit: 'cover', scale: 1,
+    offsetX: 0, offsetY: 0, overlay: '#000000', overlayOpacity: 0,
+    filter: { ...DEFAULT_PHOTO_FILTER },
+    adjust: { ...DEFAULT_ADJUST },
+    vignette: { ...DEFAULT_VIGNETTE },
+    scrim: { ...DEFAULT_SCRIM },
+    ...patch,
+  } as PostSpec['background'],
+});
+
+const photoResources = {
+  assetHref: () => 'data:image/webp;base64,AA',
+  assetSize: () => ({ width: 2000, height: 1500 }),
+  fonts: [],
+};
+
+const renderBackground = (patch: Record<string, unknown>) =>
+  buildSvg(withBackground(patch), FORMAT, photoResources);
+
+test('дзеркало й поворот лягають одним перетворенням', () => {
+  const svg = renderBackground({
+    adjust: { ...DEFAULT_ADJUST, flipX: true, rotate: -6 },
+  });
+  expect(svg).toContain('rotate(-6)');
+  expect(svg).toContain('scale(-1 1)');
+});
+
+test('без правок геометрії зайвого transform немає', () => {
+  expect(renderBackground({})).not.toContain('skewX');
+});
+
+test('нахил дає кадру запас, щоб не з\'явився порожній кут', () => {
+  expect(adjustOverscan({ ...DEFAULT_ADJUST })).toBe(1);
+  expect(adjustOverscan({ ...DEFAULT_ADJUST, rotate: 10 })).toBeGreaterThan(1);
+  // Запас обмежений: інакше сильний нахил непомітно «з'їдав» би пів кадру.
+  expect(adjustOverscan({ ...DEFAULT_ADJUST, rotate: 45, tiltX: 20, tiltY: 20 }))
+    .toBeLessThanOrEqual(1.6);
+});
+
+test('віньєтка малюється радіальним градієнтом і лише коли увімкнена', () => {
+  expect(renderBackground({})).not.toContain('bgVignette');
+  const svg = renderBackground({
+    vignette: { enabled: true, strength: 0.6, softness: 0.5, color: '#000000' },
+  });
+  expect(svg).toContain('<radialGradient id="bgVignette"');
+  expect(svg).toContain('stop-opacity="0.6"');
+});
+
+test('затемнення знизу — лінійний градієнт із прозорим верхом', () => {
+  const svg = renderBackground({
+    scrim: { mode: 'bottom', color: '#000000', opacity: 0.6 },
+  });
+  expect(svg).toContain('<linearGradient id="bgScrim"');
+  expect(svg).toContain('stop-opacity="0"');
+  expect(svg).toContain('stop-opacity="0.6"');
+});
+
+test('вимкнене затемнення не лишає слідів', () => {
+  expect(renderBackground({ scrim: { mode: 'none', color: '#000', opacity: 0.9 } }))
+    .not.toContain('bgScrim');
+});
+
+test('дзеркалення фото-шару не перевертає його рамку обрізки', () => {
+  const spec: PostSpec = {
+    ...specWith(textLayer()),
+    layers: [{
+      id: 'img', type: 'image', assetId: 7, x: 100, y: 100, width: 400, height: 300,
+      rotation: 0, opacity: 1, radius: 40,
+      filter: { ...DEFAULT_PHOTO_FILTER }, flipX: true, flipY: false,
+    }],
+  };
+  const svg = buildSvg(spec, FORMAT, photoResources);
+  // Обрізка лишається на групі, дзеркало — на самому зображенні.
+  expect(svg).toContain('<g clip-path="url(#clip_img)"');
+  expect(svg).toContain('scale(-1 1)');
 });

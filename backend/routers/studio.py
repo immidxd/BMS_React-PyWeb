@@ -23,10 +23,12 @@ logger = logging.getLogger(__name__)
 try:
     from models.database import get_db
     from services import studio
+    from services import studio_fonts
     from services import studio_publish
 except ImportError:  # запуск з кореня репо
     from backend.models.database import get_db  # type: ignore
     from backend.services import studio  # type: ignore
+    from backend.services import studio_fonts  # type: ignore
     from backend.services import studio_publish  # type: ignore
 
 router = APIRouter()
@@ -198,6 +200,40 @@ async def add_fonts(files: List[UploadFile] = File(...),
         reasons = "; ".join(f"{e['file']}: {e['reason']}" for e in errors)
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                             detail=f"Жоден шрифт не додано: {reasons}")
+    return {"added": len(added), "items": added, "errors": errors}
+
+
+@router.get("/api/studio/fonts/system")
+def system_fonts(refresh: int = Query(0, ge=0, le=1)):
+    """Шрифти, встановлені на цьому пристрої.
+
+    Читання майже тисячі гарнітур займає секунди, тому відповідь кешується й
+    перечитується лише коли теки шрифтів змінились (або на явний `refresh=1`)."""
+    return studio_fonts.catalogue(refresh=bool(refresh))
+
+
+@router.post("/api/studio/fonts/system/import")
+def import_system_fonts(payload: dict = Body(...), db: Session = Depends(get_db)):
+    """Перенести обрані гарнітури з пристрою в майстерню.
+
+    Саме копія, а не посилання на файл: макет має збиратись однаково й на
+    іншій машині, де цього шрифта немає."""
+    tokens = payload.get("tokens")
+    if not isinstance(tokens, list) or not tokens:
+        raise HTTPException(status_code=400, detail="Не обрано жодного накреслення")
+    added, errors = [], []
+    for token in tokens[:40]:
+        try:
+            added.append(studio_fonts.import_face(db, str(token)))
+        except studio.StudioError as exc:
+            errors.append({"token": str(token)[:24], "reason": str(exc)})
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("studio: системний шрифт не імпортовано")
+            errors.append({"token": str(token)[:24], "reason": str(exc)})
+    if not added and errors:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="; ".join(item["reason"] for item in errors))
     return {"added": len(added), "items": added, "errors": errors}
 
 

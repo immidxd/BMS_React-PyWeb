@@ -51,7 +51,11 @@ lxml==6.1.0
 
 # Image processing (фото товару → WebP-майстер; HEIC = формат iPhone)
 Pillow==12.2.0
+# Шрифти пристрою для майстерні: метадані гарнітур і витяг з колекцій .ttc
+fonttools==4.63.0
 pillow-heif==1.4.0
+# Шрифти пристрою для майстерні: метадані гарнітур і витяг з колекцій .ttc
+fonttools==4.63.0
 
 # Telegram integration
 telethon==1.36.0

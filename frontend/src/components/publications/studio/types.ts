@@ -91,6 +91,36 @@ export type PhotoFilter = {
   blur: number;
 };
 
+/** Геометрія кадру — те, що в телефоні роблять пальцями.
+ *
+ *  `rotate` виправляє завалений горизонт. `tiltX`/`tiltY` — нахил по осях;
+ *  SVG вміє лише афінні перетворення, тож це скіс, а не справжня
+ *  перспектива: на невеликих кутах він виправляє «завал» стін і полиць, на
+ *  великих — помітно тягне кадр. Тому межі свідомо вузькі. */
+export type PhotoAdjust = {
+  flipX: boolean;
+  flipY: boolean;
+  rotate: number;
+  tiltX: number;
+  tiltY: number;
+};
+
+/** Віньєтка — притемнення (або засвіт) по краях кадру. */
+export type Vignette = {
+  enabled: boolean;
+  strength: number;
+  softness: number;
+  color: string;
+};
+
+/** Градієнтне затемнення/засвітлення. Не «фільтр краси», а робочий
+ *  інструмент: підкладка під текст, щоб заголовок читався на будь-якому фото. */
+export type Scrim = {
+  mode: 'none' | 'top' | 'bottom' | 'both' | 'radial';
+  color: string;
+  opacity: number;
+};
+
 export const DEFAULT_SHADOW: Shadow = {
   enabled: false, color: '#000000', dx: 0, dy: 8, blur: 12, opacity: 0.35,
 };
@@ -102,6 +132,13 @@ export const DEFAULT_GRADIENT: Gradient = { from: '#4E2358', to: '#B790BF', angl
 export const DEFAULT_PHOTO_FILTER: PhotoFilter = {
   brightness: 1, contrast: 1, saturation: 1, blur: 0,
 };
+export const DEFAULT_ADJUST: PhotoAdjust = {
+  flipX: false, flipY: false, rotate: 0, tiltX: 0, tiltY: 0,
+};
+export const DEFAULT_VIGNETTE: Vignette = {
+  enabled: false, strength: 0.45, softness: 0.55, color: '#000000',
+};
+export const DEFAULT_SCRIM: Scrim = { mode: 'none', color: '#000000', opacity: 0.45 };
 
 /** Роль тексту в макеті. Саме вона, а не «розмір 72», тримає єдиний стиль:
  *  людина обирає «Заголовок», а типографіку підставляє шаблон. */
@@ -147,6 +184,8 @@ export type ImageLayer = {
   opacity: number;
   radius: number;
   filter: PhotoFilter;
+  flipX: boolean;
+  flipY: boolean;
 };
 
 export type Layer = TextLayer | ImageLayer;
@@ -160,10 +199,14 @@ export type Background = {
   scale: number;
   offsetX: number;
   offsetY: number;
-  /** Затемнення/освітлення поверх фото — щоб текст читався на будь-якому кадрі. */
+  /** Рівномірне затемнення/освітлення поверх фото. Градієнтний варіант —
+   *  у `scrim`; це лишається як найпростіший спосіб «прибрати» яскраве тло. */
   overlay: string;
   overlayOpacity: number;
   filter: PhotoFilter;
+  adjust: PhotoAdjust;
+  vignette: Vignette;
+  scrim: Scrim;
 };
 
 export type PostSpec = {
@@ -229,6 +272,8 @@ export const normalizeLayer = (layer: any): Layer => {
     return {
       ...layer,
       filter: { ...DEFAULT_PHOTO_FILTER, ...(layer.filter || {}) },
+      flipX: Boolean(layer.flipX),
+      flipY: Boolean(layer.flipY),
     } as ImageLayer;
   }
   return {
@@ -255,6 +300,9 @@ export const normalizeSpec = (spec: any, fallbackFormat: CanvasFormatKey): PostS
     overlay: spec?.background?.overlay || '#000000',
     overlayOpacity: spec?.background?.overlayOpacity ?? 0,
     filter: { ...DEFAULT_PHOTO_FILTER, ...(spec?.background?.filter || {}) },
+    adjust: { ...DEFAULT_ADJUST, ...(spec?.background?.adjust || {}) },
+    vignette: { ...DEFAULT_VIGNETTE, ...(spec?.background?.vignette || {}) },
+    scrim: { ...DEFAULT_SCRIM, ...(spec?.background?.scrim || {}) },
   },
   layers: Array.isArray(spec?.layers) ? spec.layers.map(normalizeLayer) : [],
 });

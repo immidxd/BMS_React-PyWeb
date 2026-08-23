@@ -14,8 +14,8 @@
  */
 
 import type {
-  CanvasFormat, Gradient, ImageLayer, Layer, PhotoFilter, PostSpec, Shadow,
-  StudioFont, TextLayer,
+  CanvasFormat, Gradient, ImageLayer, Layer, PhotoAdjust, PhotoFilter, PostSpec,
+  Scrim, Shadow, StudioFont, TextLayer, Vignette,
 } from './types';
 import { FALLBACK_FAMILY } from './types';
 
@@ -130,6 +130,73 @@ const gradientDef = (id: string, gradient: Gradient): string => {
   );
 };
 
+/** Геометрія кадру навколо його центру: дзеркало, поворот, нахил.
+ *
+ *  Порядок множників має значення: спершу дзеркалимо, потім нахиляємо, і аж
+ *  тоді повертаємо. Інакше «завалений горизонт» після дзеркала виправлявся б
+ *  у протилежний бік — рух мишею йшов би не туди, куди дивиться людина.
+ */
+const adjustTransform = (adjust: PhotoAdjust | undefined, cx: number, cy: number): string => {
+  const a = { flipX: false, flipY: false, rotate: 0, tiltX: 0, tiltY: 0, ...(adjust || {}) };
+  const parts: string[] = [];
+  if (a.rotate) parts.push(`rotate(${round(a.rotate)})`);
+  if (a.tiltX) parts.push(`skewX(${round(a.tiltX)})`);
+  if (a.tiltY) parts.push(`skewY(${round(a.tiltY)})`);
+  if (a.flipX || a.flipY) parts.push(`scale(${a.flipX ? -1 : 1} ${a.flipY ? -1 : 1})`);
+  if (!parts.length) return '';
+  return ` transform="translate(${round(cx)} ${round(cy)}) ${parts.join(' ')} translate(${round(-cx)} ${round(-cy)})"`;
+};
+
+/** Скільки «запасу» треба фото, щоб після нахилу й повороту в кадрі не
+ *  з'явився порожній кут. Дешевше домалювати запас, ніж пояснювати людині,
+ *  чому виправлення горизонту лишає білий трикутник. */
+export const adjustOverscan = (adjust?: PhotoAdjust): number => {
+  const a = { rotate: 0, tiltX: 0, tiltY: 0, ...(adjust || {}) };
+  const magnitude = Math.abs(a.rotate) + Math.abs(a.tiltX) + Math.abs(a.tiltY);
+  return magnitude ? 1 + Math.min(0.6, magnitude / 45) : 1;
+};
+
+const vignetteMarkup = (vignette: Vignette | undefined, format: CanvasFormat,
+                        defs: string[], id: string): string => {
+  if (!vignette?.enabled || vignette.strength <= 0) return '';
+  // Прозорий центр → колір по краях. `softness` рухає початок затемнення:
+  // менше значення = різкіше кільце.
+  const start = Math.max(0.05, Math.min(0.95, 1 - vignette.softness));
+  defs.push(
+    `<radialGradient id="${id}" cx="0.5" cy="0.5" r="0.75">` +
+    `<stop offset="${round(start)}" stop-color="${escapeXml(vignette.color)}" stop-opacity="0"/>` +
+    `<stop offset="1" stop-color="${escapeXml(vignette.color)}" stop-opacity="${round(vignette.strength)}"/>` +
+    `</radialGradient>`,
+  );
+  return `<rect x="0" y="0" width="${format.width}" height="${format.height}" fill="url(#${id})"/>`;
+};
+
+const scrimMarkup = (scrim: Scrim | undefined, format: CanvasFormat,
+                     defs: string[], id: string): string => {
+  if (!scrim || scrim.mode === 'none' || scrim.opacity <= 0) return '';
+  const color = escapeXml(scrim.color);
+  const alpha = round(scrim.opacity);
+  if (scrim.mode === 'radial') {
+    defs.push(
+      `<radialGradient id="${id}" cx="0.5" cy="0.5" r="0.7">` +
+      `<stop offset="0" stop-color="${color}" stop-opacity="${alpha}"/>` +
+      `<stop offset="1" stop-color="${color}" stop-opacity="0"/></radialGradient>`,
+    );
+  } else {
+    const stops = scrim.mode === 'top'
+      ? `<stop offset="0" stop-color="${color}" stop-opacity="${alpha}"/>` +
+        `<stop offset="0.55" stop-color="${color}" stop-opacity="0"/>`
+      : scrim.mode === 'bottom'
+        ? `<stop offset="0.45" stop-color="${color}" stop-opacity="0"/>` +
+          `<stop offset="1" stop-color="${color}" stop-opacity="${alpha}"/>`
+        : `<stop offset="0" stop-color="${color}" stop-opacity="${alpha}"/>` +
+          `<stop offset="0.5" stop-color="${color}" stop-opacity="0"/>` +
+          `<stop offset="1" stop-color="${color}" stop-opacity="${alpha}"/>`;
+    defs.push(`<linearGradient id="${id}" x1="0" y1="0" x2="0" y2="1">${stops}</linearGradient>`);
+  }
+  return `<rect x="0" y="0" width="${format.width}" height="${format.height}" fill="url(#${id})"/>`;
+};
+
 /* ── Фон ────────────────────────────────────────────────────────────────── */
 
 type Resources = {
@@ -156,7 +223,10 @@ const backgroundMarkup = (
   // ані масштабу від людини, ані зсуву.
   const cover = Math.max(format.width / size.width, format.height / size.height);
   const contain = Math.min(format.width / size.width, format.height / size.height);
-  const scale = (bg.fit === 'cover' ? cover : contain) * (bg.scale || 1);
+  // Запас під поворот і нахил: без нього виправлений горизонт лишає в куті
+  // порожній трикутник.
+  const overscan = adjustOverscan(bg.adjust);
+  const scale = (bg.fit === 'cover' ? cover : contain) * (bg.scale || 1) * overscan;
   const width = size.width * scale;
   const height = size.height * scale;
   const x = (format.width - width) / 2 + (bg.offsetX || 0);
@@ -165,17 +235,24 @@ const backgroundMarkup = (
   const filterDef = photoFilterDef('bgFilter', bg.filter);
   if (filterDef) defs.push(filterDef);
   const filterAttr = filterDef ? ' filter="url(#bgFilter)"' : '';
+  const geometry = adjustTransform(bg.adjust, format.width / 2, format.height / 2);
 
   const overlay = bg.overlayOpacity > 0
     ? `<rect x="0" y="0" width="${format.width}" height="${format.height}" fill="${escapeXml(bg.overlay)}" opacity="${round(bg.overlayOpacity)}"/>`
     : '';
+  // Порядок шарів фону: фото → рівномірне затемнення → градієнт під текст →
+  // віньєтка. Віньєтка остання навмисно: вона має обрамляти вже готовий кадр,
+  // а не ховатись під підкладкою заголовка.
+  const scrim = scrimMarkup(bg.scrim, format, defs, 'bgScrim');
+  const vignette = vignetteMarkup(bg.vignette, format, defs, 'bgVignette');
   // Фон завжди підрізаний полотном: із масштабом і зсувом фото свідомо більше
   // за кадр, і без обрізки воно вилазило б за межі SVG.
   return (
     `${base}<svg x="0" y="0" width="${format.width}" height="${format.height}"` +
     ` viewBox="0 0 ${format.width} ${format.height}" overflow="hidden">` +
     `<image href="${href}" x="${round(x)}" y="${round(y)}" width="${round(width)}"` +
-    ` height="${round(height)}" preserveAspectRatio="none"${filterAttr}/></svg>${overlay}`
+    ` height="${round(height)}" preserveAspectRatio="none"${filterAttr}${geometry}/></svg>` +
+    `${overlay}${scrim}${vignette}`
   );
 };
 
@@ -261,12 +338,18 @@ const imageMarkup = (layer: ImageLayer, res: Resources, defs: string[]): string 
   const filterDef = photoFilterDef(`pf_${layer.id}`, layer.filter);
   if (filterDef) defs.push(filterDef);
   const filterAttr = filterDef ? ` filter="url(#pf_${layer.id})"` : '';
-  return (
+  // Дзеркало окремим обгортанням: обрізка (`clip-path`) задана в координатах
+  // полотна, і якби відображення застосувалось разом із нею, разом із фото
+  // перевернулася б і сама рамка.
+  const mirrored = layer.flipX || layer.flipY;
+  const image =
     `<image href="${href}" x="${round(layer.x)}" y="${round(layer.y)}"` +
     ` width="${round(layer.width)}" height="${round(layer.height)}"` +
     ` opacity="${round(layer.opacity)}" preserveAspectRatio="xMidYMid slice"` +
-    `${clip}${filterAttr}${transform(layer, layer.width, layer.height)}/>`
-  );
+    `${filterAttr}${mirrored ? adjustTransform(
+      { flipX: Boolean(layer.flipX), flipY: Boolean(layer.flipY), rotate: 0, tiltX: 0, tiltY: 0 },
+      layer.x + layer.width / 2, layer.y + layer.height / 2) : ''}/>`;
+  return `<g${clip}${transform(layer, layer.width, layer.height)}>${image}</g>`;
 };
 
 /* ── Складання документа ────────────────────────────────────────────────── */

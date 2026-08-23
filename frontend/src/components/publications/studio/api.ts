@@ -172,3 +172,30 @@ export const fetchPublications = (id: number) =>
 export const syncPublications = (id?: number) =>
   send<{ ok: boolean; checked: number; updated: number }>(
     '/api/studio/publish/sync', 'POST', id ? { post_id: id } : {});
+
+/* ── Шрифти пристрою ────────────────────────────────────────────────────── */
+
+export type SystemFace = {
+  token: string;
+  subfamily: string;
+  weight: number;
+  weight_label: string;
+  italic: boolean;
+  has_cyrillic: boolean | null;
+  format: string;
+};
+
+export type SystemFamily = {
+  family: string;
+  source: 'user' | 'system';
+  has_cyrillic: boolean;
+  faces: SystemFace[];
+};
+
+export const fetchSystemFonts = (refresh = false) =>
+  fetch(`/api/studio/fonts/system${refresh ? '?refresh=1' : ''}`)
+    .then(json<{ families: SystemFamily[]; fonttools: boolean }>);
+
+export const importSystemFonts = (tokens: string[]) =>
+  send<{ added: number; items: StudioFont[]; errors: Array<{ reason: string }> }>(
+    '/api/studio/fonts/system/import', 'POST', { tokens });
