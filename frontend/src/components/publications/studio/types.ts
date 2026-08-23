@@ -61,6 +61,48 @@ export type StudioCollection = {
   sort_order: number;
 };
 
+/* ── Ефекти ───────────────────────────────────────────────────────────────
+ * Усе, що нижче, малює SVG рідними засобами — градієнт заливкою, тінь
+ * фільтром, обведення `paint-order`, «3D» шаром зміщених копій. Тому ефект,
+ * побачений у редакторі, потрапляє в растр буквально тим самим кодом.
+ */
+
+export type Gradient = { from: string; to: string; angle: number };
+
+export type Shadow = {
+  enabled: boolean;
+  color: string;
+  dx: number;
+  dy: number;
+  blur: number;
+  opacity: number;
+};
+
+export type Stroke = { enabled: boolean; color: string; width: number };
+
+/** Об'ємні літери: копії тексту, зміщені під кутом углиб кадру. */
+export type Extrude = { enabled: boolean; depth: number; angle: number; color: string };
+
+/** Обробка фото. Насиченість 0 = чорно-біле, тому окремого «ч/б» немає. */
+export type PhotoFilter = {
+  brightness: number;
+  contrast: number;
+  saturation: number;
+  blur: number;
+};
+
+export const DEFAULT_SHADOW: Shadow = {
+  enabled: false, color: '#000000', dx: 0, dy: 8, blur: 12, opacity: 0.35,
+};
+export const DEFAULT_STROKE: Stroke = { enabled: false, color: '#FFFFFF', width: 6 };
+export const DEFAULT_EXTRUDE: Extrude = {
+  enabled: false, depth: 12, angle: 45, color: '#B790BF',
+};
+export const DEFAULT_GRADIENT: Gradient = { from: '#4E2358', to: '#B790BF', angle: 90 };
+export const DEFAULT_PHOTO_FILTER: PhotoFilter = {
+  brightness: 1, contrast: 1, saturation: 1, blur: 0,
+};
+
 /** Роль тексту в макеті. Саме вона, а не «розмір 72», тримає єдиний стиль:
  *  людина обирає «Заголовок», а типографіку підставляє шаблон. */
 export type TextRole = 'title' | 'subtitle' | 'body' | 'caption';
@@ -86,6 +128,11 @@ export type TextLayer = {
   color: string;
   decoration: 'none' | 'underline' | 'line-through';
   uppercase: boolean;
+  fillType: 'solid' | 'gradient';
+  gradient: Gradient;
+  shadow: Shadow;
+  stroke: Stroke;
+  extrude: Extrude;
 };
 
 export type ImageLayer = {
@@ -99,6 +146,7 @@ export type ImageLayer = {
   rotation: number;
   opacity: number;
   radius: number;
+  filter: PhotoFilter;
 };
 
 export type Layer = TextLayer | ImageLayer;
@@ -115,6 +163,7 @@ export type Background = {
   /** Затемнення/освітлення поверх фото — щоб текст читався на будь-якому кадрі. */
   overlay: string;
   overlayOpacity: number;
+  filter: PhotoFilter;
 };
 
 export type PostSpec = {
@@ -168,3 +217,44 @@ export const FALLBACK_FAMILY = 'Avenir Next, Helvetica Neue, Arial, sans-serif';
 
 export const newId = (): string =>
   `l${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
+
+/* ── Сумісність зі старими постами ─────────────────────────────────────────
+ * Макети, збережені до появи ефектів, не мають цих полів. Домальовуємо
+ * значення за замовчуванням при читанні — інакше редактор упав би на
+ * `layer.shadow.enabled` вже на першому відкритті старої чернетки.
+ */
+
+export const normalizeLayer = (layer: any): Layer => {
+  if (layer?.type === 'image') {
+    return {
+      ...layer,
+      filter: { ...DEFAULT_PHOTO_FILTER, ...(layer.filter || {}) },
+    } as ImageLayer;
+  }
+  return {
+    ...layer,
+    fillType: layer?.fillType === 'gradient' ? 'gradient' : 'solid',
+    gradient: { ...DEFAULT_GRADIENT, ...(layer?.gradient || {}) },
+    shadow: { ...DEFAULT_SHADOW, ...(layer?.shadow || {}) },
+    stroke: { ...DEFAULT_STROKE, ...(layer?.stroke || {}) },
+    extrude: { ...DEFAULT_EXTRUDE, ...(layer?.extrude || {}) },
+  } as TextLayer;
+};
+
+export const normalizeSpec = (spec: any, fallbackFormat: CanvasFormatKey): PostSpec => ({
+  version: 1,
+  format: spec?.format || fallbackFormat,
+  background: {
+    type: spec?.background?.type === 'asset' ? 'asset' : 'color',
+    color: spec?.background?.color || '#F4F1F6',
+    assetId: spec?.background?.assetId ?? null,
+    fit: spec?.background?.fit === 'contain' ? 'contain' : 'cover',
+    scale: spec?.background?.scale ?? 1,
+    offsetX: spec?.background?.offsetX ?? 0,
+    offsetY: spec?.background?.offsetY ?? 0,
+    overlay: spec?.background?.overlay || '#000000',
+    overlayOpacity: spec?.background?.overlayOpacity ?? 0,
+    filter: { ...DEFAULT_PHOTO_FILTER, ...(spec?.background?.filter || {}) },
+  },
+  layers: Array.isArray(spec?.layers) ? spec.layers.map(normalizeLayer) : [],
+});

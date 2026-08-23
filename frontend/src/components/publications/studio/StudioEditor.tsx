@@ -5,10 +5,13 @@ import {
   buildFontFaces, buildSvg, collectAssetDataUrls, svgToPngBlob, textBlockHeight,
 } from './svg';
 import {
-  CanvasFormat, CanvasFormatKey, ImageLayer, Layer, PlatformKey, PostSpec,
-  PostTarget, StudioAsset, StudioConfig, StudioFont, StudioPost, TextLayer,
-  TextRole, TEXT_ROLE_PRESETS, newId,
+  CanvasFormat, CanvasFormatKey, DEFAULT_EXTRUDE, DEFAULT_GRADIENT,
+  DEFAULT_PHOTO_FILTER, DEFAULT_SHADOW, DEFAULT_STROKE, ImageLayer, Layer,
+  PhotoFilter, PlatformKey, PostSpec, PostTarget, StudioAsset, StudioConfig,
+  StudioFont, StudioPost, TextLayer, TextRole, TEXT_ROLE_PRESETS, newId,
+  normalizeSpec,
 } from './types';
+import { useIsActivePage } from '../../../contexts/ActivePageContext';
 
 /**
  * Конструктор поста.
@@ -43,6 +46,7 @@ export const emptySpec = (format: CanvasFormatKey): PostSpec => ({
   background: {
     type: 'color', color: '#F4F1F6', assetId: null, fit: 'cover',
     scale: 1, offsetX: 0, offsetY: 0, overlay: '#000000', overlayOpacity: 0,
+    filter: { ...DEFAULT_PHOTO_FILTER },
   },
   layers: [],
 });
@@ -63,6 +67,33 @@ const scaleLayer = (layer: Layer, kx: number, ky: number): Layer => {
   };
 };
 
+/** Повзунки обробки фото. Один компонент і для фону, і для фото-шару —
+ *  обробка в обох випадках однакова, а два різні набори контролів на ту саму
+ *  дію лише плутали б. */
+const PhotoFilterControls: React.FC<{
+  value: PhotoFilter;
+  onChange: (patch: Partial<PhotoFilter>) => void;
+}> = ({ value, onChange }) => (
+  <div className="grid grid-cols-2 gap-2">
+    <label className={LABEL}>Яскравість
+      <input type="range" min={0.4} max={1.8} step={0.01} value={value.brightness}
+        onChange={event => onChange({ brightness: Number(event.target.value) })} className="w-full" />
+    </label>
+    <label className={LABEL}>Контраст
+      <input type="range" min={0.4} max={2} step={0.01} value={value.contrast}
+        onChange={event => onChange({ contrast: Number(event.target.value) })} className="w-full" />
+    </label>
+    <label className={LABEL}>Насиченість (0 = ч/б)
+      <input type="range" min={0} max={2} step={0.01} value={value.saturation}
+        onChange={event => onChange({ saturation: Number(event.target.value) })} className="w-full" />
+    </label>
+    <label className={LABEL}>Розмиття
+      <input type="range" min={0} max={24} step={0.5} value={value.blur}
+        onChange={event => onChange({ blur: Number(event.target.value) })} className="w-full" />
+    </label>
+  </div>
+);
+
 type Props = {
   post: StudioPost;
   config: StudioConfig;
@@ -75,7 +106,11 @@ type Props = {
 const StudioEditor: React.FC<Props> = ({ post, config, fonts, onSaved, onDeleted, onClose }) => {
   const [title, setTitle] = useState(post.title);
   const [caption, setCaption] = useState(post.caption || '');
-  const [spec, setSpec] = useState<PostSpec>(post.spec?.layers ? post.spec : emptySpec(post.base_format));
+  // Старі чернетки не мають полів ефектів — домальовуємо їх при відкритті,
+  // інакше редактор упав би на `layer.shadow.enabled`.
+  const [spec, setSpec] = useState<PostSpec>(
+    post.spec?.layers ? normalizeSpec(post.spec, post.base_format) : emptySpec(post.base_format),
+  );
   const [targets, setTargets] = useState<PostTarget[]>(post.targets || []);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [assets, setAssets] = useState<StudioAsset[]>([]);
@@ -84,11 +119,16 @@ const StudioEditor: React.FC<Props> = ({ post, config, fonts, onSaved, onDeleted
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [stageWidth, setStageWidth] = useState(360);
+  const [guides, setGuides] = useState<{ x: number | null; y: number | null }>({ x: null, y: null });
+  const [canUndo, setCanUndo] = useState(false);
+  const [canRedo, setCanRedo] = useState(false);
+  const isActivePage = useIsActivePage();
 
   const stageRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<{
     id: string; mode: 'move' | 'resize'; startX: number; startY: number;
     originX: number; originY: number; originW: number; originH: number;
+    dragHeight: number;
   } | null>(null);
 
   const format: CanvasFormat = useMemo(
@@ -114,6 +154,31 @@ const StudioEditor: React.FC<Props> = ({ post, config, fonts, onSaved, onDeleted
 
   const scale = stageWidth / format.width;
   const stageHeight = Math.round(format.height * scale);
+
+  /** Прилипання до країв, полів і центру полотна. Числа в макеті рідко бувають
+   *  «на око» правильними — краще, щоб заголовок сам ставав рівно по центру,
+   *  ніж щоб людина ловила його мишею. */
+  const snapPosition = useCallback((x: number, y: number, width: number, height: number) => {
+    const tolerance = 14;
+    const margin = Math.round(format.width * 0.08);
+    const xCandidates: Array<[number, number]> = [
+      [0, 0], [margin, margin], [format.width / 2 - width / 2, format.width / 2],
+      [format.width - width, format.width], [format.width - margin - width, format.width - margin],
+    ];
+    const yCandidates: Array<[number, number]> = [
+      [0, 0], [margin, margin], [format.height / 2 - height / 2, format.height / 2],
+      [format.height - height, format.height], [format.height - margin - height, format.height - margin],
+    ];
+    let guideX: number | null = null;
+    let guideY: number | null = null;
+    for (const [candidate, guide] of xCandidates) {
+      if (Math.abs(x - candidate) <= tolerance) { x = Math.round(candidate); guideX = guide; break; }
+    }
+    for (const [candidate, guide] of yCandidates) {
+      if (Math.abs(y - candidate) <= tolerance) { y = Math.round(candidate); guideY = guide; break; }
+    }
+    return { x, y, guideX, guideY };
+  }, [format.width, format.height]);
 
   const assetById = useCallback(
     (id: number) => assets.find(asset => asset.id === id) || null, [assets],
@@ -141,6 +206,50 @@ const StudioEditor: React.FC<Props> = ({ post, config, fonts, onSaved, onDeleted
     }));
   }, []);
 
+  /* ── Історія (Ctrl+Z) ──────────────────────────────────────────────── */
+
+  // Знімок робиться із затримкою: інакше кожен рух повзунка кегля лишав би
+  // окремий крок, і скасування довелось би тиснути двадцять разів поспіль.
+  const historyRef = useRef<{ past: PostSpec[]; future: PostSpec[] }>({ past: [], future: [] });
+  const snapshotRef = useRef<string>(JSON.stringify(spec));
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      const current = JSON.stringify(spec);
+      if (current === snapshotRef.current) return;
+      const history = historyRef.current;
+      history.past.push(JSON.parse(snapshotRef.current));
+      if (history.past.length > 60) history.past.shift();
+      history.future = [];
+      snapshotRef.current = current;
+      setCanUndo(true);
+      setCanRedo(false);
+    }, 400);
+    return () => window.clearTimeout(timer);
+  }, [spec]);
+
+  const undo = useCallback(() => {
+    const history = historyRef.current;
+    const previous = history.past.pop();
+    if (!previous) return;
+    history.future.push(JSON.parse(snapshotRef.current));
+    snapshotRef.current = JSON.stringify(previous);
+    setSpec(previous);
+    setCanUndo(history.past.length > 0);
+    setCanRedo(true);
+  }, []);
+
+  const redo = useCallback(() => {
+    const history = historyRef.current;
+    const next = history.future.pop();
+    if (!next) return;
+    history.past.push(JSON.parse(snapshotRef.current));
+    snapshotRef.current = JSON.stringify(next);
+    setSpec(next);
+    setCanUndo(true);
+    setCanRedo(history.future.length > 0);
+  }, []);
+
   /* ── Перетягування ─────────────────────────────────────────────────── */
 
   useEffect(() => {
@@ -150,7 +259,11 @@ const StudioEditor: React.FC<Props> = ({ post, config, fonts, onSaved, onDeleted
       const dx = (event.clientX - drag.startX) / scale;
       const dy = (event.clientY - drag.startY) / scale;
       if (drag.mode === 'move') {
-        patchLayer(drag.id, { x: Math.round(drag.originX + dx), y: Math.round(drag.originY + dy) });
+        const snapped = snapPosition(
+          drag.originX + dx, drag.originY + dy, drag.originW, drag.dragHeight,
+        );
+        patchLayer(drag.id, { x: snapped.x, y: snapped.y });
+        setGuides({ x: snapped.guideX, y: snapped.guideY });
       } else {
         patchLayer(drag.id, {
           width: Math.max(40, Math.round(drag.originW + dx)),
@@ -158,14 +271,14 @@ const StudioEditor: React.FC<Props> = ({ post, config, fonts, onSaved, onDeleted
         });
       }
     };
-    const up = () => { dragRef.current = null; };
+    const up = () => { dragRef.current = null; setGuides({ x: null, y: null }); };
     window.addEventListener('pointermove', move);
     window.addEventListener('pointerup', up);
     return () => {
       window.removeEventListener('pointermove', move);
       window.removeEventListener('pointerup', up);
     };
-  }, [patchLayer, scale]);
+  }, [patchLayer, scale, snapPosition]);
 
   const startDrag = (event: React.PointerEvent, layer: Layer, mode: 'move' | 'resize') => {
     event.stopPropagation();
@@ -176,6 +289,9 @@ const StudioEditor: React.FC<Props> = ({ post, config, fonts, onSaved, onDeleted
       originX: layer.x, originY: layer.y,
       originW: layer.width,
       originH: layer.type === 'image' ? layer.height : 0,
+      // Висота потрібна прилипанню: текст «по центру» — це центр його блоку,
+      // а не верхнього краю.
+      dragHeight: layer.type === 'image' ? layer.height : textBlockHeight(layer),
     };
   };
 
@@ -203,6 +319,11 @@ const StudioEditor: React.FC<Props> = ({ post, config, fonts, onSaved, onDeleted
       color: spec.background.type === 'asset' ? '#FFFFFF' : '#4E2358',
       decoration: 'none',
       uppercase: preset.uppercase,
+      fillType: 'solid',
+      gradient: { ...DEFAULT_GRADIENT },
+      shadow: { ...DEFAULT_SHADOW },
+      stroke: { ...DEFAULT_STROKE },
+      extrude: { ...DEFAULT_EXTRUDE },
     };
     setSpec(current => ({ ...current, layers: [...current.layers, layer] }));
     setSelectedId(layer.id);
@@ -216,15 +337,40 @@ const StudioEditor: React.FC<Props> = ({ post, config, fonts, onSaved, onDeleted
       x: Math.round(format.width * 0.3), y: Math.round(format.height * 0.3),
       width, height: Math.round(width * ratio),
       rotation: 0, opacity: 1, radius: 0,
+      filter: { ...DEFAULT_PHOTO_FILTER },
     };
     setSpec(current => ({ ...current, layers: [...current.layers, layer] }));
     setSelectedId(layer.id);
   };
 
-  const removeLayer = (id: string) => {
+  const removeLayer = useCallback((id: string) => {
     setSpec(current => ({ ...current, layers: current.layers.filter(layer => layer.id !== id) }));
     setSelectedId(null);
-  };
+  }, []);
+
+  /** Зсув шару стрілками. Читає САМЕ поточний стан, а не знімок із замикання:
+   *  два швидкі натискання потрапляють в один такт React, і обидва порахували б
+   *  крок від того самого старого значення — шар зупинявся б, а стрілка іншої
+   *  осі ще й повертала б попередню назад. */
+  const nudgeLayer = useCallback((id: string, dx: number, dy: number) => {
+    setSpec(current => ({
+      ...current,
+      layers: current.layers.map(layer => (
+        layer.id === id ? ({ ...layer, x: layer.x + dx, y: layer.y + dy } as Layer) : layer
+      )),
+    }));
+  }, []);
+
+  const duplicateLayer = useCallback((id: string) => {
+    setSpec(current => {
+      const source = current.layers.find(layer => layer.id === id);
+      if (!source) return current;
+      // Копія зі зсувом: точно поверх оригіналу її не видно, і людина думає,
+      // що дублювання не спрацювало.
+      const copy = { ...source, id: newId(), x: source.x + 24, y: source.y + 24 } as Layer;
+      return { ...current, layers: [...current.layers, copy] };
+    });
+  }, []);
 
   const moveLayer = (id: string, direction: -1 | 1) => {
     setSpec(current => {
@@ -236,6 +382,44 @@ const StudioEditor: React.FC<Props> = ({ post, config, fonts, onSaved, onDeleted
       return { ...current, layers };
     });
   };
+
+  // Клавіатура. isActivePage обов'язковий: сторінки залишаються змонтованими
+  // при перемиканні верхніх вкладок, і без нього Ctrl+Z із «Товарів» скасовував
+  // би правку в макеті, якого людина навіть не бачить.
+  useEffect(() => {
+    if (!isActivePage) return undefined;
+    const onKey = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target && /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName)) return;
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'z') {
+        event.preventDefault();
+        if (event.shiftKey) redo(); else undo();
+        return;
+      }
+      if (!selectedId) return;
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'd') {
+        event.preventDefault();
+        duplicateLayer(selectedId);
+        return;
+      }
+      if (event.key === 'Delete' || event.key === 'Backspace') {
+        event.preventDefault();
+        removeLayer(selectedId);
+        return;
+      }
+      const step = event.shiftKey ? 10 : 1;
+      const nudge: Record<string, [number, number]> = {
+        ArrowLeft: [-step, 0], ArrowRight: [step, 0],
+        ArrowUp: [0, -step], ArrowDown: [0, step],
+      };
+      const delta = nudge[event.key];
+      if (!delta) return;
+      event.preventDefault();
+      nudgeLayer(selectedId, delta[0], delta[1]);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [isActivePage, selectedId, nudgeLayer, removeLayer, duplicateLayer, undo, redo]);
 
   const changeFormat = (key: CanvasFormatKey) => {
     const next = config.formats.find(item => item.key === key);
@@ -344,6 +528,10 @@ const StudioEditor: React.FC<Props> = ({ post, config, fonts, onSaved, onDeleted
           />
         </div>
         <div className="flex items-center gap-2">
+          <button type="button" onClick={undo} disabled={!canUndo} title="Скасувати (⌘Z)"
+            className={`${BTN_GHOST} disabled:opacity-40`}>↶</button>
+          <button type="button" onClick={redo} disabled={!canRedo} title="Повернути (⇧⌘Z)"
+            className={`${BTN_GHOST} disabled:opacity-40`}>↷</button>
           <button type="button" onClick={() => void remove()} className={`${BTN} text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20`}>
             Видалити
           </button>
@@ -375,6 +563,14 @@ const StudioEditor: React.FC<Props> = ({ post, config, fonts, onSaved, onDeleted
           >
             <div className="pointer-events-none absolute inset-0 [&>svg]:h-full [&>svg]:w-full"
               dangerouslySetInnerHTML={{ __html: svg }} />
+            {guides.x !== null && (
+              <div className="pointer-events-none absolute top-0 h-full w-px bg-[var(--bms-accent)]"
+                style={{ left: guides.x * scale }} />
+            )}
+            {guides.y !== null && (
+              <div className="pointer-events-none absolute left-0 w-full border-t border-[var(--bms-accent)]"
+                style={{ top: guides.y * scale }} />
+            )}
             {spec.layers.map(layer => {
               const height = layer.type === 'text' ? textBlockHeight(layer) : layer.height;
               const isSelected = layer.id === selectedId;
@@ -479,6 +675,21 @@ const StudioEditor: React.FC<Props> = ({ post, config, fonts, onSaved, onDeleted
                 </label>
               </div>
             )}
+
+            {spec.background.type === 'asset' && (
+              <div className="mt-3 border-t border-gray-100 pt-3 dark:border-gray-700">
+                <div className={LABEL}>Обробка фону</div>
+                <div className="mt-2">
+                  <PhotoFilterControls
+                    value={spec.background.filter}
+                    onChange={patch => setSpec(current => ({
+                      ...current,
+                      background: { ...current.background, filter: { ...current.background.filter, ...patch } },
+                    }))}
+                  />
+                </div>
+              </div>
+            )}
           </div>
 
           <div className={`${CARD} p-3`}>
@@ -511,6 +722,8 @@ const StudioEditor: React.FC<Props> = ({ post, config, fonts, onSaved, onDeleted
                   <span className="flex shrink-0 items-center gap-1">
                     <button type="button" title="Вище" onClick={event => { event.stopPropagation(); moveLayer(layer.id, 1); }}>↑</button>
                     <button type="button" title="Нижче" onClick={event => { event.stopPropagation(); moveLayer(layer.id, -1); }}>↓</button>
+                    <button type="button" title="Дублювати (⌘D)"
+                      onClick={event => { event.stopPropagation(); duplicateLayer(layer.id); }}>⧉</button>
                     <button type="button" title="Прибрати" className="text-red-500"
                       onClick={event => { event.stopPropagation(); removeLayer(layer.id); }}>×</button>
                   </span>
@@ -634,6 +847,143 @@ const StudioEditor: React.FC<Props> = ({ post, config, fonts, onSaved, onDeleted
                     onChange={event => patchLayer(selected.id, { rotation: Number(event.target.value) })} />
                 </label>
               </div>
+
+              {/* ── Ефекти ── */}
+              <div className="space-y-3 border-t border-gray-100 pt-3 dark:border-gray-700">
+                <div>
+                  <div className={LABEL}>Заливка</div>
+                  <div className="mt-1.5 flex flex-wrap items-center gap-2">
+                    {(['solid', 'gradient'] as const).map(mode => (
+                      <button key={mode} type="button"
+                        onClick={() => patchLayer(selected.id, { fillType: mode })}
+                        className={`${BTN} ${selected.fillType === mode
+                          ? 'bg-[var(--bms-accent)] text-white'
+                          : 'border border-gray-200 text-gray-600 dark:border-gray-600 dark:text-gray-300'}`}>
+                        {mode === 'solid' ? 'Суцільна' : 'Градієнт'}
+                      </button>
+                    ))}
+                    {selected.fillType === 'gradient' && (
+                      <>
+                        <input type="color" value={selected.gradient.from}
+                          onChange={event => patchLayer(selected.id, {
+                            gradient: { ...selected.gradient, from: event.target.value },
+                          })}
+                          className="h-7 w-10 cursor-pointer rounded border border-gray-200 dark:border-gray-600" />
+                        <input type="color" value={selected.gradient.to}
+                          onChange={event => patchLayer(selected.id, {
+                            gradient: { ...selected.gradient, to: event.target.value },
+                          })}
+                          className="h-7 w-10 cursor-pointer rounded border border-gray-200 dark:border-gray-600" />
+                        <label className={`${LABEL} flex-1`}>Кут
+                          <input type="range" min={0} max={360} step={1} value={selected.gradient.angle}
+                            onChange={event => patchLayer(selected.id, {
+                              gradient: { ...selected.gradient, angle: Number(event.target.value) },
+                            })} className="w-full" />
+                        </label>
+                      </>
+                    )}
+                  </div>
+                </div>
+
+                <div>
+                  <label className="flex items-center gap-2 text-[11px] text-gray-600 dark:text-gray-300">
+                    <input type="checkbox" checked={selected.shadow.enabled}
+                      onChange={event => patchLayer(selected.id, {
+                        shadow: { ...selected.shadow, enabled: event.target.checked },
+                      })} />
+                    Тінь
+                  </label>
+                  {selected.shadow.enabled && (
+                    <div className="mt-1.5 grid grid-cols-2 gap-2">
+                      <label className={LABEL}>Зсув ↔
+                        <input type="range" min={-60} max={60} step={1} value={selected.shadow.dx}
+                          onChange={event => patchLayer(selected.id, {
+                            shadow: { ...selected.shadow, dx: Number(event.target.value) },
+                          })} className="w-full" />
+                      </label>
+                      <label className={LABEL}>Зсув ↕
+                        <input type="range" min={-60} max={60} step={1} value={selected.shadow.dy}
+                          onChange={event => patchLayer(selected.id, {
+                            shadow: { ...selected.shadow, dy: Number(event.target.value) },
+                          })} className="w-full" />
+                      </label>
+                      <label className={LABEL}>Розмиття
+                        <input type="range" min={0} max={80} step={1} value={selected.shadow.blur}
+                          onChange={event => patchLayer(selected.id, {
+                            shadow: { ...selected.shadow, blur: Number(event.target.value) },
+                          })} className="w-full" />
+                      </label>
+                      <label className={LABEL}>Сила
+                        <input type="range" min={0.05} max={1} step={0.01} value={selected.shadow.opacity}
+                          onChange={event => patchLayer(selected.id, {
+                            shadow: { ...selected.shadow, opacity: Number(event.target.value) },
+                          })} className="w-full" />
+                      </label>
+                      <input type="color" value={selected.shadow.color}
+                        onChange={event => patchLayer(selected.id, {
+                          shadow: { ...selected.shadow, color: event.target.value },
+                        })}
+                        className="h-7 w-10 cursor-pointer rounded border border-gray-200 dark:border-gray-600" />
+                    </div>
+                  )}
+                </div>
+
+                <div>
+                  <label className="flex items-center gap-2 text-[11px] text-gray-600 dark:text-gray-300">
+                    <input type="checkbox" checked={selected.stroke.enabled}
+                      onChange={event => patchLayer(selected.id, {
+                        stroke: { ...selected.stroke, enabled: event.target.checked },
+                      })} />
+                    Обведення
+                  </label>
+                  {selected.stroke.enabled && (
+                    <div className="mt-1.5 flex items-center gap-2">
+                      <label className={`${LABEL} flex-1`}>Товщина
+                        <input type="range" min={1} max={40} step={1} value={selected.stroke.width}
+                          onChange={event => patchLayer(selected.id, {
+                            stroke: { ...selected.stroke, width: Number(event.target.value) },
+                          })} className="w-full" />
+                      </label>
+                      <input type="color" value={selected.stroke.color}
+                        onChange={event => patchLayer(selected.id, {
+                          stroke: { ...selected.stroke, color: event.target.value },
+                        })}
+                        className="h-7 w-10 cursor-pointer rounded border border-gray-200 dark:border-gray-600" />
+                    </div>
+                  )}
+                </div>
+
+                <div>
+                  <label className="flex items-center gap-2 text-[11px] text-gray-600 dark:text-gray-300">
+                    <input type="checkbox" checked={selected.extrude.enabled}
+                      onChange={event => patchLayer(selected.id, {
+                        extrude: { ...selected.extrude, enabled: event.target.checked },
+                      })} />
+                    Об'єм (3D)
+                  </label>
+                  {selected.extrude.enabled && (
+                    <div className="mt-1.5 flex items-center gap-2">
+                      <label className={`${LABEL} flex-1`}>Глибина
+                        <input type="range" min={1} max={40} step={1} value={selected.extrude.depth}
+                          onChange={event => patchLayer(selected.id, {
+                            extrude: { ...selected.extrude, depth: Number(event.target.value) },
+                          })} className="w-full" />
+                      </label>
+                      <label className={`${LABEL} flex-1`}>Напрям
+                        <input type="range" min={0} max={360} step={1} value={selected.extrude.angle}
+                          onChange={event => patchLayer(selected.id, {
+                            extrude: { ...selected.extrude, angle: Number(event.target.value) },
+                          })} className="w-full" />
+                      </label>
+                      <input type="color" value={selected.extrude.color}
+                        onChange={event => patchLayer(selected.id, {
+                          extrude: { ...selected.extrude, color: event.target.value },
+                        })}
+                        className="h-7 w-10 cursor-pointer rounded border border-gray-200 dark:border-gray-600" />
+                    </div>
+                  )}
+                </div>
+              </div>
             </div>
           )}
 
@@ -659,6 +1009,17 @@ const StudioEditor: React.FC<Props> = ({ post, config, fonts, onSaved, onDeleted
                     onChange={event => patchLayer(selected.id, { opacity: Number(event.target.value) })}
                     className="w-full" />
                 </label>
+              </div>
+              <div className="border-t border-gray-100 pt-2 dark:border-gray-700">
+                <div className={LABEL}>Обробка</div>
+                <div className="mt-2">
+                  <PhotoFilterControls
+                    value={selected.filter}
+                    onChange={patch => patchLayer(selected.id, {
+                      filter: { ...selected.filter, ...patch },
+                    })}
+                  />
+                </div>
               </div>
             </div>
           )}

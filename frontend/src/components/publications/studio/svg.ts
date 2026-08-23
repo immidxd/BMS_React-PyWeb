@@ -13,7 +13,10 @@
  * Тому все, що потрібне кадру, приходить усередині документа.
  */
 
-import type { CanvasFormat, ImageLayer, Layer, PostSpec, StudioFont, TextLayer } from './types';
+import type {
+  CanvasFormat, Gradient, ImageLayer, Layer, PhotoFilter, PostSpec, Shadow,
+  StudioFont, TextLayer,
+} from './types';
 import { FALLBACK_FAMILY } from './types';
 
 /* ── Дрібні утиліти ─────────────────────────────────────────────────────── */
@@ -83,6 +86,50 @@ export const wrapLines = (layer: TextLayer): string[] => {
 export const textBlockHeight = (layer: TextLayer): number =>
   wrapLines(layer).length * layer.fontSize * layer.lineHeight;
 
+/* ── Ефекти ─────────────────────────────────────────────────────────────── */
+
+/** Фільтр обробки фото. Яскравість і контраст — одне перетворення:
+ *  out = in·(b·c) + (0.5 − 0.5·c). Порожній рядок, якщо нічого не змінено —
+ *  зайвий фільтр у SVG коштує пам'яті на кожному кадрі. */
+const photoFilterDef = (id: string, filter?: PhotoFilter): string => {
+  const f = { brightness: 1, contrast: 1, saturation: 1, blur: 0, ...(filter || {}) };
+  const untouched = f.brightness === 1 && f.contrast === 1 && f.saturation === 1 && !f.blur;
+  if (untouched) return '';
+  const slope = round(f.brightness * f.contrast);
+  const intercept = round(0.5 - 0.5 * f.contrast);
+  const transfer = ['R', 'G', 'B'].map(channel => (
+    `<feFunc${channel} type="linear" slope="${slope}" intercept="${intercept}"/>`
+  )).join('');
+  return (
+    `<filter id="${id}" x="-15%" y="-15%" width="130%" height="130%"` +
+    ` color-interpolation-filters="sRGB">` +
+    `<feColorMatrix type="saturate" values="${round(f.saturation)}"/>` +
+    `<feComponentTransfer>${transfer}</feComponentTransfer>` +
+    (f.blur ? `<feGaussianBlur stdDeviation="${round(f.blur)}"/>` : '') +
+    `</filter>`
+  );
+};
+
+const shadowDef = (id: string, shadow: Shadow): string => (
+  `<filter id="${id}" x="-40%" y="-40%" width="180%" height="180%"` +
+  ` color-interpolation-filters="sRGB">` +
+  `<feDropShadow dx="${round(shadow.dx)}" dy="${round(shadow.dy)}"` +
+  ` stdDeviation="${round(shadow.blur / 2)}" flood-color="${escapeXml(shadow.color)}"` +
+  ` flood-opacity="${round(shadow.opacity)}"/></filter>`
+);
+
+const gradientDef = (id: string, gradient: Gradient): string => {
+  const rad = (gradient.angle * Math.PI) / 180;
+  const dx = Math.cos(rad) / 2;
+  const dy = Math.sin(rad) / 2;
+  return (
+    `<linearGradient id="${id}" x1="${round(0.5 - dx)}" y1="${round(0.5 - dy)}"` +
+    ` x2="${round(0.5 + dx)}" y2="${round(0.5 + dy)}">` +
+    `<stop offset="0" stop-color="${escapeXml(gradient.from)}"/>` +
+    `<stop offset="1" stop-color="${escapeXml(gradient.to)}"/></linearGradient>`
+  );
+};
+
 /* ── Фон ────────────────────────────────────────────────────────────────── */
 
 type Resources = {
@@ -94,8 +141,10 @@ type Resources = {
   fontFaces?: string;
 };
 
-const backgroundMarkup = (spec: PostSpec, format: CanvasFormat, res: Resources): string => {
-  const { background: bg } = spec;
+const backgroundMarkup = (
+  spec: PostSpec, format: CanvasFormat, res: Resources, defs: string[],
+): string => {
+  const bg = spec.background;
   const base = `<rect x="0" y="0" width="${format.width}" height="${format.height}" fill="${escapeXml(bg.color)}"/>`;
   if (bg.type !== 'asset' || !bg.assetId) return base;
 
@@ -113,10 +162,21 @@ const backgroundMarkup = (spec: PostSpec, format: CanvasFormat, res: Resources):
   const x = (format.width - width) / 2 + (bg.offsetX || 0);
   const y = (format.height - height) / 2 + (bg.offsetY || 0);
 
+  const filterDef = photoFilterDef('bgFilter', bg.filter);
+  if (filterDef) defs.push(filterDef);
+  const filterAttr = filterDef ? ' filter="url(#bgFilter)"' : '';
+
   const overlay = bg.overlayOpacity > 0
     ? `<rect x="0" y="0" width="${format.width}" height="${format.height}" fill="${escapeXml(bg.overlay)}" opacity="${round(bg.overlayOpacity)}"/>`
     : '';
-  return `${base}<image href="${href}" x="${round(x)}" y="${round(y)}" width="${round(width)}" height="${round(height)}" preserveAspectRatio="none"/>${overlay}`;
+  // Фон завжди підрізаний полотном: із масштабом і зсувом фото свідомо більше
+  // за кадр, і без обрізки воно вилазило б за межі SVG.
+  return (
+    `${base}<svg x="0" y="0" width="${format.width}" height="${format.height}"` +
+    ` viewBox="0 0 ${format.width} ${format.height}" overflow="hidden">` +
+    `<image href="${href}" x="${round(x)}" y="${round(y)}" width="${round(width)}"` +
+    ` height="${round(height)}" preserveAspectRatio="none"${filterAttr}/></svg>${overlay}`
+  );
 };
 
 /* ── Шари ───────────────────────────────────────────────────────────────── */
@@ -128,7 +188,7 @@ const transform = (layer: Layer, width: number, height: number): string => {
   return ` transform="rotate(${round(layer.rotation)} ${cx} ${cy})"`;
 };
 
-const textMarkup = (layer: TextLayer): string => {
+const textMarkup = (layer: TextLayer, defs: string[]): string => {
   const lines = wrapLines(layer);
   const step = layer.fontSize * layer.lineHeight;
   const anchor = layer.align === 'center' ? 'middle' : layer.align === 'right' ? 'end' : 'start';
@@ -141,44 +201,90 @@ const textMarkup = (layer: TextLayer): string => {
   const tspans = lines.map((line, index) => (
     `<tspan x="${round(anchorX)}" y="${round(firstBaseline + index * step)}">${escapeXml(line || ' ')}</tspan>`
   )).join('');
-  const decoration = layer.decoration !== 'none'
-    ? ` text-decoration="${layer.decoration}"` : '';
-  return (
-    `<text font-family="${escapeXml(fontStack(layer.fontFamily))}" font-size="${round(layer.fontSize)}"` +
+
+  const common =
+    `font-family="${escapeXml(fontStack(layer.fontFamily))}" font-size="${round(layer.fontSize)}"` +
     ` font-weight="${layer.fontWeight}" font-style="${layer.fontStyle}"` +
-    ` letter-spacing="${round(layer.letterSpacing)}" text-anchor="${anchor}"` +
-    ` fill="${escapeXml(layer.color)}" opacity="${round(layer.opacity)}"${decoration}` +
-    `${transform(layer, layer.width, textBlockHeight(layer))}>${tspans}</text>`
+    ` letter-spacing="${round(layer.letterSpacing)}" text-anchor="${anchor}"`;
+
+  const gradient = layer.fillType === 'gradient' ? layer.gradient : null;
+  if (gradient) defs.push(gradientDef(`grad_${layer.id}`, gradient));
+  const fill = gradient ? `url(#grad_${layer.id})` : escapeXml(layer.color);
+
+  const stroke = layer.stroke?.enabled && layer.stroke.width > 0
+    // paint-order: обведення малюється ПІД заливкою, інакше воно з'їдає
+    // половину товщини літери й шрифт «худне».
+    ? ` stroke="${escapeXml(layer.stroke.color)}" stroke-width="${round(layer.stroke.width)}"` +
+      ` stroke-linejoin="round" paint-order="stroke"`
+    : '';
+
+  const decoration = layer.decoration !== 'none' ? ` text-decoration="${layer.decoration}"` : '';
+
+  // «3D» — копії тексту, зміщені під кутом. Малюються ПЕРЕД основним, тому
+  // читається як товща літери, а не як розмита тінь.
+  let extruded = '';
+  if (layer.extrude?.enabled && layer.extrude.depth > 0) {
+    const rad = (layer.extrude.angle * Math.PI) / 180;
+    const steps = Math.min(40, Math.round(layer.extrude.depth));
+    for (let index = steps; index >= 1; index -= 1) {
+      const dx = round(Math.cos(rad) * index);
+      const dy = round(Math.sin(rad) * index);
+      extruded += (
+        `<g transform="translate(${dx} ${dy})">` +
+        `<text ${common} fill="${escapeXml(layer.extrude.color)}">${tspans}</text></g>`
+      );
+    }
+  }
+
+  const main = `<text ${common} fill="${fill}"${stroke}${decoration}>${tspans}</text>`;
+
+  const shadow = layer.shadow?.enabled ? layer.shadow : null;
+  if (shadow) defs.push(shadowDef(`shadow_${layer.id}`, shadow));
+  const filterAttr = shadow ? ` filter="url(#shadow_${layer.id})"` : '';
+
+  return (
+    `<g opacity="${round(layer.opacity)}"${filterAttr}` +
+    `${transform(layer, layer.width, textBlockHeight(layer))}>${extruded}${main}</g>`
   );
 };
 
-const imageMarkup = (layer: ImageLayer, res: Resources, index: number): string => {
+const imageMarkup = (layer: ImageLayer, res: Resources, defs: string[]): string => {
   const href = res.assetHref(layer.assetId);
   if (!href) return '';
-  const clip = layer.radius > 0 ? ` clip-path="url(#clip${index})"` : '';
-  const defs = layer.radius > 0
-    ? `<clipPath id="clip${index}"><rect x="${round(layer.x)}" y="${round(layer.y)}" width="${round(layer.width)}" height="${round(layer.height)}" rx="${round(layer.radius)}"/></clipPath>`
-    : '';
+  const clip = layer.radius > 0 ? ` clip-path="url(#clip_${layer.id})"` : '';
+  if (layer.radius > 0) {
+    defs.push(
+      `<clipPath id="clip_${layer.id}"><rect x="${round(layer.x)}" y="${round(layer.y)}"` +
+      ` width="${round(layer.width)}" height="${round(layer.height)}" rx="${round(layer.radius)}"/></clipPath>`,
+    );
+  }
+  const filterDef = photoFilterDef(`pf_${layer.id}`, layer.filter);
+  if (filterDef) defs.push(filterDef);
+  const filterAttr = filterDef ? ` filter="url(#pf_${layer.id})"` : '';
   return (
-    `${defs}<image href="${href}" x="${round(layer.x)}" y="${round(layer.y)}"` +
+    `<image href="${href}" x="${round(layer.x)}" y="${round(layer.y)}"` +
     ` width="${round(layer.width)}" height="${round(layer.height)}"` +
-    ` opacity="${round(layer.opacity)}" preserveAspectRatio="xMidYMid slice"${clip}` +
-    `${transform(layer, layer.width, layer.height)}/>`
+    ` opacity="${round(layer.opacity)}" preserveAspectRatio="xMidYMid slice"` +
+    `${clip}${filterAttr}${transform(layer, layer.width, layer.height)}/>`
   );
 };
 
 /* ── Складання документа ────────────────────────────────────────────────── */
 
 export const buildSvg = (spec: PostSpec, format: CanvasFormat, res: Resources): string => {
-  const body = spec.layers.map((layer, index) => (
-    layer.type === 'text' ? textMarkup(layer) : imageMarkup(layer, res, index)
+  // Визначення (градієнти, фільтри, обрізки) збираються під час обходу шарів:
+  // так ефект і його опис не можуть роз'їхатись.
+  const defs: string[] = [];
+  const background = backgroundMarkup(spec, format, res, defs);
+  const body = spec.layers.map(layer => (
+    layer.type === 'text' ? textMarkup(layer, defs) : imageMarkup(layer, res, defs)
   )).join('');
-  const style = res.fontFaces ? `<defs><style type="text/css">${res.fontFaces}</style></defs>` : '';
+  const style = res.fontFaces ? `<style type="text/css">${res.fontFaces}</style>` : '';
   return (
     `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"` +
     ` width="${format.width}" height="${format.height}"` +
     ` viewBox="0 0 ${format.width} ${format.height}">` +
-    `${style}${backgroundMarkup(spec, format, res)}${body}</svg>`
+    `<defs>${style}${defs.join('')}</defs>${background}${body}</svg>`
   );
 };
 
