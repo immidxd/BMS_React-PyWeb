@@ -23,9 +23,11 @@ logger = logging.getLogger(__name__)
 try:
     from models.database import get_db
     from services import studio
+    from services import studio_publish
 except ImportError:  # запуск з кореня репо
     from backend.models.database import get_db  # type: ignore
     from backend.services import studio  # type: ignore
+    from backend.services import studio_publish  # type: ignore
 
 router = APIRouter()
 
@@ -292,3 +294,38 @@ def post_preview(post_id: int = Path(..., ge=1),
     # тому короткий кеш, інакше після перезбереження показувався б старий кадр.
     return Response(content=data, media_type=mime,
                     headers={"Cache-Control": "no-cache"})
+
+
+# ── Публікація ──────────────────────────────────────────────────────────────
+
+@router.get("/api/studio/publish/status")
+async def publish_status():
+    """Готовність мереж приймати пост. Нічого не публікує й не змінює."""
+    return await studio_publish.readiness()
+
+
+@router.post("/api/studio/posts/{post_id}/publish")
+async def publish_post(post_id: int = Path(..., ge=1), payload: dict = Body(default={}),
+                       db: Session = Depends(get_db)):
+    """Відправити пост у ввімкнені мережі.
+
+    `dry_run: true` проходить увесь шлях, окрім самої відправки: збирає
+    публікаційний JPEG, перевіряє підписи й розклад і повертає, що саме пішло
+    б у кожну мережу. Це той самий код, тому репетиція не бреше."""
+    try:
+        return await studio_publish.publish_post(db, post_id, payload)
+    except (studio_publish.PublishError, studio.StudioError) as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
+
+@router.get("/api/studio/posts/{post_id}/publications")
+def post_publications(post_id: int = Path(..., ge=1), db: Session = Depends(get_db)):
+    return {"items": studio_publish.list_publications(db, post_id)}
+
+
+@router.post("/api/studio/publish/sync")
+async def publish_sync(payload: dict = Body(default={}), db: Session = Depends(get_db)):
+    """Перепитати хмарні диспетчери про незавершені відправки."""
+    post_id = payload.get("post_id")
+    return await studio_publish.sync_statuses(
+        db, post_id=int(post_id) if post_id else None)

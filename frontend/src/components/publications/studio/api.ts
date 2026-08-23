@@ -112,3 +112,63 @@ export const uploadRender = (id: number, format: string, blob: Blob) => {
 };
 
 export type { PostSpec };
+
+/* ── Публікація ─────────────────────────────────────────────────────────── */
+
+export type PublishReadiness = {
+  platforms: Record<string, {
+    ready: boolean;
+    detail: string | null;
+    pages?: Array<{ id: string; name: string }>;
+    channel?: string;
+    account?: string;
+    local_only?: boolean;
+  }>;
+};
+
+export type PublishResult = {
+  ok: boolean;
+  dry_run: boolean;
+  scheduled_at: string | null;
+  error: string | null;
+  results: Array<{
+    ok: boolean;
+    platform: string;
+    format?: string;
+    page?: string;
+    status?: string;
+    job_id?: string | null;
+    error?: string | null;
+    image_bytes?: number;
+    caption_chars?: number;
+    cached?: boolean;
+    dry_run?: boolean;
+  }>;
+};
+
+export type StudioPublication = {
+  id: number;
+  platform: string;
+  canvas_format: string;
+  account_label: string | null;
+  status: string;
+  dispatcher_job_id: string | null;
+  post_url: string | null;
+  scheduled_at: string | null;
+  published_at: string | null;
+  error: string | null;
+  created_at: string;
+};
+
+export const fetchPublishStatus = () =>
+  fetch('/api/studio/publish/status').then(json<PublishReadiness>);
+
+export const publishPost = (id: number, body: Record<string, unknown>) =>
+  send<PublishResult>(`/api/studio/posts/${id}/publish`, 'POST', body);
+
+export const fetchPublications = (id: number) =>
+  fetch(`/api/studio/posts/${id}/publications`).then(json<{ items: StudioPublication[] }>);
+
+export const syncPublications = (id?: number) =>
+  send<{ ok: boolean; checked: number; updated: number }>(
+    '/api/studio/publish/sync', 'POST', id ? { post_id: id } : {});

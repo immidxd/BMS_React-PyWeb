@@ -32,6 +32,15 @@ const BTN_GHOST = `${BTN} border border-gray-200 text-gray-600 hover:bg-gray-50 
 const FIELD = 'w-full rounded-lg border border-gray-200 px-2 py-1.5 text-xs dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100';
 const LABEL = 'text-[10px] font-medium uppercase tracking-wide text-gray-400';
 
+const PUBLICATION_STATUS: Record<string, string> = {
+  queued: 'у черзі', scheduled: 'заплановано', processing: 'відправляється',
+  retrying: 'повтор', published: 'опубліковано', failed: 'помилка',
+  cancelled: 'скасовано',
+};
+
+const fmtDateTime = (value?: string | null) =>
+  value ? new Date(value).toLocaleString('uk-UA', { dateStyle: 'short', timeStyle: 'short' }) : '';
+
 const PLATFORM_HINT: Record<PlatformKey, string> = {
   telegram: 'канал і каталог',
   instagram: 'стрічка та Stories',
@@ -120,6 +129,13 @@ const StudioEditor: React.FC<Props> = ({ post, config, fonts, onSaved, onDeleted
   const [message, setMessage] = useState<string | null>(null);
   const [stageWidth, setStageWidth] = useState(360);
   const [guides, setGuides] = useState<{ x: number | null; y: number | null }>({ x: null, y: null });
+  const [readiness, setReadiness] = useState<api.PublishReadiness | null>(null);
+  const [publications, setPublications] = useState<api.StudioPublication[]>([]);
+  const [publishResult, setPublishResult] = useState<api.PublishResult | null>(null);
+  const [publishAt, setPublishAt] = useState('');
+  // Публікація йде в живі акаунти, тому кнопка спрацьовує лише з другого
+  // натискання — той самий запобіжник, що й у черзі Stories.
+  const [armed, setArmed] = useState(false);
   const [canUndo, setCanUndo] = useState(false);
   const [canRedo, setCanRedo] = useState(false);
   const isActivePage = useIsActivePage();
@@ -138,7 +154,17 @@ const StudioEditor: React.FC<Props> = ({ post, config, fonts, onSaved, onDeleted
 
   useEffect(() => {
     void api.fetchAssets().then(result => setAssets(result.items)).catch(() => undefined);
+    void api.fetchPublishStatus().then(setReadiness).catch(() => undefined);
   }, []);
+
+  const loadPublications = useCallback(async () => {
+    try {
+      const result = await api.fetchPublications(post.id);
+      setPublications(result.items);
+    } catch { /* історія відправок — довідка, без неї редактор працює */ }
+  }, [post.id]);
+
+  useEffect(() => { void loadPublications(); }, [loadPublications]);
 
   // Полотно масштабується під наявну висоту, а не під ширину колонки: інакше
   // Сторіс 9:16 на широкому екрані вилазить за межі вікна.
@@ -465,21 +491,36 @@ const StudioEditor: React.FC<Props> = ({ post, config, fonts, onSaved, onDeleted
 
   /* ── Збереження ────────────────────────────────────────────────────── */
 
-  const renderPng = useCallback(async (): Promise<Blob> => {
+  /** Той самий макет, перерахований під інше полотно. Потрібно, коли одна
+   *  мережа бере Сторіс, а друга — квадрат: макет один, кадрів кілька. */
+  const specForFormat = useCallback((target: CanvasFormat): PostSpec => {
+    if (target.key === spec.format) return spec;
+    const kx = target.width / format.width;
+    const ky = target.height / format.height;
+    return {
+      ...spec,
+      format: target.key,
+      layers: spec.layers.map(layer => scaleLayer(layer, kx, ky)),
+    };
+  }, [format.height, format.width, spec]);
+
+  const renderPng = useCallback(async (target?: CanvasFormat): Promise<Blob> => {
+    const canvas = target || format;
+    const source = specForFormat(canvas);
     const [fontFaces, embedded] = await Promise.all([
       buildFontFaces(fonts.filter(font => (
-        spec.layers.some(layer => layer.type === 'text' && layer.fontFamily === font.family)
+        source.layers.some(layer => layer.type === 'text' && layer.fontFamily === font.family)
       ))),
-      collectAssetDataUrls(spec, id => assetById(id)?.src || null),
+      collectAssetDataUrls(source, id => assetById(id)?.src || null),
     ]);
-    const exportSvg = buildSvg(spec, format, {
+    const exportSvg = buildSvg(source, canvas, {
       assetHref: id => embedded.get(id) || null,
       assetSize: resources.assetSize,
       fonts,
       fontFaces,
     });
-    return svgToPngBlob(exportSvg, format);
-  }, [assetById, fonts, format, resources.assetSize, spec]);
+    return svgToPngBlob(exportSvg, canvas);
+  }, [assetById, fonts, format, resources.assetSize, specForFormat]);
 
   const save = async (withRender: boolean) => {
     setBusy(withRender ? 'render' : 'save'); setError(null); setMessage(null);
@@ -498,6 +539,65 @@ const StudioEditor: React.FC<Props> = ({ post, config, fonts, onSaved, onDeleted
     } finally {
       setBusy(null);
     }
+  };
+
+  /* ── Публікація ────────────────────────────────────────────────────── */
+
+  /** Зберегти, добудувати відсутні кадри й віддати пост мережам.
+   *
+   *  Кадри збираються ТУТ, а не на бекенді: рендерить браузер, і якщо Viber
+   *  просить квадрат, а макет намальовано в Сторіс, кадр у квадраті має
+   *  народитися з того самого документа — інакше мережа отримала б обрізок.
+   */
+  const publish = async (dryRun: boolean) => {
+    setBusy(dryRun ? 'rehearse' : 'publish');
+    setError(null); setMessage(null); setPublishResult(null);
+    try {
+      let saved = await api.updatePost(post.id, {
+        title, caption, spec, targets, base_format: spec.format,
+      });
+
+      const needed = Array.from(new Set(
+        targets.filter(target => target.enabled !== false).map(target => target.format),
+      ));
+      const missing = needed.filter(key => !saved.renders?.[key]);
+      for (const key of missing) {
+        const canvas = config.formats.find(item => item.key === key);
+        if (!canvas) continue;
+        const blob = await renderPng(canvas);
+        // Прев'ю поста лишає за собою базовий формат — саме його людина бачить
+        // у списку, і він не має підмінятись кадром для чужої мережі.
+        saved = await api.uploadRender(post.id, key, blob);
+      }
+      onSaved(saved);
+
+      const result = await api.publishPost(post.id, {
+        dry_run: dryRun,
+        publish_at: publishAt ? new Date(publishAt).toISOString() : null,
+      });
+      setPublishResult(result);
+      if (!dryRun) {
+        await loadPublications();
+        try { onSaved(await api.fetchPost(post.id)); } catch { /* картка оновиться при виході */ }
+      }
+      setMessage(dryRun
+        ? 'Репетиція пройшла: кадри зібрано, підписи й розклад придатні. Нічого не відправлено.'
+        : (result.ok ? 'Пост передано мережам.' : 'Частину мереж не вдалося пройти — деталі нижче.'));
+    } catch (reason: any) {
+      setError(reason.message || 'Не вдалося опублікувати');
+    } finally {
+      setBusy(null);
+      setArmed(false);
+    }
+  };
+
+  const armPublish = () => {
+    if (!armed) {
+      setArmed(true);
+      window.setTimeout(() => setArmed(false), 6000);
+      return;
+    }
+    void publish(false);
   };
 
   const remove = async () => {
@@ -1029,6 +1129,7 @@ const StudioEditor: React.FC<Props> = ({ post, config, fonts, onSaved, onDeleted
             <div className="mt-2 space-y-2">
               {config.platforms.map(platform => {
                 const target = targets.find(item => item.platform === platform.key);
+                const ready = readiness?.platforms?.[platform.key];
                 return (
                   <div key={platform.key} className="rounded-lg bg-gray-50 px-3 py-2 dark:bg-gray-800">
                     <div className="flex flex-wrap items-center gap-2">
@@ -1038,6 +1139,12 @@ const StudioEditor: React.FC<Props> = ({ post, config, fonts, onSaved, onDeleted
                         {platform.label}
                       </label>
                       <span className="text-[10px] text-gray-400">{PLATFORM_HINT[platform.key]}</span>
+                      {ready && !ready.ready && (
+                        <span title={ready.detail || undefined}
+                          className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] text-amber-700 dark:bg-amber-900/30 dark:text-amber-300">
+                          не підключено
+                        </span>
+                      )}
                       {target && (
                         <select className={`${FIELD} ml-auto w-40`} value={target.format}
                           onChange={event => setTargetFormat(platform.key, event.target.value as CanvasFormatKey)}>
@@ -1056,13 +1163,41 @@ const StudioEditor: React.FC<Props> = ({ post, config, fonts, onSaved, onDeleted
                         🔕 Без звуку
                       </label>
                     )}
+                    {target && platform.key === 'facebook' && Boolean(ready?.pages?.length) && (
+                      <div className="mt-1.5 flex flex-wrap gap-3">
+                        {(ready?.pages || []).map(page => {
+                          const chosen = (target.settings.page_ids as string[] | undefined) || [];
+                          // Порожній вибір = всі Сторінки: так само трактує це
+                          // товарний контур, і два різні правила тут collision-ом
+                          // не потрібні.
+                          const checked = chosen.length === 0 || chosen.includes(page.id);
+                          return (
+                            <label key={page.id}
+                              className="flex items-center gap-1.5 text-[11px] text-gray-500 dark:text-gray-400">
+                              <input type="checkbox" checked={checked}
+                                onChange={() => {
+                                  const all = (ready?.pages || []).map(item => item.id);
+                                  const current = chosen.length === 0 ? all : chosen;
+                                  const next = current.includes(page.id)
+                                    ? current.filter(id => id !== page.id)
+                                    : [...current, page.id];
+                                  setTargetSetting(platform.key, 'page_ids',
+                                    next.length === all.length ? [] : next);
+                                }} />
+                              {page.name}
+                            </label>
+                          );
+                        })}
+                      </div>
+                    )}
                   </div>
                 );
               })}
             </div>
             <p className="mt-2 text-[10px] leading-relaxed text-gray-400">
-              Вибір зберігається разом із постом. Саме відправлення в мережі підключаємо наступним
-              етапом — зараз майстерня збирає кадр і тримає його у хмарі.
+              Кожна мережа бере свій формат — кадр під неї збирається з того самого макета.
+              Instagram, Facebook і Viber публікують через хмару й не потребують запущеної
+              програми; Telegram відправляє сама BMS зі своєї сесії.
             </p>
           </div>
 
@@ -1071,6 +1206,87 @@ const StudioEditor: React.FC<Props> = ({ post, config, fonts, onSaved, onDeleted
             <textarea value={caption} rows={3} className={`${FIELD} mt-2`}
               onChange={event => setCaption(event.target.value)}
               placeholder="Текст, який піде разом із картинкою" />
+          </div>
+
+          <div className={`${CARD} p-3`}>
+            <div className={LABEL}>Відправлення</div>
+
+            <div className="mt-2 flex flex-wrap items-end gap-2">
+              <label className={LABEL}>Опублікувати о
+                <input type="datetime-local" className={`${FIELD} mt-1`} value={publishAt}
+                  onChange={event => setPublishAt(event.target.value)} />
+              </label>
+              <button type="button" className={BTN_GHOST} disabled={busy !== null}
+                onClick={() => void publish(true)}>
+                {busy === 'rehearse' ? 'Перевіряю…' : 'Репетиція'}
+              </button>
+              <button type="button" disabled={busy !== null || !targets.length}
+                onClick={armPublish}
+                className={`${BTN} ${armed
+                  ? 'bg-red-600 text-white hover:bg-red-700'
+                  : 'bg-[var(--bms-accent)] text-white hover:opacity-90'} disabled:opacity-50`}>
+                {busy === 'publish'
+                  ? 'Відправляю…'
+                  : armed ? 'Точно публікуємо?' : (publishAt ? 'Запланувати' : 'Опублікувати')}
+              </button>
+            </div>
+
+            <p className="mt-2 text-[10px] leading-relaxed text-gray-400">
+              «Репетиція» проходить увесь шлях, окрім самої відправки: збирає кадри, перевіряє
+              підписи й час. Публікація йде в живі акаунти, тому кнопка спрацьовує з другого
+              натискання. Порожній час = публікувати одразу.
+            </p>
+
+            {publishResult && (
+              <div className="mt-3 space-y-1">
+                {publishResult.results.map((row, index) => (
+                  <div key={`${row.platform}-${index}`}
+                    className={`flex flex-wrap items-center justify-between gap-2 rounded-lg px-2 py-1.5 text-[11px] ${
+                      row.ok
+                        ? 'bg-green-50 text-green-700 dark:bg-green-900/20 dark:text-green-300'
+                        : 'bg-red-50 text-red-700 dark:bg-red-900/20 dark:text-red-300'}`}>
+                    <span>
+                      {row.platform}
+                      {row.page ? ` · ${row.page}` : ''}
+                      {row.format ? ` · ${config.formats.find(item => item.key === row.format)?.label || row.format}` : ''}
+                    </span>
+                    <span className="text-[10px] opacity-80">
+                      {row.error
+                        || (row.dry_run ? `кадр ${Math.round((row.image_bytes || 0) / 1024)} КБ` : '')
+                        || (row.cached ? 'уже відправлено раніше' : row.status || '')}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {Boolean(publications.length) && (
+              <div className="mt-3 border-t border-gray-100 pt-2 dark:border-gray-700">
+                <div className="flex items-center justify-between">
+                  <div className={LABEL}>Уже відправлено</div>
+                  <button type="button" className="text-[10px] text-gray-400 hover:underline"
+                    onClick={() => void api.syncPublications(post.id).then(loadPublications)}>
+                    оновити стани
+                  </button>
+                </div>
+                <div className="mt-1.5 space-y-1">
+                  {publications.map(row => (
+                    <div key={row.id}
+                      className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-gray-50 px-2 py-1.5 text-[11px] text-gray-600 dark:bg-gray-800 dark:text-gray-300">
+                      <span>
+                        {row.platform}
+                        {row.account_label ? ` · ${row.account_label}` : ''}
+                      </span>
+                      <span className="text-[10px] text-gray-400">
+                        {PUBLICATION_STATUS[row.status] || row.status}
+                        {row.scheduled_at ? ` · ${fmtDateTime(row.scheduled_at)}` : ''}
+                        {row.error ? ` · ${row.error}` : ''}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         </div>
       </div>

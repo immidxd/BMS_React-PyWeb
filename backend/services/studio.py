@@ -747,10 +747,18 @@ def delete_post(db: Session, post_id: int) -> dict:
     if row is None:
         raise StudioError("Пост не знайдено")
     db.commit()
-    keys = [row["preview_key"]] + [
+    keys = {row["preview_key"]} | {
         entry.get("key") for entry in (row["renders_json"] or {}).values()
         if isinstance(entry, dict)
-    ]
+    }
+    # Плюс усе, що лежить під власним префіксом поста. Записані ключі — це те,
+    # що ми ПАМ'ЯТАЄМО, а перезбирання кадру лишає в хмарі й попередні версії
+    # (ключ містить відбиток вмісту). Без прибирання за префіксом вони жили б
+    # там вічно, і про них не знав би вже ніхто.
+    try:
+        keys |= set(r2_storage.list_keys(f"{R2_RENDER_PREFIX}/{post_id}/"))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("studio: не вдалось перелічити растри поста %s: %s", post_id, exc)
     for key in keys:
         if not key:
             continue
@@ -758,6 +766,10 @@ def delete_post(db: Session, post_id: int) -> dict:
             r2_storage.delete(key)
         except Exception as exc:  # noqa: BLE001
             logger.warning("studio: растр %s лишився в R2: %s", key, exc)
+    # Публікаційні JPEG (`studio/publish/...`) свідомо НЕ чіпаємо: на них може
+    # досі посилатися вже опублікований допис у мережі, і прибирання зробило б
+    # у чужій стрічці порожній кадр. Пост зникає з майстерні, публікація —
+    # лишається такою, якою її бачать люди.
     return {"deleted": post_id}
 
 
