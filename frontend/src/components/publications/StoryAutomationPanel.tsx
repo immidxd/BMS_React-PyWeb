@@ -14,6 +14,7 @@ type StoryConfig = {
   platform: Platform;
   enabled: boolean;
   auto_publish: boolean;
+  items_per_run: number;
   interval_hours: number;
   local_time: string;
   timezone: string;
@@ -54,6 +55,7 @@ const INTERVALS = [
   { value: 72, label: 'раз на 3 дні' },
   { value: 168, label: 'раз на тиждень' },
 ];
+const ITEMS_PER_RUN = [1, 2, 3, 5, 7, 10];
 const COOLDOWNS = [7, 14, 30, 60, 90, 180];
 
 const fmt = (value?: string | null) =>
@@ -124,6 +126,7 @@ const StoryAutomationPanel: React.FC = () => {
       method: 'PUT', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         enabled: config.enabled, auto_publish: config.auto_publish,
+        items_per_run: config.items_per_run,
         interval_hours: config.interval_hours, local_time: config.local_time,
         cooldown_days: config.cooldown_days, filters: config.filters,
       }),
@@ -217,7 +220,16 @@ const StoryAutomationPanel: React.FC = () => {
               </label>
             </div>
 
-            <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3">
+            <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
+              <label className="text-[10px] font-medium text-gray-500">Скільки за раз
+                <select value={config.items_per_run}
+                  onChange={event => edit(config.platform, { items_per_run: Number(event.target.value) })}
+                  className="mt-1 w-full rounded-lg border border-gray-200 px-2 py-1.5 text-xs dark:border-gray-600 dark:bg-gray-800">
+                  {ITEMS_PER_RUN.map(value => (
+                    <option key={value} value={value}>{value === 1 ? '1 Story' : `${value} Stories`}</option>
+                  ))}
+                </select>
+              </label>
               <label className="text-[10px] font-medium text-gray-500">Періодичність
                 <select value={config.interval_hours}
                   onChange={event => edit(config.platform, { interval_hours: Number(event.target.value) })}
@@ -238,6 +250,14 @@ const StoryAutomationPanel: React.FC = () => {
                 </select>
               </label>
             </div>
+
+            {config.items_per_run > 1 && (
+              <p className="mt-2 text-[10px] leading-relaxed text-gray-400 dark:text-gray-500">
+                Серія виходить не залпом, а з проміжком у кілька хвилин: Stories живуть добу,
+                тож глядач однаково гортає їх поспіль, а акаунт не впирається в ліміт Meta.
+                {config.platform === 'facebook' && ' У Facebook кожна Story — це два завдання, бо Сторінок дві.'}
+              </p>
+            )}
 
             <button type="button" onClick={() => setOpenFilters(openFilters === config.platform ? null : config.platform)}
               className="mt-3 w-full rounded-lg bg-gray-50 px-3 py-2 text-left text-[11px] dark:bg-gray-800">

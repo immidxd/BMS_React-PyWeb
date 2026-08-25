@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 from datetime import datetime, time, timedelta, timezone
 from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -30,6 +31,15 @@ PLATFORMS = story_automation.PLATFORMS
 REVIEW_STATUS = "awaiting_review"
 MIN_INTERVAL_HOURS = 4
 MAX_INTERVAL_HOURS = 168
+
+
+# Сторіс живуть 24 години, тож глядач однаково гортає всю серію поспіль —
+# незалежно від того, чи вона вийшла за хвилину, чи за півгодини. Тому пакет
+# розтягується в часі: це нічого не коштує на вигляд і рятує від ліміту Meta.
+# Бойовий випадок 2026-08-18: ~22 завдання за ~3 хв → «(#4) Application request
+# limit reached». Facebook робить завдання на КОЖНУ Сторінку, а їх дві.
+MAX_ITEMS_PER_RUN = 10
+STAGGER_MINUTES = int(os.getenv("STORY_STAGGER_MINUTES", "4"))
 
 
 def utc_now() -> datetime:
@@ -65,9 +75,13 @@ def validate_config(payload: Dict[str, Any], current: Optional[Dict[str, Any]] =
     cooldown_days = int(source.get("cooldown_days", story_automation.DEFAULT_COOLDOWN_DAYS))
     if cooldown_days < 7 or cooldown_days > 180:
         raise ValueError("Захист від повторів має бути від 7 до 180 днів")
+    items_per_run = int(source.get("items_per_run", 1))
+    if items_per_run < 1 or items_per_run > MAX_ITEMS_PER_RUN:
+        raise ValueError(f"За раз можна публікувати від 1 до {MAX_ITEMS_PER_RUN} Stories")
     return {
         "enabled": enabled,
         "auto_publish": auto_publish,
+        "items_per_run": items_per_run,
         "interval_hours": interval_hours,
         "local_time": local_time,
         "timezone": timezone_name,
@@ -126,9 +140,9 @@ def due_slot(config: Dict[str, Any], now: datetime) -> Optional[datetime]:
 
 
 _CONFIG_SELECT = """
-    SELECT platform, enabled, auto_publish, interval_hours, local_time, timezone,
-           cooldown_days, filters_json, enabled_at, last_generated_at,
-           last_error, last_error_at, updated_at
+    SELECT platform, enabled, auto_publish, items_per_run, interval_hours,
+           local_time, timezone, cooldown_days, filters_json, enabled_at,
+           last_generated_at, last_error, last_error_at, updated_at
     FROM story_automation_configs
 """
 
@@ -220,20 +234,21 @@ def update_config(db: Session, platform: str, payload: Dict[str, Any]) -> Dict[s
     row = db.execute(text("""
         UPDATE story_automation_configs
            SET enabled=:enabled, auto_publish=:auto_publish,
-               interval_hours=:interval_hours,
+               items_per_run=:items_per_run, interval_hours=:interval_hours,
                local_time=CAST(:local_time AS time), timezone=:timezone,
                cooldown_days=:cooldown_days,
                filters_json=CAST(:filters AS jsonb),
                enabled_at=:enabled_at, last_error=NULL, last_error_at=NULL,
                updated_at=now()
          WHERE platform=:platform
-     RETURNING platform, enabled, auto_publish, interval_hours, local_time, timezone,
-               cooldown_days, filters_json, enabled_at, last_generated_at,
-               last_error, last_error_at, updated_at
+     RETURNING platform, enabled, auto_publish, items_per_run, interval_hours,
+               local_time, timezone, cooldown_days, filters_json, enabled_at,
+               last_generated_at, last_error, last_error_at, updated_at
     """), {
         "platform": platform,
         "enabled": clean["enabled"],
         "auto_publish": clean["auto_publish"],
+        "items_per_run": clean["items_per_run"],
         "interval_hours": clean["interval_hours"],
         "local_time": clean["local_time"].strftime("%H:%M"),
         "timezone": clean["timezone"],
@@ -274,6 +289,7 @@ def create_draft(
     scheduled_for: Optional[datetime] = None,
     config: Optional[Dict[str, Any]] = None,
     schedule_now: Optional[datetime] = None,
+    expected_slot: Optional[datetime] = None,
 ) -> Dict[str, Any]:
     platform = str(platform or "").strip().lower()
     if platform not in PLATFORMS:
@@ -300,7 +316,10 @@ def create_draft(
         if existing:
             db.rollback()
             return {"created": False, "draft": existing}
-        if due_slot(config, schedule_now or utc_now()) != slot:
+        # Звіряємо БАЗОВИЙ слот, а не власний час цієї позиції: у пакеті друга
+        # й наступні Stories навмисно зсунуті на кілька хвилин, і без цього
+        # розрізнення гард відкидав би весь пакет, лишаючи одну Story.
+        if due_slot(config, schedule_now or utc_now()) != (expected_slot or slot):
             db.rollback()
             return {"created": False, "draft": None, "reason": "schedule_changed_or_disabled"}
 
@@ -369,24 +388,46 @@ def generate_due_drafts(db: Session, *, now: Optional[datetime] = None) -> Dict[
         if slot is None:
             skipped.append({"platform": value["platform"], "reason": "disabled_or_not_due"})
             continue
+        wanted = max(1, int(value.get("items_per_run") or 1))
         try:
-            result = create_draft(
-                db, platform=value["platform"], source="scheduled",
-                scheduled_for=slot, config=value, schedule_now=current,
-            )
-            if result["created"]:
-                created.append(result["draft"])
-                db.execute(text("""
-                    UPDATE story_automation_configs
-                       SET last_generated_at=now(), last_error=NULL,
-                           last_error_at=NULL, updated_at=now()
-                     WHERE platform=:platform
-                """), {"platform": value["platform"]})
-                db.commit()
-            else:
+            made = 0
+            for index in range(wanted):
+                # Кожна Story пакета — власна чернетка у власному слоті. Так
+                # лишається чинним UNIQUE(platform, scheduled_for), кожна
+                # перевіряється й відхиляється окремо, а добір наступної вже
+                # бачить попередню й не бере той самий товар удруге.
+                item_slot = slot + timedelta(minutes=STAGGER_MINUTES * index)
+                result = create_draft(
+                    db, platform=value["platform"], source="scheduled",
+                    scheduled_for=item_slot, config=value, schedule_now=current,
+                    expected_slot=slot,
+                )
+                if result["created"]:
+                    created.append(result["draft"])
+                    made += 1
+                    db.execute(text("""
+                        UPDATE story_automation_configs
+                           SET last_generated_at=now(), last_error=NULL,
+                               last_error_at=NULL, updated_at=now()
+                         WHERE platform=:platform
+                    """), {"platform": value["platform"]})
+                    db.commit()
+                elif result.get("draft") is None:
+                    # Розклад змінили під час пакета — далі не йдемо.
+                    skipped.append({
+                        "platform": value["platform"],
+                        "reason": result.get("reason") or "stopped",
+                    })
+                    break
+            if not made:
                 skipped.append({
                     "platform": value["platform"],
-                    "reason": result.get("reason") or "already_created",
+                    "reason": "already_created",
+                })
+            elif made < wanted:
+                skipped.append({
+                    "platform": value["platform"],
+                    "reason": f"pool_exhausted:{made}/{wanted}",
                 })
         except Exception as exc:  # один майданчик не має блокувати інший
             db.rollback()

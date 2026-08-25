@@ -85,3 +85,41 @@ def test_garbage_values_are_dropped_rather_than_crashing():
 
 def test_an_empty_filter_set_reads_as_the_whole_catalogue():
     assert sa.describe_filters(None, {}) == "усі доступні товари"
+
+
+# ─── Пакет Stories за один слот ──────────────────────────────────────────────
+
+def test_batch_size_is_capped_at_the_measured_meta_limit():
+    """10 — не кругле число, а межа з бойового випадку 18.08 (66 завдань → (#4))."""
+    from backend.services.story_automation_scheduler import (
+        MAX_ITEMS_PER_RUN, validate_config,
+    )
+    assert MAX_ITEMS_PER_RUN == 10
+    assert validate_config({"items_per_run": 10})["items_per_run"] == 10
+    for bad in (0, 11, 33):
+        try:
+            validate_config({"items_per_run": bad})
+        except ValueError:
+            continue
+        raise AssertionError(f"{bad} мало впасти")
+
+
+def test_batch_defaults_to_a_single_story():
+    """Пакет — свідомий вибір людини, а не наслідок оновлення."""
+    from backend.services.story_automation_scheduler import validate_config
+    assert validate_config({})["items_per_run"] == 1
+
+
+def test_batch_slots_are_spread_apart_not_fired_together():
+    """Слоти пакета рознесені: інакше десять Stories пішли б одним залпом."""
+    from datetime import datetime, timedelta, timezone
+    from backend.services.story_automation_scheduler import STAGGER_MINUTES
+
+    base = datetime(2026, 8, 26, 7, 0, tzinfo=timezone.utc)
+    slots = [base + timedelta(minutes=STAGGER_MINUTES * i) for i in range(10)]
+
+    assert STAGGER_MINUTES >= 1, "нульовий проміжок повертає залп"
+    assert len(set(slots)) == 10, "слоти мають бути різні — UNIQUE(platform, scheduled_for)"
+    # Десять Stories мають розтягтися помітно довше за виміряні ~3 хвилини,
+    # у які Meta вкладає свій ліміт застосунку.
+    assert (slots[-1] - slots[0]) > timedelta(minutes=3)

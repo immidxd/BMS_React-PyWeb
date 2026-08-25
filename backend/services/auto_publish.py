@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 from sqlalchemy.orm import Session
@@ -112,11 +113,23 @@ async def publish_story_draft(
 
     product = checked["product"]
     platform = str(draft.get("platform") or "")
+    # Пакет розноситься в часі САМИМ ДИСПЕТЧЕРОМ: слот кожної Story вже
+    # рознесений на кілька хвилин, і цей час передається як `publish_at`.
+    # Інакше десять Stories пішли б одним залпом і вперлися б у ліміт
+    # застосунку Meta — 18.08 так згоріло 42 завдання з 66.
+    # Минулий час не передаємо: диспетчер відхилив би його, а людина, яка
+    # затверджує вручну через годину, має отримати відправлення негайно.
+    slot = draft.get("scheduled_for")
+    paced = None
+    if slot is not None:
+        moment = slot if slot.tzinfo else slot.replace(tzinfo=timezone.utc)
+        if moment > datetime.now(timezone.utc):
+            paced = moment.isoformat()
     request = {
         "publish_type": "story",
         "image_idx": [0],
         "story_text": str(body.get("story_text") or draft.get("story_text") or ""),
-        "publish_at": body.get("publish_at"),
+        "publish_at": body.get("publish_at") or paced,
         "idempotency_key": f"auto-story:{draft_id}:{product['productnumber']}",
         **({"page_ids": body["page_ids"]} if body.get("page_ids") else {}),
     }
