@@ -749,6 +749,63 @@ async def _prom_sync_cycle() -> None:
         logger.warning(f"Prom-sync failed: {e}")
 
 
+@app.on_event("startup")
+async def _publication_status_sync_loop():
+    """Звірка станів публікацій із хмарними диспетчерами.
+
+    Диспетчери не шлють callback, тож без цієї звірки BMS ніколи не дізнається,
+    чим скінчилося відправлення: у базі назавжди лишається «в черзі», хоча пост
+    давно вийшов. Саме так і сталося — 21 Instagram- і 42 Facebook-публікації
+    висіли як «повторюється», будучи опублікованими. Поки станам не можна
+    вірити, питання «чи працює автопостинг» не має відповіді.
+
+    Дешева за задумом: запит бере лише незавершені завдання, тож у спокої цикл
+    не робить жодного мережевого виклику — один SELECT, що повертає нуль рядків.
+    PUBLICATION_STATUS_SYNC_SEC=0 вимикає її повністю.
+    """
+    import asyncio
+    import os
+
+    period_sec = int(os.getenv("PUBLICATION_STATUS_SYNC_SEC", "600"))
+    if period_sec <= 0:
+        return
+    period_sec = max(120, period_sec)
+
+    async def _sync_once():
+        try:
+            from services import viber_publisher, instagram_publisher, facebook_publisher
+            from models.database import SessionLocal
+        except ImportError:
+            from backend.services import viber_publisher, instagram_publisher, facebook_publisher
+            from backend.models.database import SessionLocal
+        db = SessionLocal()
+        try:
+            for name, module in (
+                ("viber", viber_publisher),
+                ("instagram", instagram_publisher),
+                ("facebook", facebook_publisher),
+            ):
+                try:
+                    result = await module.sync_statuses(db)
+                    if result.get("updated"):
+                        logger.info("Publication status sync (%s): %s", name, result.get("updated"))
+                except Exception as exc:  # noqa: BLE001 — один майданчик не спиняє інші
+                    logger.debug("Publication status sync skipped (%s): %s", name, exc)
+        finally:
+            db.close()
+
+    async def _loop():
+        await asyncio.sleep(50)   # не змагатись за старт із рештою циклів
+        while True:
+            try:
+                await _sync_once()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Publication status sync failed: %s", exc)
+            await asyncio.sleep(period_sec)
+
+    asyncio.create_task(_loop())
+
+
 async def _publish_due(kind: str, result: dict) -> None:
     """Відправити щойно створені чернетки там, де вимкнено ручну перевірку.
 

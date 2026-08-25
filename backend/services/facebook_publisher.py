@@ -990,7 +990,18 @@ async def sync_statuses(db: Session, *, product_id: Optional[int] = None) -> dic
         WHERE dispatcher_job_id IS NOT NULL
           AND (
                 status IN ('queued', 'scheduled', 'processing', 'retrying')
-                OR (status = 'published' AND COALESCE(payload_json->>'permalink', '') = '')
+                -- Допит про permalink обмежений навмисно. Story його НЕ МАЄ
+                -- взагалі — Meta віддає лише post_id, — тож без цієї умови
+                -- кожна опублікована Story перепитувалася б у диспетчера
+                -- вічно, на кожному циклі звірки. Для решти посилання
+                -- приходить одразу; доба — щедра стеля, після якої воно вже
+                -- не з'явиться.
+                OR (
+                    status = 'published'
+                    AND COALESCE(payload_json->>'permalink', '') = ''
+                    AND COALESCE(media_type, '') <> 'story'
+                    AND created_at > now() - interval '24 hours'
+                )
           )
           {clause}
         ORDER BY updated_at LIMIT 100
