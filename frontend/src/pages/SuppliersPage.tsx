@@ -35,6 +35,9 @@ interface SuppliersPageProps {
 const SuppliersPage: React.FC<SuppliersPageProps> = ({ currentSearchTerm }) => {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [reloadSignal, setReloadSignal] = useState(0);
+  // Режим «Виділити» — як у «Товарах»: чекбокси зʼявляються лише коли вони потрібні.
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedCount, setSelectedCount] = useState(0);
   const handleLoadComplete = React.useCallback(() => setIsRefreshing(false), []);
 
   const handleRefresh = () => {
@@ -56,13 +59,24 @@ const SuppliersPage: React.FC<SuppliersPageProps> = ({ currentSearchTerm }) => {
       <div className="p-4 bg-white dark:bg-gray-800 shadow-md rounded-lg">
         <div className="flex justify-between items-center mb-4">
             <h1 className="text-2xl font-semibold text-gray-900 dark:text-gray-100">Постачальники</h1>
-            {currentSearchTerm && <p className='text-sm text-gray-500 dark:text-gray-400'>Активний пошук: "{currentSearchTerm}"</p>}
+            <div className="flex items-center gap-3">
+              {currentSearchTerm && <p className='text-sm text-gray-500 dark:text-gray-400'>Активний пошук: "{currentSearchTerm}"</p>}
+              <button
+                onClick={() => setSelectionMode(m => !m)}
+                className={`bms-btn ${selectionMode ? 'bms-btn-primary' : 'bms-btn-secondary'}`}
+                title="Виділяти рядки для злиття постачальників"
+              >
+                {selectionMode ? (selectedCount > 0 ? `Виділено: ${selectedCount}` : 'Режим виділення') : 'Виділити'}
+              </button>
+            </div>
         </div>
 
         <SuppliersTable
           searchTerm={currentSearchTerm}
           reloadSignal={reloadSignal}
           onLoadComplete={handleLoadComplete}
+          selectionMode={selectionMode}
+          onSelectedCountChange={setSelectedCount}
         />
       </div>
     </MainLayout>

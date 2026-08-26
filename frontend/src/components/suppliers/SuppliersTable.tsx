@@ -19,9 +19,15 @@ interface SuppliersTableProps {
   searchTerm?: string;
   reloadSignal?: number;
   onLoadComplete?: () => void;
+  /** Режим «Виділити» — кнопкою керує сторінка, як у «Товарах». */
+  selectionMode?: boolean;
+  onSelectedCountChange?: (count: number) => void;
 }
 
-const SuppliersTable: React.FC<SuppliersTableProps> = ({ searchTerm = '', reloadSignal, onLoadComplete }) => {
+const SuppliersTable: React.FC<SuppliersTableProps> = ({
+  searchTerm = '', reloadSignal, onLoadComplete,
+  selectionMode = false, onSelectedCountChange,
+}) => {
   const [items, setItems] = useState<Supplier[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -209,6 +215,16 @@ const SuppliersTable: React.FC<SuppliersTableProps> = ({ searchTerm = '', reload
     }
   };
 
+  // Вихід із режиму «Виділити» — скидаємо і вибір, і напівзаповнену форму злиття.
+  useEffect(() => {
+    if (!selectionMode) { setSelected(new Set()); setMergeTarget(null); setMergeName(''); }
+  }, [selectionMode]);
+
+  // Лічильник для кнопки в шапці сторінки (стан вибору лишається тут).
+  const countRef = useRef(onSelectedCountChange);
+  countRef.current = onSelectedCountChange;
+  useEffect(() => { countRef.current?.(selected.size); }, [selected.size]);
+
   const sortIcon = (col: SortCol) => {
     if (sortBy !== col) return '';
     return sortDir === 'asc' ? ' \u2191' : ' \u2193';
@@ -258,17 +274,19 @@ const SuppliersTable: React.FC<SuppliersTableProps> = ({ searchTerm = '', reload
         <table className="min-w-full text-sm [&_th]:text-center [&_td]:text-center">
           <thead className="bg-gray-50 border-b border-gray-200">
             <tr>
-              <th className="px-3 py-3 w-10">
-                <input
-                  type="checkbox"
-                  checked={items.length > 0 && items.every(s => selected.has(s.id))}
-                  onChange={e => {
-                    if (e.target.checked) setSelected(new Set(items.map(s => s.id)));
-                    else setSelected(new Set());
-                  }}
-                  className="w-3.5 h-3.5"
-                />
-              </th>
+              {selectionMode && (
+                <th className="px-3 py-3 w-10">
+                  <input
+                    type="checkbox"
+                    checked={items.length > 0 && items.every(s => selected.has(s.id))}
+                    onChange={e => {
+                      if (e.target.checked) setSelected(new Set(items.map(s => s.id)));
+                      else setSelected(new Set());
+                    }}
+                    className="w-3.5 h-3.5"
+                  />
+                </th>
+              )}
               <th className="px-3 py-3 text-left font-semibold cursor-pointer w-14" onClick={() => toggleSort('id')}>ID{sortIcon('id')}</th>
               <th className="px-3 py-3 text-left font-semibold cursor-pointer" onClick={() => toggleSort('name')}>Назва{sortIcon('name')}</th>
               <th className="px-3 py-3 text-left font-semibold w-36">Група</th>
@@ -282,23 +300,25 @@ const SuppliersTable: React.FC<SuppliersTableProps> = ({ searchTerm = '', reload
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={10} className="text-center py-8 text-gray-400">Завантаження...</td></tr>
+              <tr><td colSpan={selectionMode ? 10 : 9} className="text-center py-8 text-gray-400">Завантаження...</td></tr>
             ) : error ? (
-              <tr><td colSpan={10} className="text-center py-8 text-red-500">{error}</td></tr>
+              <tr><td colSpan={selectionMode ? 10 : 9} className="text-center py-8 text-red-500">{error}</td></tr>
             ) : items.length === 0 ? (
-              <tr><td colSpan={10}><BmsEmpty label="Постачальників не знайдено" /></td></tr>
+              <tr><td colSpan={selectionMode ? 10 : 9}><BmsEmpty label="Постачальників не знайдено" /></td></tr>
             ) : (
               items.map(s => (
                 <React.Fragment key={s.id}>
                 <tr className={`border-b last:border-b-0 hover:bg-gray-50 ${selected.has(s.id) ? 'bg-blue-50' : ''}`}>
-                  <td className="px-3 py-2">
-                    <input
-                      type="checkbox"
-                      checked={selected.has(s.id)}
-                      onChange={() => toggleSelect(s.id)}
-                      className="w-3.5 h-3.5"
-                    />
-                  </td>
+                  {selectionMode && (
+                    <td className="px-3 py-2">
+                      <input
+                        type="checkbox"
+                        checked={selected.has(s.id)}
+                        onChange={() => toggleSelect(s.id)}
+                        className="w-3.5 h-3.5"
+                      />
+                    </td>
+                  )}
                   <td className="px-3 py-2 text-gray-400 text-xs">{s.id}</td>
                   <td className="px-3 py-2">
                     {editingId === s.id ? (
@@ -413,7 +433,7 @@ const SuppliersTable: React.FC<SuppliersTableProps> = ({ searchTerm = '', reload
                 </tr>
                 {expandedAliases === s.id && (
                   <tr className="bg-orange-50/50">
-                    <td colSpan={10} className="px-6 py-2">
+                    <td colSpan={selectionMode ? 10 : 9} className="px-6 py-2">
                       {aliasesLoading ? (
                         <span className="text-xs text-gray-400">Завантаження...</span>
                       ) : !aliasesMap[s.id] || aliasesMap[s.id].length === 0 ? (

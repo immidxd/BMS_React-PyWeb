@@ -67,6 +67,9 @@ const ClientsPage: React.FC<ClientsPageProps> = ({ currentSearchTerm }) => {
 
   // Selection for merge
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  // Чекбокси виділення показуємо лише в режимі «Виділити» — як у «Товарах»:
+  // постійна колонка чекбоксів у щоденному перегляді лише шумить.
+  const [selectionMode, setSelectionMode] = useState(false);
   const [mergeTargetId, setMergeTargetId] = useState<number | null>(null);
   const [merging, setMerging] = useState(false);
 
@@ -309,6 +312,13 @@ const ClientsPage: React.FC<ClientsPageProps> = ({ currentSearchTerm }) => {
             {currentSearchTerm && (
               <span className="text-sm text-gray-500 dark:text-gray-400">Пошук: «{currentSearchTerm}»</span>
             )}
+            <button
+              onClick={() => setSelectionMode(m => { const next = !m; if (!next) clearSelection(); return next; })}
+              className={`bms-btn ${selectionMode ? 'bms-btn-primary' : 'bms-btn-secondary'}`}
+              title="Виділяти рядки для обʼєднання дублікатів"
+            >
+              {selectionMode ? (selectedIds.size > 0 ? `Виділено: ${selectedIds.size}` : 'Режим виділення') : 'Виділити'}
+            </button>
             {dupCount != null && dupCount > 0 && (
               <button
                 onClick={() => setCarouselOpen(true)}
@@ -371,15 +381,17 @@ const ClientsPage: React.FC<ClientsPageProps> = ({ currentSearchTerm }) => {
             <table className="w-full text-sm [&_th]:text-center [&_td]:text-center">
               <thead className="bg-gray-50 dark:bg-gray-700 border-b border-gray-200 dark:border-gray-600">
                 <tr>
-                  <th className="px-2 py-3 text-center w-8">
-                    <input
-                      type="checkbox"
-                      checked={clients.length > 0 && selectedIds.size === clients.length}
-                      ref={el => { if (el) el.indeterminate = selectedIds.size > 0 && selectedIds.size < clients.length; }}
-                      onChange={toggleSelectAll}
-                      title="Виділити всіх на сторінці"
-                    />
-                  </th>
+                  {selectionMode && (
+                    <th className="px-2 py-3 text-center w-8">
+                      <input
+                        type="checkbox"
+                        checked={clients.length > 0 && selectedIds.size === clients.length}
+                        ref={el => { if (el) el.indeterminate = selectedIds.size > 0 && selectedIds.size < clients.length; }}
+                        onChange={toggleSelectAll}
+                        title="Виділити всіх на сторінці"
+                      />
+                    </th>
+                  )}
                   <th className="px-3 py-3 text-left font-semibold text-gray-600 dark:text-gray-300 cursor-pointer whitespace-nowrap" onClick={() => handleSort('id')}>
                     Номер<SortIcon field="id" />
                   </th>
@@ -401,7 +413,7 @@ const ClientsPage: React.FC<ClientsPageProps> = ({ currentSearchTerm }) => {
               <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
                 {clients.length === 0 ? (
                   <tr>
-                    <td colSpan={9} className="text-center py-12 text-gray-400">Клієнтів не знайдено</td>
+                    <td colSpan={selectionMode ? 9 : 8} className="text-center py-12 text-gray-400">Клієнтів не знайдено</td>
                   </tr>
                 ) : clients.map(c => (
                   <tr
@@ -409,13 +421,15 @@ const ClientsPage: React.FC<ClientsPageProps> = ({ currentSearchTerm }) => {
                     className={`hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors cursor-pointer select-none ${selectedIds.has(c.id) ? 'bg-blue-50/60 dark:bg-blue-900/20' : ''}`}
                     onDoubleClick={() => { setSelectedClientId(c.id); setModalOpen(true); }}
                   >
-                    <td className="px-2 py-2 text-center" onClick={e => e.stopPropagation()}>
-                      <input
-                        type="checkbox"
-                        checked={selectedIds.has(c.id)}
-                        onChange={() => toggleSelect(c.id)}
-                      />
-                    </td>
+                    {selectionMode && (
+                      <td className="px-2 py-2 text-center" onClick={e => e.stopPropagation()}>
+                        <input
+                          type="checkbox"
+                          checked={selectedIds.has(c.id)}
+                          onChange={() => toggleSelect(c.id)}
+                        />
+                      </td>
+                    )}
                     <td className="px-3 py-2 text-gray-500 dark:text-gray-400 font-mono text-xs">
                       <CopyOnClick value={c.id} />
                     </td>

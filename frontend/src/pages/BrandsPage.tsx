@@ -150,6 +150,8 @@ const BrandsPage: React.FC<BrandsPageProps> = ({ currentSearchTerm }) => {
 
   // Selection for merge
   const [selected, setSelected] = useState<Set<number>>(new Set());
+  // Чекбокси виділення — лише в режимі «Виділити» (як у «Товарах»).
+  const [selectionMode, setSelectionMode] = useState(false);
 
   // Filters
   const [concerns, setConcerns] = useState<BrandConcern[]>([]);
@@ -378,9 +380,18 @@ const BrandsPage: React.FC<BrandsPageProps> = ({ currentSearchTerm }) => {
             Бренди
             <span className="ml-2 text-base font-normal text-gray-400">({total})</span>
           </h1>
-          {currentSearchTerm && (
-            <span className="text-sm text-gray-500 dark:text-gray-400">Пошук: «{currentSearchTerm}»</span>
-          )}
+          <div className="flex items-center gap-3">
+            {currentSearchTerm && (
+              <span className="text-sm text-gray-500 dark:text-gray-400">Пошук: «{currentSearchTerm}»</span>
+            )}
+            <button
+              onClick={() => setSelectionMode(m => { const next = !m; if (!next) setSelected(new Set()); return next; })}
+              className={`bms-btn ${selectionMode ? 'bms-btn-primary' : 'bms-btn-secondary'}`}
+              title="Виділяти бренди для обʼєднання"
+            >
+              {selectionMode ? (selected.size > 0 ? `Виділено: ${selected.size}` : 'Режим виділення') : 'Виділити'}
+            </button>
+          </div>
         </div>
 
         {/* Merge bar */}
@@ -404,14 +415,16 @@ const BrandsPage: React.FC<BrandsPageProps> = ({ currentSearchTerm }) => {
             <table className="w-full text-sm [&_th]:text-center [&_td]:text-center">
               <thead className="bg-gray-50 dark:bg-gray-700 border-b border-gray-200 dark:border-gray-600">
                 <tr>
-                  <th className="px-2 py-3 w-8">
-                    <input
-                      type="checkbox"
-                      checked={brands.length > 0 && selected.size === brands.length}
-                      onChange={toggleSelectAll}
-                      className="rounded border-gray-300"
-                    />
-                  </th>
+                  {selectionMode && (
+                    <th className="px-2 py-3 w-8">
+                      <input
+                        type="checkbox"
+                        checked={brands.length > 0 && selected.size === brands.length}
+                        onChange={toggleSelectAll}
+                        className="rounded border-gray-300"
+                      />
+                    </th>
+                  )}
                   <th className="px-3 py-3 text-left font-semibold text-gray-600 dark:text-gray-300 cursor-pointer whitespace-nowrap" onClick={() => handleSort('id')}>
                     ID<SortIcon field="id" />
                   </th>
@@ -434,21 +447,23 @@ const BrandsPage: React.FC<BrandsPageProps> = ({ currentSearchTerm }) => {
               </thead>
               <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
                 {brands.length === 0 ? (
-                  <tr><td colSpan={7}><BmsEmpty label="Брендів не знайдено" /></td></tr>
+                  <tr><td colSpan={selectionMode ? 7 : 6}><BmsEmpty label="Брендів не знайдено" /></td></tr>
                 ) : brands.map(b => (
                   <tr
                     key={b.id}
                     className={`hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors ${selected.has(b.id) ? 'bg-blue-50 dark:bg-blue-900/20' : ''}`}
                   >
-                    {/* Checkbox */}
-                    <td className="px-2 py-2 text-center">
-                      <input
-                        type="checkbox"
-                        checked={selected.has(b.id)}
-                        onChange={() => toggleSelect(b.id)}
-                        className="rounded border-gray-300"
-                      />
-                    </td>
+                    {/* Checkbox — лише в режимі «Виділити» */}
+                    {selectionMode && (
+                      <td className="px-2 py-2 text-center">
+                        <input
+                          type="checkbox"
+                          checked={selected.has(b.id)}
+                          onChange={() => toggleSelect(b.id)}
+                          className="rounded border-gray-300"
+                        />
+                      </td>
+                    )}
 
                     {/* ID */}
                     <td className="px-3 py-2 text-gray-400 text-xs">{b.id}</td>

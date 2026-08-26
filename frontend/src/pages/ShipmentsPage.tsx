@@ -24,6 +24,9 @@ interface ShipmentsPageProps {
 const ShipmentsPage: React.FC<ShipmentsPageProps> = ({ currentSearchTerm }) => {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [showCreate, setShowCreate] = useState(false);
+  // Режим «Виділити» — як у «Товарах»: чекбокси зʼявляються лише коли вони потрібні.
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedCount, setSelectedCount] = useState(0);
   const [reloadSignal, setReloadSignal] = useState(0);
   const handleLoadComplete = React.useCallback(() => setIsRefreshing(false), []);
 
@@ -49,18 +52,29 @@ const ShipmentsPage: React.FC<ShipmentsPageProps> = ({ currentSearchTerm }) => {
             <h1 className="text-2xl font-semibold text-gray-900 dark:text-gray-100">Поставки</h1>
             {currentSearchTerm && <p className='text-sm text-gray-500 dark:text-gray-400'>Активний пошук: "{currentSearchTerm}"</p>}
           </div>
-          <button
-            onClick={() => setShowCreate(true)}
-            className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium bg-black text-white hover:bg-gray-800 transition-colors"
-          >
-            <span className="text-base leading-none">＋</span> Створити завіз
-          </button>
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => setSelectionMode(m => !m)}
+              className={`bms-btn ${selectionMode ? 'bms-btn-primary' : 'bms-btn-secondary'}`}
+              title="Виділяти поставки для групування"
+            >
+              {selectionMode ? (selectedCount > 0 ? `Виділено: ${selectedCount}` : 'Режим виділення') : 'Виділити'}
+            </button>
+            <button
+              onClick={() => setShowCreate(true)}
+              className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium bg-black text-white hover:bg-gray-800 transition-colors"
+            >
+              <span className="text-base leading-none">＋</span> Створити завіз
+            </button>
+          </div>
         </div>
 
         <ShipmentsTable
           reloadSignal={reloadSignal}
           searchTerm={currentSearchTerm}
           onLoadComplete={handleLoadComplete}
+          selectionMode={selectionMode}
+          onSelectedCountChange={setSelectedCount}
         />
       </div>
 
