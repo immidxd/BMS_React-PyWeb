@@ -177,10 +177,11 @@ const StoryAutomationPanel: React.FC = () => {
 
   return (
     <div className="space-y-5">
-      <div className="flex flex-wrap items-start justify-between gap-2">
+      {/* gap-x-6: інакше опис підповзав упритул до кнопок праворуч */}
+      <div className="flex flex-wrap items-start justify-between gap-x-6 gap-y-3">
         <div>
           <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Регулярні Stories</h3>
-          <p className="mt-1 max-w-3xl text-xs leading-relaxed text-gray-500 dark:text-gray-400">
+          <p className="mt-1.5 max-w-2xl text-xs leading-relaxed text-gray-500 dark:text-gray-400">
             Програма сама добирає товар за вашими критеріями й ставить його в чергу. Відправлення —
             окрема дія: доки «Публікувати без перевірки» вимкнено, жодна Story не піде без вашого
             підтвердження. Товар не повертається у Stories, доки не мине захист від повторів.

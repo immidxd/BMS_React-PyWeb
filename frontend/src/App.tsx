@@ -319,8 +319,9 @@ const AppContent: React.FC = () => {
 
       <header className="bms-header">
         <div className="flex items-center space-x-4 w-full">
-          <div className="flex-shrink-0">
+          <div className="flex-shrink-0 flex items-center gap-3">
              <AppLogo />
+             <DevBadge />
           </div>
 
           <div className="flex-grow min-w-0">
@@ -404,7 +405,6 @@ const App: React.FC = () => {
             <Route path="/*" element={<AppContent />} />
           </Routes>
           <TaskCenter />
-          <DevBadge />
           <UpdateBanner />
         </FilterPanelProvider>
       </AppThemeProvider>

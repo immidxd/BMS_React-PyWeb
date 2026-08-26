@@ -145,10 +145,11 @@ const StudioPanel: React.FC = () => {
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-start justify-between gap-2">
+      {/* gap-x-6: інакше опис підповзав упритул до кнопок праворуч */}
+      <div className="flex flex-wrap items-start justify-between gap-x-6 gap-y-3">
         <div>
           <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Майстерня</h3>
-          <p className="mt-1 max-w-3xl text-xs leading-relaxed text-gray-500 dark:text-gray-400">
+          <p className="mt-1.5 max-w-2xl text-xs leading-relaxed text-gray-500 dark:text-gray-400">
             Пости, які не про конкретний товар: анонси, оголошення, вітання. Макет складається тут,
             готовий кадр зберігається у хмарі — і саме він потім піде в мережі. Фото й шрифти
             спільні для всіх постів, тож фірмовий вигляд не треба збирати щоразу заново.

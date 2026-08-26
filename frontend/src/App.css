@@ -229,6 +229,9 @@ body {
      against the header. Other pages open with a card and never show it. */
   padding-top: 10px;
   border-bottom: 1px solid var(--bms-border);
+  /* Контент підвкладки НЕ повинен торкатися лінії підкреслення: без цього
+     заголовок «Регулярні Stories»/«Майстерня» приклеювався до самої рамки. */
+  margin-bottom: var(--bms-space-4);
 }
 .bms-subtab {
   position: relative;

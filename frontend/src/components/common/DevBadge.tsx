@@ -5,7 +5,9 @@ import { useRuntimeConfig, useFeatureFlag } from '../../contexts/RuntimeConfigCo
  * Діагностичний бейдж: версія + канал + платформа.
  * Гейтиться прапором `experimental_ui` → видно лише на dev/beta, приховано на
  * stable (Windows-прод). Демонструє ланцюг platform → feature-flag → UI.
- * Чисто додатковий, фіксована позиція — наявну розкладку не чіпає.
+ *
+ * Живе В ШАПЦІ, поруч зі знаком BMS, а не як fixed-оверлей у куті: раніше він
+ * висів поверх нижньої панелі й накривав собою підпис «Тільки непродані».
  */
 const DevBadge: React.FC = () => {
   const show = useFeatureFlag('experimental_ui');
@@ -14,26 +16,20 @@ const DevBadge: React.FC = () => {
   if (!show) return null; // на stable/Windows — нічого не рендеримо
 
   return (
-    <div
+    <span
       title="Діагностика збірки (видно лише на dev/beta)"
       style={{
-        position: 'fixed',
-        bottom: 8,
-        left: 8,
-        zIndex: 9999,
-        padding: '2px 8px',
-        fontSize: 11,
-        lineHeight: 1.4,
-        fontFamily: 'monospace',
-        borderRadius: 6,
-        background: 'rgba(0,0,0,0.6)',
-        color: '#9ae6b4',
-        pointerEvents: 'none',
+        fontFamily: 'var(--bms-font-mono)',
+        fontSize: 10,
+        lineHeight: 1,
+        letterSpacing: '0.02em',
+        color: 'var(--bms-fg-faint)',
+        whiteSpace: 'nowrap',
         userSelect: 'none',
       }}
     >
       {`v${version} · ${channel} · ${platform}`}
-    </div>
+    </span>
   );
 };
 

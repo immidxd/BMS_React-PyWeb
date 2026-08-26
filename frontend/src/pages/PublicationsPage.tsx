@@ -2273,26 +2273,28 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
       {pubTab === 'list' && (
       <div className="fixed bottom-0 left-0 right-0 px-4 py-3 bg-white/95 dark:bg-gray-800/95 backdrop-blur border-t border-gray-200 dark:border-gray-700 z-30">
         <div className="w-full grid grid-cols-[1fr_auto_1fr] items-center gap-4 max-w-screen-2xl mx-auto px-2">
-          <div className="justify-self-start flex items-center gap-6">
-            <label className="inline-flex items-center text-sm text-gray-700 dark:text-gray-300">
+          {/* Той самий рядок фільтрів, що й у «Товарах»: спільний підпис «Тільки:». */}
+          <div className="justify-self-start flex flex-wrap items-center gap-x-3.5 2xl:gap-x-5 gap-y-2">
+            <span className="text-[13px] font-medium text-gray-400 dark:text-gray-500 whitespace-nowrap">Тільки:</span>
+            <label className="inline-flex items-center text-[13px] whitespace-nowrap text-gray-700 dark:text-gray-300">
               <input
                 type="checkbox"
                 checked={onlyUnsold && filterMode !== 'problematic'}
                 disabled={filterMode === 'problematic'}
                 onChange={(e) => { setOnlyUnsold(e.target.checked); setPage(1); }}
-                title={filterMode === 'problematic' ? 'У цьому режимі треба бачити продані товари, які ще висять на обраному майданчику' : undefined}
+                title={filterMode === 'problematic' ? 'У цьому режимі треба бачити продані товари, які ще висять на обраному майданчику' : 'Тільки непродані'}
                 className="h-4 w-4 text-primary-600 border-gray-300 rounded focus:ring-primary-500 dark:focus:ring-primary-400 dark:bg-gray-700 dark:border-gray-600 disabled:opacity-50"
               />
-              <span className="ml-2">Тільки непродані</span>
+              <span className="ml-2">непродані</span>
             </label>
-            <label className="inline-flex items-center text-sm text-gray-700 dark:text-gray-300">
+            <label className="inline-flex items-center text-[13px] whitespace-nowrap text-gray-700 dark:text-gray-300" title="Тільки ростовки">
               <input
                 type="checkbox"
                 checked={onlyRostovka}
                 onChange={(e) => { setOnlyRostovka(e.target.checked); setPage(1); }}
                 className="h-4 w-4 text-blue-500 border-gray-300 rounded focus:ring-blue-400 dark:focus:ring-blue-400 dark:bg-gray-700 dark:border-gray-600"
               />
-              <span className="ml-2">Тільки ростовки</span>
+              <span className="ml-2">ростовки</span>
             </label>
           </div>
           <div className="justify-self-center flex justify-center">
