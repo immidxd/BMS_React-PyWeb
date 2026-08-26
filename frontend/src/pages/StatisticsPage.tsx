@@ -4,6 +4,9 @@ import ProductDetailsModal from '../components/products/ProductDetailsModal';
 import ProductNumberLink from '../components/products/ProductNumberLink';
 import CollectionCollageDialog, { type CollectionPlatform } from '../components/products/CollectionCollageDialog';
 import CatalogAnalyticsPanel from '../components/publications/CatalogAnalyticsPanel';
+import DeliveryCardModal from '../components/shipments/DeliveryCardModal';
+import Pagination from '../components/common/Pagination';
+import type { Shipment } from '../services/referenceService';
 import {
   statisticsService,
   type SalesStatsResponse,
@@ -12,6 +15,7 @@ import {
   type SummaryStats,
   type SupplierTotalData,
   type DeliveriesListResponse,
+  type DeliveryListItem,
   type DeliveryDetailStats,
   type SupplierDetailStats,
   type ClientsStatsResponse,
@@ -28,9 +32,12 @@ import {
 // ── Helpers ──────────────────────────────────────────────────────────────────
 const fmtNum = (n: number) => n.toLocaleString('uk-UA', { maximumFractionDigits: 0 });
 const fmtPrice = (n: number) => n.toLocaleString('uk-UA', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+// Округлення до цілих тисяч робило сусідні позначки осі однаковими (1 750 і
+// 2 100 — обидва «2K»), тож нижче 10 000 лишаємо десяту частку.
 const fmtShort = (n: number) => {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(0)}K`;
+  if (n >= 10_000) return `${(n / 1_000).toFixed(0)}K`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
   return String(n);
 };
 
@@ -49,6 +56,25 @@ const COLORS = {
 type PeriodType = 'month' | 'quarter' | 'year';
 
 const WEEKDAYS = ['Понеділок', 'Вівторок', 'Середа', 'Четвер', 'П’ятниця', 'Субота', 'Неділя'];
+/** Рядок статистики завозу → об'єкт для картки завозу.
+ *  `/api/shipments` — це та сама таблиця `deliveries`, тож id збігається;
+ *  картка тягне товари сама за shipment.id, з решти полів їй треба лише шапка. */
+const deliveryToShipment = (d: DeliveryListItem): Shipment => ({
+  id: d.id,
+  sheet_name: d.deliveryname || null,
+  shipment_date: d.deliverydate,
+  supplier_id: null,
+  supplier_name: d.supplier_name,
+  items_count: d.total_pairs,
+  total_cost: d.purchase_cost,
+  delivery_cost: d.delivery_cost,
+  notes: null,
+  group_id: null,
+  group_name: null,
+  created_at: null,
+  updated_at: null,
+});
+
 const platformLabel = (platform: CollectionPlatform) => platform === 'viber' ? 'Viber' : 'Facebook';
 const formatDateTime = (value?: string | null) => value
   ? new Date(value).toLocaleString('uk-UA', { dateStyle: 'medium', timeStyle: 'short' })
@@ -205,6 +231,8 @@ const StatisticsPage: React.FC<StatisticsPageProps> = () => {
   const [delDetail, setDelDetail] = useState<DeliveryDetailStats | null>(null);
   const [delDetailLoading, setDelDetailLoading] = useState(false);
   const [delDetailId, setDelDetailId] = useState<number | null>(null);
+  // Картка завозу (та сама, що у «Поставках») — відкривається кліком по назві.
+  const [delCardShipment, setDelCardShipment] = useState<Shipment | null>(null);
 
   // Supplier detail state
   const [supDetailId, setSupDetailId] = useState<number | null>(null);
@@ -684,8 +712,18 @@ const StatisticsPage: React.FC<StatisticsPageProps> = () => {
                             key={d.id}
                             className={`border-b hover:bg-gray-50 dark:hover:bg-gray-700 cursor-pointer ${delDetailId === d.id ? 'bg-blue-50 dark:bg-blue-900/20' : ''}`}
                             onClick={() => setDelDetailId(delDetailId === d.id ? null : d.id)}
+                            title="Клік — аналітика завозу нижче; клік по назві — картка завозу з товарами"
                           >
-                            <td className="px-3 py-2 text-blue-600 hover:underline">{d.deliveryname || `#${d.id}`}</td>
+                            <td className="px-3 py-2">
+                              <button
+                                type="button"
+                                onClick={e => { e.stopPropagation(); setDelCardShipment(deliveryToShipment(d)); }}
+                                title="Відкрити картку завозу"
+                                className="text-blue-600 hover:underline text-left"
+                              >
+                                {d.deliveryname || `#${d.id}`}
+                              </button>
+                            </td>
                             <td className="px-3 py-2 whitespace-nowrap">{d.deliverydate ? new Date(d.deliverydate).toLocaleDateString('uk-UA') : '—'}</td>
                             <td className="px-3 py-2">{d.supplier_name || '—'}</td>
                             <td className="px-3 py-2 text-right">{d.total_pairs}</td>
@@ -709,18 +747,13 @@ const StatisticsPage: React.FC<StatisticsPageProps> = () => {
 
                   {/* Pagination */}
                   {delData.pages > 1 && (
-                    <div className="flex justify-center items-center gap-2 mt-3">
-                      <button
-                        disabled={delPage <= 1}
-                        onClick={() => setDelPage(p => p - 1)}
-                        className="px-2 py-1 text-xs border rounded disabled:opacity-30"
-                      >Назад</button>
-                      <span className="text-xs text-gray-500">Сторінка {delPage} з {delData.pages}</span>
-                      <button
-                        disabled={delPage >= delData.pages}
-                        onClick={() => setDelPage(p => p + 1)}
-                        className="px-2 py-1 text-xs border rounded disabled:opacity-30"
-                      >Далі</button>
+                    <div className="mt-5 flex justify-center">
+                      <Pagination
+                        currentPage={delPage}
+                        totalPages={delData.pages}
+                        onPageChange={setDelPage}
+                        showRange={false}
+                      />
                     </div>
                   )}
 
@@ -934,19 +967,19 @@ const StatisticsPage: React.FC<StatisticsPageProps> = () => {
                   {/* Top brands */}
                   <div>
                     <h4 className="text-sm font-semibold text-gray-600 dark:text-gray-300 mb-2">Топ брендів (по виторгу)</h4>
-                    <div className="space-y-1.5">
+                    <div className="space-y-2">
                       {productStats.top_brands.slice(0, 10).map((b, i) => {
                         const maxRev = productStats.top_brands[0]?.revenue || 1;
                         const pct = Math.round((b.revenue / maxRev) * 100);
                         return (
-                          <div key={b.brand} className="flex items-center gap-2">
+                          <div key={b.brand} className="flex items-center gap-3">
                             <span className="text-[10px] text-gray-400 w-4 text-right">{i + 1}</span>
                             <span className="text-xs font-medium text-gray-700 dark:text-gray-200 w-28 truncate">{b.brand}</span>
-                            <div className="flex-1 bg-gray-100 dark:bg-gray-700 rounded-full h-4 relative">
-                              <div className="h-4 bg-blue-400 rounded-full" style={{ width: `${pct}%` }} />
-                              <span className="absolute inset-0 flex items-center justify-end pr-1.5 text-[9px] font-semibold text-gray-600 dark:text-gray-200">{fmtShort(b.revenue)}₴</span>
+                            <div className="flex-1 bg-gray-100 dark:bg-gray-700 rounded-full h-5 relative">
+                              <div className="h-5 bg-blue-400 rounded-full" style={{ width: `${pct}%` }} />
+                              <span className="absolute inset-0 flex items-center justify-end pr-2.5 text-[10px] font-semibold text-gray-600 dark:text-gray-200">{fmtShort(b.revenue)}₴</span>
                             </div>
-                            <span className="text-[10px] text-gray-400 w-8 text-right">{b.sold_count}шт</span>
+                            <span className="text-[10px] text-gray-400 w-12 text-right whitespace-nowrap">{b.sold_count} шт</span>
                           </div>
                         );
                       })}
@@ -1088,6 +1121,11 @@ const StatisticsPage: React.FC<StatisticsPageProps> = () => {
         productId={cardProductId}
         open={cardProductId !== null}
         onClose={() => setCardProductId(null)}
+      />
+      <DeliveryCardModal
+        shipment={delCardShipment}
+        open={!!delCardShipment}
+        onClose={() => setDelCardShipment(null)}
       />
     </MainLayout>
   );
