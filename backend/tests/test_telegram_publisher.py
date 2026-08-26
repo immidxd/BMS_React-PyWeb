@@ -11,6 +11,7 @@
 import asyncio
 import os
 import sys
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -559,6 +560,77 @@ def test_invalid_schedule_never_silently_becomes_publish_now():
 
     past, error = tp._validate_when("2020-01-01T08:00:00+03:00")
     assert past is None and "2 хвилини" in error
+
+
+def test_schedule_capacity_counts_album_messages_and_names_next_free_slot(monkeypatch):
+    class FakeClient:
+        async def get_entity(self, entity):
+            return entity
+
+        async def __call__(self, _request):
+            return SimpleNamespace(
+                count=99,
+                messages=[SimpleNamespace(date=datetime(2026, 8, 27, 8, 0, tzinfo=timezone.utc))],
+            )
+
+    monkeypatch.setattr(tp, "SCHEDULED_MESSAGE_LIMIT", 100)
+    scanner = SimpleNamespace(client=FakeClient())
+
+    error = asyncio.run(tp._channel_schedule_capacity_error(scanner, 5))
+
+    assert error is not None
+    assert "99 із 100" in error
+    assert "потребує 5" in error
+    assert "27.08 о 11:00" in error
+    assert "Форум і тематичні гілки не змінено" in error
+
+
+def test_batch_stops_before_first_forum_post_when_schedule_is_full(monkeypatch):
+    class FakeScanner:
+        def __init__(self):
+            self.disconnected = 0
+
+        async def disconnect(self):
+            self.disconnected += 1
+
+    scanner = FakeScanner()
+    capacity_checks = []
+    published = []
+
+    async def fake_connect():
+        return scanner, None
+
+    async def fake_capacity(_scanner, required):
+        capacity_checks.append(required)
+        return "Розклад Telegram заповнений"
+
+    async def fake_create(*_args, **_kwargs):
+        published.append(True)
+        return {"ok": True, "failed": []}
+
+    products = {
+        1: _p(id=1, productnumber="#Ф1"),
+        2: _p(id=2, productnumber="#Ф2"),
+    }
+    monkeypatch.setattr(tp, "_connect", fake_connect)
+    monkeypatch.setattr(tp, "_channel_schedule_capacity_error", fake_capacity)
+    monkeypatch.setattr(tp, "create_post", fake_create)
+    monkeypatch.setattr(tp, "_load_product", lambda _db, pid: products.get(pid))
+    monkeypatch.setattr(tp, "_preflight_batch_item", lambda *_args: None)
+    monkeypatch.setattr(tp, "_photo_entries", lambda _bms: ([object()] * 5, "official"))
+    tp._BATCH_CACHE.clear()
+    first_at = datetime.now(tp.KYIV_TZ) + timedelta(days=1)
+    request = [
+        {"product_id": 1, "payload": {"to_channel": True, "channel_at": first_at.isoformat()}},
+        {"product_id": 2, "payload": {"to_channel": True, "channel_at": (first_at + timedelta(minutes=2)).isoformat()}},
+    ]
+
+    result = asyncio.run(tp.create_posts_batch(object(), request, "test-full-schedule"))
+
+    assert result == {"ok": False, "error": "Розклад Telegram заповнений"}
+    assert capacity_checks == [10]
+    assert published == []
+    assert scanner.disconnected == 1
 
 
 def test_batch_reuses_connection_stops_after_flood_and_is_idempotent(monkeypatch):

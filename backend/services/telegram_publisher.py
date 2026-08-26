@@ -78,6 +78,7 @@ BATCH_MAX_PRODUCTS = int(os.getenv("TELEGRAM_BATCH_MAX_PRODUCTS", "25"))
 MAX_THREADS_PER_POST = int(os.getenv("TELEGRAM_MAX_THREADS_PER_POST", "6"))
 BATCH_POST_GAP_SEC = float(os.getenv("TELEGRAM_BATCH_POST_GAP_SEC", "1.25"))
 BATCH_DESTINATION_GAP_SEC = float(os.getenv("TELEGRAM_BATCH_DESTINATION_GAP_SEC", "0.45"))
+SCHEDULED_MESSAGE_LIMIT = int(os.getenv("TELEGRAM_SCHEDULED_MESSAGE_LIMIT", "100"))
 BATCH_CACHE_TTL_SEC = 6 * 60 * 60
 _PUBLISH_LOCK = asyncio.Lock()
 _BATCH_CACHE: "OrderedDict[str, Tuple[float, dict]]" = OrderedDict()
@@ -1437,6 +1438,82 @@ def _record_post(db: Session, *, product_id: int, pnum: str, chat_id: int,
     })
 
 
+def _selected_photo_entries(bms: dict, payload: dict) -> Tuple[List[Any], str]:
+    """Фактичний альбом у тому самому порядку, в якому він піде в Telegram."""
+    all_photos, image_kind = _photo_entries(bms)
+    raw_indices = payload.get("image_idx")
+    if not isinstance(raw_indices, list) or not raw_indices:
+        return all_photos[:ALBUM_LIMIT], image_kind
+
+    photos: List[Any] = []
+    seen = set()
+    for raw in raw_indices:
+        try:
+            index = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if index in seen or not 0 <= index < len(all_photos):
+            continue
+        seen.add(index)
+        photos.append(all_photos[index])
+        if len(photos) >= ALBUM_HARD_LIMIT:
+            break
+    return photos, image_kind
+
+
+async def _channel_schedule_capacity_error(scanner: Any, required: int) -> Optional[str]:
+    """Перевірити квоту Telegram до створення форумного оригіналу.
+
+    Telegram рахує кожне фото альбому як окреме заплановане повідомлення.
+    Тому 20 товарів по 5 фото вже займають усі 100 місць каналу.
+    """
+    if required <= 0:
+        return None
+    try:
+        from telethon.tl.functions.messages import GetScheduledHistoryRequest
+        from telethon.tl.types import PeerChannel
+
+        channel = await scanner.client.get_entity(PeerChannel(CHANNEL_CHAT_ID))
+        history = await scanner.client(GetScheduledHistoryRequest(peer=channel, hash=0))
+        messages = list(getattr(history, "messages", None) or [])
+        used = int(getattr(history, "count", len(messages)) or len(messages))
+    except Exception as exc:
+        logger.warning("Не вдалося перевірити місткість розкладу Telegram: %s", exc)
+        return (
+            "Не вдалося перевірити вільні місця в розкладі каналу Telegram. "
+            "Публікацію зупинено до створення постів у форумі — спробуй ще раз."
+        )
+
+    if used + required <= SCHEDULED_MESSAGE_LIMIT:
+        return None
+
+    available = max(0, SCHEDULED_MESSAGE_LIMIT - used)
+    dates = [getattr(message, "date", None) for message in messages]
+    dates = [value for value in dates if isinstance(value, datetime)]
+    next_free = ""
+    if dates:
+        first = min(dates).astimezone(KYIV_TZ)
+        next_free = f" Найближчі місця почнуть звільнятися {first:%d.%m о %H:%M}."
+    return (
+        f"У каналі Telegram уже зайнято {used} із {SCHEDULED_MESSAGE_LIMIT} місць "
+        f"для запланованих повідомлень; вільно {available}, а нове планування потребує {required}. "
+        "Кожне фото альбому Telegram рахує окремо."
+        f"{next_free} Форум і тематичні гілки не змінено."
+    )
+
+
+def _telegram_destination_error(exc: Exception) -> str:
+    name = type(exc).__name__
+    raw = str(exc).strip()
+    if name == "ScheduleTooMuchError" or "SCHEDULE_TOO_MUCH" in raw.upper():
+        return (
+            "У каналі заповнений ліміт запланованих повідомлень Telegram. "
+            "Дочекайся виходу найближчих постів і доплануй у канал уже створений "
+            "форумний пост; увесь пакет повторно не запускай."
+        )
+    return raw or name
+
+
 async def create_post(db: Session, product_id: int, payload: dict, *,
                       _scanner: Any = None, _lock_held: bool = False) -> dict:
     """Опублікувати товар у Telegram.
@@ -1505,14 +1582,7 @@ async def create_post(db: Session, product_id: int, payload: dict, *,
             return {"ok": False, "already_published": True,
                     "error": f"Товар уже має {live} живих постів у Telegram"}
 
-    all_photos, image_kind = _photo_entries(bms)
-    # Вибір людини (індекси у порядку, як їх обрали) — інакше перші ALBUM_LIMIT.
-    idx = payload.get("image_idx")
-    if isinstance(idx, list) and idx:
-        photos = [all_photos[i] for i in (int(x) for x in idx) if 0 <= i < len(all_photos)]
-    else:
-        photos = all_photos[:ALBUM_LIMIT]
-    photos = photos[:ALBUM_HARD_LIMIT]
+    photos, image_kind = _selected_photo_entries(bms, payload)
     if not photos:
         return {"ok": False, "error": "У товару немає фото — Telegram не прийме пост без альбому"}
 
@@ -1566,6 +1636,13 @@ async def create_post(db: Session, product_id: int, payload: dict, *,
     try:
         from telethon.tl.types import PeerChannel
         from starlette.concurrency import run_in_threadpool
+
+        # Для одиночної публікації batch-preflight не виконувався. Перевіряємо
+        # Telegram ДО форумного оригіналу, щоб відмова каналу не лишила дублі.
+        if owns_scanner and channel_when is not None:
+            capacity_error = await _channel_schedule_capacity_error(scanner, len(photos))
+            if capacity_error:
+                return {"ok": False, "error": capacity_error}
 
         # Читання з диска + перекодування 5 кадрів у JPEG — це Pillow і сотні
         # мілісекунд CPU. У корутині воно б заморозило ВЕСЬ бекенд (uvicorn —
@@ -1672,7 +1749,11 @@ async def create_post(db: Session, product_id: int, payload: dict, *,
                     result["channel"] = {"scheduled_at": None, "sent": True}
             except Exception as exc:
                 logger.warning("Форвард у канал не вдався: %s", exc)
-                result["failed"].append({"channel": CHANNEL_TITLE, "error": str(exc)})
+                result["failed"].append({
+                    "channel": CHANNEL_TITLE,
+                    "stage": "channel_schedule" if when else "channel_send",
+                    "error": _telegram_destination_error(exc),
+                })
 
         # ── 4. Запамʼятати формулювання для наступного товару цієї моделі ───
         try:
@@ -1726,12 +1807,8 @@ def _preflight_batch_item(db: Session, product_id: int, payload: dict) -> Option
     problem = validate_caption(str(payload.get("caption") or "").strip())
     if problem:
         return problem
-    photos, _kind = _photo_entries(bms)
-    idx = payload.get("image_idx")
-    if isinstance(idx, list) and idx:
-        valid_count = len({int(x) for x in idx if str(x).lstrip("-").isdigit() and 0 <= int(x) < len(photos)})
-    else:
-        valid_count = min(len(photos), ALBUM_LIMIT)
+    selected_photos, _kind = _selected_photo_entries(bms, payload)
+    valid_count = len(selected_photos)
     if valid_count < 1:
         return "У товару немає вибраних фото"
     try:
@@ -1804,6 +1881,7 @@ async def create_posts_batch(db: Session, items: List[dict], batch_id: str) -> d
     normalized: List[Tuple[int, dict, str]] = []
     seen_numbers = set()
     scheduled: List[Tuple[int, datetime]] = []
+    scheduled_messages_required = 0
     for pos, item in enumerate(items):
         try:
             pid = int(item.get("product_id"))
@@ -1825,6 +1903,8 @@ async def create_posts_batch(db: Session, items: List[dict], batch_id: str) -> d
             when, _ = _validate_when(payload.get("channel_at"))
             if when:
                 scheduled.append((pos, when, pnum.lstrip("#") or str(pid)))
+                selected_photos, _kind = _selected_photo_entries(bms, payload)
+                scheduled_messages_required += len(selected_photos)
         normalized.append((pid, payload, pnum))
 
     # Однаковий/майже однаковий час для кількох форвардів створює некерований
@@ -1853,6 +1933,12 @@ async def create_posts_batch(db: Session, items: List[dict], batch_id: str) -> d
         results: List[dict] = []
         stopped_reason: Optional[str] = None
         try:
+            capacity_error = await _channel_schedule_capacity_error(
+                scanner, scheduled_messages_required,
+            )
+            if capacity_error:
+                return {"ok": False, "error": capacity_error}
+
             for index, (pid, payload, pnum) in enumerate(normalized):
                 if stopped_reason:
                     results.append({

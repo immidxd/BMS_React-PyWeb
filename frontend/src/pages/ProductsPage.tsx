@@ -14,6 +14,7 @@ import { PlusOutlined, SendOutlined, CheckSquareOutlined, DownOutlined } from '@
 import LoadingSpinner from '../components/common/LoadingSpinner';
 import { useSelection } from '../services/selectionManager';
 import { taskManager } from '../services/taskManager';
+import { formatTelegramBatchResult } from '../services/telegramBatchResult';
 import { waitForPromImport, type PromImportProgress } from '../services/promImportMonitor';
 import {
   markPromImportAccepted, refreshPromLimitWatch, watchPromLimitStatus,
@@ -573,23 +574,9 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
       {
         silentSuccess: true,
         resultStatus: (result: any) => {
-          const c = result.counts || {};
-          const summary = [
-            c.success ? `${c.success} успішно` : '',
-            c.partial ? `${c.partial} частково` : '',
-            c.error ? `${c.error} з помилкою` : '',
-            c.skipped ? `${c.skipped} не надсилали` : '',
-          ].filter(Boolean).join(' · ');
-          const issues = (result.results || [])
-            .filter((item: any) => item.status !== 'success')
-            .map((item: any) => {
-              const failed = item.result?.failed?.map((f: any) => f.thread_title || f.channel || f.error).join(', ');
-              return `#${item.productnumber}: ${item.error || failed || item.status}`;
-            })
-            .join(' · ');
           return {
             status: result.status === 'success' ? 'success' : 'partial',
-            detail: [summary, issues].filter(Boolean).join(' — '),
+            detail: formatTelegramBatchResult(result),
           };
         },
         onSuccess: (result: any) => {

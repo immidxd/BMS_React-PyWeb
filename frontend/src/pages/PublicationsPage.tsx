@@ -19,6 +19,7 @@ import FacebookPublishDialog, { FacebookMark, type FacebookDraftPayload, type Fa
 import { confirmDialog, alertDialog, notify } from '../ui/feedback';
 import LoadingSpinner from '../components/common/LoadingSpinner';
 import { taskManager } from '../services/taskManager';
+import { formatTelegramBatchResult } from '../services/telegramBatchResult';
 
 /* ── Types ─────────────────────────────────────────────────────────── */
 
@@ -1216,25 +1217,9 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
       {
         silentSuccess: true,
         resultStatus: (result: any) => {
-          const counts = result.counts || {};
-          const summary = [
-            counts.success ? `${counts.success} успішно` : '',
-            counts.partial ? `${counts.partial} частково` : '',
-            counts.error ? `${counts.error} з помилкою` : '',
-            counts.skipped ? `${counts.skipped} не надсилали` : '',
-          ].filter(Boolean).join(' · ');
-          const issues = (result.results || [])
-            .filter((item: any) => item.status !== 'success')
-            .map((item: any) => {
-              const failed = item.result?.failed
-                ?.map((failure: any) => failure.thread_title || failure.channel || failure.error)
-                .join(', ');
-              return `#${item.productnumber}: ${item.error || failed || item.status}`;
-            })
-            .join(' · ');
           return {
             status: result.status === 'success' ? 'success' : 'partial',
-            detail: [summary, issues].filter(Boolean).join(' — '),
+            detail: formatTelegramBatchResult(result),
           };
         },
         onSuccess: (result: any) => {
