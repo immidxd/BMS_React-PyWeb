@@ -634,6 +634,36 @@ def _build_product_where(filters: Optional["schemas.ProductFilter"]) -> tuple:
                 )
             )""")
 
+        if filters.only_with_photo:
+            # Дзеркало has_photo у видачі: власне фото за номером АБО підтягнуте
+            # з товару-донора (official_photos_from). Фото живуть у файловій
+            # системі/Drive, не в БД, тож множину номерів (кешовану, TTL) вносимо
+            # у SQL параметром — інакше фільтр не зміг би працювати разом із
+            # пагінацією та лічильником total.
+            try:
+                from services.product_images import get_photo_pnum_set
+            except ImportError:
+                from backend.services.product_images import get_photo_pnum_set
+            try:
+                photo_pnums = sorted(get_photo_pnum_set())
+            except Exception as _pe:
+                logger.warning(f"only_with_photo: photo-set unavailable: {_pe}")
+                photo_pnums = []
+            if photo_pnums:
+                # Нормалізація ключа збігається з product_has_photo():
+                # strip → зняти провідний '#' → strip → lower.
+                # ⚠️ COLLATE "und-x-icu" обов'язковий: база створена з локаллю C,
+                # де lower() НЕ опускає кирилицю ('Ф4350' лишається 'Ф4350') —
+                # без ICU збігались би лише суто цифрові номери.
+                where_conditions.append("""(
+                    lower(btrim(ltrim(btrim(p.productnumber), '#') COLLATE "und-x-icu")) = ANY(:photo_pnums)
+                    OR lower(btrim(ltrim(btrim(COALESCE(p.official_photos_from, '')), '#') COLLATE "und-x-icu")) = ANY(:photo_pnums)
+                )""")
+                params["photo_pnums"] = photo_pnums
+            else:
+                # Порожня множина (немає теки з фото) — чесний нуль, а не «всі».
+                where_conditions.append("FALSE")
+
         if filters.shipment_id:
             where_conditions.append("p.deliveryid = :shipment_id")
             params["shipment_id"] = filters.shipment_id

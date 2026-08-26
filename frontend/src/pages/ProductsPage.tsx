@@ -67,6 +67,9 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
   const [onlyUnsold, setOnlyUnsold] = useState<boolean>(true);
   const [onlyProblematic, setOnlyProblematic] = useState<boolean>(false);
   const [onlyRostovka, setOnlyRostovka] = useState<boolean>(false);
+  // «Тільки з фото»: власне фото за номером АБО підтягнуте з товару-донора —
+  // та сама умова, що дає іконку 📷 у таблиці (has_photo).
+  const [onlyWithPhoto, setOnlyWithPhoto] = useState<boolean>(false);
   const [selectedShipmentId, setSelectedShipmentId] = useState<number | undefined>(undefined);
   const [visibleOnly, setVisibleOnly] = useState<boolean>(false);
   const [sortBy, setSortBy] = useState<string>('delivery_date');
@@ -121,6 +124,7 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
         only_unsold: onlyUnsold || undefined,
         only_problematic: onlyProblematic || undefined,
         only_rostovka: onlyRostovka || undefined,
+        only_with_photo: onlyWithPhoto || undefined,
         shipment_id: selectedShipmentId,
         is_visible: visibleOnly ? true : (selectedFilters.is_visible || undefined),
         min_price: selectedFilters.min_price,
@@ -183,6 +187,7 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
       only_unsold: onlyUnsold || undefined,
       only_problematic: onlyProblematic || undefined,
       only_rostovka: onlyRostovka || undefined,
+      only_with_photo: onlyWithPhoto || undefined,
       shipment_id: selectedShipmentId,
       is_visible: visibleOnly ? true : (selectedFilters.is_visible || undefined),
       min_price: selectedFilters.min_price,
@@ -1008,17 +1013,18 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
     // бо це базовий режим перегляду, а не накладений користувачем фільтр.
     setOnlyProblematic(false);
     setOnlyRostovka(false);
+    setOnlyWithPhoto(false);
     setSelectedShipmentId(undefined);
     setVisibleOnly(false);
     setPage(1);
   };
     
-    useEffect(() => { fetchProducts(); }, [page, perPage, currentSearchTerm, selectedFilters, onlyUnsold, onlyProblematic, onlyRostovka, selectedShipmentId, visibleOnly, sortBy, sortDir]);
+    useEffect(() => { fetchProducts(); }, [page, perPage, currentSearchTerm, selectedFilters, onlyUnsold, onlyProblematic, onlyRostovka, onlyWithPhoto, selectedShipmentId, visibleOnly, sortBy, sortDir]);
 
     // Динамічний фасет розмірів — оновлюємо при зміні будь-якого «звужуючого»
     // фільтра/пошуку (без page/sort: вони не впливають на наявні розміри).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    useEffect(() => { fetchAvailableFacets(); }, [currentSearchTerm, selectedFilters, onlyUnsold, onlyProblematic, onlyRostovka, selectedShipmentId, visibleOnly]);
+    useEffect(() => { fetchAvailableFacets(); }, [currentSearchTerm, selectedFilters, onlyUnsold, onlyProblematic, onlyRostovka, onlyWithPhoto, selectedShipmentId, visibleOnly]);
 
     useEffect(() => () => {
       abortRef.current?.abort();
@@ -1104,6 +1110,7 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
       const ou = params.has('only_unsold') ? params.get('only_unsold') === 'true' : true;
       const op = params.get('only_problematic') === 'true';
       const or_ = params.get('only_rostovka') === 'true';
+      const owp = params.get('only_with_photo') === 'true';
       const sh = params.get('shipment_id') ? Number(params.get('shipment_id')) : undefined;
       const vo = params.get('visible_only') === 'true';
       setPage(pn);
@@ -1113,6 +1120,7 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
       setOnlyUnsold(ou);
       setOnlyProblematic(op);
       setOnlyRostovka(or_);
+      setOnlyWithPhoto(owp);
       setSelectedShipmentId(sh);
       setVisibleOnly(vo);
       // basic selected filters
@@ -1140,13 +1148,14 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
       if (onlyUnsold) params.set('only_unsold', 'true');
       if (onlyProblematic) params.set('only_problematic', 'true');
       if (onlyRostovka) params.set('only_rostovka', 'true');
+      if (onlyWithPhoto) params.set('only_with_photo', 'true');
       if (selectedShipmentId) params.set('shipment_id', String(selectedShipmentId));
       if (visibleOnly) params.set('visible_only', 'true');
       Object.entries(selectedFilters).forEach(([k, v]) => {
         if (v !== undefined && v !== null && typeof v !== 'object') params.set(k, String(v));
       });
       navigate({ pathname: location.pathname, search: params.toString() }, { replace: true });
-    }, [page, perPage, sortBy, sortDir, onlyUnsold, onlyProblematic, onlyRostovka, selectedShipmentId, visibleOnly, selectedFilters, navigate, location.pathname]);
+    }, [page, perPage, sortBy, sortDir, onlyUnsold, onlyProblematic, onlyRostovka, onlyWithPhoto, selectedShipmentId, visibleOnly, selectedFilters, navigate, location.pathname]);
 
     return (
     <MainLayout
@@ -1282,33 +1291,47 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
       {/* Фіксований (fixed) нижній бар для стабільної пагінації незалежно від скролу */}
         <div className="fixed bottom-0 left-0 right-0 px-0 py-3 bg-white/95 dark:bg-gray-800/95 backdrop-blur supports-backdrop-blur:backdrop-blur-md border-t border-gray-100 dark:border-gray-700 z-20 shadow-[0_-2px_10px_rgba(0,0,0,0.04)]">
           <div className="w-full grid grid-cols-1 md:grid-cols-[1fr_auto_1fr] items-center px-4 lg:px-6 gap-4">
-            <div className="order-2 md:order-none flex items-center gap-6 justify-self-start justify-start mt-3 md:mt-0 pl-2 md:pl-0">
-              <label className="inline-flex items-center text-sm text-gray-700 dark:text-gray-300" title="Перемкнути: ⌘/Ctrl + U">
+            {/* Спільний підпис «Тільки:» замість чотирьох повторів того самого
+                слова — рядок стає вдвічі коротшим і вміщується в один рядок,
+                а кожен чекбокс лишається тим самим фільтром «тільки X». */}
+            <div className="order-2 md:order-none flex flex-wrap items-center gap-x-3.5 2xl:gap-x-5 gap-y-2 justify-self-start justify-start mt-3 md:mt-0 pl-2 md:pl-0">
+              <span className="text-[13px] font-medium text-gray-400 dark:text-gray-500 whitespace-nowrap">Тільки:</span>
+              <label className="inline-flex items-center text-[13px] whitespace-nowrap text-gray-700 dark:text-gray-300" title="Тільки непродані · перемкнути: ⌘/Ctrl + U">
                 <input
                   type="checkbox"
                   checked={onlyUnsold}
                   onChange={(e) => { setOnlyUnsold(e.target.checked); setPage(1); }}
                   className="h-4 w-4 text-primary-600 border-gray-300 rounded focus:ring-primary-500 dark:focus:ring-primary-400 dark:bg-gray-700 dark:border-gray-600"
                 />
-                <span className="ml-2">Тільки непродані</span>
+                <span className="ml-2">непродані</span>
               </label>
-              <label className="inline-flex items-center text-sm text-gray-700 dark:text-gray-300">
+              <label className="inline-flex items-center text-[13px] whitespace-nowrap text-gray-700 dark:text-gray-300" title="Тільки проблемні">
                 <input
                   type="checkbox"
                   checked={onlyProblematic}
                   onChange={(e) => { setOnlyProblematic(e.target.checked); setPage(1); }}
                   className="h-4 w-4 text-orange-500 border-gray-300 rounded focus:ring-orange-400 dark:focus:ring-orange-400 dark:bg-gray-700 dark:border-gray-600"
                 />
-                <span className="ml-2">Тільки проблемні</span>
+                <span className="ml-2">проблемні</span>
               </label>
-              <label className="inline-flex items-center text-sm text-gray-700 dark:text-gray-300">
+              <label className="inline-flex items-center text-[13px] whitespace-nowrap text-gray-700 dark:text-gray-300" title="Тільки ростовки">
                 <input
                   type="checkbox"
                   checked={onlyRostovka}
                   onChange={(e) => { setOnlyRostovka(e.target.checked); setPage(1); }}
                   className="h-4 w-4 text-blue-500 border-gray-300 rounded focus:ring-blue-400 dark:focus:ring-blue-400 dark:bg-gray-700 dark:border-gray-600"
                 />
-                <span className="ml-2">Тільки ростовки</span>
+                <span className="ml-2">ростовки</span>
+              </label>
+              <label className="inline-flex items-center text-[13px] whitespace-nowrap text-gray-700 dark:text-gray-300"
+                title="Тільки з фото — власним або підтягнутим з товару-донора">
+                <input
+                  type="checkbox"
+                  checked={onlyWithPhoto}
+                  onChange={(e) => { setOnlyWithPhoto(e.target.checked); setPage(1); }}
+                  className="h-4 w-4 text-emerald-500 border-gray-300 rounded focus:ring-emerald-400 dark:focus:ring-emerald-400 dark:bg-gray-700 dark:border-gray-600"
+                />
+                <span className="ml-2">з фото</span>
               </label>
             </div>
             <div className="order-1 md:order-none justify-self-center flex justify-center">
@@ -1321,7 +1344,7 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
                 showRange={false}
               />
             </div>
-            <div className="order-3 md:order-none justify-self-end flex justify-end text-xs md:text-sm lg:text-base text-gray-500 pr-2 md:pr-0">
+            <div className="order-3 md:order-none justify-self-end flex justify-end text-[13px] text-gray-500 pr-2 md:pr-0">
               <span className="whitespace-nowrap">Показано {products.items.length ? (products.page - 1) * products.per_page + 1 : 0}-{Math.min(products.page * products.per_page, products.total)} з {products.total} записів</span>
             </div>
           </div>

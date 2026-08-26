@@ -511,6 +511,9 @@ class ProductFilter(BaseModel):
     only_unsold: Optional[bool] = None
     only_problematic: Optional[bool] = None
     only_rostovka: Optional[bool] = None
+    # «Тільки з фото»: власне фото за номером АБО підтягнуте з товару-донора
+    # (official_photos_from) — узгоджено з полем has_photo у видачі.
+    only_with_photo: Optional[bool] = None
     shipment_id: Optional[int] = None
 
 # Модель для опцій фільтрів
