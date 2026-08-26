@@ -15,8 +15,9 @@
 
 #define AppName "BMS"
 #define AppPublisher "BMS"
-; Версію зчитуємо з файлу VERSION у корені (тримати в синхроні)
-#define AppVersion "0.1.1-alpha"
+; ⚠️ Дублює файл VERSION у корені — ISCC читає саме цей рядок, тож при бампі
+; версії міняти В ОБОХ місцях (інакше Setup.exe вийде зі старим номером).
+#define AppVersion "0.2.0-alpha"
 #define AppExe "BMS.exe"
 
 [Setup]
