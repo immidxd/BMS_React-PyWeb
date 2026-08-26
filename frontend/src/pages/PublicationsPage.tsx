@@ -695,6 +695,8 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
   const [detailProductId, setDetailProductId] = useState<number | null>(null);
   const [cardProductId, setCardProductId] = useState<number | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  // Чекбокси виділення — лише в режимі «Виділити» (як у «Товарах» і решті таблиць).
+  const [selectionMode, setSelectionMode] = useState(false);
   const [unpublishing, setUnpublishing] = useState<number | null>(null);
   const [bulkUnpublishing, setBulkUnpublishing] = useState(false);
   const [manualCleanupBusy, setManualCleanupBusy] = useState<number | null>(null);
@@ -1732,6 +1734,15 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
             {currentSearchTerm && (
               <span className="text-sm text-gray-500 dark:text-gray-400">Пошук: «{currentSearchTerm}»</span>
             )}
+            {pubTab === 'list' && (
+              <button
+                onClick={() => setSelectionMode(m => { const next = !m; if (!next) setSelectedIds(new Set()); return next; })}
+                className={`bms-btn ${selectionMode ? 'bms-btn-primary' : 'bms-btn-secondary'}`}
+                title="Виділяти товари для пакетної публікації"
+              >
+                {selectionMode ? (selectedIds.size > 0 ? `Виділено: ${selectedIds.size}` : 'Режим виділення') : 'Виділити'}
+              </button>
+            )}
             {/* Усі інтеграції — за однією кнопкою, щоб тулбар був чистим */}
             <button
               onClick={() => setIntegrationsOpen(true)}
@@ -1853,9 +1864,11 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
             <table className="w-full text-sm">
               <thead className="bg-gray-50 dark:bg-gray-700 border-b border-gray-200 dark:border-gray-600">
                 <tr>
-                  <th className="px-2 py-3 text-center w-8">
-                    <input type="checkbox" checked={selectedIds.size > 0 && selectedIds.size === items.filter(i => i.product_id !== null && !i.is_unlinked).length} onChange={toggleSelectAll} className="rounded" />
-                  </th>
+                  {selectionMode && (
+                    <th className="px-2 py-3 text-center w-8">
+                      <input type="checkbox" checked={selectedIds.size > 0 && selectedIds.size === items.filter(i => i.product_id !== null && !i.is_unlinked).length} onChange={toggleSelectAll} className="rounded" />
+                    </th>
+                  )}
                   {isPubColVisible('productnumber')      && <th className="px-3 py-3 text-left font-semibold text-gray-600 dark:text-gray-300 whitespace-nowrap">Номер</th>}
                   {isPubColVisible('brand_name')         && <th className="px-3 py-3 text-left font-semibold text-gray-600 dark:text-gray-300 whitespace-nowrap">Бренд</th>}
                   {isPubColVisible('type_name')          && <th className="px-3 py-3 text-left font-semibold text-gray-600 dark:text-gray-300 whitespace-nowrap">Вид</th>}
@@ -1902,11 +1915,13 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
                       }`}
                       onClick={() => handleRowClick(item.product_id)}
                     >
-                      <td className="px-2 py-2 text-center w-8" onClick={e => e.stopPropagation()}>
-                        {!isUnlinked && item.product_id !== null ? (
-                          <input type="checkbox" checked={selectedIds.has(item.product_id as number)} onChange={() => toggleSelect(item.product_id as number)} className="rounded" />
-                        ) : <span className="text-gray-300">—</span>}
-                      </td>
+                      {selectionMode && (
+                        <td className="px-2 py-2 text-center w-8" onClick={e => e.stopPropagation()}>
+                          {!isUnlinked && item.product_id !== null ? (
+                            <input type="checkbox" checked={selectedIds.has(item.product_id as number)} onChange={() => toggleSelect(item.product_id as number)} className="rounded" />
+                          ) : <span className="text-gray-300">—</span>}
+                        </td>
+                      )}
                       {isPubColVisible('productnumber') && (
                       <td className="px-3 py-2 font-mono text-xs text-gray-900 dark:text-gray-100 whitespace-nowrap">
                         {item.product_id ? (
@@ -2146,7 +2161,7 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
                     {/* ── Expanded detail row ── */}
                     {isExpanded && (
                       <tr className="bg-blue-50/60 dark:bg-blue-900/10">
-                        <td colSpan={1 + PUB_COLUMN_ORDER.filter(c => pubColumnsVisible[c.id]).length} className="px-6 py-3">
+                        <td colSpan={(selectionMode ? 1 : 0) + PUB_COLUMN_ORDER.filter(c => pubColumnsVisible[c.id]).length} className="px-6 py-3">
                           {expandedLoading ? (
                             <div className="text-xs text-gray-400 py-2">Завантаження...</div>
                           ) : expandedDetail ? (
