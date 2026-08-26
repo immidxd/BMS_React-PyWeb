@@ -2,33 +2,27 @@ import React from 'react';
 import { useRuntimeConfig, useFeatureFlag } from '../../contexts/RuntimeConfigContext';
 
 /**
- * Діагностичний бейдж: версія + канал + платформа.
- * Гейтиться прапором `experimental_ui` → видно лише на dev/beta, приховано на
- * stable (Windows-прод). Демонструє ланцюг platform → feature-flag → UI.
+ * Діагностика збірки: версія + канал + платформа.
+ * Гейтиться прапором `experimental_ui` → лише dev/beta, на stable (Windows-прод)
+ * не робить нічого.
  *
- * Живе В ШАПЦІ, поруч зі знаком BMS, а не як fixed-оверлей у куті: раніше він
- * висів поверх нижньої панелі й накривав собою підпис «Тільки непродані».
+ * НЕ займає місця в розкладці: обгортає знак BMS і живе у його підказці. Дві
+ * попередні спроби місця не витримали — fixed-оверлей у куті накривав підпис
+ * «Тільки непродані» в нижній панелі, а рядок поруч із логотипом зсував поле
+ * пошуку. Діагностика не має посувати робочі елементи.
  */
-const DevBadge: React.FC = () => {
+const DevBadge: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const show = useFeatureFlag('experimental_ui');
   const { version, channel, platform } = useRuntimeConfig();
 
-  if (!show) return null; // на stable/Windows — нічого не рендеримо
+  if (!show) return <>{children}</>;
 
   return (
     <span
-      title="Діагностика збірки (видно лише на dev/beta)"
-      style={{
-        fontFamily: 'var(--bms-font-mono)',
-        fontSize: 10,
-        lineHeight: 1,
-        letterSpacing: '0.02em',
-        color: 'var(--bms-fg-faint)',
-        whiteSpace: 'nowrap',
-        userSelect: 'none',
-      }}
+      title={`Збірка: v${version} · ${channel} · ${platform}`}
+      style={{ display: 'inline-flex' }}
     >
-      {`v${version} · ${channel} · ${platform}`}
+      {children}
     </span>
   );
 };
