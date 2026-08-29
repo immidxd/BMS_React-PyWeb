@@ -3,6 +3,21 @@ from pydantic import BaseModel, Field, validator
 from datetime import datetime
 import re
 
+def _decimalize(v):
+    """Розмір/замір: дроби знаком або текстом → десяткові (38⅔ → 38.6).
+
+    Діапазони («38-39»), літерні розміри (S/M/XL) і решта тексту лишаються як є —
+    перетворюється тільки дробова частина.
+    """
+    if v is None or not isinstance(v, str):
+        return v
+    try:
+        from services.size_normalization import decimalize_fractions
+    except ImportError:
+        from backend.services.size_normalization import decimalize_fractions
+    return decimalize_fractions(v)
+
+
 def _validate_width(v):
     """Спільна перевірка поля «Ширина» для схем створення й редагування."""
     if v is None:
@@ -164,6 +179,11 @@ class ProductBase(BaseModel):
         """Те саме правило, що й при редагуванні (див. ProductUpdate)."""
         return _validate_width(v)
 
+    @validator('sizeeu', 'measurementscm', 'dimensions')
+    def decimalize_size_fields(cls, v):
+        """Те саме правило, що й при редагуванні (див. ProductUpdate)."""
+        return _decimalize(v)
+
 # Модель для створення товару
 class ProductCreate(ProductBase):
     pass
@@ -299,6 +319,16 @@ class ProductUpdate(BaseModel):
             if v < 1900 or v > current_year + 1:
                 raise ValueError(f'Рік має бути між 1900 та {current_year + 1}')
         return v
+
+    @validator('sizeeu', 'measurementscm', 'dimensions')
+    def decimalize_size_fields(cls, v):
+        """Розміри й заміри — тільки десяткові дроби.
+
+        38⅔ і 38 2/3 — той самий розмір, що й 38.6, але як окремий рядок він
+        випадає з числового сортування, ділить фільтр «Розмір» надвоє і не
+        приймається формами маркетплейсів.
+        """
+        return _decimalize(v)
 
     @validator('width')
     def normalize_width_field(cls, v):

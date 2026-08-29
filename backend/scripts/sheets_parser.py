@@ -1560,6 +1560,14 @@ def _normalize_size(val: str) -> str:
     s = val.strip().replace(",", ".")
     if not s:
         return ""
+    # Дроби знаком або текстом → десяткові (38⅔ → 38.6, 43 1/3 → 43.3). Робимо це
+    # ПЕРШИМ і до правила «слеш → діапазон», інакше «38 2/3» перетворилось би на
+    # діапазон розмірів. Діапазони («41/42») правило нижче обробляє як раніше.
+    try:
+        from backend.services.size_normalization import decimalize_fractions
+    except ImportError:
+        from services.size_normalization import decimalize_fractions
+    s = decimalize_fractions(s)
     # Measurements (contain 'x' between digits)
     if _MEASUREMENT_RE.search(s):
         return ""
