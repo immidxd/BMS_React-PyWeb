@@ -2,7 +2,7 @@ from typing import Optional, Dict, Any
 from datetime import date, datetime
 import logging
 from fastapi import APIRouter, Depends, Query, Path, HTTPException, Body
-from pydantic import BaseModel
+from pydantic import BaseModel, validator
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 
@@ -148,6 +148,17 @@ class ProductQuickCreate(BaseModel):
     material_midsole: Optional[str] = None     # «Проміжна підошва»
     material_insole: Optional[str] = None      # «Устілка»
     material_membrane: Optional[str] = None    # «Мембрана»
+
+    @validator('width')
+    def _normalize_width(cls, v):
+        """Та сама перевірка, що й у картці: ширина — літера, не речення.
+        Форма швидкого додавання пише і в БД, і в аркуш, тож пропустити її тут
+        означало б завести словесне значення одразу в обох місцях."""
+        try:
+            from schemas.product import _validate_width
+        except ImportError:
+            from backend.schemas.product import _validate_width
+        return _validate_width(v)
 
 
 @router.post("/api/deliveries/{delivery_id}/products", status_code=201)

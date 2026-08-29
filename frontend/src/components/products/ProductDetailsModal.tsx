@@ -189,6 +189,19 @@ const measurementsFromProduct = (p: any): Record<string, string> => {
 // одразу — фото вантажаться окремо й «доїжджають» у фоні навіть після таймауту).
 const IMAGE_SOFT_TIMEOUT_MS = 3500;
 
+// Ширина колодки — літера або літера+число (G, W, D, H, F 1/2, EE), ніколи речення.
+// Дзеркало backend/services/width_normalization.py: бекенд усе одно перевіряє сам,
+// але помилку краще показати ДО збереження, а не після 400-ї.
+const WIDTH_RE = /^[0-9]{0,2}[A-Za-z]{1,4}(?:\s*[0-9](?:\s*\/\s*[0-9])?)?$/;
+const WIDTH_WORDS = ['стандартна', 'стандартний', 'стандарт', 'standard', 'normal',
+                     'широка', 'широкий', 'wide'];
+const isWidthLike = (v?: string | null): boolean => {
+  const raw = (v ?? '').trim();
+  if (!raw) return true;                       // порожнє = очистити поле
+  if (WIDTH_WORDS.includes(raw.toLowerCase())) return true;  // сервер зведе до літери
+  return WIDTH_RE.test(raw);
+};
+
 const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev, onNext, onSaved }) => {
   const [loading, setLoading] = useState(false);
   // Перехід ◀/▶ у процесі: показана картка вже НЕ відповідає обраному товару.
@@ -1707,6 +1720,11 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
         payload[field] = cur.trim() === '' ? null : cur;
       }
     }
+    if ('width' in payload && !isWidthLike(payload.width)) {
+      setSaveError('Ширина вказується літерою або літерою з числом (G, W, D, H, F 1/2), а не текстом');
+      return;
+    }
+
     // Матеріали: лише позиції, що змінилися (порівняно з вихідним станом картки).
     const origMaterials = groupMaterialsByPosition((product as any)?.materials);
     const matChanges: Record<string, string> = {};
@@ -2086,7 +2104,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
   // НОВУ ідентичність типу щорендера, тож React РОЗМОНТОВУЄ+монтує input на кожне
   // натискання → інпут губить фокус після першої літери («стан не редагується»).
   // Виклик функцією вбудовує JSX без межі компонента → input зберігає фокус.
-  const EditCell = ({ field, label, type = 'text', placeholder, lockField }: { field: string; label: string; type?: FieldType; placeholder?: string; lockField?: string }): React.ReactElement | null => {
+  const EditCell = ({ field, label, type = 'text', placeholder, lockField, options, hint }: { field: string; label: string; type?: FieldType; placeholder?: string; lockField?: string; options?: string[]; hint?: string }): React.ReactElement | null => {
     const lf = lockField ?? field;   // lock state may live on a different DB column (e.g. FK id)
     // У edit-режимі ховаємо тип-нерелевантні поля. У read-режимі — лишаємо
     // (бо там empty-guard сам приховає; а якщо значення є — хай користувач його бачить).
@@ -2099,11 +2117,18 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
           </span>
           <input
             type={type === 'number' ? 'number' : 'text'}
+            list={options && options.length ? `dl-edit-${field}` : undefined}
             value={drafts[field] ?? ''}
             onChange={(e) => setDraft(field, e.target.value)}
             placeholder={placeholder}
             className={inputCls}
           />
+          {options && options.length > 0 && (
+            <datalist id={`dl-edit-${field}`}>
+              {options.map((o) => <option key={o} value={o} />)}
+            </datalist>
+          )}
+          {hint && <span className="text-[10px] text-gray-400 dark:text-gray-500">{hint}</span>}
         </div>
       );
     }
@@ -3313,7 +3338,11 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                     {classSelect({ field: 'genderid', label: 'Стать', options: (filterOpts?.genders ?? []) as any, readValue: (p as any).gender_name })}
                     {EditCell({ field: 'season', label: 'Сезон' })}
                     {EditCell({ field: 'color_name', lockField: 'colorid', label: 'Колір' })}
-                    {EditCell({ field: 'width', label: 'Ширина' })}
+                    {EditCell({
+                      field: 'width', label: 'Ширина',
+                      options: (filterOpts as any)?.lookups?.widths ?? [],
+                      hint: 'літера або літера з числом: G, W, D, F 1/2',
+                    })}
                     {EditCell({ field: 'current_condition_name', lockField: 'current_conditionid', label: 'Поточний стан' })}
                     {/* «Початковий стан» (журнальний condition_name) показуємо ЛИШЕ коли він
                         відрізняється від поточного — інакше дубль однакового значення поряд

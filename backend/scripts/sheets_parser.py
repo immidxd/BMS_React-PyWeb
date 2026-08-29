@@ -290,6 +290,19 @@ def _restore_order_locks(session: Session, snapshot: dict) -> int:
 # ── Phase 2b: write-back of in-app edits to the journal sheet ─────────────────
 # Maps editable product fields → journal column header (resolved by NAME, not
 # position; rename-safe). A field with no column here cannot be written back.
+def _normalize_width(value):
+    """Ширина колодки → канонічна літерна форма (див. services/width_normalization).
+
+    Обгортка з дворежимним імпортом — модуль вантажиться і як `services.X`,
+    і як `backend.services.X` залежно від того, звідки стартував процес.
+    """
+    try:
+        from backend.services.width_normalization import normalize_width
+    except ImportError:
+        from services.width_normalization import normalize_width
+    return normalize_width(value)
+
+
 WRITEBACK_FIELD_HEADERS = {
     "price":          "Ціна",
     "oldprice":       "Стара ціна",
@@ -5506,7 +5519,14 @@ def _parse_workspace_sheet(
         if taxonomy_packaging and not packaging_relocation_conflict:
             packaging_val = taxonomy_packaging
         current_cond_val = col(row, "Поточний стан") if "Поточний стан" in header else ""
-        width_val        = col(row, "Ширина") if "Ширина" in header else ""
+        # Ширина — літерна колодка (G/W/D/H/F 1/2). Журнал місцями носить словесні
+        # форми; нормалізуємо на читанні, інакше «Стандартна» щоразу поверталась би
+        # у базу поверх виправленого значення. Не-ширина → None (не сміттямо в БД).
+        width_raw        = col(row, "Ширина") if "Ширина" in header else ""
+        width_val        = _normalize_width(width_raw)
+        if width_raw and width_raw.strip() and not width_val:
+            logger.warning("[width] %s %s: значення %r не схоже на ширину — пропускаю",
+                           ws.title, pnum or "без номера", width_raw.strip())
         # Колонки 2026-06-10 (Колекція/GTIN/Геометрична форма) — вставлені й у Воркспейс.
         collection_val   = col(row, "Колекція").strip() if "Колекція" in header else ""
         gtin_val         = col(row, "GTIN").strip() if "GTIN" in header else ""

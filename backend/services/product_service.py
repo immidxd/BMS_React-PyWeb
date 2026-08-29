@@ -2018,12 +2018,37 @@ def get_product_filters(db: Session) -> Dict[str, Any]:
             "technologies":    _names("technologies", "technologyname"),
             "packagings":      _names("packaging_types", "packagingname"),
             "materials":       _names("materials", "materialname"),
+            # Ширина — не довідникова таблиця, а канонічний список літерних
+            # колодок ∪ те, що реально вже є в базі (щоб рідкісна, але законна
+            # ширина з минулих завозів не зникла з підказок).
+            "widths":          _width_options(db),
         }
         logger.debug("Retrieved filters via raw SQL")
         return result
     except Exception as e:
         logger.error(f"Error getting filters: {str(e)}")
         raise
+
+def _width_options(db: Session) -> List[str]:
+    """Варіанти для випадаючого списку «Ширина»: канон ∪ наявні в базі."""
+    try:
+        from services.width_normalization import CANONICAL_WIDTHS, normalize_width
+    except ImportError:
+        from backend.services.width_normalization import CANONICAL_WIDTHS, normalize_width
+    values = list(CANONICAL_WIDTHS)
+    try:
+        rows = db.execute(text(
+            "SELECT DISTINCT width FROM products "
+            "WHERE width IS NOT NULL AND btrim(width) <> ''"
+        )).fetchall()
+    except Exception:
+        rows = []
+    for r in rows:
+        norm = normalize_width(r[0])
+        if norm and norm not in values:
+            values.append(norm)
+    return sorted(values)
+
 
 def get_product_with_relations(db: Session, product_id: int) -> Optional[Dict[str, Any]]:
     """

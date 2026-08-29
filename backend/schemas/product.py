@@ -3,6 +3,26 @@ from pydantic import BaseModel, Field, validator
 from datetime import datetime
 import re
 
+def _validate_width(v):
+    """Спільна перевірка поля «Ширина» для схем створення й редагування."""
+    if v is None:
+        return v
+    raw = str(v).strip()
+    if not raw:
+        return None
+    try:
+        from services.width_normalization import normalize_width
+    except ImportError:
+        from backend.services.width_normalization import normalize_width
+    norm = normalize_width(raw)
+    if norm is None:
+        raise ValueError(
+            'Ширина вказується літерою або літерою з числом (G, W, D, H, F 1/2, EE), '
+            f'а не текстом: {raw!r}'
+        )
+    return norm
+
+
 class ReferenceItem(BaseModel):
     id: int
     name: str
@@ -62,7 +82,7 @@ class ProductBase(BaseModel):
     season: Optional[str] = Field(None, max_length=100, description="Сезон (multi-value, через кому): \"Зима, Осінь\"")
     dimensions: Optional[str] = Field(None, max_length=50, description="Габарити: \"40x20x5\"")
     geometric_shape: Optional[str] = Field(None, max_length=500, description="Геометрична форма (model-level)")
-    width: Optional[str] = Field(None, max_length=20, description="Ширина ніжки: 'Вузька'/'Стандартна'/'Широка' або B/D/EE")
+    width: Optional[str] = Field(None, max_length=20, description="Ширина колодки ЛІТЕРОЮ: G, W, D, H, F 1/2, EE… Словесні форми («Стандартна», «Широка») нормалізуються, решта тексту відхиляється")
     # Заміри (см) — всі min/max; single value = min == max; діапазон = min<max
     measurements_length_min: Optional[float] = Field(None, description="Довжина, см (min)")
     measurements_length_max: Optional[float] = Field(None, description="Довжина, см (max)")
@@ -138,6 +158,11 @@ class ProductBase(BaseModel):
             if v < 1900 or v > current_year + 1:
                 raise ValueError(f'Рік має бути між 1900 та {current_year + 1}')
         return v
+
+    @validator('width')
+    def normalize_width_field(cls, v):
+        """Те саме правило, що й при редагуванні (див. ProductUpdate)."""
+        return _validate_width(v)
 
 # Модель для створення товару
 class ProductCreate(ProductBase):
@@ -274,6 +299,16 @@ class ProductUpdate(BaseModel):
             if v < 1900 or v > current_year + 1:
                 raise ValueError(f'Рік має бути між 1900 та {current_year + 1}')
         return v
+
+    @validator('width')
+    def normalize_width_field(cls, v):
+        """Ширина — літера або літера+число, ніколи речення.
+
+        «Стандартна»/«Широка» тихо стають G/W (їх ще носить журнал), а довгий
+        текст відхиляється з поясненням — інакше він осідає окремим значенням
+        поряд із літерними у фільтрах і на маркетплейсах.
+        """
+        return _validate_width(v)
 
     @validator('season')
     def normalize_season(cls, v):

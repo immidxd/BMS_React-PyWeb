@@ -44,6 +44,8 @@ const OPT_FROM_FILTERS: Record<string, (f: ProductFilters) => string[]> = {
   material_midsole: f => f.lookups?.materials || [],
   material_insole: f => f.lookups?.materials || [],
   material_membrane: f => f.lookups?.materials || [],
+  // Ширина колодки — літерний список із бекенда (канон ∪ наявне в базі).
+  width: f => f.lookups?.widths || [],
 };
 
 const inputCls =
