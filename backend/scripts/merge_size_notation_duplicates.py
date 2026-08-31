@@ -48,23 +48,19 @@ from datetime import datetime
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from sqlalchemy import text  # noqa: E402
-from sqlalchemy.exc import IntegrityError  # noqa: E402
 
 from models.database import SessionLocal  # noqa: E402
+from services.product_refs import (  # noqa: E402
+    UNENFORCED_REFS,
+    count_product_refs,
+    product_ref_columns,
+    repoint_product_refs,
+)
 from services.size_normalization import decimalize_fractions  # noqa: E402
 
 BACKUP_DIR = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "..", "..", "manual_cleanup_backups")
 )
-
-# Колонки, що тримають products.id БЕЗ зовнішнього ключа — база їх не захищає,
-# тож знайти їх можна лише за конвенцією імені. Пропустити котрусь = лишити
-# висяче посилання на видалений рядок, і ніхто про це не дізнається.
-UNENFORCED_REFS = [
-    ("product_images", "productid"),
-    ("story_automation_drafts", "product_id"),
-    ("journal_writeback_queue", "product_id"),
-]
 
 # Поля, що мають збігатись, аби вважати два рядки одним товаром. Розбіжність —
 # привід НЕ зливати й покликати людину.
@@ -76,39 +72,6 @@ def _canon_size(v) -> str:
     if v is None:
         return ""
     return str(decimalize_fractions(str(v))).strip()
-
-
-def collect_ref_columns(db) -> list[tuple[str, str]]:
-    """Усі місця, звідки хтось посилається на products.id: справжні FK + ті,
-    що тримаються лише на конвенції."""
-    fks = db.execute(text("""
-        SELECT c.conrelid::regclass::text AS tbl, a.attname AS col
-        FROM pg_constraint c
-        JOIN unnest(c.conkey) WITH ORDINALITY k(attnum, ord) ON true
-        JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = k.attnum
-        WHERE c.confrelid = 'products'::regclass AND c.contype = 'f'
-        ORDER BY 1, 2
-    """)).fetchall()
-    refs = [(t, c) for t, c in fks]
-    known = {(t, c) for t, c in refs}
-    for t, c in UNENFORCED_REFS:
-        if (t, c) not in known:
-            refs.append((t, c))
-    return refs
-
-
-def count_refs(db, refs, pid: int) -> tuple[int, dict]:
-    """Скільки рядків і де саме посилаються на товар."""
-    detail = {}
-    total = 0
-    for tbl, col in refs:
-        n = db.execute(
-            text(f"SELECT count(*) FROM {tbl} WHERE {col} = :i"), {"i": pid}
-        ).scalar() or 0
-        if n:
-            detail[f"{tbl}.{col}"] = n
-            total += n
-    return total, detail
 
 
 def find_clusters(db) -> list[dict]:
@@ -158,59 +121,13 @@ def pick_survivor(db, refs, members):
     """Виживає найбагатший на посилання; за нічиєї — старший id."""
     scored = []
     for m in members:
-        total, detail = count_refs(db, refs, m.id)
+        total, detail = count_product_refs(db, m.id, refs)
         scored.append((total, -m.id, m, detail))
     scored.sort(reverse=True)
     survivor = scored[0][2]
     survivor_detail = scored[0][3]
     doomed = [(s[2], s[3]) for s in scored[1:]]
     return survivor, survivor_detail, doomed
-
-
-def repoint(db, refs, doomed_id: int, survivor_id: int, dry: bool) -> dict:
-    """Перевісити посилання. Рядок, що дав би дубль на новому власнику,
-    видаляється: такий самий там уже є."""
-    moved, dropped = {}, {}
-    for tbl, col in refs:
-        ids = [r[0] for r in db.execute(
-            text(f"SELECT ctid FROM {tbl} WHERE {col} = :i"), {"i": doomed_id}
-        ).fetchall()]
-        if not ids:
-            continue
-        if dry:
-            moved[f"{tbl}.{col}"] = len(ids)
-            continue
-        for ctid in ids:
-            sp = db.begin_nested()
-            try:
-                db.execute(
-                    text(f"UPDATE {tbl} SET {col} = :s WHERE ctid = :c"),
-                    {"s": survivor_id, "c": ctid},
-                )
-                sp.commit()
-                moved[f"{tbl}.{col}"] = moved.get(f"{tbl}.{col}", 0) + 1
-            except IntegrityError:
-                sp.rollback()
-                db.execute(text(f"DELETE FROM {tbl} WHERE ctid = :c"), {"c": ctid})
-                dropped[f"{tbl}.{col}"] = dropped.get(f"{tbl}.{col}", 0) + 1
-    if not dry:
-        # ctid — ФІЗИЧНИЙ вказівник: якщо застосунок паралельно оновив рядок,
-        # він змінився, і UPDATE зачепив би нуль рядків МОВЧКИ, лишивши висяче
-        # посилання на видалений товар. Тому не віримо лічильникам, а звіряємо
-        # факт: на приреченого не має лишитись жодного посилання.
-        leftovers = {}
-        for tbl, col in refs:
-            n = db.execute(
-                text(f"SELECT count(*) FROM {tbl} WHERE {col} = :i"), {"i": doomed_id}
-            ).scalar() or 0
-            if n:
-                leftovers[f"{tbl}.{col}"] = n
-        if leftovers:
-            raise RuntimeError(
-                f"на id={doomed_id} лишились посилання після перевішування: "
-                f"{leftovers} — злиття скасовано, база не змінена"
-            )
-    return {"moved": moved, "dropped_as_duplicate": dropped}
 
 
 def dump_backup(db, refs, clusters) -> str:
@@ -263,7 +180,7 @@ def main() -> int:
 
     db = SessionLocal()
     try:
-        refs = collect_ref_columns(db)
+        refs = product_ref_columns(db)
         print(f"Місць, що посилаються на products.id: {len(refs)} "
               f"(з них без FK: {len(UNENFORCED_REFS)})\n")
 
@@ -319,7 +236,7 @@ def main() -> int:
         for item in plan:
             c, s = item["cluster"], item["survivor"]
             for d, _ in item["doomed"]:
-                res = repoint(db, refs, d.id, s.id, dry=False)
+                res = repoint_product_refs(db, d.id, s.id, refs=refs)
                 print(f"{c['pnum']}: id={d.id} → id={s.id}  {res}")
                 db.execute(text("DELETE FROM products WHERE id = :i"), {"i": d.id})
             # ТІЛЬКИ після видалення двійника: інакше UPDATE впаде на

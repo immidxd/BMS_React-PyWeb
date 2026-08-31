@@ -197,3 +197,19 @@ def test_report_is_silent_when_the_number_is_absent_or_sizeless():
     assert _orphans([_Row(1, "#Ф4355", "38.6", 3924)], {"Ф9999": {"40"}}) == []
     # Номер є, але розміри в аркуші порожні — судити нема на чому.
     assert _orphans([_Row(1, "#Ф4355", "38.6", 3924)], {"Ф4355": set()}) == []
+
+
+# ── Скоринг workspace-merge теж має бачити збіг ──────────────────────────────
+def test_strict_size_match_counts_notation_as_a_match():
+    from backend.scripts.sheets_parser import _sizes_strict_match
+    assert _sizes_strict_match("38⅔", "38.6") is True
+    assert _sizes_strict_match("44,6", "44.6") is True
+    assert _sizes_strict_match("38.5", "39") is False
+
+
+def test_strict_size_match_still_refuses_empty():
+    # На відміну від _sizes_match, порожнє тут НЕ збіг: у workspace-merge
+    # порожнє поле не сміє зараховуватись як «це той самий товар».
+    from backend.scripts.sheets_parser import _sizes_strict_match
+    for a, b in ((None, "42"), ("42", ""), ("   ", "42"), (None, None)):
+        assert _sizes_strict_match(a, b) is False

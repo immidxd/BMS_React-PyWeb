@@ -19,9 +19,11 @@ except ImportError:
 
 try:
     from services.match_finder import scan_lost_products, record_decision, DEFAULT_MIN_SCORE, DEFAULT_TOP_N
+    from services.product_refs import repoint_product_refs
     from models.models import Product
 except ImportError:
     from backend.services.match_finder import scan_lost_products, record_decision, DEFAULT_MIN_SCORE, DEFAULT_TOP_N
+    from backend.services.product_refs import repoint_product_refs
     from backend.models.models import Product
 
 logger = logging.getLogger(__name__)
@@ -246,15 +248,24 @@ def accept_merge_candidate(
             if filled_fields:
                 db.flush()
 
-        # Перепривʼязуємо FK-залежні рядки з NEW на SUGGESTED, щоб історія
-        # продажів/пости/etc. не загубились
-        db.execute(
-            text("UPDATE order_items SET product_id = :sg WHERE product_id = :np"),
-            {"sg": sug_pid, "np": new_pid},
-        )
-        db.execute(
-            text("UPDATE telegram_posts SET product_id = :sg WHERE product_id = :np"),
-            {"sg": sug_pid, "np": new_pid},
+        # Перепривʼязуємо ВСІ посилання з NEW на SUGGESTED, щоб історія продажів,
+        # фото, публікацій тощо не загубились.
+        #
+        # ⚠️ Раніше тут стояли рівно два UPDATE — `order_items` і `telegram_posts`.
+        # Решта 20 місць перевішування не діставали, і DELETE нижче їх тихо
+        # калічив: `product_images`, `story_automation_drafts` і
+        # `journal_writeback_queue` не мають FK і лишались висіти на неіснуючому
+        # id, публікації (Instagram/Facebook/Viber/OLX/monoБазар/Prom/Shafa)
+        # обнулялись через ON DELETE SET NULL, втрачаючи зв'язок із товаром, а
+        # `order_details` (FK без дії) взагалі поклав би merge у 500. Тепер
+        # список місць — один на весь проєкт, у services/product_refs.
+        #
+        # `merge_candidates` свідомо лишаємо каскаду, як було: перевішування
+        # зробило б із решти пропозицій для NEW нові pending-пропозиції для
+        # SUGGESTED, і після «прийняти» в картці раптом з'являлись би кандидати,
+        # яких людина не просила. Поведінку тут не міняємо.
+        repoint_result = repoint_product_refs(
+            db, new_pid, sug_pid, skip_tables={"merge_candidates"},
         )
 
         # Persistent рішення (стабільний ключ) — щоб після ре-парсу не пропонувати знову
@@ -282,7 +293,8 @@ def accept_merge_candidate(
         db.commit()
         logger.info(
             f"[merge-candidates] ACCEPT #{candidate_id}: merged new={new_pid} → suggested={sug_pid}, "
-            f"clones now: {new_clones_str!r}, filled empty fields: {filled_fields}"
+            f"clones now: {new_clones_str!r}, filled empty fields: {filled_fields}, "
+            f"refs: {repoint_result}"
         )
 
         # Позначити рядок загубленого у Воркспейс як обʼєднаний (у ФОНІ, не

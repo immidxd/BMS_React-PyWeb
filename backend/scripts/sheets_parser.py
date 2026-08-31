@@ -5376,6 +5376,21 @@ def _strict_match(a, b) -> bool:
     return str(a).strip().lower() == str(b).strip().lower()
 
 
+def _sizes_strict_match(a, b) -> bool:
+    """`_strict_match` для розміру: за канонічним написанням.
+
+    Тут ціна помилки м'яка (розмір просто не зарахується в score, і кандидат не
+    запропонується), але '38⅔' проти '38.6' — це збіг, і мовчати про нього
+    означає не показати людині справжній двійник. Порожнє з будь-якого боку,
+    як і в `_strict_match`, збігом НЕ вважається.
+    """
+    def is_empty(v):
+        return v is None or str(v).strip() == "" or v == 0
+    if is_empty(a) or is_empty(b):
+        return False
+    return _size_canon(a) == _size_canon(b)
+
+
 def _workspace_merge_score(
     p: "Product",
     brand_id, color_id, size_val, marking_val, model_val,
@@ -5395,7 +5410,7 @@ def _workspace_merge_score(
     score = 0
     if _strict_match(p.brandid,  brand_id):    score += 1
     if _strict_match(p.colorid,  color_id):    score += 1
-    if _strict_match(p.sizeeu,   size_val):    score += 1
+    if _sizes_strict_match(p.sizeeu, size_val): score += 1
     if _strict_match(p.marking,  marking_val): score += 1
     if _strict_match(p.model,    model_val):   score += 1
     return score
@@ -5983,7 +5998,7 @@ def _parse_workspace_sheet(
                 _reasons = []
                 if _strict_match(cand_product.brandid, brand_id):  _reasons.append("бренд")
                 if _strict_match(cand_product.colorid, color_id):  _reasons.append("колір")
-                if _strict_match(cand_product.sizeeu, size_val):   _reasons.append("розмір")
+                if _sizes_strict_match(cand_product.sizeeu, size_val): _reasons.append("розмір")
                 if _strict_match(cand_product.marking, marking):   _reasons.append("маркування")
                 if _strict_match(cand_product.model, model_val):   _reasons.append("модель")
                 reason_txt = "збіг: " + "+".join(_reasons) if _reasons else None
@@ -6167,6 +6182,21 @@ def run_products_parsing(
     except Exception as e:  # noqa: BLE001 — діагностика не сміє валити парс
         logger.warning(f"[products] звіт про орфанів за розміром не вдався: {e}")
         size_orphans = []
+    # Третя сітка: посилання на неіснуючий товар. Три таблиці тримають
+    # products.id без FK, тож будь-який шлях, що видаляє товар повз
+    # `repoint_product_refs`, лишає їх висіти мовчки.
+    try:
+        from services.product_refs import find_dangling_product_refs
+    except ImportError:
+        from backend.services.product_refs import find_dangling_product_refs
+    try:
+        dangling = find_dangling_product_refs(session)
+    except Exception as e:  # noqa: BLE001 — діагностика не сміє валити парс
+        logger.warning(f"[products] перевірка висячих посилань не вдалась: {e}")
+        dangling = {}
+    if dangling:
+        logger.error(f"[products] ⚠️ посилання на неіснуючі товари: {dangling}")
+
     if size_orphans:
         logger.warning(
             f"[products] розмір зник із вкладки, номер лишився — {len(size_orphans)} "
@@ -6187,6 +6217,7 @@ def run_products_parsing(
         "added_mismatch": mismatch,
         "size_notation_twins": size_twins,
         "size_level_orphans": size_orphans,
+        "dangling_product_refs": dangling,
         "seen_product_ids": set(seen_in_run.keys()),
     }
 
