@@ -132,3 +132,68 @@ def test_detector_does_not_confuse_different_colors():
 def test_detector_is_quiet_when_nothing_was_parsed():
     from backend.scripts.sheets_parser import _find_size_notation_twins
     assert _find_size_notation_twins(_FakeSession([]), []) == []
+
+
+# ── Звіт про орфанів за РОЗМІРОМ (сліпа пляма звірки за номером) ─────────────
+def _sheet(rows):
+    from backend.scripts.sheets_parser import _sheet_number_sizes
+    return _sheet_number_sizes(rows)
+
+
+def test_sheet_sizes_go_through_the_same_pipeline_as_parsing():
+    # '3XL' в аркуші лежить у базі як 'XXXL', '38⅔' — як '38.6', '44,6' — як '44.6'.
+    # Без спільного конвеєра звіт брехав би на кожному такому рядку.
+    got = _sheet([["Номер", "Розмір"],
+                  ["#Ф4374", "38⅔"], ["#Ф4375", "3XL"], ["#Ф4376", "44,6"]])
+    assert got["Ф4374"] == {"38.6"}
+    assert got["Ф4375"] == {"xxxl"}
+    assert got["Ф4376"] == {"44.6"}
+
+
+def test_sheet_without_size_column_yields_nothing():
+    # Без колонки «Розмір» звіряти нічого — і мовчати краще, ніж вигадувати.
+    assert _sheet([["Номер", "Вид"], ["#Ф4374", "Кросівки"]]) == {}
+    assert _sheet([]) == {}
+
+
+def test_rostovka_keeps_every_size_of_one_number():
+    got = _sheet([["Номер", "Розмір"], ["#Ф955", "44"], ["#Ф955", "45"], ["#Ф955", "45.3"]])
+    assert got["Ф955"] == {"44", "45", "45.3"}
+
+
+def _orphans(rows, sheet, seen=frozenset()):
+    from backend.scripts.sheets_parser import _find_size_level_orphans
+    return _find_size_level_orphans(_FakeSession(rows), 808, sheet, set(seen))
+
+
+def test_report_catches_a_size_that_vanished_while_the_number_stayed():
+    # Номер у вкладці є (його тримає інший рядок ростовки), а цього розміру вже
+    # нема. Звірка за НОМЕРОМ такий рядок не бачить — саме ця сліпа пляма.
+    found = _orphans([_Row(349616, "#Ф4355", "44", 3924)], {"Ф4355": {"45", "45.3"}})
+    assert [o["id"] for o in found] == [349616]
+    assert found[0]["sheet_sizes"] == ["45", "45.3"]
+
+
+def test_notation_twins_are_not_this_reports_business():
+    # '38⅔' і '38.6' — ОДИН розмір: після `_sizes_match` рядок не орфан.
+    # Двійниками за написанням займається _find_size_notation_twins, і плутати
+    # ці дві ролі не можна — інакше звіт вимагав би видалити живий рядок.
+    assert _orphans([_Row(1, "#Ф4355", "38⅔", 3924)], {"Ф4355": {"38.6"}}) == []
+
+
+def test_report_is_silent_when_the_size_is_in_the_sheet():
+    assert _orphans([_Row(1, "#Ф4355", "38.6", 3924)], {"Ф4355": {"38.6"}}) == []
+    # Різні написання одного розміру — теж збіг, не орфан.
+    assert _orphans([_Row(1, "#Ф4355", "38⅔", 3924)], {"Ф4355": {"38.6", "39"}}) == []
+
+
+def test_report_never_accuses_a_row_the_parser_just_touched():
+    # Якщо рядок матчився у цьому прогоні — він живий за визначенням.
+    assert _orphans([_Row(1, "#Ф4355", "38⅔", 3924)], {"Ф4355": {"39"}}, seen={1}) == []
+
+
+def test_report_is_silent_when_the_number_is_absent_or_sizeless():
+    # Номера нема у вкладці — це справа звірки за НОМЕРОМ, не наша.
+    assert _orphans([_Row(1, "#Ф4355", "38.6", 3924)], {"Ф9999": {"40"}}) == []
+    # Номер є, але розміри в аркуші порожні — судити нема на чому.
+    assert _orphans([_Row(1, "#Ф4355", "38.6", 3924)], {"Ф4355": set()}) == []

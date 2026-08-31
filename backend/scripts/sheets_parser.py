@@ -6045,7 +6045,7 @@ def run_products_parsing(
 
     total_added = total_updated = total_skipped = 0
     total_orphans_deleted = 0
-    orphan_scan: list = []   # (shipment_id, назва вкладки, номери з аркуша)
+    orphan_scan: list = []   # (shipment_id, вкладка, номери, {номер: розміри})
     products_before = session.execute(text("SELECT count(*) FROM products")).scalar() or 0
     total_sheets = len(batch_sheets)
     # Спільний лічильник появ product.id між усіма аркушами в цьому run.
@@ -6095,7 +6095,8 @@ def run_products_parsing(
         # його наново, вже іншим id). Тому рішення відкладаємо до кінця прогону,
         # коли відомо ВСЕ, що журнал реально бачив (`seen_in_run`).
         if shipment_id:
-            orphan_scan.append((shipment_id, ws.title, _sheet_numbers(all_rows)))
+            orphan_scan.append((shipment_id, ws.title, _sheet_numbers(all_rows),
+                                _sheet_number_sizes(all_rows)))
 
     if shipment_ids:
         session.commit()
@@ -6106,9 +6107,9 @@ def run_products_parsing(
     # номер ('???'/'__tmp_rename'), (д) не суфіксна ростовка живого номера.
     # Плюс бекап (без нього — не видаляємо) і стеля частки завозу.
     if PARSE_ORPHAN_AUTO and orphan_scan:
-        all_sheet_nums = set().union(*(nums for _, _, nums in orphan_scan))
+        all_sheet_nums = set().union(*(nums for _, _, nums, _sz in orphan_scan))
         seen_ids = set(seen_in_run.keys())
-        for shipment_id, title, nums in orphan_scan:
+        for shipment_id, title, nums, _sz in orphan_scan:
             try:
                 deleted = _reconcile_delivery_orphans(
                     session, shipment_id, None, max_share=PARSE_ORPHAN_MAX_SHARE,
@@ -6153,6 +6154,26 @@ def run_products_parsing(
             f"Розсудити: backend/scripts/merge_size_notation_duplicates.py"
         )
 
+    # Друга сліпа пляма: розмір зник із вкладки, а номер лишився. Звірка орфанів
+    # такий рядок не бачить — вона судить за номером. ⚠️ ТІЛЬКИ ЗВІТ: сусідня
+    # функція 19.08.2026 знесла 135 живих товарів, тож спершу дивимось у лог.
+    size_orphans: list = []
+    try:
+        for shipment_id, _title, _nums, sheet_sizes in orphan_scan:
+            size_orphans.extend(
+                _find_size_level_orphans(session, shipment_id, sheet_sizes,
+                                         set(seen_in_run.keys()))
+            )
+    except Exception as e:  # noqa: BLE001 — діагностика не сміє валити парс
+        logger.warning(f"[products] звіт про орфанів за розміром не вдався: {e}")
+        size_orphans = []
+    if size_orphans:
+        logger.warning(
+            f"[products] розмір зник із вкладки, номер лишився — {len(size_orphans)} "
+            f"рядок(ів), НЕ чіпаю: "
+            f"{[(o['productnumber'], o['sizeeu']) for o in size_orphans[:10]]}"
+        )
+
     return {
         "mode":    mode,
         "sheets":  total_sheets,
@@ -6165,6 +6186,7 @@ def run_products_parsing(
         "products_after": products_after,
         "added_mismatch": mismatch,
         "size_notation_twins": size_twins,
+        "size_level_orphans": size_orphans,
         "seen_product_ids": set(seen_in_run.keys()),
     }
 
@@ -6574,6 +6596,78 @@ def _sheet_numbers(all_rows: list) -> set:
         return set()
     return {_canon_sheet_num(r[num_idx]) for r in all_rows[1:]
             if num_idx < len(r) and _canon_sheet_num(r[num_idx])}
+
+
+def _sheet_number_sizes(all_rows: list) -> dict:
+    """`{канонічний номер: {канонічні розміри}}` з вкладки. Розмір проганяється
+    ТИМ САМИМ конвеєром, що й при парсингу (`_normalize_size` → `_size_canon`),
+    інакше порівняння з базою буде брехати: '3XL' в аркуші лежить у базі як
+    'XXXL'. Порожні розміри не потрапляють — літерні розміри парсер кладе в
+    `size_letter`, лишаючи `sizeeu` порожнім, і такий рядок тут не рахується.
+    """
+    if not all_rows:
+        return {}
+    header = all_rows[0]
+    try:
+        num_idx = header.index("Номер")
+    except (ValueError, AttributeError):
+        return {}
+    try:
+        size_idx = header.index("Розмір")
+    except (ValueError, AttributeError):
+        return {}
+
+    out: dict = {}
+    for r in all_rows[1:]:
+        if num_idx >= len(r):
+            continue
+        num = _canon_sheet_num(r[num_idx])
+        if not num:
+            continue
+        raw = r[size_idx] if size_idx < len(r) else ""
+        canon = _size_canon(_normalize_size(str(raw))) if raw else ""
+        bucket = out.setdefault(num, set())
+        if canon:
+            bucket.add(canon)
+    return out
+
+
+def _find_size_level_orphans(session: Session, delivery_id: int,
+                             sheet_sizes: dict, seen_ids: set) -> list:
+    """Рядки, чий РОЗМІР зник із вкладки, хоча номер лишився.
+
+    Сліпа пляма `_reconcile_delivery_orphans`: та судить за НОМЕРОМ
+    (`if c in sheet_nums: return False`), а ростовка означає «один номер = багато
+    рядків». Тому коли в аркуші правлять розмір, старий рядок лишається жити
+    вічно — номер же на місці, його тримає новий рядок. Саме так 27.08.2026
+    роздвоїлись 4 товари.
+
+    ⚠️ ТІЛЬКИ ЗВІТ. Нічого не видаляє й не позначає: це та сама функція-сусід,
+    яка 19.08.2026 знесла 135 живих товарів, тож спершу дивимось у лог, і лише
+    коли він чистий — обговорюємо дії. Вмикати видалення тут НЕ МОЖНА без
+    окремого рішення.
+    """
+    if not sheet_sizes:
+        return []
+    rows = session.execute(
+        text("""SELECT id, productnumber, sizeeu FROM products
+                WHERE deliveryid = :d AND COALESCE(sizeeu, '') <> ''"""),
+        {"d": delivery_id},
+    ).fetchall()
+
+    found = []
+    for r in rows:
+        if seen_ids and r.id in seen_ids:
+            continue                          # журнал бачив цей рядок у цьому прогоні
+        num = _canon_sheet_num(r.productnumber)
+        sizes = sheet_sizes.get(num) or sheet_sizes.get(_num_base(num))
+        if not sizes:
+            continue                          # номера нема або в аркуші всі розміри порожні
+        if _size_canon(r.sizeeu) in sizes:
+            continue                          # такий розмір у вкладці є
+        found.append({"id": r.id, "productnumber": r.productnumber,
+                      "sizeeu": r.sizeeu, "sheet_sizes": sorted(sizes)})
+    return found
 
 
 def _find_size_notation_twins(session: Session, delivery_ids: list) -> list:
