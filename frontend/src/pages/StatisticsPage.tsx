@@ -616,7 +616,15 @@ const StatisticsPage: React.FC<StatisticsPageProps> = () => {
               {supLoading ? (
                 <div className="h-80 flex items-center justify-center text-gray-400">Завантаження...</div>
               ) : supData && supData.data.length > 0 ? (
-                supPeriod === 'total' ? (
+                /* Гілка вибирається за періодом ДАНИХ, а не за станом кнопок.
+                   supPeriod міняється миттєво на клік, а supData приїжджає
+                   пізніше — між ними є рендер, де період уже новий, дані ще
+                   старі, а supLoading ще false. Форма рядків тут залежить від
+                   періоду ('Загалом' дає name, решта — supplier_name +
+                   period_label), тож «Квартали → Загалом» читав d.name.length
+                   на рядку без name і клав усю сторінку. period_type приходить
+                   у тій самій відповіді, тож гілка й дані більше не розʼїдуться. */
+                supData.period_type === 'total' ? (
                   // Horizontal bar chart for overall supplier stats
                   <ResponsiveContainer width="100%" height={Math.max(360, (supData.data as SupplierTotalData[]).length * 36)}>
                     <BarChart
@@ -647,7 +655,7 @@ const StatisticsPage: React.FC<StatisticsPageProps> = () => {
                   // Grouped time series for suppliers by period
                   (() => {
                     // Pivot data: period → { supplier1: cost, supplier2: cost, ... }
-                    const periodMap = supPeriod === 'total' ? {} :
+                    const periodMap = supData.period_type === 'total' ? {} :
                       (supData.data as any[]).reduce((acc: any, d: any) => {
                         if (!acc[d.period_label]) acc[d.period_label] = { period: d.period_label };
                         acc[d.period_label][d.supplier_name] = supMetric === 'avg_price' ? d.avg_price : d.total_cost;
