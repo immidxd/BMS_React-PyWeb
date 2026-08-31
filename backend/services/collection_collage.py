@@ -54,6 +54,10 @@ PLATFORMS: Dict[str, dict] = {
         "thumbnail": True,
         "caption_limit": 768,
         "markdown": True,
+        # Viber має власну Markdown-підмножину: *bold*, _italic_, ```mono```,
+        # ~strike~. Моноширинний тут не косметика: номер треба скопіювати й
+        # надіслати назад, а рівноширинні цифри читаються без помилок.
+        "mono": True,
     },
     "facebook": {
         "label": "Сторінка Facebook",
@@ -62,6 +66,9 @@ PLATFORMS: Dict[str, dict] = {
         "thumbnail": False,
         "caption_limit": 63_206,
         "markdown": False,
+        # Facebook не має розмітки в тексті допису взагалі — маркери поїхали б
+        # у стрічку видимими символами. Окремий прапорець, щоб це не загубилось.
+        "mono": False,
     },
 }
 
@@ -337,14 +344,15 @@ def build_caption(items: Sequence[dict], platform: str, *, ranked: bool = False)
     """
     config = platform_config(platform)
     bold = (lambda value: f"*{value}*") if config["markdown"] else (lambda value: value)
+    mono = (lambda value: f"```{value}```") if config.get("mono") else (lambda value: value)
     limit = int(config["caption_limit"])
     header = bold("Топ тижня 🔥" if ranked else "Свіжа підбірка 🔥")
-    footer = "📲 Напишіть номер товару — і ми його відкладемо."
+    footer = "📲 Напишіть номер товару — і ми його відкладемо"
 
     def compose(*, with_title: bool, with_sizes: bool, with_measurement: bool) -> str:
         lines = [header, ""]
         for position, item in enumerate(items, 1):
-            parts = [f"{position}. #{item['productnumber']}"]
+            parts = [f"{position}. " + mono(f"#{item['productnumber']}")]
             title = " ".join(
                 value for value in (item.get("brand"), item.get("model")) if value
             ).strip()
@@ -368,7 +376,7 @@ def build_caption(items: Sequence[dict], platform: str, *, ranked: bool = False)
         if len(caption) <= limit:
             return caption
 
-    numbers = " · ".join(f"#{item['productnumber']}" for item in items)
+    numbers = " · ".join(mono(f"#{item['productnumber']}") for item in items)
     caption = "\n\n".join([header, numbers, footer]).strip()
     return caption if len(caption) <= limit else caption[: limit - 1].rstrip() + "…"
 

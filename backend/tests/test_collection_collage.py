@@ -517,3 +517,58 @@ def test_the_old_grid32_key_still_resolves(monkeypatch):
     """У вже збережених банерах у payload_json лишилася назва grid32."""
     spec = cc.normalize_spec({"platform": "viber", "layout": "grid32", "items": _items(20)})
     assert spec["layout"] == "grid36"
+
+
+# ── Шаблон підбірки: номер моноширинним у Viber, жодної розмітки у Facebook ──
+def _mono_items(n=3):
+    return [
+        {"productnumber": f"Ф{4350 + i}", "brand": "HOKA", "model": f"Bondi {i}",
+         "sizes": ["42"], "measurement": "26,5 см", "price": "2600"}
+        for i in range(n)
+    ]
+
+
+def test_viber_wraps_the_number_in_monospace():
+    """Номер треба скопіювати й надіслати назад — рівноширинні цифри читаються
+    без помилок. Viber має власну підмножину розмітки, і ```mono``` у ній є:
+    картка товару користується цим давно (viber_publisher.build_caption)."""
+    caption = cc.build_caption(_mono_items(), "viber", ranked=True)
+    assert "1. ```#Ф4350```" in caption
+    assert "2. ```#Ф4351```" in caption
+
+
+def test_facebook_never_receives_markup():
+    """Найнебезпечніший напрямок правки: у Facebook розмітки в тексті допису
+    немає взагалі, тож маркери поїхали б у стрічку ВИДИМИМИ символами."""
+    caption = cc.build_caption(_mono_items(), "facebook", ranked=True)
+    assert "```" not in caption
+    assert "1. #Ф4350" in caption
+    # Заголовок теж лишається чистим — жирного там не буває.
+    assert caption.splitlines()[0] == "Топ тижня 🔥"
+
+
+def test_the_call_to_action_has_no_trailing_dot():
+    for platform in ("viber", "facebook"):
+        caption = cc.build_caption(_mono_items(), platform, ranked=True)
+        assert caption.rstrip().endswith("і ми його відкладемо")
+        assert not caption.rstrip().endswith(".")
+
+
+def test_monospace_markers_do_not_squeeze_out_the_measurement():
+    """Маркери — частина підпису, який іде в API, тож вони їдять ліміт Viber
+    (768). Замір випадати не має: саме за ним обирають взуття онлайн."""
+    caption = cc.build_caption(_mono_items(9), "viber", ranked=True)
+    assert len(caption) <= cc.PLATFORMS["viber"]["caption_limit"]
+    assert "26,5 см" in caption
+
+
+def test_the_last_resort_numbers_only_line_keeps_monospace():
+    """Коли не влазить навіть без назв, лишається рядок самих номерів — і там
+    моноширинний потрібен найбільше, бо крім номера читати нема чого."""
+    many = [{"productnumber": f"Ф{1000 + i}", "brand": "Дуже довга назва бренду",
+             "model": "І ще довша назва моделі для переповнення",
+             "sizes": ["40", "41", "42"], "measurement": "26,5 см", "price": "2600"}
+            for i in range(36)]
+    caption = cc.build_caption(many, "viber", ranked=True)
+    assert "```#Ф1000```" in caption
+    assert len(caption) <= cc.PLATFORMS["viber"]["caption_limit"]
