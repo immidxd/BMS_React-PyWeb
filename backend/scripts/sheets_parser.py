@@ -2786,6 +2786,50 @@ def _fields_match(a, b) -> bool:
     return str(a).strip().lower() == str(b).strip().lower()
 
 
+def _size_canon(v) -> str:
+    """Канонічне НАПИСАННЯ розміру — тільки для порівняння, не для запису.
+
+    Зводить до спільного вигляду різні записи ОДНОГО значення: '38⅔'/'38 2/3',
+    '44,6'/'44.6', '42.0'/'42', 'S / M'/'S/M'. Значення при цьому не міняється й
+    не округлюється, а непорожнє НІКОЛИ не стає порожнім — на відміну від
+    `_normalize_size`, який має право викинути сміття ('40x32x14' → ''). Саме
+    тому тут окрема, свідомо вужча функція: порівняння не сміє «загубити» розмір.
+    """
+    if v is None:
+        return ""
+    s = str(v).strip().replace(",", ".")
+    if not s:
+        return ""
+    try:
+        from backend.services.size_normalization import decimalize_fractions
+    except ImportError:
+        from services.size_normalization import decimalize_fractions
+    s = re.sub(r"\s+", "", str(decimalize_fractions(s)))
+    if re.fullmatch(r"\d+/\d+", s):           # '41/42' → '41-42', як робить _normalize_size
+        s = s.replace("/", "-")
+    if re.fullmatch(r"\d+\.\d+", s):          # '42.0' → '42', '38.60' → '38.6'
+        s = s.rstrip("0").rstrip(".")
+    return s.lower()
+
+
+def _sizes_match(a, b) -> bool:
+    """`_fields_match` для розміру: порівнює за канонічним написанням.
+
+    Без цього рядок аркуша з '38.6' не впізнавав запис БД '38⅔' як той самий
+    товар: `id_match` не спрацьовував, а що бренд/тип/стан/колір збігались —
+    парсер ішов у гілку «Ростовка» і створював ДРУГИЙ рядок на той самий розмір.
+    Так 27.08.2026 роздвоїлись 4 товари завозу «24.08.2026(Андрій)» після того,
+    як в аркуші переписали ⅔ на .6 (див. merge_size_notation_duplicates.py).
+
+    Порожнє з будь-якого боку — як і раніше «нема даних» → збіг.
+    """
+    def is_empty(v):
+        return v is None or str(v).strip() == "" or v == 0
+    if is_empty(a) or is_empty(b):
+        return True
+    return _size_canon(a) == _size_canon(b)
+
+
 def _parse_products_sheet(
     ws: gspread.Worksheet,
     session: Session,
@@ -3195,7 +3239,7 @@ def _parse_products_sheet(
                 and _fields_match(p.typeid,  type_id)
                 and _fields_match(p.conditionid, cond_id)
                 and _fields_match(p.colorid, color_id)
-                and _fields_match(p.sizeeu,  size_val)
+                and _sizes_match(p.sizeeu,  size_val)
             )
 
         def _sold_guard(p: "Product") -> bool:
@@ -3215,7 +3259,7 @@ def _parse_products_sheet(
             if sold_status_id is None or p.statusid != sold_status_id:
                 return False
             return not (status_id == sold_status_id
-                        and _fields_match(p.sizeeu, size_val))
+                        and _sizes_match(p.sizeeu, size_val))
 
         def base_match(p: "Product") -> bool:
             """Same brand/type/condition/color but ANY size (ростовка check)."""
@@ -3686,7 +3730,7 @@ def _parse_products_sheet(
                     # DIFFERENT color (both non-NULL), it's a color variant —
                     # a genuinely separate product, not an attribute edit.
                     def _is_color_variant(p) -> bool:
-                        size_same = _fields_match(p.sizeeu, size_val)
+                        size_same = _sizes_match(p.sizeeu, size_val)
                         color_genuinely_differs = (
                             p.colorid is not None
                             and color_id is not None
@@ -3854,7 +3898,7 @@ def _parse_products_sheet(
                         if not _fields_match(p.typeid,      type_id):  score += 1
                         if not _fields_match(p.conditionid, cond_id):  score += 1
                         if not _fields_match(p.colorid,     color_id): score += 1
-                        if not _fields_match(p.sizeeu,      size_val): score += 2  # size is heavier
+                        if not _sizes_match(p.sizeeu,       size_val): score += 2  # size is heavier
                         return score
 
                     target = min(brand_compat_updatable, key=_conflict_score)
@@ -6094,6 +6138,21 @@ def run_products_parsing(
     if mismatch:
         logger.error(f"[products] ⚠️ лічильник розійшовся з базою: {mismatch}")
 
+    # Аварійна лампочка: один розмір, записаний двома способами = роздвоєний товар.
+    # Не прибираємо (це рішення людини), але й мовчати не можна — саме мовчанка
+    # дала прожити 4 двійникам із 27.08.2026 до того, як їх помітили очима.
+    try:
+        size_twins = _find_size_notation_twins(session, shipment_ids)
+    except Exception as e:  # noqa: BLE001 — діагностика не сміє валити парс
+        logger.warning(f"[products] перевірка двійників за написанням розміру не вдалась: {e}")
+        size_twins = []
+    if size_twins:
+        logger.error(
+            f"[products] ⚠️ товарів, роздвоєних написанням розміру: {len(size_twins)} — "
+            f"{[t['productnumber'] for t in size_twins[:10]]}. "
+            f"Розсудити: backend/scripts/merge_size_notation_duplicates.py"
+        )
+
     return {
         "mode":    mode,
         "sheets":  total_sheets,
@@ -6105,6 +6164,7 @@ def run_products_parsing(
         "products_before": products_before,
         "products_after": products_after,
         "added_mismatch": mismatch,
+        "size_notation_twins": size_twins,
         "seen_product_ids": set(seen_in_run.keys()),
     }
 
@@ -6514,6 +6574,47 @@ def _sheet_numbers(all_rows: list) -> set:
         return set()
     return {_canon_sheet_num(r[num_idx]) for r in all_rows[1:]
             if num_idx < len(r) and _canon_sheet_num(r[num_idx])}
+
+
+def _find_size_notation_twins(session: Session, delivery_ids: list) -> list:
+    """Товари одного (номер, колір), чиї розміри — це ОДИН розмір, записаний
+    по-різному ('38⅔' і '38.6'). Нічого не міняє: тільки знаходить.
+
+    Гілка «Ростовка» (`_parse_products_sheet`) створює на кожен новий розмір
+    окремий рядок, і поки порівняння було текстовим, переписаний в аркуші розмір
+    давав ДРУГИЙ рядок на той самий товар. `_sizes_match` це закрив, але в базі
+    лишаються старі пари й ті, що прийшли з ручних правок картки, — а звірка
+    орфанів їх не бачить, бо судить за НОМЕРОМ, який в аркуші є.
+
+    Тому це аварійна лампочка, а не прибиральник: рішення про злиття ухвалює
+    людина скриптом `merge_size_notation_duplicates.py` (з бекапом і
+    перевішуванням посилань). Мовчазне псування даних має бути видимим.
+    """
+    if not delivery_ids:
+        return []
+    rows = session.execute(
+        text("""SELECT id, productnumber, sizeeu, colorid, deliveryid
+                FROM products
+                WHERE deliveryid = ANY(:d) AND COALESCE(sizeeu, '') <> ''"""),
+        {"d": list(delivery_ids)},
+    ).fetchall()
+
+    groups = {}
+    for r in rows:
+        groups.setdefault((r.productnumber, r.colorid, _size_canon(r.sizeeu)), []).append(r)
+
+    twins = []
+    for (pnum, _colorid, canon), members in groups.items():
+        if len(members) < 2:
+            continue
+        if len({(m.sizeeu or "") for m in members}) < 2:
+            continue                      # однакове написання унікальний індекс не пустить
+        twins.append({
+            "productnumber": pnum,
+            "canon_size": canon,
+            "rows": [{"id": m.id, "sizeeu": m.sizeeu} for m in members],
+        })
+    return twins
 
 
 def _added_mismatch(added: int, deleted: int, before: int, after: int) -> Optional[str]:
