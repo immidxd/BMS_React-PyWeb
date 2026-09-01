@@ -185,7 +185,13 @@ def _due_drafts(db: Session, kind: str, platforms: list, max_age_hours: int) -> 
         WHERE status = :review
           AND platform = ANY(:platforms)
           AND scheduled_for <= now()
-          AND scheduled_for >= now() - make_interval(hours => :max_age)
+          -- Вікно рахується від ПІЗНІШОГО з двох: слота або створення.
+          -- ⚠️ Слот часто вже в минулому, коли чернетка народжується: розклад
+          -- спрацьовує при старті BMS, і 01.09.2026 слоти 10:00–11:36 отримали
+          -- рядки, створені о 14:51. Рахувати лише від слота означало б, що
+          -- чернетка «прострочена» ще до того, як з'явилась, — а до її появи
+          -- публікувати не було чого.
+          AND GREATEST(scheduled_for, created_at) >= now() - make_interval(hours => :max_age)
         ORDER BY platform, scheduled_for DESC
     """), {
         "review": scheduler.REVIEW_STATUS,

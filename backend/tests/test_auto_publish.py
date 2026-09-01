@@ -169,3 +169,18 @@ def test_a_failed_send_does_not_lock_the_draft_forever(monkeypatch):
     monkeypatch.setattr(auto_publish, "publish_collection_draft", publish_ok)
     _run()
     assert ok == [9], "наступний оберт мусить повторити спробу"
+
+
+def test_the_window_starts_when_the_draft_appears_not_when_its_slot_was(monkeypatch):
+    """Розклад спрацьовує при старті BMS, тож слот часто вже в минулому:
+    01.09.2026 слоти 10:00–11:36 отримали рядки, створені о 14:51. Рахувати
+    вікно лише від слота означало б, що чернетка прострочена ще до появи — а
+    до появи публікувати не було чого.
+
+    Умова живе в SQL, тож перевіряємо саме її текст: підміна `_due_drafts`
+    (як у решті тестів) цю логіку обійшла б і нічого б не довела.
+    """
+    import inspect
+    src = inspect.getsource(auto_publish._due_drafts)
+    assert "GREATEST(scheduled_for, created_at)" in src
+    assert "scheduled_for <= now()" in src, "прострочені все одно лише ті, чий слот настав"
