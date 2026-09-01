@@ -94,3 +94,6 @@ deploy/Output/
 
 # Бекапи merge_phantom_duplicates.py — знімки рядків БД, не в git
 backend/scripts/phantom_backup_*.json
+
+# Бекапи .env — містять секрети так само, як сам .env
+.env.bak.*
