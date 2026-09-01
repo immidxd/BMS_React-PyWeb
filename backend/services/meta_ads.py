@@ -126,7 +126,7 @@ def unpriced(charges: Iterable[dict]) -> List[dict]:
 def load_config(db: Session) -> dict:
     row = db.execute(text("""
         SELECT id, account_id, enabled, vat_pct, bank_fee_pct, backfill_from,
-               last_synced_at, last_error, last_error_at
+               additive_from, last_synced_at, last_error, last_error_at
         FROM meta_ads_config WHERE id = 1
     """)).mappings().first()
     if not row:
@@ -137,7 +137,8 @@ def load_config(db: Session) -> dict:
 
 
 def save_config(db: Session, **fields) -> dict:
-    allowed = {"account_id", "enabled", "vat_pct", "bank_fee_pct", "backfill_from"}
+    allowed = {"account_id", "enabled", "vat_pct", "bank_fee_pct", "backfill_from",
+               "additive_from"}
     clean = {k: v for k, v in fields.items() if k in allowed}
     if clean:
         sets = ", ".join(f"{k} = :{k}" for k in clean)

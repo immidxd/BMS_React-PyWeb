@@ -186,3 +186,14 @@ def test_three_decimals_of_fee_would_miss_the_receipt():
     в кількадесят списань помилка накопичується в один бік."""
     nbu = Decimal("44.5445")
     assert to_uah(Decimal("87.00"), nbu, bank_fee_pct=Decimal("0.575")) == Decimal("3897.65")
+
+
+def test_config_carries_the_shared_cell_date():
+    """Колонки в load_config перелічені поіменно, тож нове поле треба додати
+    і туди, і в allowed для save_config — інакше режим не вмикається взагалі,
+    і мовчки: помилки не буде, просто нічого не станеться."""
+    import inspect
+    from backend.services import meta_ads
+    src = inspect.getsource(meta_ads.load_config)
+    assert "additive_from" in src
+    assert "additive_from" in inspect.getsource(meta_ads.save_config)

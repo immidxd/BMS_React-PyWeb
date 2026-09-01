@@ -49,6 +49,11 @@ CREATE TABLE IF NOT EXISTS meta_ads_config (
     vat_pct       NUMERIC(6,3) NOT NULL DEFAULT 0.000,
     bank_fee_pct  NUMERIC(7,4) NOT NULL DEFAULT 0.0000,
     backfill_from DATE,                  -- порожньо = шукати початок автоматично
+    -- З цієї дати комірка «Витрати на рекламу» СПІЛЬНА: програма не
+    -- пропускає заповнену, а ДОДАЄ до неї свою частку. Раніші аркуші
+    -- лишаються недоторканими назавжди — там ручні числа власника.
+    -- Порожньо = стара поведінка (заповнене не чіпати взагалі).
+    additive_from DATE,
     last_synced_at TIMESTAMPTZ,
     last_error     TEXT,
     last_error_at  TIMESTAMPTZ,
@@ -126,3 +131,6 @@ CREATE INDEX IF NOT EXISTS idx_meta_ad_charges_air ON meta_ad_charges (air_date)
 CREATE INDEX IF NOT EXISTS idx_meta_ad_charges_date ON meta_ad_charges (charge_date);
 CREATE INDEX IF NOT EXISTS idx_meta_ad_charges_pending
     ON meta_ad_charges (write_status) WHERE write_status = 'pending';
+
+-- Дозапис у спільну комірку (додано 01.09.2026 на прохання власника).
+ALTER TABLE IF EXISTS meta_ads_config ADD COLUMN IF NOT EXISTS additive_from DATE;

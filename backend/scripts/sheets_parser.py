@@ -1995,6 +1995,10 @@ def _extract_advertising_expense(rows: list) -> dict:
     return {
         "found": True,
         "amount": _parse_nonnegative_money(raw_value),
+        # Сире значення потрібне, щоб відрізнити ПОРОЖНЮ комірку від
+        # нечитабельної: `amount` дорівнює None в обох випадках, і той, хто
+        # вирішує «можна писати», без цього затер би чужий текст числом.
+        "raw": raw_value,
         "label_cell": gspread.utils.rowcol_to_a1(row_idx + 1, col_idx + 1),
         "value_cell": gspread.utils.rowcol_to_a1(row_idx + 2, col_idx + 1),
     }

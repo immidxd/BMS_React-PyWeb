@@ -46,14 +46,17 @@ def _sheet_without_block(title, gid):
 
 
 class _DB:
-    def __init__(self, charges):
+    def __init__(self, charges, additive_from=None):
         self._charges = charges
+        self._config = {"additive_from": additive_from}
         self.marks = []
 
     def execute(self, stmt, params=None):
         sql = " ".join(str(stmt).split())
         if sql.startswith("SELECT id, transaction_id"):
             return _Res(self._charges)
+        if sql.startswith("SELECT id, account_id"):
+            return _Res([self._config])
         if sql.startswith("UPDATE meta_ad_charges"):
             self.marks.append(params)
             return _Res([])
@@ -67,6 +70,7 @@ class _Res:
     def __init__(self, rows): self._rows = rows
     def mappings(self): return self
     def all(self): return self._rows
+    def first(self): return self._rows[0] if self._rows else None
 
 
 def _charge(cid, day, uah):
@@ -183,3 +187,108 @@ def test_the_report_shows_both_what_goes_and_what_is_left_alone():
     report = wb.format_plan(wb.build_plan(db, sh))
     assert "ЗАПИСАТИ" in report and "23.08.2026" in report
     assert "НЕ ЧІПАЮ" in report and "500" in report
+
+
+# ── Спільна комірка: програма ДОДАЄ свою частку, а не заміняє ───────────────
+ADDITIVE = date(2026, 9, 1)
+
+
+def test_from_the_shared_date_our_share_is_added_to_what_is_there():
+    """У комірці — ВСЯ реклама ефіру. Наші списання Meta лише складова, решту
+    (Telegram, блогери) власник дописує сам, і вона мусить вціліти."""
+    sh = _SH([_sheet("05.09.2026", 1, existing="150")])
+    db = _DB([_charge(1, date(2026, 9, 5), "3897.67")], additive_from=ADDITIVE)
+
+    entry = wb.build_plan(db, sh)["planned"][0]
+    assert entry["status"] == wb.PLANNED_ADD
+    assert entry["existing"] == 150.0
+    assert entry["total_uah"] == Decimal("3897.67")
+    assert entry["new_value"] == Decimal("4047.67")
+
+
+def test_sheets_before_the_shared_date_stay_untouched():
+    """«Минулі не трогаємо» — там ручні числа за період, коли програми не було."""
+    sh = _SH([_sheet("01.08.2026", 1, existing="1000")])
+    db = _DB([_charge(1, date(2026, 8, 1), "2465.70")], additive_from=ADDITIVE)
+
+    plan = wb.build_plan(db, sh)
+    assert plan["planned"] == []
+    assert plan["skipped_manual"][0]["existing"] == 1000.0
+
+
+def test_a_second_run_does_not_add_the_same_charge_twice():
+    """Ідемпотентність тримає СТАТУС списання, а не значення комірки: до суми
+    береться лише те, що ще не записано."""
+    target = _sheet("05.09.2026", 1, existing="150")
+    sh = _SH([target])
+    db = _DB([_charge(1, date(2026, 9, 5), "3897.67")], additive_from=ADDITIVE)
+
+    wb.apply_plan(db, wb.build_plan(db, sh), sh=sh)
+    assert target.updates == [("AB46", 4047.67)]
+    assert db.marks[-1]["status"] == "written"
+
+    # Другий прогін: списання вже `written`, тож у pending його немає.
+    db2 = _DB([], additive_from=ADDITIVE)
+    assert wb.build_plan(db2, sh)["planned"] == []
+
+
+def test_apply_adds_to_the_freshest_value_not_the_planned_one():
+    """Між планом і записом власник дописав своє. Його число мусить вціліти,
+    а наша частка лишається тією самою — вона визначається списаннями."""
+    target = _sheet("05.09.2026", 1, existing="150")
+    sh = _SH([target])
+    db = _DB([_charge(1, date(2026, 9, 5), "3897.67")], additive_from=ADDITIVE)
+    plan = wb.build_plan(db, sh)
+    assert plan["planned"][0]["new_value"] == Decimal("4047.67")
+
+    target._rows[45][27] = "900"          # власник встиг змінити
+
+    wb.apply_plan(db, plan, sh=sh)
+    assert target.updates == [("AB46", 4797.67)]   # 900 + 3897.67, а не 4047.67
+
+
+def test_an_unreadable_cell_is_never_touched_in_either_mode():
+    """`amount` дорівнює None і для порожньої комірки, і для тексту. Без
+    перевірки сирого значення «уточнити у Жені» стало б числом."""
+    for additive in (None, ADDITIVE):
+        target = _sheet("05.09.2026", 1, existing="уточнити у Жені")
+        sh = _SH([target])
+        db = _DB([_charge(1, date(2026, 9, 5), "100.00")], additive_from=additive)
+
+        plan = wb.build_plan(db, sh)
+        assert plan["planned"] == []
+        assert plan["unreadable"][0]["raw"] == "уточнити у Жені"
+        wb.apply_plan(db, plan, sh=sh)
+        assert target.updates == []
+
+
+def test_an_empty_cell_is_filled_plainly_even_in_shared_mode():
+    sh = _SH([_sheet("05.09.2026", 1)])
+    db = _DB([_charge(1, date(2026, 9, 5), "3897.67")], additive_from=ADDITIVE)
+    entry = wb.build_plan(db, sh)["planned"][0]
+    assert entry["status"] == wb.PLANNED
+    assert entry["new_value"] == Decimal("3897.67")
+
+
+def test_the_report_shows_the_arithmetic_of_a_shared_cell():
+    sh = _SH([_sheet("05.09.2026", 1, existing="150")])
+    db = _DB([_charge(1, date(2026, 9, 5), "3897.67")], additive_from=ADDITIVE)
+    report = wb.format_plan(wb.build_plan(db, sh))
+    assert "150.0 + 3897.67 = 4047.67" in report
+
+
+def test_settled_past_sheets_leave_the_queue_but_broken_ones_stay():
+    """Рішення по минулих аркушах не зміниться — тримати їх у черзі означало б
+    перечитувати ті самі аркуші вічно. А от аркуш БЕЗ блоку ще можуть
+    полагодити руками, тож він лишається."""
+    sh = _SH([_sheet("01.08.2026", 1, existing="1000"),
+              _sheet_without_block("02.08.2026", 2)])
+    db = _DB([_charge(1, date(2026, 8, 1), "2465.70"),
+              _charge(2, date(2026, 8, 2), "100.00")], additive_from=ADDITIVE)
+
+    plan = wb.build_plan(db, sh)
+    result = wb.apply_plan(db, plan, sh=sh)
+
+    assert result["settled"] == 1
+    assert [m["status"] for m in db.marks] == ["skipped_manual"]
+    assert db.marks[0]["ids"] == [1]          # аркуш без блоку не позначено

@@ -40,6 +40,9 @@ def test_reads_value_directly_below_exact_summary_label():
     assert _extract_advertising_expense(rows) == {
         "found": True,
         "amount": 1000.0,
+        # Сире значення потрібне тому, хто вирішує «чи можна сюди писати»:
+        # `amount` дорівнює None і для порожньої комірки, і для нечитабельної.
+        "raw": "1 000",
         "label_cell": "C3",
         "value_cell": "C4",
     }
@@ -57,3 +60,16 @@ def test_marks_empty_summary_value_as_invalid_instead_of_zero():
     result = _extract_advertising_expense(rows)
     assert result["found"] is True
     assert result["amount"] is None
+
+
+def test_an_unreadable_cell_is_told_apart_from_an_empty_one():
+    """`amount` дорівнює None в обох випадках, тож без сирого значення той, хто
+    вирішує «комірка вільна», затер би чужий текст числом."""
+    empty = _extract_advertising_expense(
+        [["", "Витрати на рекламу"], ["", ""]])
+    unreadable = _extract_advertising_expense(
+        [["", "Витрати на рекламу"], ["", "уточнити у Жені"]])
+
+    assert empty["amount"] is None and unreadable["amount"] is None
+    assert empty["raw"].strip() == ""
+    assert unreadable["raw"].strip() == "уточнити у Жені"
