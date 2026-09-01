@@ -22,6 +22,7 @@ import {
   type ProductsStatsResponse,
   type CatalogStatsResponse,
   type CatalogProductStat,
+  type AdvertisingStatsResponse,
 } from '../services/statisticsService';
 import {
   BarChart, Bar, LineChart, Line, AreaChart, Area,
@@ -176,6 +177,7 @@ const STAT_TABS = [
   { key: 'clients', label: 'Клієнти' },
   { key: 'products', label: 'Товари' },
   { key: 'channels', label: 'Канали продажу' },
+  { key: 'ads', label: 'Реклама' },
 ] as const;
 
 type StatTab = typeof STAT_TABS[number]['key'];
@@ -245,6 +247,12 @@ const StatisticsPage: React.FC<StatisticsPageProps> = () => {
 
   // Products statistics state
   const [productStats, setProductStats] = useState<ProductsStatsResponse | null>(null);
+  // Реклама
+  const [adsPeriod, setAdsPeriod] = useState<PeriodType>('month');
+  const [adsYear, setAdsYear] = useState<number | undefined>(undefined);
+  const [adsData, setAdsData] = useState<AdvertisingStatsResponse | null>(null);
+  const [adsLoading, setAdsLoading] = useState(false);
+  const adsRequestRef = useRef(0);
   const [productStatsLoading, setProductStatsLoading] = useState(false);
   const salesRequestRef = useRef(0);
   const shipmentsRequestRef = useRef(0);
@@ -292,6 +300,18 @@ const StatisticsPage: React.FC<StatisticsPageProps> = () => {
     finally { if (requestId === suppliersRequestRef.current) setSupLoading(false); }
   }, [supPeriod, supYear]);
   useEffect(() => { loadSuppliers(); }, [loadSuppliers]);
+
+  // Load advertising data
+  const loadAds = useCallback(async () => {
+    const requestId = ++adsRequestRef.current;
+    setAdsLoading(true);
+    try {
+      const res = await statisticsService.getAdvertisingStats(adsPeriod, adsYear);
+      if (requestId === adsRequestRef.current) setAdsData(res);
+    } catch (e) { console.error(e); }
+    finally { if (requestId === adsRequestRef.current) setAdsLoading(false); }
+  }, [adsPeriod, adsYear]);
+  useEffect(() => { if (activeTab === 'ads') loadAds(); }, [activeTab, loadAds]);
 
   // Load deliveries list
   const loadDeliveries = useCallback(async () => {
@@ -1117,6 +1137,151 @@ const StatisticsPage: React.FC<StatisticsPageProps> = () => {
                       ))}
                     </tbody>
                   </table>
+                </div>
+              </div>
+            ) : (
+              <div className="h-40 flex items-center justify-center text-gray-400 text-sm">Немає даних</div>
+            )}
+          </Section>
+        )}
+
+        {activeTab === 'ads' && (
+          <Section
+            title="Реклама"
+            controls={
+              <PeriodSelector
+                period={adsPeriod} setPeriod={setAdsPeriod}
+                year={adsYear} setYear={setAdsYear}
+                years={years}
+              />
+            }
+          >
+            {adsLoading ? (
+              <div className="h-80 flex items-center justify-center text-gray-400">Завантаження...</div>
+            ) : adsData ? (
+              <div className="space-y-6">
+                {/* Плитки: скільки всього, з чого складається, чого це варте */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                  <KpiCard label="Уся реклама ефіру" value={`${fmtPrice(adsData.totals.total_all)}`}
+                            sub="з комірок «Витрати на рекламу»" color="text-orange-700" />
+                  <KpiCard label="З них Meta" value={`${fmtPrice(adsData.totals.meta_all)}`}
+                            sub={`${adsData.totals.meta_count} списань із виписки банку`}
+                            color="text-blue-700" />
+                  <KpiCard label="Інша реклама"
+                            value={`${fmtPrice(adsData.totals.total_all - adsData.totals.meta_all)}`}
+                            sub="Telegram, блогери тощо — вписані вручну"
+                            color="text-purple-700" />
+                  <KpiCard label="Період списань Meta"
+                            value={adsData.totals.meta_from
+                              ? `${adsData.totals.meta_from} — ${adsData.totals.meta_to}` : '—'}
+                            sub={adsData.totals.waiting_air > 0
+                              ? `${adsData.totals.waiting_air} чекають ефіру`
+                              : 'усі розподілені по ефірах'}
+                            color="text-gray-700" />
+                </div>
+
+                {/* Динаміка: Meta окремо від решти */}
+                <div>
+                  <h3 className="text-sm font-medium text-gray-600 dark:text-gray-300 mb-2">
+                    Структура витрат на рекламу
+                  </h3>
+                  <ResponsiveContainer width="100%" height={300}>
+                    <ComposedChart data={adsData.data} margin={{ top: 5, right: 20, bottom: 5, left: 10 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                      <XAxis dataKey="period" tick={{ fontSize: 11 }} />
+                      <YAxis tick={{ fontSize: 11 }} tickFormatter={fmtShort} />
+                      <Tooltip content={<CustomTooltip />} />
+                      <Legend wrapperStyle={{ fontSize: 12 }} />
+                      <Bar dataKey="meta_cost" name="Meta (з банку)" stackId="ads"
+                           fill={COLORS.advertising} radius={[0, 0, 0, 0]} />
+                      <Bar dataKey="other_cost" name="Інша реклама" stackId="ads"
+                           fill="#a78bfa" radius={[4, 4, 0, 0]} />
+                      <Line dataKey="share_of_revenue" name="% від виторгу"
+                            stroke="#0ea5e9" strokeWidth={2} dot={{ r: 3 }} yAxisId="right" />
+                      <YAxis yAxisId="right" orientation="right" tick={{ fontSize: 11 }}
+                             tickFormatter={(v: number) => `${v}%`} />
+                    </ComposedChart>
+                  </ResponsiveContainer>
+                  <p className="text-[11px] text-gray-400 mt-1">
+                    Від'ємна «інша реклама» означає, що в комірку ще не дописали свіже
+                    списання Meta — це видима розбіжність, а не помилка даних.
+                  </p>
+                </div>
+
+                {/* Таблиця по періодах */}
+                <div className="overflow-x-auto">
+                  <table className="min-w-full text-xs">
+                    <thead className="bg-gray-50 dark:bg-gray-800 text-gray-600 dark:text-gray-300">
+                      <tr>
+                        <th className="px-2 py-1.5 text-left font-medium">Період</th>
+                        <th className="px-2 py-1.5 text-right font-medium">Уся реклама</th>
+                        <th className="px-2 py-1.5 text-right font-medium">Meta</th>
+                        <th className="px-2 py-1.5 text-right font-medium">Інша</th>
+                        <th className="px-2 py-1.5 text-right font-medium">Виторг</th>
+                        <th className="px-2 py-1.5 text-right font-medium">% від виторгу</th>
+                        <th className="px-2 py-1.5 text-right font-medium">На 1 замовлення</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {adsData.data.map((r, i) => (
+                        <tr key={r.period} className={i % 2 === 0 ? 'bg-white dark:bg-gray-900' : 'bg-gray-50 dark:bg-gray-800'}>
+                          <td className="px-2 py-1.5 font-medium">{r.period}</td>
+                          <td className="px-2 py-1.5 text-right font-semibold text-orange-700">{fmtShort(r.total_cost)}₴</td>
+                          <td className="px-2 py-1.5 text-right text-blue-700">{fmtShort(r.meta_cost)}₴</td>
+                          <td className={`px-2 py-1.5 text-right ${r.other_cost < 0 ? 'text-red-600 font-semibold' : 'text-purple-700'}`}>
+                            {fmtShort(r.other_cost)}₴
+                          </td>
+                          <td className="px-2 py-1.5 text-right text-gray-500">{fmtShort(r.revenue)}₴</td>
+                          <td className="px-2 py-1.5 text-right">{r.share_of_revenue !== null ? `${r.share_of_revenue}%` : '—'}</td>
+                          <td className="px-2 py-1.5 text-right text-gray-500">{r.cost_per_order !== null ? `${fmtShort(r.cost_per_order)}₴` : '—'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                {/* Списання Meta — рядок у рядок із виписки */}
+                <div>
+                  <h3 className="text-sm font-medium text-gray-600 dark:text-gray-300 mb-2">
+                    Списання Meta з карток ({adsData.charges.length})
+                  </h3>
+                  <div className="overflow-x-auto max-h-96 overflow-y-auto">
+                    <table className="min-w-full text-xs">
+                      <thead className="bg-gray-50 dark:bg-gray-800 text-gray-600 dark:text-gray-300 sticky top-0">
+                        <tr>
+                          <th className="px-2 py-1.5 text-left font-medium">Дата списання</th>
+                          <th className="px-2 py-1.5 text-right font-medium">Сума ₴</th>
+                          <th className="px-2 py-1.5 text-right font-medium">У валюті</th>
+                          <th className="px-2 py-1.5 text-left font-medium">Картка</th>
+                          <th className="px-2 py-1.5 text-left font-medium">Ефір</th>
+                          <th className="px-2 py-1.5 text-left font-medium">Квитанція</th>
+                          <th className="px-2 py-1.5 text-left font-medium">В аркуші</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {adsData.charges.map((c, i) => (
+                          <tr key={`${c.charge_date}-${c.receipt_id ?? i}`}
+                              className={i % 2 === 0 ? 'bg-white dark:bg-gray-900' : 'bg-gray-50 dark:bg-gray-800'}>
+                            <td className="px-2 py-1.5">{c.charge_date}</td>
+                            <td className="px-2 py-1.5 text-right font-semibold text-orange-700">{fmtPrice(c.amount_uah)}</td>
+                            <td className="px-2 py-1.5 text-right text-gray-500">
+                              {c.amount_orig !== null ? `${c.amount_orig} ${c.operation_currency ?? ''}` : '—'}
+                            </td>
+                            <td className="px-2 py-1.5 text-gray-500">{c.card ? `···${c.card}` : '—'}</td>
+                            <td className="px-2 py-1.5">{c.air_date ?? <span className="text-amber-600">чекає ефіру</span>}</td>
+                            <td className="px-2 py-1.5 text-gray-400 font-mono text-[10px]">{c.receipt_id ?? '—'}</td>
+                            <td className="px-2 py-1.5">
+                              {c.write_status === 'written'
+                                ? <span className="text-green-700">записано</span>
+                                : c.write_status === 'skipped_manual'
+                                  ? <span className="text-gray-400">ручне значення</span>
+                                  : <span className="text-amber-600">{c.write_status}</span>}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
               </div>
             ) : (

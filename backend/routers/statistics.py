@@ -1299,3 +1299,123 @@ def get_products_stats(
         "channel_distribution": channel_dist,
         "inventory_summary": dict(inventory_summary._mapping) if inventory_summary else {},
     }
+
+
+@router.get("/api/statistics/advertising")
+def advertising_stats(
+    period: str = Query("month", pattern="^(month|quarter|year|total)$"),
+    year: Optional[int] = Query(None),
+    db: Session = Depends(get_db),
+) -> Dict[str, Any]:
+    """Реклама: скільки, з чого складається і що з того вийшло.
+
+    Два джерела, і вони НЕ дублюються, а доповнюють одне одного:
+
+    * `advertising_expenses` — УСЯ реклама ефіру. Дзеркало комірки «Витрати на
+      рекламу» в аркуші «Замовлення»; там сидить і Meta, і все інше
+      (Telegram, блогери), про що знає лише власник.
+    * `meta_ad_charges` — списання Meta з картки, точні до копійки з виписки
+      банку.
+
+    Звідси «інша реклама» = всього − Meta. Вона може вийти відʼємною, і це не
+    помилка даних, а чесний сигнал: у комірку ще не дописали свіже списання
+    Meta. Тому не обрізаємо в нуль — інакше розбіжність стала б невидимою.
+    """
+    if period == "month":
+        total_expr = "TO_CHAR(e.expense_date, 'YYYY-MM')"
+        meta_expr = "TO_CHAR(c.air_date, 'YYYY-MM')"
+    elif period == "quarter":
+        total_expr = "TO_CHAR(e.expense_date, 'YYYY') || '-Q' || EXTRACT(QUARTER FROM e.expense_date)::int"
+        meta_expr = "TO_CHAR(c.air_date, 'YYYY') || '-Q' || EXTRACT(QUARTER FROM c.air_date)::int"
+    else:
+        total_expr = "TO_CHAR(e.expense_date, 'YYYY')"
+        meta_expr = "TO_CHAR(c.air_date, 'YYYY')"
+
+    year_filter_e = "AND EXTRACT(YEAR FROM e.expense_date) = :year" if year else ""
+    year_filter_c = "AND EXTRACT(YEAR FROM c.air_date) = :year" if year else ""
+    params: Dict[str, Any] = {"year": year} if year else {}
+
+    total_rows = db.execute(text(f"""
+        SELECT {total_expr} AS period_label,
+               COALESCE(SUM(e.amount), 0)::float AS total_cost
+        FROM advertising_expenses e
+        WHERE e.sales_channel = 'Ефір' AND e.expense_date IS NOT NULL {year_filter_e}
+        GROUP BY 1 ORDER BY 1
+    """), params).mappings().all()
+
+    # Meta групуємо за ЕФІРОМ, а не за датою списання: у комірку сума лягла
+    # саме до того ефіру, тож інакше два ряди не зійшлися б по періодах.
+    meta_rows = db.execute(text(f"""
+        SELECT {meta_expr} AS period_label,
+               COALESCE(SUM(c.amount_uah), 0)::float AS meta_cost,
+               COUNT(*)::int AS meta_charges
+        FROM meta_ad_charges c
+        WHERE c.air_date IS NOT NULL {year_filter_c}
+        GROUP BY 1 ORDER BY 1
+    """), params).mappings().all()
+
+    # Виторг і замовлення — щоб показати ціну реклами, а не лише її суму.
+    sales_expr = total_expr.replace("e.expense_date", "o.order_date")
+    year_filter_o = "AND EXTRACT(YEAR FROM o.order_date) = :year" if year else ""
+    sales_rows = db.execute(text(f"""
+        SELECT {sales_expr} AS period_label,
+               COALESCE(SUM(oi.price * oi.quantity), 0)::float AS revenue,
+               COUNT(DISTINCT o.id)::int AS orders
+        FROM orders o
+        JOIN order_items oi ON oi.order_id = o.id
+        WHERE o.sales_channel = 'Ефір' AND o.order_date IS NOT NULL
+          AND o.order_status_id IN (1, 7) {year_filter_o}
+        GROUP BY 1 ORDER BY 1
+    """), params).mappings().all()
+
+    total_map = {r["period_label"]: r for r in total_rows}
+    meta_map = {r["period_label"]: r for r in meta_rows}
+    sales_map = {r["period_label"]: r for r in sales_rows}
+
+    data = []
+    for label in sorted(set(total_map) | set(meta_map)):
+        total_cost = float(total_map.get(label, {}).get("total_cost", 0) or 0)
+        meta_cost = float(meta_map.get(label, {}).get("meta_cost", 0) or 0)
+        revenue = float(sales_map.get(label, {}).get("revenue", 0) or 0)
+        orders = int(sales_map.get(label, {}).get("orders", 0) or 0)
+        data.append({
+            "period": label,
+            "total_cost": round(total_cost, 2),
+            "meta_cost": round(meta_cost, 2),
+            "other_cost": round(total_cost - meta_cost, 2),
+            "meta_charges": int(meta_map.get(label, {}).get("meta_charges", 0) or 0),
+            "revenue": round(revenue, 2),
+            "orders": orders,
+            "share_of_revenue": round(total_cost / revenue * 100, 2) if revenue else None,
+            "cost_per_order": round(total_cost / orders, 2) if orders else None,
+        })
+
+    charges = db.execute(text(f"""
+        SELECT c.charge_date, c.amount_uah::float AS amount_uah,
+               c.operation_amount::float AS amount_orig, c.operation_currency,
+               c.air_date, c.receipt_id, c.write_status, c.description,
+               RIGHT(COALESCE(s.masked_pan, ''), 4) AS card
+        FROM meta_ad_charges c
+        LEFT JOIN mono_sync_state s ON s.account_id = c.bank_account_id
+        WHERE TRUE {year_filter_c.replace('c.air_date', 'COALESCE(c.air_date, c.charge_date)')}
+        ORDER BY c.charge_date DESC
+        LIMIT 300
+    """), params).mappings().all()
+
+    totals = db.execute(text("""
+        SELECT
+          (SELECT COALESCE(SUM(amount), 0)::float FROM advertising_expenses
+            WHERE sales_channel = 'Ефір') AS total_all,
+          (SELECT COALESCE(SUM(amount_uah), 0)::float FROM meta_ad_charges) AS meta_all,
+          (SELECT COUNT(*)::int FROM meta_ad_charges) AS meta_count,
+          (SELECT MIN(charge_date) FROM meta_ad_charges) AS meta_from,
+          (SELECT MAX(charge_date) FROM meta_ad_charges) AS meta_to,
+          (SELECT COUNT(*)::int FROM meta_ad_charges WHERE air_date IS NULL) AS waiting_air
+    """)).mappings().first()
+
+    return {
+        "period_type": period,
+        "data": data,
+        "charges": [dict(r) for r in charges],
+        "totals": dict(totals) if totals else {},
+    }

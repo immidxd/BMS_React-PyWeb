@@ -86,16 +86,18 @@ def cmd_plan(db, args) -> int:
 def cmd_apply(db, args) -> int:
     book = _orders_book()
     plan = wb.build_plan(db, book)
-    if not plan["planned"]:
-        print(wb.format_plan(plan))
+    print(wb.format_plan(plan))
+
+    if not plan["planned"] and not plan["skipped_manual"]:
         print("\nЗаписувати нічого.")
         return 0
-
-    print(wb.format_plan(plan))
     if not args.yes:
         print("\nЗапуск без --yes нічого не змінює. Перечитай план вище.")
         return 1
 
+    # ⚠️ Викликаємо навіть коли писати нема чого: apply_plan ще й ФІКСУЄ рішення
+    # по минулих аркушах, щоб ті самі 22 не перечитувались вічно. Ранній вихід
+    # на «нічого писати» цю фіксацію не давав зробити жодного разу.
     result = wb.apply_plan(db, plan, sh=book)
     print(f"\nЗаписано аркушів: {len(result['written'])}")
     for e in result["written"]:

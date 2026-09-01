@@ -293,4 +293,54 @@ export const statisticsService = {
     const res = await axios.get(`/api/statistics/catalog?days=${days}&limit=${limit}`);
     return res.data;
   },
+
+  async getAdvertisingStats(period = 'month', year?: number): Promise<AdvertisingStatsResponse> {
+    const q = new URLSearchParams({ period });
+    if (year) q.set('year', String(year));
+    const res = await axios.get(`/api/statistics/advertising?${q}`);
+    return res.data;
+  },
 };
+
+
+// ── Реклама ──────────────────────────────────────────────────────────────────
+// `other_cost` = вся реклама ефіру − Meta. Може бути ВІД'ЄМНОЮ, і це не збій
+// даних: означає, що в комірку «Витрати на рекламу» ще не дописали свіже
+// списання Meta. Обрізати в нуль не можна — розбіжність стала б невидимою.
+export interface AdvertisingPeriodData {
+  period: string;
+  total_cost: number;
+  meta_cost: number;
+  other_cost: number;
+  meta_charges: number;
+  revenue: number;
+  orders: number;
+  share_of_revenue: number | null;
+  cost_per_order: number | null;
+}
+
+export interface AdvertisingCharge {
+  charge_date: string;
+  amount_uah: number;
+  amount_orig: number | null;
+  operation_currency: string | null;
+  air_date: string | null;
+  receipt_id: string | null;
+  write_status: string;
+  description: string | null;
+  card: string | null;
+}
+
+export interface AdvertisingStatsResponse {
+  period_type: string;
+  data: AdvertisingPeriodData[];
+  charges: AdvertisingCharge[];
+  totals: {
+    total_all: number;
+    meta_all: number;
+    meta_count: number;
+    meta_from: string | null;
+    meta_to: string | null;
+    waiting_air: number;
+  };
+}
