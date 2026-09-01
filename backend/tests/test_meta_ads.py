@@ -165,3 +165,24 @@ def test_charged_amount_needs_no_vat_multiplier():
     charged_usd, rate = Decimal("87.00"), Decimal("44.7006")
     assert to_uah(charged_usd, rate) == Decimal("3888.95")
     assert to_uah(charged_usd, rate, vat_pct=Decimal("20")) == Decimal("4666.74")
+
+
+# ── Еталон: справжній чек monobank від 30.08.2026 ───────────────────────────
+def test_the_real_monobank_receipt_is_reproduced_to_the_kopiyka():
+    """87,00 USD → 3897,67 ₴ (чек 30.08.2026, курс банку 44,8008).
+
+    НБУ того дня — 44,5445. Банк не бере комісії окремим рядком, а зашиває її
+    в курс, тож надбавка = 44.8008/44.5445 − 1 = 0.5754%. Цей тест тримає всю
+    формулу разом: курс НБУ, надбавку і одноразове округлення.
+    """
+    nbu = Decimal("44.5445")
+    fee = Decimal("0.5754")
+    assert to_uah(Decimal("87.00"), nbu, bank_fee_pct=fee) == Decimal("3897.67")
+
+
+def test_three_decimals_of_fee_would_miss_the_receipt():
+    """Чому в схемі NUMERIC(7,4), а не (6,3): на 0.575 той самий чек дає
+    3897,65 — дві копійки повз. На порогових $87 це дрібниця, але на історії
+    в кількадесят списань помилка накопичується в один бік."""
+    nbu = Decimal("44.5445")
+    assert to_uah(Decimal("87.00"), nbu, bank_fee_pct=Decimal("0.575")) == Decimal("3897.65")
