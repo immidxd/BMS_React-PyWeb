@@ -1,8 +1,13 @@
 """Виписка monobank: розбір операцій і зіставлення з транзакціями Meta.
 
-Еталон — справжній чек від 30.08.2026: 87,00 USD списано як 3897,67 ₴,
-опис «FACEBK *VP93D4ECP4». Рівно той самий код `VP93D4ECP4` Meta показує в
-історії платежів, тому зіставлення точне, а не «та сама дата й схожа сума».
+Еталон — справжній чек від 30.08.2026: 87,00 USD списано як 3897,67 ₴.
+
+⚠️ Форма даних у PDF-квитанції і в Personal API РІЗНА, і це з'ясувалось лише на
+живих даних (01.09.2026). У квитанції продавець надрукований як
+«FACEBK *VP93D4ECP4», а у виписці `description` — просто «Facebook»: коду там
+немає взагалі. Тести нижче тримають обидві форми, бо розбір коду лишається
+корисним для квитанцій, але покладатись на нього як на ключ до історії
+платежів Meta НЕ можна.
 """
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
@@ -154,3 +159,36 @@ def test_a_missing_token_is_a_clear_refusal_not_a_crash(monkeypatch):
     assert mb.token() is None
     with pytest.raises(mb.MonoUnavailable):
         mb._headers()
+
+
+# ── Справжня форма виписки (перевірено на живих даних 01.09.2026) ────────────
+LIVE = {"id": "live-1", "time": int(datetime(2026, 8, 30, 20, 2, 6,
+                                             tzinfo=timezone.utc).timestamp()),
+        "description": "Facebook", "amount": -389767, "operationAmount": -8700,
+        "currencyCode": 840, "commissionRate": 0, "mcc": 7311,
+        "receiptId": "9X42-18TP-5593-954H"}
+
+
+def test_the_statement_says_just_facebook_without_any_code():
+    """У PDF-квитанції стоїть «FACEBK *VP93D4ECP4», а в Personal API —
+    просто «Facebook». Контрольного номера там немає взагалі, тож наскрізного
+    ключа з історією платежів Meta не існує."""
+    assert mb.is_meta_charge(LIVE) is True
+    parsed = mb.parse_charge(LIVE)
+    assert parsed["auth_code"] is None
+    assert parsed["amount_uah"] == Decimal("3897.67")
+
+
+def test_the_bank_receipt_number_is_kept_for_human_cross_check():
+    """Той самий номер надрукований на паперовій квитанції — за ним власник
+    звірить рядок у програмі з чеком у застосунку банку."""
+    assert mb.parse_charge(LIVE)["receipt_id"] == "9X42-18TP-5593-954H"
+    assert mb.parse_charge(LIVE)["mcc"] == mb.MCC_ADVERTISING
+
+
+def test_mcc_alone_must_not_decide():
+    """MCC 7311 — «рекламні послуги», під нього підпадає і Google Ads.
+    Розпізнаємо за продавцем, MCC лишається підтвердженням у звіті."""
+    google = dict(LIVE, description="Google Ads", id="g1")
+    assert google["mcc"] == mb.MCC_ADVERTISING
+    assert mb.is_meta_charge(google) is False
