@@ -81,6 +81,22 @@ CREATE TABLE IF NOT EXISTS meta_ad_charges (
     vat_pct         NUMERIC(6,3),
     bank_fee_pct    NUMERIC(7,4),
     amount_uah      NUMERIC(16,2),
+    -- ── Точна гривня з виписки monobank ────────────────────────────────
+    -- Курс НБУ × надбавка дає НАБЛИЖЕННЯ (банк застосовує власний плаваючий
+    -- курс). Виписка містить рівно ту суму, яку списали, тож коли збіг є —
+    -- він і є істиною, а розрахунок лишається як запис про те, «скільки б
+    -- вийшло». Обидва зберігаються поряд: інакше неможливо перевірити, чи
+    -- наближення взагалі варте довіри.
+    --   amount_uah   = bank_amount_uah, якщо є збіг; інакше розрахунок за НБУ
+    --   bank_match   = 'auth_code' (точний) | 'date_amount' (слабший) | NULL
+    -- Контрольний номер (напр. VP93D4ECP4) Meta показує в історії платежів, а
+    -- банк кладе в опис операції: `FACEBK *VP93D4ECP4`. Це наскрізний ключ.
+    auth_code           VARCHAR(32),
+    bank_transaction_id VARCHAR(64),
+    bank_amount_uah     NUMERIC(16,2),
+    bank_match          VARCHAR(16),
+    bank_matched_at     TIMESTAMPTZ,
+
     -- До якого ефіру віднесено. NULL = ефіру ще немає (списання пізніше за
     -- останній аркуш) — такий рядок НЕ втрачається, а чекає нового аркуша.
     air_date        DATE,
@@ -97,5 +113,7 @@ CREATE TABLE IF NOT EXISTS meta_ad_charges (
 );
 
 CREATE INDEX IF NOT EXISTS idx_meta_ad_charges_air ON meta_ad_charges (air_date);
+CREATE INDEX IF NOT EXISTS idx_meta_ad_charges_auth
+    ON meta_ad_charges (auth_code) WHERE auth_code IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_meta_ad_charges_paid
     ON meta_ad_charges (charge_date) WHERE status = 'paid';
