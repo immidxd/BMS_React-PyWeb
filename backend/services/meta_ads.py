@@ -3,7 +3,7 @@
 
 Ланцюг і чому саме такий
 ────────────────────────
-    Meta Marketing API → meta_ad_spend (сирий журнал, ₴ за курсом НБУ)
+    Meta Marketing API → meta_ad_charges (списання з картки, ₴ за курсом НБУ)
                        → аркуш «Замовлення» (комірка під «Витрати на рекламу»)
                        → advertising_expenses (наявний парсер, аркуш → база)
                        → «Статистика» (уже читає advertising_expenses)
@@ -13,15 +13,25 @@
 аркуші немає. Тобто прямий запис прожив би рівно до наступного парсу. Тому
 єдиний напрямок лишається аркуш → база, а ми дописуємо в АРКУШ.
 
+Джерело грошей — СПИСАННЯ, а не покази
+──────────────────────────────────────
+Кабінет працює за порогом: Meta знімає гроші, коли баланс сягає $87, а не
+щодня. У налаштуваннях платежів прямо написано «Поточний баланс $4,47 + усі
+застосовні комісії» — тобто витрати на покази й сума списання це різні числа.
+Власник просив саме «суми на моменти списання коштів», тож беремо транзакцію:
+у ній податки вже сидять, бо стільки Meta реально зняла з картки.
+
+⚠️ Кожне списання йде ПАРОЮ: спроба на одну картку зі статусом «Помилка» і
+успішна на другу. Рахувати можна ЛИШЕ оплачені — інакше витрати подвоюються.
+
 Правило дат (сформульоване власником)
 ─────────────────────────────────────
-Реклама, куплена 20-го, належить найближчому ефіру НА цю дату або ПІЗНІШЕ —
-21-го, 22-го, 23-го, якщо раніше ефірів не було. Ефіри нерегулярні: за літо
-2026 розриви між ними — від 1 до 9 днів, тож «той самий день» покрив би меншість
-випадків. Кілька кампаній одного дня (і кілька днів поспіль до найближчого
-ефіру) підсумовуються в ОДИН аркуш.
+Списання 20-го належить найближчому ефіру НА цю дату або ПІЗНІШЕ — 21-го,
+22-го, 23-го, якщо раніше ефірів не було. Ефіри нерегулярні: за літо 2026
+розриви між ними — від 1 до 9 днів, тож «той самий день» покрив би меншість
+випадків. Кілька списань між двома ефірами підсумовуються в ОДИН аркуш.
 
-Реклама після останнього ефіру не має куди лягти — і НЕ втрачається: рядок
+Списання після останнього ефіру не має куди лягти — і НЕ втрачається: рядок
 лишається без `air_date` і чекає, поки з'явиться новий аркуш.
 
 Недоторканне
@@ -44,6 +54,19 @@ from sqlalchemy.orm import Session
 
 logger = logging.getLogger("bms.meta_ads")
 
+PAID = "paid"
+
+
+def paid_only(charges: Iterable[dict]) -> List[dict]:
+    """Лише успішні списання.
+
+    Кожен платіж цього кабінету лишає в історії ДВА рядки: невдалу спробу на
+    одну картку і успішну на другу. Без цього фільтра витрати подвоюються, і
+    помилка виглядає правдоподібно — суми ж однакові.
+    """
+    return [c for c in charges if str(c.get("status") or "").lower() == PAID]
+
+
 # Статуси запису в аркуш.
 PENDING = "pending"          # ще не дописано
 WRITTEN = "written"          # дописано нами
@@ -52,18 +75,18 @@ NO_BLOCK = "no_block"        # на аркуші немає підпису «В�
 NO_AIR = "no_air"            # ефіру на цю дату ще немає
 
 
-def resolve_air_date(spend_date: date, air_dates: Sequence[date]) -> Optional[date]:
+def resolve_air_date(charge_date: date, air_dates: Sequence[date]) -> Optional[date]:
     """Найближчий ефір НА дату витрати або ПІЗНІШЕ. None — ефіру ще немає.
 
     `air_dates` мусить бути відсортованим за зростанням.
     """
     if not air_dates:
         return None
-    idx = bisect_left(air_dates, spend_date)
+    idx = bisect_left(air_dates, charge_date)
     return air_dates[idx] if idx < len(air_dates) else None
 
 
-def group_by_air(spends: Iterable[dict], air_dates: Sequence[date]
+def group_by_air(charges: Iterable[dict], air_dates: Sequence[date]
                  ) -> Tuple[Dict[date, List[dict]], List[dict]]:
     """Розкласти витрати по ефірах. Другим елементом — ті, що ще не мають ефіру.
 
@@ -72,16 +95,16 @@ def group_by_air(spends: Iterable[dict], air_dates: Sequence[date]
     """
     grouped: Dict[date, List[dict]] = {}
     orphans: List[dict] = []
-    for spend in spends:
-        air = resolve_air_date(spend["spend_date"], air_dates)
+    for charge in charges:
+        air = resolve_air_date(charge["charge_date"], air_dates)
         if air is None:
-            orphans.append(spend)
+            orphans.append(charge)
             continue
-        grouped.setdefault(air, []).append(spend)
+        grouped.setdefault(air, []).append(charge)
     return grouped, orphans
 
 
-def total_uah(spends: Iterable[dict]) -> Decimal:
+def total_uah(charges: Iterable[dict]) -> Decimal:
     """Сума в гривні. Рядок без порахованої гривні НЕ вважається нулем.
 
     Нуль замість невідомого — найгірше, що тут можна зробити: у аркуш пішла б
@@ -89,14 +112,14 @@ def total_uah(spends: Iterable[dict]) -> Decimal:
     бере участі в підсумку, а виклик мусить перевірити `unpriced`.
     """
     return sum(
-        (Decimal(str(s["amount_uah"])) for s in spends if s.get("amount_uah") is not None),
+        (Decimal(str(s["amount_uah"])) for s in charges if s.get("amount_uah") is not None),
         Decimal("0"),
     ).quantize(Decimal("0.01"))
 
 
-def unpriced(spends: Iterable[dict]) -> List[dict]:
+def unpriced(charges: Iterable[dict]) -> List[dict]:
     """Витрати, для яких не вдалося порахувати гривню (немає курсу НБУ)."""
-    return [s for s in spends if s.get("amount_uah") is None]
+    return [s for s in charges if s.get("amount_uah") is None]
 
 
 # ── Налаштування ────────────────────────────────────────────────────────────
@@ -125,7 +148,7 @@ def save_config(db: Session, **fields) -> dict:
 
 
 # ── Перерахунок у гривню ────────────────────────────────────────────────────
-def price_spends(db: Session, spends: Sequence[dict], config: dict, *,
+def price_charges(db: Session, charges: Sequence[dict], config: dict, *,
                  allow_network: bool = True) -> List[dict]:
     """Дописати кожній витраті курс НБУ на ЇЇ дату і суму в гривні.
 
@@ -141,8 +164,8 @@ def price_spends(db: Session, spends: Sequence[dict], config: dict, *,
     vat = Decimal(str(config.get("vat_pct") or 0))
     fee = Decimal(str(config.get("bank_fee_pct") or 0))
     priced: List[dict] = []
-    for spend in spends:
-        row = dict(spend)
+    for charge in charges:
+        row = dict(charge)
         currency = str(row.get("currency") or "USD").upper()
         if currency == "UAH":
             # Кабінет уже в гривні — курс не потрібен, надбавки теж: банк не
@@ -150,7 +173,7 @@ def price_spends(db: Session, spends: Sequence[dict], config: dict, *,
             row["nbu_rate"] = None
             row["amount_uah"] = Decimal(str(row["amount"])).quantize(Decimal("0.01"))
         else:
-            rate = nbu_rates.rate_for(db, row["spend_date"], currency,
+            rate = nbu_rates.rate_for(db, row["charge_date"], currency,
                                       allow_network=allow_network)
             row["nbu_rate"] = rate
             row["amount_uah"] = (

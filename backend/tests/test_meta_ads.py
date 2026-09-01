@@ -48,7 +48,7 @@ def test_without_any_airs_nothing_is_resolved():
 
 # ── Групування: кілька кампаній і кілька днів — в один аркуш ────────────────
 def _spend(day, name, uah):
-    return {"spend_date": day, "campaign_name": name,
+    return {"charge_date": day, "campaign_name": name,
             "amount_uah": Decimal(uah) if uah is not None else None}
 
 
@@ -131,3 +131,37 @@ def test_rounding_happens_once_at_the_very_end():
     assert exact == Decimal("66222.69")
     # Наочно: покрокове округлення дає інше число.
     assert step_by_step != exact
+
+
+# ── Кожне списання лишає в історії пару: помилка + успіх ────────────────────
+def test_only_paid_charges_count_or_spending_doubles():
+    """Бойовий кабінет: 30.08 два рядки по 87,00 USD — на одній картці
+    «Помилка», на другій «Оплачено». Без фільтра витрати подвоюються, і
+    помилка виглядає правдоподібно, бо суми однакові."""
+    from backend.services.meta_ads import paid_only
+    charges = [
+        {"transaction_id": "A", "status": "paid", "amount": Decimal("87.00")},
+        {"transaction_id": "B", "status": "failed", "amount": Decimal("87.00")},
+        {"transaction_id": "C", "status": "Paid", "amount": Decimal("8.60")},
+    ]
+    assert [c["transaction_id"] for c in paid_only(charges)] == ["A", "C"]
+
+
+def test_a_failed_charge_never_reaches_a_sheet():
+    from backend.services.meta_ads import paid_only
+    charges = [
+        {"charge_date": date(2026, 8, 20), "status": "failed",
+         "amount_uah": Decimal("3900.00")},
+        {"charge_date": date(2026, 8, 20), "status": "paid",
+         "amount_uah": Decimal("3900.00")},
+    ]
+    grouped, _ = group_by_air(paid_only(charges), AIRS)
+    assert total_uah(grouped[date(2026, 8, 23)]) == Decimal("3900.00")
+
+
+def test_charged_amount_needs_no_vat_multiplier():
+    """У сумі списання податки вже сидять — Meta зняла з картки саме стільки.
+    Додати 20% зверху означало б завищити витрати на п'яту частину."""
+    charged_usd, rate = Decimal("87.00"), Decimal("44.7006")
+    assert to_uah(charged_usd, rate) == Decimal("3888.95")
+    assert to_uah(charged_usd, rate, vat_pct=Decimal("20")) == Decimal("4666.74")
