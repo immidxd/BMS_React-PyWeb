@@ -1205,6 +1205,13 @@ def get_products_stats(
         LEFT JOIN types t ON t.id = p.typeid
         JOIN orders o ON o.id = oi.order_id
         WHERE o.order_status_id IN {CONFIRMED_SOLD_SQL}
+          -- Службові номери — не товари. '???' і '__tmp_rename_…' носять
+          -- «проблемні» записи, які власник веде руками; групування за номером
+          -- зліплює їх в один рядок, і той піднімався у ТОП-2 з 23 продажами,
+          -- хоча жодного такого товару не існує.
+          AND p.productnumber IS NOT NULL
+          AND p.productnumber !~ '^#?\?\?\?'
+          AND p.productnumber NOT ILIKE '%tmp\_rename%'
         GROUP BY p.productnumber, p.model, b.brandname, t.typename
         ORDER BY sold_count DESC
         LIMIT :limit

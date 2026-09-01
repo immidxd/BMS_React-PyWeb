@@ -877,47 +877,52 @@ const StatisticsPage: React.FC<StatisticsPageProps> = () => {
             {clientStatsLoading ? (
               <div className="h-40 flex items-center justify-center text-gray-400">Завантаження...</div>
             ) : clientStats ? (
-              <div className="space-y-6">
+              <div className="space-y-10">
                 {/* Top clients by revenue */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div className="grid grid-cols-1 xl:grid-cols-2 gap-x-10 gap-y-8">
                   <div>
-                    <h3 className="text-sm font-medium text-gray-600 dark:text-gray-300 mb-2">Топ клієнтів за виторгом</h3>
-                    <div className="space-y-1">
+                    <h3 className="text-sm font-semibold text-gray-600 dark:text-gray-300 mb-3">Топ клієнтів за виторгом</h3>
+                    <div className="divide-y divide-gray-100 dark:divide-gray-800">
                       {clientStats.top_by_revenue.slice(0, 10).map((c, i) => (
-                        <div key={c.id} className="flex items-center gap-2 text-xs py-1">
-                          <span className="w-5 text-right text-gray-400 font-medium">{i + 1}.</span>
-                          <span className="flex-1 truncate text-gray-700 dark:text-gray-300">{c.name}</span>
-                          <span className="text-gray-400">{c.orders_count} зам.</span>
-                          <span className="font-medium text-green-600 w-24 text-right">{fmtPrice(c.total_revenue)}</span>
+                        <div key={c.id} className="flex items-center gap-3 text-[13px] py-2">
+                          <span className="w-6 shrink-0 text-right text-gray-400 tabular-nums">{i + 1}.</span>
+                          <span className="flex-1 min-w-0 truncate text-gray-700 dark:text-gray-300">{c.name}</span>
+                          <span className="shrink-0 text-gray-400 tabular-nums w-20 text-right">{c.orders_count} зам.</span>
+                          <span className="shrink-0 font-semibold text-green-600 tabular-nums w-28 text-right">{fmtPrice(c.total_revenue)}</span>
                         </div>
                       ))}
                     </div>
                   </div>
                   <div>
-                    <h3 className="text-sm font-medium text-gray-600 dark:text-gray-300 mb-2">Топ клієнтів за к-стю замовлень</h3>
-                    <div className="space-y-1">
+                    <h3 className="text-sm font-semibold text-gray-600 dark:text-gray-300 mb-3">Топ клієнтів за к-стю замовлень</h3>
+                    <div className="divide-y divide-gray-100 dark:divide-gray-800">
                       {clientStats.top_by_orders.slice(0, 10).map((c, i) => (
-                        <div key={c.id} className="flex items-center gap-2 text-xs py-1">
-                          <span className="w-5 text-right text-gray-400 font-medium">{i + 1}.</span>
-                          <span className="flex-1 truncate text-gray-700 dark:text-gray-300">{c.name}</span>
-                          <span className="font-bold text-blue-600">{c.orders_count}</span>
-                          <span className="text-gray-400 w-24 text-right">{fmtPrice(c.total_revenue)}</span>
+                        <div key={c.id} className="flex items-center gap-3 text-[13px] py-2">
+                          <span className="w-6 shrink-0 text-right text-gray-400 tabular-nums">{i + 1}.</span>
+                          <span className="flex-1 min-w-0 truncate text-gray-700 dark:text-gray-300">{c.name}</span>
+                          <span className="shrink-0 font-bold text-blue-600 tabular-nums w-10 text-right">{c.orders_count}</span>
+                          <span className="shrink-0 text-gray-400 tabular-nums w-28 text-right">{fmtPrice(c.total_revenue)}</span>
                         </div>
                       ))}
                     </div>
                   </div>
                 </div>
 
-                {/* New clients trend + Average check trend */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                {/* Нові клієнти + середній чек.
+                    ⚠️ Ширина колонки рахується від того, СКІЛЬКИ графіків реально
+                    є: коли другий порожній, жорстка сітка на дві колонки лишала
+                    єдиний графік притиснутим у ліву половину, а праву — порожньою. */}
+                <div className={`grid grid-cols-1 gap-8 ${
+                  clientStats.new_clients_trend.length > 0 && clientStats.avg_check_trend.length > 0
+                    ? 'xl:grid-cols-2' : ''}`}>
                   {clientStats.new_clients_trend.length > 0 && (
                     <div>
-                      <h3 className="text-sm font-medium text-gray-600 dark:text-gray-300 mb-2">Нові клієнти по місяцях</h3>
-                      <ResponsiveContainer width="100%" height={200}>
-                        <BarChart data={clientStats.new_clients_trend.slice(-12)} margin={{ top: 5, right: 10, bottom: 5, left: 10 }}>
+                      <h3 className="text-sm font-semibold text-gray-600 dark:text-gray-300 mb-3">Нові клієнти по місяцях</h3>
+                      <ResponsiveContainer width="100%" height={280}>
+                        <BarChart data={clientStats.new_clients_trend.slice(-12)} margin={{ top: 10, right: 20, bottom: 10, left: 10 }}>
                           <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-                          <XAxis dataKey="month" tick={{ fontSize: 10 }} />
-                          <YAxis tick={{ fontSize: 10 }} />
+                          <XAxis dataKey="month" tick={{ fontSize: 11 }} tickMargin={8} />
+                          <YAxis tick={{ fontSize: 11 }} width={48} />
                           <Tooltip />
                           <Bar dataKey="new_clients" name="Нових клієнтів" fill={COLORS.orders} radius={[3, 3, 0, 0]} />
                         </BarChart>
@@ -926,12 +931,12 @@ const StatisticsPage: React.FC<StatisticsPageProps> = () => {
                   )}
                   {clientStats.avg_check_trend.length > 0 && (
                     <div>
-                      <h3 className="text-sm font-medium text-gray-600 dark:text-gray-300 mb-2">Середній чек (тренд)</h3>
-                      <ResponsiveContainer width="100%" height={200}>
-                        <AreaChart data={clientStats.avg_check_trend.slice(-12)} margin={{ top: 5, right: 10, bottom: 5, left: 10 }}>
+                      <h3 className="text-sm font-semibold text-gray-600 dark:text-gray-300 mb-3">Середній чек (тренд)</h3>
+                      <ResponsiveContainer width="100%" height={280}>
+                        <AreaChart data={clientStats.avg_check_trend.slice(-12)} margin={{ top: 10, right: 20, bottom: 10, left: 10 }}>
                           <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-                          <XAxis dataKey="month" tick={{ fontSize: 10 }} />
-                          <YAxis tick={{ fontSize: 10 }} tickFormatter={fmtShort} />
+                          <XAxis dataKey="month" tick={{ fontSize: 11 }} tickMargin={8} />
+                          <YAxis tick={{ fontSize: 11 }} width={48} tickFormatter={fmtShort} />
                           <Tooltip content={<CustomTooltip />} />
                           <Area dataKey="avg_check" name="Середній чек" fill={COLORS.revenue} fillOpacity={0.2} stroke={COLORS.revenue} strokeWidth={2} />
                         </AreaChart>
@@ -943,15 +948,15 @@ const StatisticsPage: React.FC<StatisticsPageProps> = () => {
                 {/* Rating distribution */}
                 {clientStats.rating_distribution.length > 0 && (
                   <div>
-                    <h3 className="text-sm font-medium text-gray-600 dark:text-gray-300 mb-2">Розподіл рейтингів клієнтів</h3>
+                    <h3 className="text-sm font-semibold text-gray-600 dark:text-gray-300 mb-3">Розподіл рейтингів клієнтів</h3>
                     <div className="flex gap-4 flex-wrap">
                       {clientStats.rating_distribution.map(r => {
                         const colors: Record<string, string> = { excellent: 'bg-green-100 text-green-700', good: 'bg-blue-100 text-blue-700', average: 'bg-yellow-100 text-yellow-700', low: 'bg-red-100 text-red-700' };
                         const labels: Record<string, string> = { excellent: 'Відмінний (8+)', good: 'Хороший (6-8)', average: 'Середній (4-6)', low: 'Низький (<4)' };
                         return (
-                          <div key={r.category} className={`flex items-center gap-2 px-3 py-2 rounded-lg ${colors[r.category] || 'bg-gray-100 text-gray-700'}`}>
-                            <span className="text-xs font-medium">{labels[r.category] || r.category}</span>
-                            <span className="text-lg font-bold">{r.count}</span>
+                          <div key={r.category} className={`flex items-center gap-3 px-4 py-2.5 rounded-lg ${colors[r.category] || 'bg-gray-100 text-gray-700'}`}>
+                            <span className="text-[13px] font-medium whitespace-nowrap">{labels[r.category] || r.category}</span>
+                            <span className="text-xl font-bold tabular-nums">{r.count}</span>
                           </div>
                         );
                       })}
@@ -971,10 +976,10 @@ const StatisticsPage: React.FC<StatisticsPageProps> = () => {
             {productStatsLoading ? (
               <div className="h-40 flex items-center justify-center text-gray-400">Завантаження...</div>
             ) : productStats ? (
-              <div className="space-y-5">
+              <div className="space-y-10">
                 {/* Inventory summary KPIs */}
                 {productStats.inventory_summary && (
-                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+                  <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-6 gap-4">
                     {[
                       { label: 'Всього товарів', value: productStats.inventory_summary.total_products, color: 'text-blue-700' },
                       { label: 'Одиниць', value: productStats.inventory_summary.total_units, color: 'text-indigo-700' },
@@ -983,31 +988,31 @@ const StatisticsPage: React.FC<StatisticsPageProps> = () => {
                       { label: 'Продано повністю', value: productStats.inventory_summary.fully_sold, color: 'text-red-700' },
                       { label: 'Ростовок', value: productStats.inventory_summary.rostovkas, color: 'text-purple-700' },
                     ].map(kpi => (
-                      <div key={kpi.label} className="bg-gray-50 dark:bg-gray-800 rounded-lg p-3 text-center">
-                        <div className={`text-xl font-bold ${kpi.color}`}>{fmtNum(kpi.value)}</div>
-                        <div className="text-[11px] text-gray-500 mt-0.5">{kpi.label}</div>
+                      <div key={kpi.label} className="bg-gray-50 dark:bg-gray-800 rounded-lg px-4 py-5 text-center">
+                        <div className={`text-2xl font-bold tabular-nums ${kpi.color}`}>{fmtNum(kpi.value)}</div>
+                        <div className="text-xs text-gray-500 mt-1.5 leading-snug">{kpi.label}</div>
                       </div>
                     ))}
                   </div>
                 )}
 
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+                <div className="grid grid-cols-1 xl:grid-cols-2 gap-x-10 gap-y-8">
                   {/* Top brands */}
                   <div>
-                    <h4 className="text-sm font-semibold text-gray-600 dark:text-gray-300 mb-2">Топ брендів (по виторгу)</h4>
-                    <div className="space-y-2">
+                    <h4 className="text-sm font-semibold text-gray-600 dark:text-gray-300 mb-3">Топ брендів (по виторгу)</h4>
+                    <div className="space-y-2.5">
                       {productStats.top_brands.slice(0, 10).map((b, i) => {
                         const maxRev = productStats.top_brands[0]?.revenue || 1;
                         const pct = Math.round((b.revenue / maxRev) * 100);
                         return (
                           <div key={b.brand} className="flex items-center gap-3">
-                            <span className="text-[10px] text-gray-400 w-4 text-right">{i + 1}</span>
-                            <span className="text-xs font-medium text-gray-700 dark:text-gray-200 w-28 truncate">{b.brand}</span>
-                            <div className="flex-1 bg-gray-100 dark:bg-gray-700 rounded-full h-5 relative">
-                              <div className="h-5 bg-blue-400 rounded-full" style={{ width: `${pct}%` }} />
-                              <span className="absolute inset-0 flex items-center justify-end pr-2.5 text-[10px] font-semibold text-gray-600 dark:text-gray-200">{fmtShort(b.revenue)}₴</span>
+                            <span className="text-[11px] text-gray-400 w-5 shrink-0 text-right tabular-nums">{i + 1}</span>
+                            <span className="text-[13px] font-medium text-gray-700 dark:text-gray-200 w-36 shrink-0 truncate">{b.brand}</span>
+                            <div className="flex-1 min-w-0 bg-gray-100 dark:bg-gray-700 rounded-full h-6 relative">
+                              <div className="h-6 bg-blue-400 rounded-full" style={{ width: `${pct}%` }} />
+                              <span className="absolute inset-0 flex items-center justify-end pr-3 text-[11px] font-semibold tabular-nums text-gray-700 dark:text-gray-100">{fmtShort(b.revenue)}₴</span>
                             </div>
-                            <span className="text-[10px] text-gray-400 w-12 text-right whitespace-nowrap">{b.sold_count} шт</span>
+                            <span className="text-[11px] text-gray-400 w-14 shrink-0 text-right tabular-nums whitespace-nowrap">{b.sold_count} шт</span>
                           </div>
                         );
                       })}
@@ -1016,12 +1021,12 @@ const StatisticsPage: React.FC<StatisticsPageProps> = () => {
 
                   {/* Type distribution */}
                   <div>
-                    <h4 className="text-sm font-semibold text-gray-600 dark:text-gray-300 mb-2">Розподіл по типах товарів</h4>
-                    <ResponsiveContainer width="100%" height={220}>
-                      <BarChart data={productStats.type_distribution} layout="vertical" margin={{ left: 8, right: 40 }}>
+                    <h4 className="text-sm font-semibold text-gray-600 dark:text-gray-300 mb-3">Розподіл по типах товарів</h4>
+                    <ResponsiveContainer width="100%" height={Math.max(260, productStats.type_distribution.length * 30)}>
+                      <BarChart data={productStats.type_distribution} layout="vertical" margin={{ top: 5, left: 8, right: 48, bottom: 5 }}>
                         <CartesianGrid strokeDasharray="3 3" horizontal={false} />
-                        <XAxis type="number" tick={{ fontSize: 10 }} tickFormatter={fmtShort} />
-                        <YAxis type="category" dataKey="type" tick={{ fontSize: 10 }} width={80} />
+                        <XAxis type="number" tick={{ fontSize: 11 }} tickFormatter={fmtShort} />
+                        <YAxis type="category" dataKey="type" tick={{ fontSize: 11 }} width={110} />
                         <Tooltip formatter={(v: any) => [`${fmtNum(Number(v))} шт`, 'Продано']} />
                         <Bar dataKey="sold_count" fill="#6366f1" radius={[0, 3, 3, 0]} />
                       </BarChart>
@@ -1031,9 +1036,9 @@ const StatisticsPage: React.FC<StatisticsPageProps> = () => {
 
                 {/* Top products */}
                 <div>
-                  <h4 className="text-sm font-semibold text-gray-600 dark:text-gray-300 mb-2">Топ товарів по продажах</h4>
+                  <h4 className="text-sm font-semibold text-gray-600 dark:text-gray-300 mb-3">Топ товарів по продажах</h4>
                   <div className="overflow-x-auto">
-                    <table className="min-w-full text-xs [&_th]:text-center [&_td]:text-center">
+                    <table className="min-w-full text-[13px] [&_th]:text-center [&_td]:text-center [&_th]:whitespace-nowrap [&_td]:py-2.5 [&_th]:py-2.5 [&_td]:px-3 [&_th]:px-3">
                       <thead>
                         <tr className="bg-gray-50 dark:bg-gray-800 text-gray-500 dark:text-gray-400">
                           <th className="px-2 py-1.5 text-left font-medium">#</th>
