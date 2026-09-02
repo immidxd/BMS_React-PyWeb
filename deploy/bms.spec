@@ -59,6 +59,9 @@ _COLLECT = [
     "anyio",
     "bs4",             # beautifulsoup4
     "lxml",
+    "httpx",           # facebook/instagram/viber publisher, studio_publish
+    "fontTools",       # каталог шрифтів Майстерні (services/studio_fonts)
+    "packaging",       # звірка версій в services/updater
 ]
 
 datas, binaries, hiddenimports = [], [], []
