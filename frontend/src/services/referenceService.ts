@@ -492,6 +492,7 @@ export interface QuickProductPayload {
   width?: string; dimensions?: string; size_letter?: string;
   // Деталі (взуттєві lookup + виміри)
   sole_type_name?: string; fastening_type_name?: string; toe_shape_name?: string;
+  tread_type_name?: string;
   technology_name?: string; sole_color_name?: string; lining_name?: string;
   heel_type_name?: string; lace_type_name?: string; height?: number; sole_thickness?: number;
   // Одягові виміри

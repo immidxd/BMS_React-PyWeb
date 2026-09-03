@@ -119,6 +119,7 @@ const EDITABLE_FIELDS: { field: string; type: FieldType }[] = [
   // written back to the journal). Draft/display read from the `*_name` field.
   { field: 'sole_color_name', type: 'text' },
   { field: 'sole_type_name', type: 'text' },
+  { field: 'tread_type_name', type: 'text' },
   { field: 'toe_shape_name', type: 'text' },
   { field: 'fastening_type_name', type: 'text' },
   { field: 'lining_name', type: 'text' },
@@ -2002,6 +2003,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     const dr = { ...drafts };
     const SCALARS = ['season', 'collection', 'geometric_shape', 'width',
       'manufacturer_country_name', 'heel_type_name', 'lace_type_name', 'sole_type_name',
+      'tread_type_name',
       'toe_shape_name', 'fastening_type_name', 'lining_name', 'technology_name', 'packaging_name'];
     for (const f of SCALARS) {
       if (f in dr && !(dr[f] ?? '').trim() && pf[f]) { dr[f] = pf[f].value; filled++; }
@@ -3404,7 +3406,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
 
                   {/* Інше — решта характеристик (взуття + усі виміри), єдиним підрозділом без
                       окремих заголовків «Взуття»/«Виміри одягу» (згорнуто за замовчуванням). */}
-                  {(editMode || p.sole_type_name || p.toe_shape_name || p.fastening_type_name || p.lining_name ||
+                  {(editMode || p.sole_type_name || p.tread_type_name || p.toe_shape_name || p.fastening_type_name || p.lining_name ||
                     p.heel_type_name || p.lace_type_name || p.packaging_name || p.technology_name || p.sole_color_name ||
                     p.measurements_height_min != null || p.measurements_sole_thickness_min != null || p.measurements_heel_min != null ||
                     p.measurements_insole_width_min != null || p.measurements_shaft_circumference_min != null ||
@@ -3413,6 +3415,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                     CollapsibleSection({ id: 'other', title: 'Інше', children: (
                       <div className={`grid ${charCols} gap-x-6 gap-y-3`}>
                         {EditCell({ field: 'sole_type_name', lockField: 'soletypeid', label: 'Тип підошви' })}
+                        {EditCell({ field: 'tread_type_name', lockField: 'treadtypeid', label: 'Протектор' })}
                         {EditCell({ field: 'sole_color_name', lockField: 'sole_colorid', label: 'Колір підошви' })}
                         {EditCell({ field: 'toe_shape_name', lockField: 'toeshapeid', label: 'Форма носка' })}
                         {EditCell({ field: 'fastening_type_name', lockField: 'fasteningtypeid', label: 'Застібка' })}

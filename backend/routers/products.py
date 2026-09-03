@@ -771,6 +771,7 @@ def get_model_profile(
                mc.countryname AS manufacturer_country_name,
                ht.heeltypename AS heel_type_name, lt.lacetypename AS lace_type_name,
                so.soletypename AS sole_type_name, tsh.toeshapename AS toe_shape_name,
+               trd.treadtypename AS tread_type_name,
                ft.fasteningtypename AS fastening_type_name, li.liningname AS lining_name,
                tech.technologyname AS technology_name, pk.packagingname AS packaging_name
         FROM products p
@@ -783,6 +784,7 @@ def get_model_profile(
         LEFT JOIN heel_types ht ON ht.id = p.heeltypeid
         LEFT JOIN lace_types lt ON lt.id = p.lacetypeid
         LEFT JOIN sole_types so ON so.id = p.soletypeid
+        LEFT JOIN tread_types trd ON trd.id = p.treadtypeid
         LEFT JOIN toe_shapes tsh ON tsh.id = p.toeshapeid
         LEFT JOIN fastening_types ft ON ft.id = p.fasteningtypeid
         LEFT JOIN linings li ON li.id = p.liningid
@@ -800,6 +802,7 @@ def get_model_profile(
     FIELDS = ["type_name", "subtype_name", "style_name", "gender_name", "season",
               "collection", "geometric_shape", "width", "manufacturer_country_name",
               "heel_type_name", "lace_type_name", "sole_type_name", "toe_shape_name",
+              "tread_type_name",
               "fastening_type_name", "lining_name", "technology_name", "packaging_name"]
     fields_out: Dict[str, Any] = {}
     for f in FIELDS:

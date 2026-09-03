@@ -44,6 +44,7 @@ const productToPrefill = (p: any): Record<string, string> => {
   set('sizeeu', p.sizeeu); set('size_letter', p.size_letter);
   set('measurementscm', p.measurementscm); set('dimensions', p.dimensions);
   set('sole_type_name', p.sole_type_name); set('fastening_type_name', p.fastening_type_name);
+  set('tread_type_name', p.tread_type_name);
   set('sole_color_name', p.sole_color_name); set('toe_shape_name', p.toe_shape_name);
   set('technology_name', p.technology_name); set('heel_type_name', p.heel_type_name);
   set('lace_type_name', p.lace_type_name); set('lining_name', p.lining_name);

@@ -161,6 +161,7 @@ _PRODUCT_FROM_SQL = """
         LEFT JOIN subtypes st ON p.subtypeid = st.id
         LEFT JOIN styles sty ON p.styleid = sty.id
         LEFT JOIN sole_types sol ON p.soletypeid = sol.id
+        LEFT JOIN tread_types trd ON p.treadtypeid = trd.id
         LEFT JOIN toe_shapes tsh ON p.toeshapeid = tsh.id
         LEFT JOIN fastening_types fst ON p.fasteningtypeid = fst.id
         LEFT JOIN linings lin ON p.liningid = lin.id
@@ -758,6 +759,7 @@ def get_products(
                sty.stylename as style_name,
                sup.company_name as supplier_name,
                sol.soletypename as sole_type_name,
+               trd.treadtypename as tread_type_name,
                tsh.toeshapename as toe_shape_name,
                fst.fasteningtypename as fastening_type_name,
                lin.liningname as lining_name,
@@ -827,6 +829,7 @@ def get_products(
         LEFT JOIN subtypes st ON p.subtypeid = st.id
         LEFT JOIN styles sty ON p.styleid = sty.id
         LEFT JOIN sole_types sol ON p.soletypeid = sol.id
+        LEFT JOIN tread_types trd ON p.treadtypeid = trd.id
         LEFT JOIN toe_shapes tsh ON p.toeshapeid = tsh.id
         LEFT JOIN fastening_types fst ON p.fasteningtypeid = fst.id
         LEFT JOIN linings lin ON p.liningid = lin.id
@@ -1121,6 +1124,7 @@ def get_products(
                 'technologyid': m.get('technologyid'),
                 'sole_colorid': m.get('sole_colorid'),
                 'sole_type_name': m.get('sole_type_name'),
+                'tread_type_name': m.get('tread_type_name'),
                 'toe_shape_name': m.get('toe_shape_name'),
                 'fastening_type_name': m.get('fastening_type_name'),
                 'lining_name': m.get('lining_name'),
@@ -1275,6 +1279,7 @@ LOCKABLE_PRODUCT_FIELDS = {
     "heeltypeid", "lacetypeid", "packagingid", "technologyid", "sole_colorid",
     # «Інше» shoe-lookups (model-level; edited by NAME) — same pattern.
     "soletypeid", "toeshapeid", "fasteningtypeid", "liningid",
+    "treadtypeid",
     # Main color (model-level FK → colors; edited by NAME like sole color).
     "colorid",
     # Класифікація (model-level; edited via dropdown by id). Write-back as name.
@@ -1294,6 +1299,7 @@ LOOKUP_NAME_FIELDS = {
     "technology_name": ("technologyid", "technologies",    "technologyname"),
     "sole_color_name": ("sole_colorid", "colors",          "colorname"),
     "sole_type_name":      ("soletypeid",     "sole_types",      "soletypename"),
+    "tread_type_name":     ("treadtypeid",    "tread_types",     "treadtypename"),
     "toe_shape_name":      ("toeshapeid",     "toe_shapes",      "toeshapename"),
     "fastening_type_name": ("fasteningtypeid", "fastening_types", "fasteningtypename"),
     "lining_name":         ("liningid",       "linings",         "liningname"),
@@ -1316,6 +1322,7 @@ LOOKUP_NAME_FIELDS = {
 # лоуеркейс зіпсував би їх ('sOFTFOAM+'). Так само materials лишаємо як ввів користувач.
 LOWERCASE_LOOKUP_TABLES = {
     "sole_types", "toe_shapes", "fastening_types", "lace_types", "heel_types",
+    "tread_types",
     "linings", "colors",
 }
 
@@ -1406,6 +1413,7 @@ def resolve_lookup_name(db: Session, fk_field: str, fk_id: Optional[int]) -> Opt
         "technologyid":        ("technologies",    "technologyname"),
         "sole_colorid":        ("colors",          "colorname"),
         "soletypeid":          ("sole_types",      "soletypename"),
+        "treadtypeid":         ("tread_types",     "treadtypename"),
         "toeshapeid":          ("toe_shapes",      "toeshapename"),
         "fasteningtypeid":     ("fastening_types", "fasteningtypename"),
         "liningid":            ("linings",         "liningname"),
@@ -1434,6 +1442,7 @@ def resolve_lookup_name(db: Session, fk_field: str, fk_id: Optional[int]) -> Opt
 # FK fields edited by name (used by the router to map id→name for write-back).
 SHOE_FK_NAME_FIELDS = {"heeltypeid", "lacetypeid", "packagingid", "technologyid", "sole_colorid",
                        "soletypeid", "toeshapeid", "fasteningtypeid", "liningid",
+                       "treadtypeid",
                        "colorid", "current_conditionid",
                        # Класифікація — write-back as canonical name.
                        "typeid", "subtypeid", "styleid", "brandid", "genderid",
@@ -2016,6 +2025,7 @@ def get_product_filters(db: Session) -> Dict[str, Any]:
                 return []
         result["lookups"] = {
             "sole_types":      _names("sole_types", "soletypename"),
+            "tread_types":     _names("tread_types", "treadtypename"),
             "toe_shapes":      _names("toe_shapes", "toeshapename"),
             "fastening_types": _names("fastening_types", "fasteningtypename"),
             "lace_types":      _names("lace_types", "lacetypename"),
@@ -2078,6 +2088,7 @@ def get_product_with_relations(db: Session, product_id: int) -> Optional[Dict[st
                    i.importname as import_name,
                    d.deliveryname as delivery_name,
                    sol.soletypename as sole_type_name,
+                   trd.treadtypename as tread_type_name,
                    tsh.toeshapename as toe_shape_name,
                    fst.fasteningtypename as fastening_type_name,
                    lin.liningname as lining_name,
@@ -2113,6 +2124,7 @@ def get_product_with_relations(db: Session, product_id: int) -> Optional[Dict[st
             LEFT JOIN imports i ON p.importid = i.id
             LEFT JOIN deliveries d ON p.deliveryid = d.id
             LEFT JOIN sole_types sol ON p.soletypeid = sol.id
+            LEFT JOIN tread_types trd ON p.treadtypeid = trd.id
             LEFT JOIN toe_shapes tsh ON p.toeshapeid = tsh.id
             LEFT JOIN fastening_types fst ON p.fasteningtypeid = fst.id
             LEFT JOIN linings lin ON p.liningid = lin.id

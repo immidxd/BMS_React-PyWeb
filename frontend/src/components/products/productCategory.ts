@@ -96,6 +96,7 @@ export function hiddenFieldsForType(typeName?: string | null): Set<string> {
   // мають застібку: блискавка/магніт/замок/ґудзики; та підкладку). Решта — суто взуттєві.
   const SHOE_ONLY = [
     'sole_type_name', 'sole_color_name', 'toe_shape_name',
+    'tread_type_name',
     'lace_type_name', 'heel_type_name', 'technology_name',
   ];
   if (cat !== 'shoe') {

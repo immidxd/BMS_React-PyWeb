@@ -333,6 +333,7 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
         // 7
         { id: 'measurementscm', title: 'СМ', optional: false },
         { id: 'sole_type_name', title: 'Тип підошви', optional: true },
+        { id: 'tread_type_name', title: 'Протектор', optional: true },
         { id: 'toe_shape_name', title: 'Форма носка', optional: true },
         { id: 'fastening_type_name', title: 'Застібка', optional: true },
         { id: 'lining_name', title: 'Підкладка', optional: true },
@@ -570,6 +571,8 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
         measurementscm: { title: 'СМ', dataIndex: 'measurementscm', key: 'measurementscm', width: 60,
             render: (text: string) => text ? <span className="text-xs">{text}</span> : <span className="text-gray-300 text-xs">—</span> },
         sole_type_name: { title: 'Тип підошви', dataIndex: 'sole_type_name', key: 'sole_type_name', width: 110,
+            render: (text: string) => text ? <span className="text-xs">{text}</span> : null },
+        tread_type_name: { title: 'Протектор', dataIndex: 'tread_type_name', key: 'tread_type_name', width: 100,
             render: (text: string) => text ? <span className="text-xs">{text}</span> : null },
         toe_shape_name: { title: 'Форма носка', dataIndex: 'toe_shape_name', key: 'toe_shape_name', width: 110,
             render: (text: string) => text ? <span className="text-xs">{text}</span> : null },

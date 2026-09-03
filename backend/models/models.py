@@ -428,6 +428,9 @@ class Product(Base):
     deliveryid = Column(Integer, ForeignKey("deliveries.id"), nullable=True)
     # Shoe-specific lookups (single FK; nullable — більшість legacy без значень)
     soletypeid       = Column(Integer, ForeignKey("sole_types.id",       ondelete="SET NULL"), nullable=True)
+    # Протектор — поверхня контакту. Профіль лишається в soletypeid: свідомо
+    # окремі поля, бо в одній колонці вони роками витісняли одне одного.
+    treadtypeid      = Column(Integer, ForeignKey("tread_types.id",      ondelete="SET NULL"), nullable=True)
     toeshapeid       = Column(Integer, ForeignKey("toe_shapes.id",       ondelete="SET NULL"), nullable=True)
     fasteningtypeid  = Column(Integer, ForeignKey("fastening_types.id",  ondelete="SET NULL"), nullable=True)
     liningid         = Column(Integer, ForeignKey("linings.id",          ondelete="SET NULL"), nullable=True)
@@ -450,6 +453,7 @@ class Product(Base):
     status = relationship("Status", foreign_keys=[statusid], primaryjoin="Product.statusid == Status.id")
     condition = relationship("Condition", foreign_keys=[conditionid], primaryjoin="Product.conditionid == Condition.id")
     sole_type      = relationship("SoleType",      foreign_keys=[soletypeid])
+    tread_type     = relationship("TreadType",     foreign_keys=[treadtypeid])
     toe_shape      = relationship("ToeShape",      foreign_keys=[toeshapeid])
     fastening_type = relationship("FasteningType", foreign_keys=[fasteningtypeid])
     lining         = relationship("Lining",        foreign_keys=[liningid])
@@ -495,6 +499,14 @@ class SoleType(Base):
     id           = Column(Integer, primary_key=True, index=True)
     soletypename = Column(String, unique=True, nullable=False, index=True)
     created_at   = Column(DateTime, default=datetime.utcnow)
+
+
+class TreadType(Base):
+    """Протектор — поверхня контакту підошви (гладка/рифлена/рельєфна/тракторна)."""
+    __tablename__ = "tread_types"
+    id            = Column(Integer, primary_key=True, index=True)
+    treadtypename = Column(String, unique=True, nullable=False, index=True)
+    created_at    = Column(DateTime, default=datetime.utcnow)
 
 
 class ToeShape(Base):

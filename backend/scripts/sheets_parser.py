@@ -167,6 +167,7 @@ PRODUCT_LOCK_FIELDS = {"price", "oldprice", "model", "marking", "description", "
                        "heeltypeid", "lacetypeid", "packagingid", "technologyid", "sole_colorid",
                        # «Інше» shoe-lookups edited in-app (model-level).
                        "soletypeid", "toeshapeid", "fasteningtypeid", "liningid",
+                       "treadtypeid",
                        # Main color edited in-app (model-level).
                        "colorid",
                        # Класифікація edited in-app (model-level, dropdown).
@@ -325,6 +326,7 @@ WRITEBACK_FIELD_HEADERS = {
     "technologyid":   "Технології",
     "sole_colorid":   "Колір підошви",
     "soletypeid":     "Тип підошви",
+    "treadtypeid":    "Протектор",
     "toeshapeid":     "Форма носка",
     "fasteningtypeid": "Застібка",
     "liningid":       "Підкладка",
@@ -390,6 +392,7 @@ WRITEBACK_TEXT_FIELDS = {"model", "marking", "description", "season", "extranote
                          # Shoe-lookup + condition FKs written back as canonical name text.
                          "heeltypeid", "lacetypeid", "packagingid", "technologyid", "sole_colorid",
                          "soletypeid", "toeshapeid", "fasteningtypeid", "liningid",
+                         "treadtypeid",
                          "colorid",
                          "typeid", "subtypeid", "styleid", "brandid", "genderid",
                          "current_conditionid",
@@ -1295,6 +1298,7 @@ def _resolve_shoe_lookup_id(session, table: str, name_col: str, value: str) -> O
 # Sheet column → (table, name_col, FK column on products) for shoe lookups
 SHOE_LOOKUP_COLUMNS: dict[str, tuple[str, str, str]] = {
     "Тип підошви":  ("sole_types",       "soletypename",       "soletypeid"),
+    "Протектор":    ("tread_types",      "treadtypename",      "treadtypeid"),
     "Форма носка":  ("toe_shapes",       "toeshapename",       "toeshapeid"),
     "Застібка":     ("fastening_types",  "fasteningtypename",  "fasteningtypeid"),
     "Підкладка":    ("linings",          "liningname",         "liningid"),
@@ -1323,6 +1327,7 @@ _NEW_MIN_MAX_PAIRS: list[tuple[str, str]] = [
 # Single-FK fields (one value per product).
 _NEW_SINGLE_FK_FIELDS: list[str] = [
     "soletypeid", "toeshapeid", "fasteningtypeid", "liningid",
+    "treadtypeid",
     "heeltypeid", "lacetypeid", "packagingid", "technologyid", "sole_colorid",
 ]
 # Plain-text fields enriched NULL-only ТІЛЬКИ Воркспейс-парсером (Журнал-парсер

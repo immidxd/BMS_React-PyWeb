@@ -121,6 +121,7 @@ class ProductBase(BaseModel):
     measurements_shaft_circumference_max: Optional[float] = Field(None, description="Обхват халяви, см (max)")
     # Shoe-specific lookup FKs (single value per product)
     soletypeid: Optional[int] = Field(None, description="ID типу підошви")
+    treadtypeid: Optional[int] = Field(None, description="ID протектора (поверхня контакту)")
     toeshapeid: Optional[int] = Field(None, description="ID форми носка")
     fasteningtypeid: Optional[int] = Field(None, description="ID типу застібки")
     liningid: Optional[int] = Field(None, description="ID типу підкладки")
@@ -244,6 +245,7 @@ class ProductUpdate(BaseModel):
     measurements_shaft_circumference_min: Optional[float] = None
     measurements_shaft_circumference_max: Optional[float] = None
     soletypeid: Optional[int] = None
+    treadtypeid: Optional[int] = None
     toeshapeid: Optional[int] = None
     fasteningtypeid: Optional[int] = None
     liningid: Optional[int] = None
@@ -261,6 +263,7 @@ class ProductUpdate(BaseModel):
     sole_color_name: Optional[str] = None
     # Shoe-lookup характеристики «Інше» — той самий патерн edit-by-NAME.
     sole_type_name: Optional[str] = None
+    tread_type_name: Optional[str] = None
     toe_shape_name: Optional[str] = None
     fastening_type_name: Optional[str] = None
     lining_name: Optional[str] = None
@@ -388,6 +391,7 @@ class Product(ProductBase):
     import_name: Optional[str] = None
     delivery_name: Optional[str] = None
     sole_type_name: Optional[str] = None
+    tread_type_name: Optional[str] = None
     toe_shape_name: Optional[str] = None
     fastening_type_name: Optional[str] = None
     lining_name: Optional[str] = None
@@ -468,6 +472,7 @@ class ProductList(BaseModel):
     measurements_shaft_circumference_min: Optional[float] = None
     measurements_shaft_circumference_max: Optional[float] = None
     soletypeid: Optional[int] = None
+    treadtypeid: Optional[int] = None
     toeshapeid: Optional[int] = None
     fasteningtypeid: Optional[int] = None
     liningid: Optional[int] = None
@@ -477,6 +482,7 @@ class ProductList(BaseModel):
     technologyid: Optional[int] = None
     sole_colorid: Optional[int] = None
     sole_type_name: Optional[str] = None
+    tread_type_name: Optional[str] = None
     toe_shape_name: Optional[str] = None
     fastening_type_name: Optional[str] = None
     lining_name: Optional[str] = None

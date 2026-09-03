@@ -89,6 +89,7 @@ export interface Product {
     technologyid?: number;
     sole_colorid?: number;
     sole_type_name?: string;
+    tread_type_name?: string;      // протектор — поверхня контакту
     toe_shape_name?: string;
     fastening_type_name?: string;
     lining_name?: string;

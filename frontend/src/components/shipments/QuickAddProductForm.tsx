@@ -32,6 +32,7 @@ const OPT_FROM_FILTERS: Record<string, (f: ProductFilters) => string[]> = {
   manufacturer_name: f => refNames(f.countries as any),
   packaging_name: f => f.lookups?.packagings || [],
   sole_type_name: f => f.lookups?.sole_types || [],
+  tread_type_name: f => f.lookups?.tread_types || [],
   toe_shape_name: f => f.lookups?.toe_shapes || [],
   fastening_type_name: f => f.lookups?.fastening_types || [],
   lace_type_name: f => f.lookups?.lace_types || [],
@@ -91,6 +92,7 @@ const F: Record<string, FieldDef> = {
   // Деталі
   material_membrane: { key: 'material_membrane', label: 'Мембрана' },
   sole_type_name: { key: 'sole_type_name', label: 'Тип підошви' },
+  tread_type_name: { key: 'tread_type_name', label: 'Протектор' },
   fastening_type_name: { key: 'fastening_type_name', label: 'Застібка' },
   sole_color_name: { key: 'sole_color_name', label: 'Колір підошви', dl: 'colors' },
   toe_shape_name: { key: 'toe_shape_name', label: 'Форма носка' },
@@ -114,7 +116,7 @@ type HubView = 'root' | 'materials' | 'details';
 
 const SUBHUBS: Record<Exclude<HubView, 'root'>, { label: string; fields: string[] }> = {
   materials: { label: 'Матеріали', fields: ['material_upper', 'material_middle', 'material_sole', 'material_midsole', 'material_insole', 'lining_name'] },
-  details: { label: 'Деталі', fields: ['material_membrane', 'sole_type_name', 'fastening_type_name', 'sole_color_name', 'toe_shape_name', 'technology_name', 'heel_type_name', 'lace_type_name', 'height', 'sole_thickness', 'insole_width', 'shaft_circumference'] },
+  details: { label: 'Деталі', fields: ['material_membrane', 'sole_type_name', 'tread_type_name', 'fastening_type_name', 'sole_color_name', 'toe_shape_name', 'technology_name', 'heel_type_name', 'lace_type_name', 'height', 'sole_thickness', 'insole_width', 'shaft_circumference'] },
 };
 const SUBHUB_KEYS = [...SUBHUBS.materials.fields, ...SUBHUBS.details.fields];
 const CLOTHING_MEAS = ['chest', 'waist', 'hips', 'sleeve', 'length'];
@@ -124,7 +126,7 @@ const CLOTHING_MEAS = ['chest', 'waist', 'hips', 'sleeve', 'length'];
 const DEFAULTABLE_KEYS = [
   'type_name', 'subtype_name', 'brand_name', 'style_name', 'gender_name', 'color_name',
   'condition_name', 'season', 'packaging_name', 'manufacturer_name', 'width', 'geometric_shape',
-  'lining_name', 'sole_type_name', 'fastening_type_name', 'sole_color_name', 'toe_shape_name',
+  'lining_name', 'sole_type_name', 'tread_type_name', 'fastening_type_name', 'sole_color_name', 'toe_shape_name',
   'technology_name', 'heel_type_name', 'lace_type_name',
   'material_upper', 'material_middle', 'material_sole', 'material_midsole', 'material_insole', 'material_membrane',
 ];
