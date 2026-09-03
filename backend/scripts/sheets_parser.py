@@ -359,6 +359,8 @@ WRITEBACK_FIELD_HEADERS = {
     "meas_height":         "Висота",
     "meas_sole_thickness": "Товщина підошви",
     "meas_heel":           "Підбор",
+    "meas_insole_width":        "Ширина устілки",
+    "meas_shaft_circumference": "Обхват халяви",
     # Per-item (унікальні на КОЖЕН рядок ростовки) — пишуться лише коли номер
     # у аркуші займає один рядок (див. PER_ITEM_WRITEBACK_FIELDS + guard нижче).
     "sizeeu":         "Розмір",
@@ -375,7 +377,8 @@ PER_ITEM_WRITEBACK_FIELDS = {"sizeeu", "size_letter", "measurementscm", "dimensi
                              "current_conditionid",
                              # Заміри — унікальні на розмір ростовки.
                              "meas_length", "meas_pog", "meas_pob", "meas_pot",
-                             "meas_sleeve", "meas_height", "meas_sole_thickness", "meas_heel"}
+                             "meas_sleeve", "meas_height", "meas_sole_thickness", "meas_heel",
+                             "meas_insole_width", "meas_shaft_circumference"}
 # Text fields written RAW (literal, no formula interpretation); numeric fields
 # USER_ENTERED so the sheet stores a real number.
 WRITEBACK_TEXT_FIELDS = {"model", "marking", "description", "season", "extranote",
@@ -398,7 +401,8 @@ WRITEBACK_TEXT_FIELDS = {"model", "marking", "description", "season", "extranote
                          # Заміри — рядок-діапазон ("25-27") пишемо літерально (RAW),
                          # щоб Sheets не трактував як дату/формулу.
                          "meas_length", "meas_pog", "meas_pob", "meas_pot",
-                         "meas_sleeve", "meas_height", "meas_sole_thickness", "meas_heel"}
+                         "meas_sleeve", "meas_height", "meas_sole_thickness", "meas_heel",
+                         "meas_insole_width", "meas_shaft_circumference"}
 WRITEBACK_ENABLED = os.getenv("PARSER_WRITEBACK", "1") != "0"
 _WRITEBACK_BACKUP_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "writeback_backups")
 
@@ -1313,6 +1317,8 @@ _NEW_MIN_MAX_PAIRS: list[tuple[str, str]] = [
     ("measurements_height_min",         "measurements_height_max"),
     ("measurements_sole_thickness_min", "measurements_sole_thickness_max"),
     ("measurements_heel_min",           "measurements_heel_max"),
+    ("measurements_insole_width_min",   "measurements_insole_width_max"),
+    ("measurements_shaft_circumference_min", "measurements_shaft_circumference_max"),
 ]
 # Single-FK fields (one value per product).
 _NEW_SINGLE_FK_FIELDS: list[str] = [
@@ -3044,6 +3050,8 @@ def _parse_products_sheet(
         height_val          = col(row, "Висота").strip()          if "Висота" in header else ""
         sole_thickness_val  = col(row, "Товщина підошви").strip() if "Товщина підошви" in header else ""
         heel_val            = col(row, "Підбор").strip()          if "Підбор" in header else ""
+        insole_width_val    = col(row, "Ширина устілки").strip()  if "Ширина устілки" in header else ""
+        shaft_circ_val      = col(row, "Обхват халяви").strip()   if "Обхват халяви" in header else ""
 
         # СМ — числовий range alongside legacy TEXT (cm_val above).
         cm_min, cm_max                 = _parse_measurement_range(cm_val)
@@ -3055,6 +3063,8 @@ def _parse_products_sheet(
         height_min, height_max         = _parse_measurement_range(height_val)
         sole_thickness_min, sole_thickness_max = _parse_measurement_range(sole_thickness_val)
         heel_min, heel_max                     = _parse_measurement_range(heel_val)
+        insole_width_min, insole_width_max     = _parse_measurement_range(insole_width_val)
+        shaft_circ_min, shaft_circ_max         = _parse_measurement_range(shaft_circ_val)
 
         # Shoe-specific lookups (single FK each). Unknown values → unmapped log, FK stays NULL.
         resolved_shoe_fk: dict[str, Optional[int]] = {}
@@ -3102,6 +3112,10 @@ def _parse_products_sheet(
             "measurements_sole_thickness_min": sole_thickness_min,
             "measurements_sole_thickness_max": sole_thickness_max,
             "measurements_heel_min":   heel_min,           "measurements_heel_max":   heel_max,
+            "measurements_insole_width_min": insole_width_min,
+            "measurements_insole_width_max": insole_width_max,
+            "measurements_shaft_circumference_min": shaft_circ_min,
+            "measurements_shaft_circumference_max": shaft_circ_max,
             "soletypeid":              resolved_shoe_fk.get("soletypeid"),
             "toeshapeid":              resolved_shoe_fk.get("toeshapeid"),
             "fasteningtypeid":         resolved_shoe_fk.get("fasteningtypeid"),
@@ -3516,6 +3530,10 @@ def _parse_products_sheet(
                     measurements_sole_thickness_max = sole_thickness_max,
                     measurements_heel_min           = heel_min,
                     measurements_heel_max           = heel_max,
+                    measurements_insole_width_min   = insole_width_min,
+                    measurements_insole_width_max   = insole_width_max,
+                    measurements_shaft_circumference_min = shaft_circ_min,
+                    measurements_shaft_circumference_max = shaft_circ_max,
                     soletypeid                      = sole_type_id,
                     toeshapeid                      = toe_shape_id,
                     fasteningtypeid                 = fastening_type_id,
@@ -3619,6 +3637,10 @@ def _parse_products_sheet(
                     measurements_sole_thickness_max = sole_thickness_max,
                     measurements_heel_min           = heel_min,
                     measurements_heel_max           = heel_max,
+                    measurements_insole_width_min   = insole_width_min,
+                    measurements_insole_width_max   = insole_width_max,
+                    measurements_shaft_circumference_min = shaft_circ_min,
+                    measurements_shaft_circumference_max = shaft_circ_max,
                     soletypeid                      = sole_type_id,
                     toeshapeid                      = toe_shape_id,
                     fasteningtypeid                 = fastening_type_id,
@@ -3815,6 +3837,10 @@ def _parse_products_sheet(
                             measurements_sole_thickness_max = sole_thickness_max,
                             measurements_heel_min           = heel_min,
                             measurements_heel_max           = heel_max,
+                            measurements_insole_width_min   = insole_width_min,
+                            measurements_insole_width_max   = insole_width_max,
+                            measurements_shaft_circumference_min = shaft_circ_min,
+                            measurements_shaft_circumference_max = shaft_circ_max,
                             soletypeid                      = sole_type_id,
                             toeshapeid                      = toe_shape_id,
                             fasteningtypeid                 = fastening_type_id,
@@ -3983,6 +4009,10 @@ def _parse_products_sheet(
                         measurements_sole_thickness_max = sole_thickness_max,
                         measurements_heel_min           = heel_min,
                         measurements_heel_max           = heel_max,
+                        measurements_insole_width_min   = insole_width_min,
+                        measurements_insole_width_max   = insole_width_max,
+                        measurements_shaft_circumference_min = shaft_circ_min,
+                        measurements_shaft_circumference_max = shaft_circ_max,
                         soletypeid                      = sole_type_id,
                         toeshapeid                      = toe_shape_id,
                         fasteningtypeid                 = fastening_type_id,
@@ -5633,6 +5663,8 @@ def _parse_workspace_sheet(
         height_min, height_max         = _parse_measurement_range(col(row, "Висота")          if "Висота" in header else "")
         sole_thickness_min, sole_thickness_max = _parse_measurement_range(col(row, "Товщина підошви") if "Товщина підошви" in header else "")
         heel_min, heel_max             = _parse_measurement_range(col(row, "Підбор")          if "Підбор" in header else "")
+        insole_width_min, insole_width_max = _parse_measurement_range(col(row, "Ширина устілки") if "Ширина устілки" in header else "")
+        shaft_circ_min, shaft_circ_max = _parse_measurement_range(col(row, "Обхват халяви")    if "Обхват халяви" in header else "")
 
         # Взуттєві lookup (single FK each). Невідоме → unmapped log, FK = NULL.
         resolved_shoe_fk: dict[str, Optional[int]] = {}
@@ -5677,6 +5709,10 @@ def _parse_workspace_sheet(
             "measurements_sole_thickness_min": sole_thickness_min,
             "measurements_sole_thickness_max": sole_thickness_max,
             "measurements_heel_min":   heel_min,           "measurements_heel_max":   heel_max,
+            "measurements_insole_width_min": insole_width_min,
+            "measurements_insole_width_max": insole_width_max,
+            "measurements_shaft_circumference_min": shaft_circ_min,
+            "measurements_shaft_circumference_max": shaft_circ_max,
             "soletypeid":              resolved_shoe_fk.get("soletypeid"),
             "toeshapeid":              resolved_shoe_fk.get("toeshapeid"),
             "fasteningtypeid":         resolved_shoe_fk.get("fasteningtypeid"),
@@ -5929,6 +5965,10 @@ def _parse_workspace_sheet(
                     measurements_sole_thickness_max = sole_thickness_max,
                     measurements_heel_min           = heel_min,
                     measurements_heel_max           = heel_max,
+                    measurements_insole_width_min   = insole_width_min,
+                    measurements_insole_width_max   = insole_width_max,
+                    measurements_shaft_circumference_min = shaft_circ_min,
+                    measurements_shaft_circumference_max = shaft_circ_max,
                     soletypeid                      = sole_type_id,
                     toeshapeid                      = toe_shape_id,
                     fasteningtypeid                 = fastening_type_id,

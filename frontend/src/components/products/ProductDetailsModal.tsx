@@ -163,6 +163,8 @@ const MEASUREMENTS: { name: string; label: string; minKey: string; maxKey: strin
   { name: 'height',         label: 'Висота',     minKey: 'measurements_height_min',         maxKey: 'measurements_height_max' },
   { name: 'sole_thickness', label: 'Підошва',    minKey: 'measurements_sole_thickness_min', maxKey: 'measurements_sole_thickness_max' },
   { name: 'heel',           label: 'Каблук',     minKey: 'measurements_heel_min',           maxKey: 'measurements_heel_max' },
+  { name: 'insole_width',   label: 'Ширина устілки', minKey: 'measurements_insole_width_min', maxKey: 'measurements_insole_width_max' },
+  { name: 'shaft_circumference', label: 'Обхват халяви', minKey: 'measurements_shaft_circumference_min', maxKey: 'measurements_shaft_circumference_max' },
   { name: 'length',         label: 'Довжина',    minKey: 'measurements_length_min',         maxKey: 'measurements_length_max' },
   { name: 'pog',            label: 'Груди (н/о)', minKey: 'measurements_pog_min',           maxKey: 'measurements_pog_max' },
   { name: 'pob',            label: 'Бедра (н/о)', minKey: 'measurements_pob_min',           maxKey: 'measurements_pob_max' },
@@ -3405,6 +3407,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                   {(editMode || p.sole_type_name || p.toe_shape_name || p.fastening_type_name || p.lining_name ||
                     p.heel_type_name || p.lace_type_name || p.packaging_name || p.technology_name || p.sole_color_name ||
                     p.measurements_height_min != null || p.measurements_sole_thickness_min != null || p.measurements_heel_min != null ||
+                    p.measurements_insole_width_min != null || p.measurements_shaft_circumference_min != null ||
                     p.measurements_length_min != null || p.measurements_pog_min != null || p.measurements_pob_min != null ||
                     p.measurements_pot_min != null || p.measurements_sleeve_min != null) && (
                     CollapsibleSection({ id: 'other', title: 'Інше', children: (

@@ -54,6 +54,8 @@ const productToPrefill = (p: any): Record<string, string> => {
   }
   const meas = (minKey: string, fk: string) => set(fk, p[minKey]);
   meas('measurements_height_min', 'height'); meas('measurements_sole_thickness_min', 'sole_thickness');
+  meas('measurements_insole_width_min', 'insole_width');
+  meas('measurements_shaft_circumference_min', 'shaft_circumference');
   meas('measurements_length_min', 'length'); meas('measurements_pog_min', 'chest');
   meas('measurements_pot_min', 'waist'); meas('measurements_pob_min', 'hips');
   meas('measurements_sleeve_min', 'sleeve');

@@ -1469,6 +1469,12 @@ MEASUREMENT_EDIT_FIELDS = {
     "height":         ("measurements_height_min",         "measurements_height_max"),
     "sole_thickness": ("measurements_sole_thickness_min", "measurements_sole_thickness_max"),
     "heel":           ("measurements_heel_min",           "measurements_heel_max"),
+    # Ширина устілки — пара до "СМ" (довжина устілки): міряються за один захід.
+    "insole_width":   ("measurements_insole_width_min",   "measurements_insole_width_max"),
+    # Обхват халяви — пара до "height" (висота халяви). ⚠️ ПОВНЕ коло, не
+    # напівобхват, на відміну від pog/pob/pot вище.
+    "shaft_circumference": ("measurements_shaft_circumference_min",
+                            "measurements_shaft_circumference_max"),
 }
 
 

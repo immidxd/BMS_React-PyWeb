@@ -115,6 +115,10 @@ class ProductBase(BaseModel):
     measurements_sole_thickness_max: Optional[float] = Field(None, description="Товщина підошви/платформи, см (max)")
     measurements_heel_min: Optional[float] = Field(None, description="Висота каблука/підбора, см (min)")
     measurements_heel_max: Optional[float] = Field(None, description="Висота каблука/підбора, см (max)")
+    measurements_insole_width_min: Optional[float] = Field(None, description="Ширина устілки, см (min) — у найширшому місці")
+    measurements_insole_width_max: Optional[float] = Field(None, description="Ширина устілки, см (max)")
+    measurements_shaft_circumference_min: Optional[float] = Field(None, description="Обхват халяви, см (min) — ПОВНЕ коло, не напівобхват")
+    measurements_shaft_circumference_max: Optional[float] = Field(None, description="Обхват халяви, см (max)")
     # Shoe-specific lookup FKs (single value per product)
     soletypeid: Optional[int] = Field(None, description="ID типу підошви")
     toeshapeid: Optional[int] = Field(None, description="ID форми носка")
@@ -235,6 +239,10 @@ class ProductUpdate(BaseModel):
     measurements_sole_thickness_max: Optional[float] = None
     measurements_heel_min: Optional[float] = None
     measurements_heel_max: Optional[float] = None
+    measurements_insole_width_min: Optional[float] = None
+    measurements_insole_width_max: Optional[float] = None
+    measurements_shaft_circumference_min: Optional[float] = None
+    measurements_shaft_circumference_max: Optional[float] = None
     soletypeid: Optional[int] = None
     toeshapeid: Optional[int] = None
     fasteningtypeid: Optional[int] = None
@@ -455,6 +463,10 @@ class ProductList(BaseModel):
     measurements_sole_thickness_max: Optional[float] = None
     measurements_heel_min: Optional[float] = None
     measurements_heel_max: Optional[float] = None
+    measurements_insole_width_min: Optional[float] = None
+    measurements_insole_width_max: Optional[float] = None
+    measurements_shaft_circumference_min: Optional[float] = None
+    measurements_shaft_circumference_max: Optional[float] = None
     soletypeid: Optional[int] = None
     toeshapeid: Optional[int] = None
     fasteningtypeid: Optional[int] = None

@@ -394,6 +394,15 @@ class Product(Base):
     measurements_sole_thickness_max = Column(Float)
     measurements_heel_min           = Column(Float)   # висота каблука/підбора
     measurements_heel_max           = Column(Float)
+    # Ширина устілки, см — у найширшому місці (зона пучків). Свідомо ОКРЕМО від
+    # `width` (буквена оцінка): та заповнена на 0.8%, а довжина устілки в см —
+    # на 93.9%. Заповнюється те, що міряється, а не те, що оцінюється.
+    measurements_insole_width_min   = Column(Float)
+    measurements_insole_width_max   = Column(Float)
+    # Обхват халяви, см. ⚠️ ПОВНЕ коло, не напівобхват — на відміну від pog/pob/pot
+    # поруч, які зберігають половину. Головний вимір посадки чобота після розміру.
+    measurements_shaft_circumference_min = Column(Float)
+    measurements_shaft_circumference_max = Column(Float)
     quantity = Column(Integer, default=1)
     mainimage = Column(String(255))
     # In-app edit locks (Phase 2a) — fields the user edited in the app; parser

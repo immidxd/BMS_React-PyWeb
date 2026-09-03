@@ -74,6 +74,10 @@ export interface Product {
     measurements_sole_thickness_max?: number;
     measurements_heel_min?: number;            // висота каблука/підбора
     measurements_heel_max?: number;
+    measurements_insole_width_min?: number;    // ширина устілки (≠ width — та буквена)
+    measurements_insole_width_max?: number;
+    measurements_shaft_circumference_min?: number;  // обхват халяви — ПОВНИЙ, не напівобхват
+    measurements_shaft_circumference_max?: number;
     // Shoe-specific single-value lookups
     soletypeid?: number;
     toeshapeid?: number;

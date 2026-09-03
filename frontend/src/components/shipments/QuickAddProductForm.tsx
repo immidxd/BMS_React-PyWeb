@@ -99,6 +99,8 @@ const F: Record<string, FieldDef> = {
   lace_type_name: { key: 'lace_type_name', label: 'Тип шнурівки' },
   height: { key: 'height', label: 'Висота', number: true },
   sole_thickness: { key: 'sole_thickness', label: 'Товщина підошви', number: true },
+  insole_width: { key: 'insole_width', label: 'Ширина устілки', number: true },
+  shaft_circumference: { key: 'shaft_circumference', label: 'Обхват халяви', number: true },
   // Одягові виміри
   chest: { key: 'chest', label: 'Груди (н/о)', number: true },
   waist: { key: 'waist', label: 'Талія (н/о)', number: true },
@@ -112,7 +114,7 @@ type HubView = 'root' | 'materials' | 'details';
 
 const SUBHUBS: Record<Exclude<HubView, 'root'>, { label: string; fields: string[] }> = {
   materials: { label: 'Матеріали', fields: ['material_upper', 'material_middle', 'material_sole', 'material_midsole', 'material_insole', 'lining_name'] },
-  details: { label: 'Деталі', fields: ['material_membrane', 'sole_type_name', 'fastening_type_name', 'sole_color_name', 'toe_shape_name', 'technology_name', 'heel_type_name', 'lace_type_name', 'height', 'sole_thickness'] },
+  details: { label: 'Деталі', fields: ['material_membrane', 'sole_type_name', 'fastening_type_name', 'sole_color_name', 'toe_shape_name', 'technology_name', 'heel_type_name', 'lace_type_name', 'height', 'sole_thickness', 'insole_width', 'shaft_circumference'] },
 };
 const SUBHUB_KEYS = [...SUBHUBS.materials.fields, ...SUBHUBS.details.fields];
 const CLOTHING_MEAS = ['chest', 'waist', 'hips', 'sleeve', 'length'];
@@ -197,7 +199,8 @@ const OPTIONAL_POOL = [
   'collection', 'gtin', 'geometric_shape', 'width', 'dimensions', 'size_letter',
   'manufacturer_name', 'year', 'oldprice', 'description', 'extranote',
 ];
-const NUMBER_KEYS = new Set(['price', 'year', 'oldprice', 'height', 'sole_thickness', ...CLOTHING_MEAS]);
+const NUMBER_KEYS = new Set(['price', 'year', 'oldprice', 'height', 'sole_thickness',
+  'insole_width', 'shaft_circumference', ...CLOTHING_MEAS]);
 const KEEP_ON_CHANGE = ['productnumber', 'brand_name', 'model', 'marking', 'gender_name', 'color_name', 'price', 'condition_name'];
 
 const baseFields = (lay: Layout): FieldDef[] => [
