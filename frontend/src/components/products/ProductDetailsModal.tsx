@@ -160,16 +160,20 @@ const groupMaterialsByPosition = (materials?: { position: string; materialname?:
 };
 
 // Заміри — порядок, підпис, та *_min/*_max ключі (узгоджено з MEASUREMENT_EDIT_FIELDS бекенду).
-const MEASUREMENTS: { name: string; label: string; minKey: string; maxKey: string }[] = [
-  { name: 'height',         label: 'Висота',     minKey: 'measurements_height_min',         maxKey: 'measurements_height_max' },
-  { name: 'sole_thickness', label: 'Підошва',    minKey: 'measurements_sole_thickness_min', maxKey: 'measurements_sole_thickness_max' },
-  { name: 'heel',           label: 'Каблук',     minKey: 'measurements_heel_min',           maxKey: 'measurements_heel_max' },
-  { name: 'insole_width',   label: 'Ширина устілки', minKey: 'measurements_insole_width_min', maxKey: 'measurements_insole_width_max' },
-  { name: 'shaft_circumference', label: 'Обхват халяви', minKey: 'measurements_shaft_circumference_min', maxKey: 'measurements_shaft_circumference_max' },
+// `hint` — інструкція заміру, що спливає на наведення. Живе біля поля навмисно:
+// документ відкриють раз, а підказку тут бачитимуть щоразу. Саме від цього
+// залежить, чи поле взагалі заповнюватимуть: висота халяви й товщина підошви
+// стоять порожніми на 99%+ не через брак місця в схемі, а через незрозумілість.
+const MEASUREMENTS: { name: string; label: string; minKey: string; maxKey: string; hint?: string }[] = [
+  { name: 'height',         label: 'Висота',     minKey: 'measurements_height_min',         maxKey: 'measurements_height_max' , hint: 'Ззаду по задньому шву: від верхнього краю підошви (НЕ від підлоги) до верху халяви. Каблук у висоту не входить.' },
+  { name: 'sole_thickness', label: 'Підошва',    minKey: 'measurements_sole_thickness_min', maxKey: 'measurements_sole_thickness_max' , hint: 'Збоку в передній частині, під пучками — рівна частина без протектора. Це платформа, а не каблук.' },
+  { name: 'heel',           label: 'Каблук',     minKey: 'measurements_heel_min',           maxKey: 'measurements_heel_max' , hint: 'Ззаду збоку: від точки, якою каблук торкається підлоги, до місця переходу в підошву.' },
+  { name: 'insole_width',   label: 'Ширина устілки', minKey: 'measurements_insole_width_min', maxKey: 'measurements_insole_width_max' , hint: 'У найширшому місці — зона пучків, приблизно на третині довжини від носка. Знімну устілку вийняти й міряти її.' },
+  { name: 'shaft_circumference', label: 'Обхват халяви', minKey: 'measurements_shaft_circumference_min', maxKey: 'measurements_shaft_circumference_max' , hint: 'ПОВНЕ коло стрічкою навколо халяви у найширшому місці, чобіт застебнутий. НЕ напівобхват, на відміну від замірів одягу. Звужується донизу — записати діапазон.' },
   { name: 'length',         label: 'Довжина',    minKey: 'measurements_length_min',         maxKey: 'measurements_length_max' },
-  { name: 'pog',            label: 'Груди (н/о)', minKey: 'measurements_pog_min',           maxKey: 'measurements_pog_max' },
-  { name: 'pob',            label: 'Бедра (н/о)', minKey: 'measurements_pob_min',           maxKey: 'measurements_pob_max' },
-  { name: 'pot',            label: 'Талія (н/о)', minKey: 'measurements_pot_min',           maxKey: 'measurements_pot_max' },
+  { name: 'pog',            label: 'Груди (н/о)', minKey: 'measurements_pog_min',           maxKey: 'measurements_pog_max' , hint: 'Напівобхват — половина кола, по найширшому місцю грудей.' },
+  { name: 'pob',            label: 'Бедра (н/о)', minKey: 'measurements_pob_min',           maxKey: 'measurements_pob_max' , hint: 'Напівобхват — половина кола.' },
+  { name: 'pot',            label: 'Талія (н/о)', minKey: 'measurements_pot_min',           maxKey: 'measurements_pot_max' , hint: 'Напівобхват — половина кола.' },
   { name: 'sleeve',         label: 'Рукав',      minKey: 'measurements_sleeve_min',         maxKey: 'measurements_sleeve_max' },
 ];
 
@@ -3426,10 +3430,13 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                         {EditCell({ field: 'packaging_name', lockField: 'packagingid', label: 'Пакування' })}
                         {MEASUREMENTS
                           .filter(({ name }) => !(editMode && hiddenFields.has(`meas_${name}`)))
-                          .map(({ name, label, minKey, maxKey }) => (
+                          .map(({ name, label, minKey, maxKey, hint }) => (
                           editMode ? (
                             <div key={name} className="flex flex-col gap-1 min-w-0">
-                              <span className="text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500 font-medium">{label}</span>
+                              <span
+                                title={hint}
+                                className={`text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500 font-medium${hint ? ' cursor-help decoration-dotted underline underline-offset-2' : ''}`}
+                              >{label}</span>
                               <input
                                 type="text"
                                 value={measurementDrafts[name] ?? ''}

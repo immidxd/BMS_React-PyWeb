@@ -121,6 +121,21 @@ const SUBHUBS: Record<Exclude<HubView, 'root'>, { label: string; fields: string[
 const SUBHUB_KEYS = [...SUBHUBS.materials.fields, ...SUBHUBS.details.fields];
 const CLOTHING_MEAS = ['chest', 'waist', 'hips', 'sleeve', 'length'];
 
+// Інструкції заміру. Спливають на наведення прямо в полі: документ відкриють
+// раз, а підказку тут бачитимуть щоразу — і саме від цього залежить, чи поле
+// заповнять узагалі. Ті самі тексти живуть у картці товару (MEASUREMENTS.hint).
+const FIELD_HINTS: Record<string, string> = {
+  height: 'Ззаду по задньому шву: від верхнього краю підошви (НЕ від підлоги) до верху халяви. Каблук у висоту не входить.',
+  sole_thickness: 'Збоку в передній частині, під пучками — рівна частина без протектора. Це платформа, а не каблук.',
+  insole_width: 'У найширшому місці — зона пучків, приблизно на третині довжини від носка. Знімну устілку вийняти й міряти її.',
+  shaft_circumference: 'ПОВНЕ коло стрічкою навколо халяви у найширшому місці, чобіт застебнутий. НЕ напівобхват, на відміну від замірів одягу. Звужується донизу — записати діапазон.',
+  chest: 'Напівобхват — половина кола, по найширшому місцю грудей.',
+  waist: 'Напівобхват — половина кола.',
+  hips: 'Напівобхват — половина кола.',
+  measurementscm: 'Довжина устілки: всередині взуття від найдальшої точки носка до задника. Знімну устілку вийняти.',
+  tread_type_name: 'Протектор — поверхня контакту: гладка, рифлена, рельєфна, тракторна. Профіль (плоска/платформа/танкетка) — у «Типі підошви».',
+};
+
 // Поля, придатні як «дефолт на лот» (класифікація + деталі; БЕЗ унікальних per-item:
 // номер/розмір/ціна/модель/маркування/виміри тощо).
 const DEFAULTABLE_KEYS = [
@@ -475,7 +490,7 @@ const QuickAddProductForm: React.FC<Props> = ({ deliveryId, onSaved, filters: fi
     const opts = optionsFor(f.key);
     const onVal = (v: string) => (f.key === 'type_name' ? onTypeChange(v) : set(f.key, v));
     return (
-    <div key={f.key} className="relative">
+    <div key={f.key} className="relative" title={FIELD_HINTS[f.key]}>
       {opts.length > 0 ? (
         <AutoCompleteInput
           value={values[f.key] || ''}
