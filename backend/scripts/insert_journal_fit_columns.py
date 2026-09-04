@@ -130,6 +130,23 @@ def main() -> int:
             vals = vr.get("values", [[]])
             hdrs[t] = vals[0] if vals else []
 
+    # ⚠️ is_skip_sheet — фільтр ПАРСЕРА (не читати службові вкладки як завози).
+    # Для вставки колонок він хибний: «New» — ШАБЛОН нових завозів, і колонки
+    # там потрібні найбільше. Один раз це вже коштувало трьох колонок, яких у
+    # шаблоні не було, і кожен новий завіз народжувався б без них.
+    if not args.all_tabs:
+        skipped_with_anchor = []
+        for w in sh.worksheets():
+            if not is_skip_sheet(w.title):
+                continue
+            h = [x.strip() for x in (w.row_values(1) or [])]
+            if plan_for(h) is not None:
+                skipped_with_anchor.append(w.title)
+        if skipped_with_anchor:
+            print(f"\n⚠️ УВАГА: вкладки {skipped_with_anchor} мають потрібні колонки-якорі,")
+            print("   але відфільтровані is_skip_sheet і НЕ будуть оброблені.")
+            print("   Серед них може бути ШАБЛОН нових завозів. Додайте --all-tabs.\n")
+
     todo, skip_done, skip_bad = [], [], []
     for w in tabs:
         h = hdrs.get(w.title, [])
