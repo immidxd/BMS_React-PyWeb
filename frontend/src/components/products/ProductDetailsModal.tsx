@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useMemo, useRef } from 'react';
 import { productService, type JournalSyncState } from '../../services/productService';
 import type { Product, ProductFilters } from '../../types/product';
-import { Tag, Image, Tooltip } from 'antd';
+import { Tag, Image, Tooltip, message } from 'antd';
 import { CloseOutlined, PictureOutlined, LeftOutlined, RightOutlined, WarningOutlined, EditOutlined, CheckOutlined, PlusOutlined, SyncOutlined, EyeOutlined, EyeInvisibleOutlined, StarFilled, ShoppingOutlined, TableOutlined, InboxOutlined, TagOutlined, DownloadOutlined, CopyOutlined, LoadingOutlined, RotateLeftOutlined, RotateRightOutlined, SwapOutlined } from '@ant-design/icons';
 import { copyImageToClipboard, saveProductPhoto, saveProductPhotosZip } from '../../services/imageTransfer';
 import { CopyOnClick, formatBrandName, getProductDisplayStatus, getProductStock, getConditionColor, effectiveProductNumber } from '../common/displayHelpers';
@@ -271,6 +271,13 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
   const [profileNote, setProfileNote] = useState<string | null>(null);
   const [promBusy, setPromBusy] = useState(false);  // експорт/видалення товару на Prom
   const [promPublished, setPromPublished] = useState(false);  // чіп-стан «на Prom»
+  // Пропозиції автозаповнення з фото: {поле → пропозиція}. Ключ — ім'я поля
+  // ProductUpdate, те саме, що в EditCell, тож чіп стає рівно під своїм полем.
+  const [proposals, setProposals] = useState<Record<string, {
+    id: number; value: string; confidence: number | null; model?: string;
+  }>>({});
+  const [proposalBusy, setProposalBusy] = useState<number | null>(null);
+  const [autofillRunning, setAutofillRunning] = useState(false);
   const [promPublishing, setPromPublishing] = useState(false);  // публікація в процесі (фон, до ~3.6хв)
   const [promPreview, setPromPreview] = useState<any | null>(null);  // дані діалогу публікації
   const [shafaStatus, setShafaStatus] = useState<ShafaProductStatus | null>(null);
@@ -449,6 +456,71 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     setPromPublished(!!(product as any)?.published_prom);   // швидкий початковий хінт
     refreshPromStatus(productId);
   }, [productId, open, (product as any)?.published_prom, refreshPromStatus]);
+
+  // Пропозиції автозаповнення. ⚠️ Гард за id обовʼязковий: поки летить відповідь,
+  // користувач міг перегорнути на інший товар стрілками — і чіпи чужого товару
+  // сіли б у відкриту картку.
+  const reloadProposals = React.useCallback(async (pid: number) => {
+    try {
+      const r = await fetch(`/api/products/${pid}/proposals`);
+      if (!r.ok) return;
+      const list = await r.json();
+      if (curPidRef.current !== pid) return;
+      const byField: Record<string, any> = {};
+      for (const it of list) byField[it.field] = it;
+      setProposals(byField);
+    } catch { /* мовчки: автозаповнення не має ламати картку */ }
+  }, []);
+
+  useEffect(() => {
+    if (!productId || !open) { setProposals({}); return; }
+    setProposals({});          // не показувати чіпи попереднього товару
+    reloadProposals(productId);
+  }, [productId, open, reloadProposals]);
+
+  const decideProposal = React.useCallback(async (id: number, accept: boolean) => {
+    if (!productId) return;
+    setProposalBusy(id);
+    try {
+      const r = await fetch(
+        `/api/products/${productId}/proposals/${id}/${accept ? 'accept' : 'reject'}`,
+        { method: 'POST' });
+      if (!r.ok) { message.error('Не вдалося застосувати'); return; }
+      await reloadProposals(productId);
+      // Прийняте значення потрапило в картку звичайним update_product, тож
+      // товар треба перечитати — інакше поле лишиться зі старим значенням.
+      if (accept) onSavedRef.current?.(productId);
+    } catch {
+      message.error('Не вдалося застосувати');
+    } finally {
+      setProposalBusy(null);
+    }
+  }, [productId, reloadProposals]);
+
+  // Запуск розпізнавання. Вичерпаний бюджет — НЕ помилка: показуємо як
+  // спокійне повідомлення, бо автозаповнення в такому стані просто вимкнене.
+  const runAutofill = React.useCallback(async () => {
+    if (!productId || autofillRunning) return;
+    setAutofillRunning(true);
+    try {
+      const r = await fetch(`/api/products/${productId}/autofill`, { method: 'POST' });
+      const d = await r.json().catch(() => ({}));
+      if (curPidRef.current !== productId) return;
+      if (!d?.ok) {
+        message.info(d?.budget_blocked
+          ? 'Місячний ліміт розпізнавання вичерпано'
+          : (d?.reason || 'Не вдалося розпізнати'));
+        return;
+      }
+      await reloadProposals(productId);
+      const n = (d.proposed || []).length;
+      message.success(n ? `Розпізнано полів: ${n}` : 'Нічого впевнено не розпізналось');
+    } catch {
+      message.error('Не вдалося розпізнати');
+    } finally {
+      setAutofillRunning(false);
+    }
+  }, [productId, autofillRunning, reloadProposals]);
 
   useEffect(() => {
     if (!productId || !open) return;
@@ -2046,6 +2118,46 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     ) : null;
 
   // Маленька крапка-індикатор лока (для компактних місць — лейбли в edit-режимі)
+  // Чіп пропозиції автозаповнення. Візуальна мова навмисно стримана: пунктирна
+  // рамка читається як «чернетка, що чекає рішення», і не вводить нового кольору
+  // в монохромну палітру. Червоний лише на відхиленні — так само, як на
+  // видаленні в інших місцях програми.
+  const ProposalChip: React.FC<{ field: string }> = ({ field }) => {
+    const pr = proposals[field];
+    if (!pr) return null;
+    const busy = proposalBusy === pr.id;
+    const pct = pr.confidence != null ? Math.round(pr.confidence * 100) : null;
+    return (
+      <span
+        title={`Розпізнано з фото${pr.model ? ` (${pr.model})` : ''}. Приймається у картку лише вашим підтвердженням.`}
+        className={`inline-flex items-center gap-1.5 mt-1 pl-2 pr-1 py-0.5 rounded-md w-fit max-w-full
+          border border-dashed border-gray-300 dark:border-gray-600
+          bg-gray-50/60 dark:bg-gray-800/40 ${busy ? 'opacity-50' : ''}`}
+      >
+        <span className="text-[11px] text-gray-600 dark:text-gray-300 truncate">{pr.value}</span>
+        {pct != null && (
+          <span className="text-[10px] text-gray-400 dark:text-gray-500 tabular-nums shrink-0">{pct}%</span>
+        )}
+        <button
+          type="button" disabled={busy} onClick={() => decideProposal(pr.id, true)}
+          title="Прийняти"
+          className="inline-flex items-center justify-center w-5 h-5 rounded shrink-0
+            text-gray-400 hover:text-gray-800 dark:hover:text-gray-100
+            hover:bg-gray-200/70 dark:hover:bg-gray-700 transition-colors">
+          <CheckOutlined style={{ fontSize: 11 }} />
+        </button>
+        <button
+          type="button" disabled={busy} onClick={() => decideProposal(pr.id, false)}
+          title="Відхилити"
+          className="inline-flex items-center justify-center w-5 h-5 rounded shrink-0
+            text-gray-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/30
+            transition-colors">
+          <CloseOutlined style={{ fontSize: 10 }} />
+        </button>
+      </span>
+    );
+  };
+
   const LockDot: React.FC<{ field: string }> = ({ field }) =>
     lockFresh && lockedFields.has(field)
       ? <span className="w-1.5 h-1.5 rounded-full bg-amber-500 inline-block" title="Змінено в програмі" />
@@ -2137,18 +2249,24 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
             </datalist>
           )}
           {hint && <span className="text-[10px] text-gray-400 dark:text-gray-500">{hint}</span>}
+          <ProposalChip field={field} />
         </div>
       );
     }
     const v = (p as any)?.[field];
-    if (v === null || v === undefined || v === '') return null;
+    // ⚠️ Порожнє поле з пропозицією ПОКАЗУЄМО: саме заради порожніх усе й
+    // робилось. Без цього чіп ніколи б не зʼявився там, де найпотрібніший.
+    if ((v === null || v === undefined || v === '') && !proposals[field]) return null;
     return (
       <div className="flex flex-col gap-0.5 min-w-0">
         <span className="text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500 font-medium">{label}</span>
-        <span className="text-sm text-gray-800 dark:text-gray-200 break-words flex items-center gap-2">
-          <CopyOnClick value={v as string | number} />
-          <LockBadge field={lf} />
-        </span>
+        {v !== null && v !== undefined && v !== '' && (
+          <span className="text-sm text-gray-800 dark:text-gray-200 break-words flex items-center gap-2">
+            <CopyOnClick value={v as string | number} />
+            <LockBadge field={lf} />
+          </span>
+        )}
+        <ProposalChip field={field} />
       </div>
     );
   };
@@ -2179,17 +2297,22 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
           <datalist id={`dl-${nameField}`}>
             {options.map((o) => <option key={o.id} value={o.name} />)}
           </datalist>
+          <ProposalChip field={nameField} />
         </div>
       );
     }
-    if (readValue === null || readValue === undefined || readValue === '') return null;
+    const empty = readValue === null || readValue === undefined || readValue === '';
+    if (empty && !proposals[nameField]) return null;
     return (
       <div className="flex flex-col gap-0.5 min-w-0">
         <span className="text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500 font-medium">{label}</span>
-        <span className="text-sm text-gray-800 dark:text-gray-200 break-words flex items-center gap-2">
-          {(typeof readValue === 'string' || typeof readValue === 'number') ? <CopyOnClick value={readValue as string | number} /> : readValue}
-          <LockBadge field={lockField} />
-        </span>
+        {!empty && (
+          <span className="text-sm text-gray-800 dark:text-gray-200 break-words flex items-center gap-2">
+            {(typeof readValue === 'string' || typeof readValue === 'number') ? <CopyOnClick value={readValue as string | number} /> : readValue}
+            <LockBadge field={lockField} />
+          </span>
+        )}
+        <ProposalChip field={nameField} />
       </div>
     );
   };
@@ -3335,7 +3458,21 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
 
                   {/* Характеристики — у правій колонці ПОРУЧ із фото (заповнюють висоту) */}
                   <div className="mt-3 border-t border-gray-100 dark:border-gray-800 pt-4">
-                    <div className="text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500 mb-3 font-medium">Характеристики</div>
+                    <div className="flex items-center justify-between mb-3">
+                      <div className="text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500 font-medium">Характеристики</div>
+                      {/* Тиха дія: розпізнавання допоміжне, тож кнопка не має
+                          конкурувати вагою з самими характеристиками. */}
+                      <button
+                        type="button" onClick={runAutofill} disabled={autofillRunning}
+                        title="Розпізнати характеристики за живими знімками. Значення потраплять у картку лише після вашого підтвердження."
+                        className="inline-flex items-center gap-1 text-[11px] px-1.5 py-0.5 rounded
+                          text-gray-400 hover:text-gray-700 dark:text-gray-500 dark:hover:text-gray-200
+                          hover:bg-gray-100 dark:hover:bg-gray-700/60 transition-colors
+                          disabled:opacity-50 disabled:cursor-default">
+                        {autofillRunning ? <LoadingOutlined style={{ fontSize: 11 }} /> : <SyncOutlined style={{ fontSize: 11 }} />}
+                        <span>З фото</span>
+                      </button>
+                    </div>
                     <div className={`grid ${charCols} gap-x-6 gap-y-3`}>
                     {classCombo({ nameField: 'brand_name', lockField: 'brandid', label: 'Бренд', options: (filterOpts?.brands ?? []) as any, readValue: formatBrandName((p as any).brand_name) })}
                     {EditCell({ field: 'model', label: 'Модель' })}
