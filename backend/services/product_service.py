@@ -49,6 +49,16 @@ except ImportError:
         subtype_from_style_name,
     )
 
+# ⚠️ services.X і backend.services.X — різні обʼєкти; порядок як у решті блоків.
+try:
+    from backend.services.shoe_attribute_normalization import (
+        canonicalize_shoe_attribute as _canonicalize_shoe_attribute,
+    )
+except ImportError:
+    from services.shoe_attribute_normalization import (
+        canonicalize_shoe_attribute as _canonicalize_shoe_attribute,
+    )
+
 logger = logging.getLogger(__name__)
 
 def get_product(db: Session, product_id: int) -> Optional[models.Product]:
@@ -1322,6 +1332,19 @@ LOOKUP_NAME_FIELDS = {
 # Користувацька стать/тип/бренд НЕ чіпаємо (вони бувають з великої: Жіноча/Nike).
 # ⚠️ technologies НЕ включаємо — це власні назви (SOFTFOAM+, BOOST, Gore-Tex, GEL),
 # лоуеркейс зіпсував би їх ('sOFTFOAM+'). Так само materials лишаємо як ввів користувач.
+# Таблиця довідника → атрибут у shoe_attribute_normalization. Потрібна, щоб
+# резолвер САМ приводив перевірені варіанти до канону: інакше введена в картці
+# «підбора» знайшла б рядок-варіант (він лишився з нулем товарів після злиття)
+# і мовчки відкотила б канонізацію для цього товару.
+_CANON_ATTR_BY_TABLE = {
+    "sole_types":      "sole_type",
+    "toe_shapes":      "toe_shape",
+    "fastening_types": "fastening_type",
+    "linings":         "lining",
+    "heel_types":      "heel_type",
+    "technologies":    "technology",
+}
+
 LOWERCASE_LOOKUP_TABLES = {
     "sole_types", "toe_shapes", "fastening_types", "lace_types", "heel_types",
     "tread_types",
@@ -1329,8 +1352,20 @@ LOWERCASE_LOOKUP_TABLES = {
 }
 
 
-def _resolve_lookup_id_by_name(db: Session, table: str, name_col: str, value: str) -> Optional[int]:
+def _resolve_lookup_id_by_name(db: Session, table: str, name_col: str, value: str,
+                               *, strict: bool = False) -> Optional[int]:
     """Case-insensitive get-or-create in a single-FK lookup table. Returns id.
+
+    КАНОНІЗАЦІЯ. Перед пошуком значення проганяється через ПЕРЕВІРЕНІ варіанти
+    (shoe_attribute_normalization). Без цього канон не самозастосовний: рядки
+    «підбора», «магніт», «vibram» лишились у довідниках із нулем товарів, і
+    введене в картці старе написання знову набирало б їх, відкочуючи злиття по
+    одному товару. Незнане значення НЕ вгадується — воно йде далі як є.
+
+    STRICT. У строгому режимі нове значення НЕ створюється: збігу немає — None.
+    Це другий із трьох рубежів для машинного джерела. Людина, що свідомо вписує
+    новий тип підошви, і далі має це робити, тож режим вмикається за ПОХОДЖЕННЯМ
+    значення, а не глобально. Прецедент є: `genders` так поводиться завжди.
 
     ⚠️ SQL LOWER()/ILIKE do NOT case-fold Cyrillic in this DB (C collation), so the
     case-insensitive step is done in Python (str.lower() handles Cyrillic). See
@@ -1339,6 +1374,9 @@ def _resolve_lookup_id_by_name(db: Session, table: str, name_col: str, value: st
     val = (value or "").strip()
     if not val:
         return None
+    attr = _CANON_ATTR_BY_TABLE.get(table)
+    if attr:
+        val = _canonicalize_shoe_attribute(attr, val) or val
     if table == "types":
         val = canonicalize_type_name(val) or ""
         if not val:
@@ -1369,6 +1407,10 @@ def _resolve_lookup_id_by_name(db: Session, table: str, name_col: str, value: st
     for rid, nm in db.execute(text(f"SELECT id, {name_col} FROM {table}")).fetchall():
         if (nm or "").strip().lower() == folded:
             return int(rid)
+    if strict:
+        # Машинне джерело нових значень не створює. Викликач вирішує, що робити
+        # з None: у нас це «поле лишається порожнім і йде в чергу аліасів».
+        return None
     # 3) create new — для описових таблиць (sole_types/toe_shapes/...) канон у БД
     #    — з малої літери, тож нормалізуємо першу літеру вниз перед INSERT, щоб не
     #    плодити дублікатів типу «Шнурівка» поряд із «шнурівка».
