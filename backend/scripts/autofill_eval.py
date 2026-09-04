@@ -53,9 +53,16 @@ from dotenv import load_dotenv
 load_dotenv(REPO / ".env")
 
 try:
-    from services.shoe_attribute_normalization import DEAD_VALUES, is_dead_value
+    from services.shoe_attribute_normalization import DEAD_VALUES
+    from services import photo_autofill
 except ImportError:  # pragma: no cover
-    from backend.services.shoe_attribute_normalization import DEAD_VALUES, is_dead_value
+    from backend.services.shoe_attribute_normalization import DEAD_VALUES
+    from backend.services import photo_autofill
+
+# ⚠️ ЄДИНЕ ДЖЕРЕЛО. Схема й перелік полів беруться з сервісу, а не будуються тут
+# заново. Інакше вимір показував би якість на одній схемі, а бойовий шлях
+# працював на іншій — і цифрам не можна було б вірити.
+CLOSED_FIELDS_SVC = photo_autofill.CLOSED_FIELDS
 
 PHOTO_DIR = pathlib.Path(os.environ.get(
     "PRODUCT_IMAGES_DIR", os.path.expanduser("~/Downloads/Бізнес/Товар"))) / "Взуття"
@@ -65,15 +72,9 @@ OUT_DIR = REPO / "backend" / "scripts" / "autofill_eval_out"
 # official. Відрізняються ЛИШЕ кількістю цифр в індексі (photo_manager._name_for).
 _REAL_PHOTO = re.compile(r"^(?P<pn>.+)_(?P<idx>\d{3,})\.webp$")
 
-# поле → (таблиця довідника, колонка назви, FK у products, підпис)
-CLOSED_FIELDS = {
-    "sole_type":      ("sole_types",      "soletypename",      "soletypeid",      "тип підошви (профіль)"),
-    "tread_type":     ("tread_types",     "treadtypename",     "treadtypeid",     "протектор"),
-    "fastening_type": ("fastening_types", "fasteningtypename", "fasteningtypeid", "застібка"),
-    "toe_shape":      ("toe_shapes",      "toeshapename",      "toeshapeid",      "форма носка"),
-    "lining":         ("linings",         "liningname",        "liningid",        "підкладка"),
-    "heel_type":      ("heel_types",      "heeltypename",      "heeltypeid",      "тип каблука"),
-}
+# поле → (таблиця, колонка назви, FK, підпис) — зрізане з сервісної мапи,
+# яка має ще пʼятий елемент (ім'я для ProductUpdate) і тут не потрібна.
+CLOSED_FIELDS = {k: v[:4] for k, v in CLOSED_FIELDS_SVC.items()}
 
 # Поля, за якими вимір щось означає. toe_shape виключено — розподіл вироджений.
 SCORED_FIELDS = ("sole_type", "fastening_type", "lining", "heel_type")
@@ -173,68 +174,30 @@ def cmd_dataset(args) -> int:
 
 
 def cmd_schema(args) -> int:
-    conn = _connect()
-    cur = conn.cursor()
+    """Тонка обгортка: схему будує СЕРВІС, тут лише зберігаємо й показуємо."""
+    try:
+        from models.database import SessionLocal
+    except ModuleNotFoundError:  # pragma: no cover
+        from backend.models.database import SessionLocal
 
-    props: dict[str, dict] = {}
-    vocab: dict[str, list[str]] = {}
-    for field, (table, col, fk, label) in CLOSED_FIELDS.items():
-        # Беремо лише значення, за якими Є товари: мертві в перелік не йдуть.
-        cur.execute(
-            f"SELECT l.{col}, count(p.id) FROM {table} l "
-            f"LEFT JOIN products p ON p.{fk} = l.id "
-            f"GROUP BY l.{col} ORDER BY l.{col}"
-        )
-        values = [
-            (n or "").strip() for n, k in cur.fetchall()
-            if (n or "").strip() and k > 0 and not is_dead_value(field, n)
-        ]
-        vocab[field] = values
-        props[field] = {
-            "type": ["string", "null"],
-            # null у переліку — це і є «чесна відмова». Без нього модель мусить вгадувати.
-            "enum": values + [None],
-            "description": f"{label}; null, якщо на знімках не видно однозначно",
-        }
-        props[f"{field}_confidence"] = {
-            "type": "number", "minimum": 0, "maximum": 1,
-            "description": f"певність щодо «{label}» від 0 до 1",
-        }
-
-    # Технології — many-to-many, тож масив. Перелік відкритий: назви власні й
-    # нові зʼявляються постійно, а закритий список тут відсікав би реальні.
-    cur.execute("SELECT DISTINCT t.technologyname FROM technologies t "
-                "JOIN product_technologies pt ON pt.technology_id = t.id ORDER BY 1")
-    known_tech = [r[0] for r in cur.fetchall()]
-    props["technologies"] = {
-        "type": "array", "items": {"type": "string"},
-        "description": ("технології, читані з бирки/язичка; порожній масив, якщо не видно. "
-                        f"Відомі нам: {', '.join(known_tech[:40])}"),
-    }
-
-    # Вільний текст — те, що ЧИТАЄТЬСЯ з бирки, а не класифікується.
-    props["brand_text"] = {"type": ["string", "null"],
-                           "description": "бренд як НАПИСАНО на бирці/лого, дослівно"}
-    props["article_text"] = {"type": ["string", "null"],
-                             "description": "артикул виробника з бирки, дослівно (напр. CW2288-111)"}
-    props["model_text"] = {"type": ["string", "null"],
-                           "description": "назва моделі як написано на бирці"}
-
-    schema = {"type": "object", "additionalProperties": False,
-              "required": list(props), "properties": props}
+    db = SessionLocal()
+    try:
+        schema = photo_autofill.build_schema(db)
+    finally:
+        db.close()
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     out = OUT_DIR / "schema.json"
     out.write_text(json.dumps(schema, ensure_ascii=False, indent=1), encoding="utf-8")
 
     size = len(json.dumps(schema, ensure_ascii=False))
-    print(f"полів у схемі: {len(props)}   ~{size // 4} токенів\n")
-    for f, vals in vocab.items():
+    print(f"полів у схемі: {len(schema['properties'])}   ~{size // 4} токенів\n")
+    for f in CLOSED_FIELDS:
+        vals = [v for v in schema["properties"][f]["enum"] if v is not None]
         dead = len(DEAD_VALUES.get(f, ()))
         print(f"── {f}  ({len(vals)} значень" + (f", мертвих виключено {dead}" if dead else "") + ")")
         print(f"   {', '.join(vals) if vals else '—'}\n")
-    print(f"технологій відомих: {len(known_tech)}")
-    print(f"\nзаписано → {out}")
+    print(f"записано → {out}")
     return 0
 
 
@@ -243,47 +206,10 @@ def cmd_schema(args) -> int:
 # специфічне для провайдера, живе тут і більше ніде — бо міняти провайдера ми
 # майже напевно будемо, а решту коду чіпати не хочеться.
 
-def _to_gemini_schema(schema: dict) -> dict:
-    """Загальний JSON Schema → діалект Gemini.
+# Адаптер і промпт живуть у сервісі — тут лише псевдоніми, щоб не розійшлись.
+_to_gemini_schema = photo_autofill.to_gemini_schema
 
-    Gemini НЕ розуміє ані union-типів (`["string","null"]`), ані `null` у enum:
-    у нього для цього окреме поле `nullable`. Саме через такі розбіжності
-    адаптер і потрібен — «одна схема на всіх» тут не працює.
-    """
-    def conv(node: dict) -> dict:
-        t = node.get("type")
-        nullable = False
-        if isinstance(t, list):
-            nullable = "null" in t
-            t = next((x for x in t if x != "null"), "string")
-        out: dict = {"type": (t or "string").upper()}
-        if nullable:
-            out["nullable"] = True
-        if "description" in node:
-            out["description"] = node["description"]
-        if "enum" in node:
-            vals = [v for v in node["enum"] if v is not None]
-            if vals:
-                out["enum"] = vals
-                out["type"] = "STRING"
-        if node.get("type") == "array" or t == "array":
-            out["items"] = conv(node.get("items", {"type": "string"}))
-        if "properties" in node:
-            out["properties"] = {k: conv(v) for k, v in node["properties"].items()}
-            if node.get("required"):
-                out["required"] = list(node["required"])
-        return out
-    return conv(schema)
-
-
-_PROMPT = (
-    "Ти оцінюєш вживане брендове взуття за фотографіями для картки товару.\n"
-    "Заповни лише те, що ВИДНО НА ЗНІМКАХ. Якщо ознака не видна однозначно — "
-    "постав null. Порожнє значення коштує кілька секунд ручної роботи, а "
-    "неправильне псує дані у двох системах, тож null завжди краще за здогад.\n"
-    "Текстові поля (бренд, артикул, модель) читай ДОСЛІВНО з бирки або лого, "
-    "нічого не додумуючи."
-)
+_PROMPT = photo_autofill.PROMPT
 
 
 def _call_gemini(model: str, key: str, photos: list[pathlib.Path], schema: dict) -> dict:
