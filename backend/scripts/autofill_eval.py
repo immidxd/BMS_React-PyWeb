@@ -238,6 +238,173 @@ def cmd_schema(args) -> int:
     return 0
 
 
+# ── Прогін через провайдера ─────────────────────────────────────────────────
+# Адаптер навмисно вузький: «знімки + схема → структурована відповідь». Усе, що
+# специфічне для провайдера, живе тут і більше ніде — бо міняти провайдера ми
+# майже напевно будемо, а решту коду чіпати не хочеться.
+
+def _to_gemini_schema(schema: dict) -> dict:
+    """Загальний JSON Schema → діалект Gemini.
+
+    Gemini НЕ розуміє ані union-типів (`["string","null"]`), ані `null` у enum:
+    у нього для цього окреме поле `nullable`. Саме через такі розбіжності
+    адаптер і потрібен — «одна схема на всіх» тут не працює.
+    """
+    def conv(node: dict) -> dict:
+        t = node.get("type")
+        nullable = False
+        if isinstance(t, list):
+            nullable = "null" in t
+            t = next((x for x in t if x != "null"), "string")
+        out: dict = {"type": (t or "string").upper()}
+        if nullable:
+            out["nullable"] = True
+        if "description" in node:
+            out["description"] = node["description"]
+        if "enum" in node:
+            vals = [v for v in node["enum"] if v is not None]
+            if vals:
+                out["enum"] = vals
+                out["type"] = "STRING"
+        if node.get("type") == "array" or t == "array":
+            out["items"] = conv(node.get("items", {"type": "string"}))
+        if "properties" in node:
+            out["properties"] = {k: conv(v) for k, v in node["properties"].items()}
+            if node.get("required"):
+                out["required"] = list(node["required"])
+        return out
+    return conv(schema)
+
+
+_PROMPT = (
+    "Ти оцінюєш вживане брендове взуття за фотографіями для картки товару.\n"
+    "Заповни лише те, що ВИДНО НА ЗНІМКАХ. Якщо ознака не видна однозначно — "
+    "постав null. Порожнє значення коштує кілька секунд ручної роботи, а "
+    "неправильне псує дані у двох системах, тож null завжди краще за здогад.\n"
+    "Текстові поля (бренд, артикул, модель) читай ДОСЛІВНО з бирки або лого, "
+    "нічого не додумуючи."
+)
+
+
+def _call_gemini(model: str, key: str, photos: list[pathlib.Path], schema: dict) -> dict:
+    import base64
+    import requests
+
+    parts = [{"text": _PROMPT}]
+    for p in photos:
+        parts.append({"inline_data": {
+            "mime_type": "image/webp",
+            "data": base64.standard_b64encode(p.read_bytes()).decode("ascii"),
+        }})
+    body = {
+        "contents": [{"parts": parts}],
+        "generationConfig": {
+            "responseMimeType": "application/json",
+            "responseSchema": _to_gemini_schema(schema),
+            "temperature": 0,
+        },
+    }
+    # 503 «high demand» і 429 трапляються регулярно навіть на дрібних прогонах,
+    # тож без повторів вимір показував би не якість моделі, а погоду в дата-центрі.
+    import time
+    r = None
+    for attempt in range(5):
+        r = requests.post(
+            f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+            headers={"x-goog-api-key": key, "Content-Type": "application/json"},
+            json=body, timeout=180,
+        )
+        if r.status_code not in (429, 500, 502, 503, 504):
+            break
+        time.sleep(2 ** attempt)          # 1, 2, 4, 8 с
+    if r is None or r.status_code != 200:
+        return {"_error": f"HTTP {r.status_code}: {r.text[:200]}"}
+    data = r.json()
+    try:
+        text = data["candidates"][0]["content"]["parts"][0]["text"]
+        out = json.loads(text)
+        out["_usage"] = data.get("usageMetadata", {})
+        return out
+    except (KeyError, IndexError, json.JSONDecodeError) as e:
+        return {"_error": f"{type(e).__name__}: {str(e)[:120]}", "_raw": str(data)[:300]}
+
+
+def cmd_run(args) -> int:
+    ds = json.loads((OUT_DIR / "dataset.json").read_text(encoding="utf-8"))
+    schema = json.loads((OUT_DIR / "schema.json").read_text(encoding="utf-8"))
+    key = os.getenv("GEMINI_API_KEY")
+    if not key:
+        print("Немає GEMINI_API_KEY у .env")
+        return 1
+    if args.limit:
+        ds = ds[:args.limit]
+
+    results = []
+    tok_in = tok_out = 0
+    for i, item in enumerate(ds, 1):
+        photos = [PHOTO_DIR / f for f in item["photos"]]
+        photos = [p for p in photos if p.exists()]
+        if not photos:
+            continue
+        pred = _call_gemini(args.model, key, photos, schema)
+        u = pred.pop("_usage", {}) or {}
+        tok_in += u.get("promptTokenCount", 0)
+        tok_out += u.get("candidatesTokenCount", 0)
+        results.append({"productnumber": item["productnumber"],
+                        "truth": item["truth"], "pred": pred})
+        mark = "!" if "_error" in pred else "."
+        print(mark, end="", flush=True)
+        if i % 50 == 0:
+            print(f" {i}/{len(ds)}", flush=True)
+
+    out = OUT_DIR / f"run_{args.model}.json"
+    out.write_text(json.dumps(results, ensure_ascii=False, indent=1), encoding="utf-8")
+    errs = sum(1 for r in results if "_error" in r["pred"])
+    print(f"\n\nвідповідей: {len(results)}   помилок виклику: {errs}")
+    print(f"токенів: вхід {tok_in}, вихід {tok_out}")
+    print(f"записано → {out}")
+    return 0
+
+
+def cmd_score(args) -> int:
+    """Три величини окремо: правильно / упевнено помилився / чесно відмовився.
+
+    Третя не менш важлива за першу. Модель, яка на невпевненому полі ставить
+    null, коштує нам секунди ручної роботи; модель, яка вгадує, коштує
+    зіпсованого запису в базі І в аркуші.
+    """
+    path = OUT_DIR / f"run_{args.model}.json"
+    results = json.loads(path.read_text(encoding="utf-8"))
+
+    print(f"модель: {args.model}   товарів: {len(results)}\n")
+    hdr = f"{'поле':22} {'еталон':>7} {'влучив':>8} {'помилка':>8} {'null':>7}"
+    print(hdr); print("─" * len(hdr))
+    for field in SCORED_FIELDS:
+        have = hit = miss = skip = 0
+        for r in results:
+            truth = (r["truth"] or {}).get(field)
+            if not truth:
+                continue
+            have += 1
+            pred = (r["pred"] or {}).get(field)
+            if pred is None:
+                skip += 1
+            elif str(pred).strip() == str(truth).strip():
+                hit += 1
+            else:
+                miss += 1
+        if not have:
+            continue
+        pct = lambda n: f"{100*n/have:.0f}%"
+        print(f"{field:22} {have:7} {hit:5} {pct(hit):>3} {miss:5} {pct(miss):>3} {skip:4} {pct(skip):>3}")
+
+    print("\n── читання з бирки (еталон = model/marking у БД) ──")
+    for key_pred, label in (("article_text", "артикул"), ("brand_text", "бренд")):
+        got = sum(1 for r in results if (r["pred"] or {}).get(key_pred))
+        print(f"   {label:10} прочитано на {got} з {len(results)} товарів")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -247,6 +414,14 @@ def main() -> int:
     d.set_defaults(func=cmd_dataset)
     s = sub.add_parser("schema", help="побудувати схему відповіді")
     s.set_defaults(func=cmd_schema)
+    r = sub.add_parser("run", help="прогнати вибірку через провайдера")
+    r.add_argument("--model", default="gemini-3.8-flash",
+                   help="конкретна версія, а не *-latest: вимір має бути відтворюваним")
+    r.add_argument("--limit", type=int, default=0)
+    r.set_defaults(func=cmd_run)
+    sc = sub.add_parser("score", help="порахувати влучив / помилився / відмовився")
+    sc.add_argument("--model", default="gemini-3.8-flash")
+    sc.set_defaults(func=cmd_score)
     args = ap.parse_args()
     return args.func(args)
 
