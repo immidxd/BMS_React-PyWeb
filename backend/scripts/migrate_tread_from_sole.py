@@ -122,9 +122,15 @@ def main() -> int:
                       encoding="utf-8")
     print(f"\nбекап → {backup}")
 
-    from services import journal_sync  # noqa: E402  (важкий імпорт лише при записі)
+    # ⚠️ services.X і backend.services.X — РІЗНІ обʼєкти; підтримуємо обидва шляхи,
+    # як робить решта коду. Імпорт важкий, тому лише в гілці запису.
+    try:  # noqa: E402
+        from services import journal_sync
+        from models.database import SessionLocal
+    except ModuleNotFoundError:  # noqa: E402
+        from backend.services import journal_sync
+        from backend.models.database import SessionLocal
     from sqlalchemy.orm import Session  # noqa: E402
-    from models.database import SessionLocal  # noqa: E402
 
     db: Session = SessionLocal()
     moved = 0
