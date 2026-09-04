@@ -376,7 +376,18 @@ def cmd_score(args) -> int:
     path = OUT_DIR / f"run_{args.model}.json"
     results = json.loads(path.read_text(encoding="utf-8"))
 
-    print(f"модель: {args.model}   товарів: {len(results)}\n")
+    # ⚠️ Провалені виклики МУСЯТЬ бути виключені, а не порахуватись як null:
+    # інакше квота Google змішується з чесною відмовою моделі, і 75% «відмов»
+    # означають не обережність, а те, що ми не додзвонились.
+    failed = [r for r in results if "_error" in (r["pred"] or {})]
+    results = [r for r in results if "_error" not in (r["pred"] or {})]
+    if failed:
+        print(f"⚠️ виключено провалених викликів: {len(failed)} — вони НЕ рахуються "
+              f"як відмова моделі")
+    print(f"модель: {args.model}   оцінено товарів: {len(results)}\n")
+    if not results:
+        print("Немає жодної успішної відповіді — міряти нічого.")
+        return 1
     hdr = f"{'поле':22} {'еталон':>7} {'влучив':>8} {'помилка':>8} {'null':>7}"
     print(hdr); print("─" * len(hdr))
     for field in SCORED_FIELDS:
