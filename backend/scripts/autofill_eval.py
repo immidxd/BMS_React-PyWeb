@@ -304,19 +304,21 @@ def _call_gemini(model: str, key: str, photos: list[pathlib.Path], schema: dict)
             "temperature": 0,
         },
     }
-    # 503 «high demand» і 429 трапляються регулярно навіть на дрібних прогонах,
-    # тож без повторів вимір показував би не якість моделі, а погоду в дата-центрі.
+    # Повторюємо лише 5xx — тимчасове перевантаження минає саме.
+    # ⚠️ 429 НЕ повторюємо: перший прогін показав, що це вичерпана добова квота,
+    # а не швидкісний ліміт. Повтори там безглузді — 43 провали з'їли 11 хвилин
+    # чистого сну й не врятували жодного виклику.
     import time
     r = None
-    for attempt in range(5):
+    for attempt in range(4):
         r = requests.post(
             f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
             headers={"x-goog-api-key": key, "Content-Type": "application/json"},
             json=body, timeout=180,
         )
-        if r.status_code not in (429, 500, 502, 503, 504):
+        if r.status_code not in (500, 502, 503, 504):
             break
-        time.sleep(2 ** attempt)          # 1, 2, 4, 8 с
+        time.sleep(2 ** attempt)          # 1, 2, 4 с
     if r is None or r.status_code != 200:
         return {"_error": f"HTTP {r.status_code}: {r.text[:200]}"}
     data = r.json()
@@ -354,6 +356,12 @@ def cmd_run(args) -> int:
                         "truth": item["truth"], "pred": pred})
         mark = "!" if "_error" in pred else "."
         print(mark, end="", flush=True)
+        # Квота вичерпана — решта викликів гарантовано впаде так само.
+        # Краще зупинитись і зберегти те, що вже є, ніж зібрати 43 однакові
+        # помилки й потім вручну відділяти їх від справжніх відмов.
+        if "429" in str(pred.get("_error", "")):
+            print("\n\n⚠️ КВОТА ВИЧЕРПАНА — прогін зупинено. Зібране збережено.")
+            break
         if i % 50 == 0:
             print(f" {i}/{len(ds)}", flush=True)
 
