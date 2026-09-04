@@ -773,7 +773,11 @@ def get_model_profile(
                so.soletypename AS sole_type_name, tsh.toeshapename AS toe_shape_name,
                trd.treadtypename AS tread_type_name,
                ft.fasteningtypename AS fastening_type_name, li.liningname AS lining_name,
-               tech.technologyname AS technology_name, pk.packagingname AS packaging_name
+               (SELECT string_agg(t2.technologyname, ', ' ORDER BY pt.ord)
+                  FROM product_technologies pt
+                  JOIN technologies t2 ON t2.id = pt.technology_id
+                 WHERE pt.product_id = p.id) AS technology_name,
+               pk.packagingname AS packaging_name
         FROM products p
         JOIN brands b ON b.id = p.brandid
         LEFT JOIN types t ON t.id = p.typeid
@@ -1185,13 +1189,17 @@ def update_product(
         material_writeback = getattr(updated_product, "_material_writeback", {}) or {}
         # Заміри → синтетичні meas_<name> (значення = рядок-діапазон).
         measurement_writeback = getattr(updated_product, "_measurement_writeback", {}) or {}
+        # Технології — синтетичне поле: значення вже зібране в CSV сервісом,
+        # бо скаляра technologyid більше немає (many-to-many).
+        technology_writeback = getattr(updated_product, "_technology_writeback", None)
 
         # Phase 2b: write-back у журнал — через чергу, щоб PUT відповідав миттєво
         # (запис в аркуш ~2-3с мережі не має блокувати UI). Раніше тут стартував
         # daemon-потік напряму: якщо він падав (токен/SSL/мережа), правка лишалась
         # тільки в БД і аркуш відставав назавжди. Тепер поля лягають у
         # journal_writeback_queue, а воркер несе їх в аркуш і повторює спроби.
-        if edited_lockable or material_writeback or measurement_writeback:
+        if edited_lockable or material_writeback or measurement_writeback \
+                or technology_writeback is not None:
             sheet_title = product_service.get_delivery_name(db, updated_product.deliveryid)
             pnum = updated_product.productnumber
             # Shoe-lookup FKs are written back as the canonical NAME, not the id.
@@ -1205,6 +1213,8 @@ def update_product(
                 field_values[f] = v
             for pos, csv in material_writeback.items():
                 field_values[f"material_{pos}"] = csv
+            if technology_writeback is not None:
+                field_values["technologyid"] = technology_writeback
             for mkey, rng in measurement_writeback.items():
                 field_values[mkey] = rng   # mkey уже 'meas_<name>'
 

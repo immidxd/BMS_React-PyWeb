@@ -766,7 +766,10 @@ def get_products(
                ht.heeltypename as heel_type_name,
                lt.lacetypename as lace_type_name,
                pk.packagingname as packaging_name,
-               tech.technologyname as technology_name,
+               (SELECT string_agg(t2.technologyname, ', ' ORDER BY pt.ord)
+                  FROM product_technologies pt
+                  JOIN technologies t2 ON t2.id = pt.technology_id
+                 WHERE pt.product_id = p.id) as technology_name,
                scol.colorname as sole_color_name,
                COALESCE(sold.sold_count, 0) AS sold_count,
                GREATEST(COALESCE(p.quantity, 0) - COALESCE(sold.sold_count, 0), 0) AS available_qty,
@@ -1296,7 +1299,6 @@ LOOKUP_NAME_FIELDS = {
     "heel_type_name":  ("heeltypeid",   "heel_types",      "heeltypename"),
     "lace_type_name":  ("lacetypeid",   "lace_types",      "lacetypename"),
     "packaging_name":  ("packagingid",  "packaging_types", "packagingname"),
-    "technology_name": ("technologyid", "technologies",    "technologyname"),
     "sole_color_name": ("sole_colorid", "colors",          "colorname"),
     "sole_type_name":      ("soletypeid",     "sole_types",      "soletypename"),
     "tread_type_name":     ("treadtypeid",    "tread_types",     "treadtypename"),
@@ -1440,7 +1442,7 @@ def resolve_lookup_name(db: Session, fk_field: str, fk_id: Optional[int]) -> Opt
 
 
 # FK fields edited by name (used by the router to map id→name for write-back).
-SHOE_FK_NAME_FIELDS = {"heeltypeid", "lacetypeid", "packagingid", "technologyid", "sole_colorid",
+SHOE_FK_NAME_FIELDS = {"heeltypeid", "lacetypeid", "packagingid", "sole_colorid",
                        "soletypeid", "toeshapeid", "fasteningtypeid", "liningid",
                        "treadtypeid",
                        "colorid", "current_conditionid",
@@ -1555,6 +1557,50 @@ def _get_or_create_material_id(db: Session, name: str) -> Optional[int]:
         {"n": val},
     ).fetchone()
     return int(new[0]) if new else None
+
+
+def _apply_technologies_edit(db: Session, product_id: int, csv: str) -> str:
+    """Full-replace технологій товару з рядка через кому. Повертає канонічний CSV.
+
+    Технології — many-to-many (product_technologies), а не один FK: з одним FK
+    кожна НОВА комбінація породжувала окремий рядок довідника, і зростання було
+    комбінаторним. Форма API при цьому не змінилась — назовні це так само рядок
+    через кому, тож фронтенд нічого не знає про перехід.
+
+    ⚠️ Регістр НЕ чіпаємо: назви технологій — власні (SOFTFOAM+, Gore-Tex, GEL),
+    і lowercase зіпсував би їх. Тому technologies немає в LOWERCASE_LOOKUP_TABLES.
+    """
+    names: list[str] = []
+    for part in (csv or "").split(","):
+        atom = part.strip()
+        if atom and atom not in names:
+            names.append(atom)
+    db.execute(text("DELETE FROM product_technologies WHERE product_id = :pid"),
+               {"pid": product_id})
+    canon: list[str] = []
+    for ord_idx, nm in enumerate(names):
+        row = db.execute(text("SELECT id FROM technologies WHERE technologyname = :n LIMIT 1"),
+                         {"n": nm}).fetchone()
+        if row:
+            tid = int(row[0])
+        else:
+            new = db.execute(
+                text("INSERT INTO technologies (technologyname) VALUES (:n) "
+                     "ON CONFLICT (technologyname) DO UPDATE SET technologyname = EXCLUDED.technologyname "
+                     "RETURNING id"),
+                {"n": nm},
+            ).fetchone()
+            if not new:
+                continue
+            tid = int(new[0])
+        db.execute(
+            text("INSERT INTO product_technologies (product_id, technology_id, ord) "
+                 "VALUES (:pid, :tid, :ord) "
+                 "ON CONFLICT (product_id, technology_id) DO UPDATE SET ord = EXCLUDED.ord"),
+            {"pid": product_id, "tid": tid, "ord": ord_idx},
+        )
+        canon.append(nm)
+    return ", ".join(canon)
 
 
 def _apply_materials_edit(db: Session, product_id: int, by_position: Dict[str, str]) -> Dict[str, str]:
@@ -1722,6 +1768,10 @@ def update_product(db: Session, product_id: int, product: schemas.ProductUpdate)
 
             # Inline-edit by NAME: translate typed lookup names → FK id columns
             # (get-or-create, case-insensitive). "" / null clears the FK.
+            # Технології — не простий FK: рядок через кому розкладається в
+            # product_technologies. Виймаємо ДО циклу, щоб не потрапило в setattr.
+            technology_edit = update_data.pop("technology_name", None)
+
             for name_key, (fk_field, table, name_col) in LOOKUP_NAME_FIELDS.items():
                 if name_key in update_data:
                     raw = update_data.pop(name_key)
@@ -1822,6 +1872,20 @@ def update_product(db: Session, product_id: int, product: schemas.ProductUpdate)
                         _apply_materials_edit(db, sib.id, materials_by_position)
                         _merge_lock(sib, pos_locks)
 
+            # Технології (CSV) — full-replace + лок `technologyid`. Model-level:
+            # дублюємо на всіх «братів» ростовки, як матеріали.
+            technology_writeback: Optional[str] = None
+            if technology_edit is not None:
+                technology_writeback = _apply_technologies_edit(db, db_product.id, technology_edit)
+                _merge_lock(db_product, {"technologyid"})
+                tech_sibs = db.query(models.Product).filter(
+                    models.Product.productnumber == db_product.productnumber,
+                    models.Product.id != db_product.id,
+                ).all()
+                for sib in tech_sibs:
+                    _apply_technologies_edit(db, sib.id, technology_edit)
+                    _merge_lock(sib, {"technologyid"})
+
             db.commit()
             db.refresh(db_product)
             # Transient (non-column) hint for the router: which lockable fields
@@ -1829,6 +1893,7 @@ def update_product(db: Session, product_id: int, product: schemas.ProductUpdate)
             # Includes auto-derived oldprice from the markdown rule.
             db_product._writeback_fields = newly_locked
             db_product._material_writeback = material_writeback   # {position: csv}
+            db_product._technology_writeback = technology_writeback   # CSV або None
             db_product._measurement_writeback = measurement_writeback   # {meas_<name>: range}
             logger.debug(f"Updated product: {db_product}")
         return db_product
@@ -2095,7 +2160,10 @@ def get_product_with_relations(db: Session, product_id: int) -> Optional[Dict[st
                    ht.heeltypename as heel_type_name,
                    lt.lacetypename as lace_type_name,
                    pk.packagingname as packaging_name,
-                   tech.technologyname as technology_name,
+                   (SELECT string_agg(t2.technologyname, ', ' ORDER BY pt.ord)
+                      FROM product_technologies pt
+                      JOIN technologies t2 ON t2.id = pt.technology_id
+                     WHERE pt.product_id = p.id) as technology_name,
                    scol.colorname as sole_color_name,
                    COALESCE(sold.sold_count, 0) AS sold_count,
                    GREATEST(COALESCE(p.quantity, 0) - COALESCE(sold.sold_count, 0), 0) AS available_qty,

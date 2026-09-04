@@ -1305,7 +1305,6 @@ SHOE_LOOKUP_COLUMNS: dict[str, tuple[str, str, str]] = {
     "Тип каблука":  ("heel_types",       "heeltypename",       "heeltypeid"),
     "Тип шнурівки": ("lace_types",       "lacetypename",       "lacetypeid"),
     "Пакування":    ("packaging_types",  "packagingname",      "packagingid"),
-    "Технології":   ("technologies",     "technologyname",     "technologyid"),
 }
 # "Колір підошви" → reuse colors table (auto-create), resolved separately (not here),
 # written into sole_colorid. See _resolve_sole_color() usage in both parser paths.
@@ -1328,7 +1327,7 @@ _NEW_MIN_MAX_PAIRS: list[tuple[str, str]] = [
 _NEW_SINGLE_FK_FIELDS: list[str] = [
     "soletypeid", "toeshapeid", "fasteningtypeid", "liningid",
     "treadtypeid",
-    "heeltypeid", "lacetypeid", "packagingid", "technologyid", "sole_colorid",
+    "heeltypeid", "lacetypeid", "packagingid", "sole_colorid",
 ]
 # Plain-text fields enriched NULL-only ТІЛЬКИ Воркспейс-парсером (Журнал-парсер
 # пише їх авторитетно у своїй update-гілці і в new_fields сюди не передає).
@@ -1339,6 +1338,7 @@ def _apply_new_fields_and_materials(
     session, prod, *,
     new_fields: dict,            # {'measurements_*_min/max': float|None, 'soletypeid': int|None, ...}
     materials_parsed: dict,      # {position: [name,...]} — populated only for non-empty cells
+    technologies: list,          # атоми з комірки «Технології»; [] = комірка порожня
     source: str | None = None,
 ) -> None:
     """
@@ -1367,8 +1367,24 @@ def _apply_new_fields_and_materials(
         v = new_fields.get(f)
         if v and getattr(prod, f, None) is None:
             setattr(prod, f, v)
-    if materials_parsed:
-        _apply_product_materials(session, prod.id, materials_parsed, source)
+    _apply_product_relations(session, prod.id, materials_parsed, technologies, source)
+
+
+def _split_technologies_cell(value: str) -> list[str]:
+    """Комірка «Технології» → атоми, у порядку запису, без дублів.
+
+    ТІЛЬКИ кома. Крапку з пробілом як роздільник свідомо не вводимо: на всю базу
+    є рівно одне таке значення — «gore-tex. Meta-Rocker», тобто загальне правило
+    існувало б заради однієї одруківки, а ламало б назви на кшталт «U.S. Grip».
+    Одруківку лікує канонізація написань. Та сама логіка, що в
+    backend/scripts/backfill_product_technologies.py.
+    """
+    out: list[str] = []
+    for part in (value or "").split(","):
+        atom = part.strip()
+        if atom and atom not in out:
+            out.append(atom)
+    return out
 
 
 def _looks_like_material(s: str) -> bool:
@@ -1438,18 +1454,27 @@ def _log_unmapped_material(session, raw_value: str, position: str, product_id: O
         pass
 
 
-def _apply_product_materials(
+def _apply_product_relations(
     session,
     product_id: int,
     parsed: dict[str, list[str]],   # position → [raw lowercased names]
+    technologies: Optional[list] = None,   # атоми «Технологій»; [] / None = не чіпати
     sheet_source: Optional[str] = None,
 ) -> None:
     """
-    Replace materials for a product (only for positions where parsed has a non-empty list).
+    Replace materials AND technologies for a product.
+
+    Обидва — many-to-many, обидва full-replace, обидва поважають інлайн-локи, і
+    обидва НЕ чіпають наявні рядки, коли комірка порожня (часткове оновлення
+    аркуша нічого не стирає). Технології тут разом із матеріалами навмисно:
+    раніше вони були одним FK, і рознесені виклики надто легко розʼїхались би
+    по тринадцятьох місцях. Спільна функція робить пропуск неможливим.
+
+    (only for positions where parsed has a non-empty list).
     Empty/missing position = leave existing rows untouched (so partial sheet updates don't wipe data).
     Unknown names → unmapped_materials log; row not inserted.
     """
-    if not parsed:
+    if not parsed and not technologies:
         return
     from sqlalchemy import text as _sql
     # Поважаємо інлайн-локи: позиції, відредаговані в програмі (`material_<pos>` у
@@ -1465,6 +1490,25 @@ def _apply_product_materials(
         for x in mef.split(",")
         if x.strip().startswith("material_")
     }
+    if technologies and "technologyid" not in {x.strip() for x in mef.split(",")}:
+        session.execute(
+            _sql("DELETE FROM product_technologies WHERE product_id = :pid"),
+            {"pid": product_id},
+        )
+        ord_idx = 0
+        for name in technologies:
+            tid = _resolve_shoe_lookup_id(session, "technologies", "technologyname", name)
+            if tid is None:
+                _log_unmapped_material(session, name, "_technologyid", None, sheet_source)
+                continue
+            session.execute(
+                _sql("INSERT INTO product_technologies (product_id, technology_id, ord) "
+                     "VALUES (:pid, :tid, :ord) "
+                     "ON CONFLICT (product_id, technology_id) DO UPDATE SET ord = EXCLUDED.ord"),
+                {"pid": product_id, "tid": tid, "ord": ord_idx},
+            )
+            ord_idx += 1
+
     for position, names in parsed.items():
         if position in locked_positions:
             continue  # відредаговано в програмі — не чіпаємо
@@ -2987,6 +3031,9 @@ def _parse_products_sheet(
         model_val = normalized_brand_fields.model or ""
         collection_val = normalized_brand_fields.collection or ""
         technology_val = normalized_brand_fields.technology or ""
+        # Комірка «Технології» — тепер many-to-many: розкладаємо на атоми тут,
+        # щоб змінна була видима в усіх гілках create/update нижче.
+        technologies_parsed = _split_technologies_cell(technology_val)
         if normalized_brand_fields.reason:
             logger.info(
                 "[brand-normalize] %s %s: %s",
@@ -3128,7 +3175,6 @@ def _parse_products_sheet(
             "heeltypeid":              resolved_shoe_fk.get("heeltypeid"),
             "lacetypeid":              resolved_shoe_fk.get("lacetypeid"),
             "packagingid":             resolved_shoe_fk.get("packagingid"),
-            "technologyid":            resolved_shoe_fk.get("technologyid"),
             "sole_colorid":            sole_color_id,
         }
 
@@ -3420,6 +3466,7 @@ def _parse_products_sheet(
                 session, full_match,
                 new_fields=parsed_new_fields,
                 materials_parsed=materials_parsed,
+                technologies=technologies_parsed,
                 source=ws.title,
             )
             # ── Productnumber sync: якщо в Google Sheets номер відрізняється
@@ -3489,6 +3536,7 @@ def _parse_products_sheet(
                     session, orphan,
                     new_fields=parsed_new_fields,
                     materials_parsed=materials_parsed,
+                    technologies=technologies_parsed,
                     source=ws.title,
                 )
                 if pnum != orphan.productnumber:
@@ -3570,7 +3618,8 @@ def _parse_products_sheet(
                     session.flush()
                     sp_add.commit()
                     seen_in_run[product.id] = 1
-                    _apply_product_materials(session, product.id, materials_parsed, ws.title)
+                    _apply_product_relations(session, product.id, materials_parsed,
+                                             technologies_parsed, ws.title)
                     added += 1
                 except IntegrityError:
                     sp_add.rollback()
@@ -3593,6 +3642,7 @@ def _parse_products_sheet(
                             session, existing_now,
                             new_fields=parsed_new_fields,
                             materials_parsed=materials_parsed,
+                            technologies=technologies_parsed,
                             source=ws.title,
                         )
                         session.flush()
@@ -3677,7 +3727,8 @@ def _parse_products_sheet(
                     session.flush()
                     sp_add.commit()
                     seen_in_run[product.id] = 1
-                    _apply_product_materials(session, product.id, materials_parsed, ws.title)
+                    _apply_product_relations(session, product.id, materials_parsed,
+                                             technologies_parsed, ws.title)
                     added += 1
                 except IntegrityError:
                     sp_add.rollback()
@@ -3697,6 +3748,7 @@ def _parse_products_sheet(
                             session, existing_now,
                             new_fields=parsed_new_fields,
                             materials_parsed=materials_parsed,
+                            technologies=technologies_parsed,
                             source=ws.title,
                         )
                         session.flush()
@@ -3877,7 +3929,8 @@ def _parse_products_sheet(
                             session.flush()
                             sp_add.commit()
                             seen_in_run[product.id] = 1
-                            _apply_product_materials(session, product.id, materials_parsed, ws.title)
+                            _apply_product_relations(session, product.id, materials_parsed,
+                                                     technologies_parsed, ws.title)
                             added += 1
                         except IntegrityError:
                             sp_add.rollback()
@@ -3897,6 +3950,7 @@ def _parse_products_sheet(
                                     session, existing_now,
                                     new_fields=parsed_new_fields,
                                     materials_parsed=materials_parsed,
+                                    technologies=technologies_parsed,
                                     source=ws.title,
                                 )
                                 session.flush()
@@ -4049,7 +4103,8 @@ def _parse_products_sheet(
                         session.flush()
                         sp_add.commit()
                         seen_in_run[product.id] = 1
-                        _apply_product_materials(session, product.id, materials_parsed, ws.title)
+                        _apply_product_relations(session, product.id, materials_parsed,
+                                                 technologies_parsed, ws.title)
                         added += 1
                     except IntegrityError:
                         sp_add.rollback()
@@ -4069,6 +4124,7 @@ def _parse_products_sheet(
                                 session, existing_now,
                                 new_fields=parsed_new_fields,
                                 materials_parsed=materials_parsed,
+                                technologies=technologies_parsed,
                                 source=ws.title,
                             )
                             session.flush()
@@ -5649,6 +5705,9 @@ def _parse_workspace_sheet(
         model_val = normalized_brand_fields.model or ""
         collection_val = normalized_brand_fields.collection or ""
         technology_val = normalized_brand_fields.technology or ""
+        # Комірка «Технології» — тепер many-to-many: розкладаємо на атоми тут,
+        # щоб змінна була видима в усіх гілках create/update нижче.
+        technologies_parsed = _split_technologies_cell(technology_val)
         if normalized_brand_fields.reason:
             logger.info(
                 "[brand-normalize] %s %s: %s",
@@ -5725,7 +5784,6 @@ def _parse_workspace_sheet(
             "heeltypeid":              resolved_shoe_fk.get("heeltypeid"),
             "lacetypeid":              resolved_shoe_fk.get("lacetypeid"),
             "packagingid":             resolved_shoe_fk.get("packagingid"),
-            "technologyid":            resolved_shoe_fk.get("technologyid"),
             "sole_colorid":            sole_color_id,
             # Текстові поля 2026-06-10 — NULL-only збагачення (_NEW_TEXT_FIELDS):
             # воркспейс не перетирає журнальні значення, лише заповнює порожні.
@@ -5922,6 +5980,7 @@ def _parse_workspace_sheet(
                         session, product,
                         new_fields=parsed_new_fields,
                         materials_parsed=materials_parsed,
+                        technologies=technologies_parsed,
                         source=ws.title,
                     )
                     logger.info(
@@ -6008,7 +6067,8 @@ def _parse_workspace_sheet(
                 try:
                     session.add(product)
                     session.flush()
-                    _apply_product_materials(session, product.id, materials_parsed, ws.title)
+                    _apply_product_relations(session, product.id, materials_parsed,
+                                             technologies_parsed, ws.title)
                     sp_ws.commit()  # release savepoint (товар лишається в зовнішній txn)
                     added += 1
                     touched_product_ids.add(product.id)
