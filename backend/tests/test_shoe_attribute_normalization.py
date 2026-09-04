@@ -31,6 +31,38 @@ def test_reviewed_variants_map_to_canonical(attribute, variant, canonical):
     assert canonicalize_shoe_attribute(attribute, variant) == canonical
 
 
+@pytest.mark.parametrize("variant, canonical", [
+    ("vibram", "Vibram"),                 # 16 товарів проти 13 — канон за брендом, не за частотою
+    ("gore-tex", "Gore-Tex"),
+    ("Gore-tex", "Gore-Tex"),
+    ("ortholite", "OrthoLite"),
+    ("Ortholite", "OrthoLite"),
+    ("Croslite\u2122", "Croslite"),           # ™ — знак охорони, не частина назви
+    ("Relaxed Fit\u00ae", "Relaxed Fit"),
+    ("relaxed fit", "Relaxed Fit"),
+    ("Boost\u2122", "Boost"),
+    ("contagrip", "Contagrip"),
+])
+def test_technology_spelling_is_canonicalised(variant, canonical):
+    assert canonicalize_shoe_attribute("technology", variant) == canonical
+
+
+def test_technology_unknown_is_left_alone():
+    """Незнану технологію не вгадуємо — вона просто лишається як є."""
+    assert canonicalize_shoe_attribute("technology", "SOFTFOAM+") == "SOFTFOAM+"
+    assert not is_known_variant("technology", "SOFTFOAM+")
+
+
+def test_technology_split_is_declared_not_guessed():
+    """«gore-tex. Meta-Rocker» розбирається за ЯВНИМ записом, а не за правилом:
+    загальний роздільник-крапка поламав би назви на кшталт «U.S. Grip»."""
+    from backend.services.shoe_attribute_normalization import TECHNOLOGY_SPLITS
+    assert TECHNOLOGY_SPLITS["gore-tex. Meta-Rocker"] == ("Gore-Tex", "Meta-Rocker")
+    # і кожна частина сама по собі вже канонічна
+    for part in TECHNOLOGY_SPLITS["gore-tex. Meta-Rocker"]:
+        assert canonicalize_shoe_attribute("technology", part) == part
+
+
 def test_canonical_value_is_stable():
     """Канон індексується теж — інше написання самого канону не зсуває його."""
     assert canonicalize_shoe_attribute("fastening_type", "Шнурівка") == "шнурівка"

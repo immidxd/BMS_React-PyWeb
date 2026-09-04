@@ -35,6 +35,8 @@ except ImportError:  # pragma: no cover — залежить від того, з
     from backend.services.shoe_attribute_normalization import CANONICAL_GROUPS, DEAD_VALUES
 
 # атрибут → (таблиця довідника, колонка назви, FK у products)
+# ⚠️ technology тут НЕ через products.<fk>: технології — many-to-many, і рахувати
+# їх треба по product_technologies (скаляр technologyid виведено з ужитку).
 TABLES = {
     "sole_type":      ("sole_types",      "soletypename",      "soletypeid"),
     "toe_shape":      ("toe_shapes",      "toeshapename",      "toeshapeid"),
@@ -54,12 +56,20 @@ def main() -> int:
     problems: list[str] = []
 
     for attribute, groups in CANONICAL_GROUPS.items():
-        table, name_col, fk = TABLES[attribute]
         # Кількість товарів на кожному значенні — щоб бачити ціну майбутнього злиття.
-        cur.execute(
-            f"SELECT l.{name_col}, count(p.id) FROM {table} l "
-            f"LEFT JOIN products p ON p.{fk} = l.id GROUP BY l.{name_col}"
-        )
+        if attribute == "technology":
+            table, name_col = "technologies", "technologyname"
+            cur.execute(
+                "SELECT l.technologyname, count(pt.product_id) FROM technologies l "
+                "LEFT JOIN product_technologies pt ON pt.technology_id = l.id "
+                "GROUP BY l.technologyname"
+            )
+        else:
+            table, name_col, fk = TABLES[attribute]
+            cur.execute(
+                f"SELECT l.{name_col}, count(p.id) FROM {table} l "
+                f"LEFT JOIN products p ON p.{fk} = l.id GROUP BY l.{name_col}"
+            )
         live = {(n or "").strip(): k for n, k in cur.fetchall()}
 
         print(f"\n══ {attribute}  ({len(live)} значень у довіднику)")

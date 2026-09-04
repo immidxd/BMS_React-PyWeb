@@ -65,7 +65,33 @@ LINING: Final[dict[str, tuple[str, ...]]] = {
 
 HEEL_TYPE: Final[dict[str, tuple[str, ...]]] = {}
 
+# Технології — власні назви брендів, тому канон = офіційне написання виробника,
+# а не найчастіше в базі. Числа — кількість товарів на момент аудиту 04.09.2026.
+#
+# ™ і ® ЗНІМАЄМО: це знаки правової охорони, а не частина назви. У базі вони
+# стоять хаотично (Boost™ є, а Cloudfoam без), ламають пошук і нічого не
+# додають у комірці Журналу. Рішення стилістичне й тривіально зворотне.
+TECHNOLOGY: Final[dict[str, tuple[str, ...]]] = {
+    "Vibram":       ("vibram",),                          # 13 ← 16
+    "Gore-Tex":     ("gore-tex", "Gore-tex"),             # 4 ← 9 + 1
+    "OrthoLite":    ("ortholite", "Ortholite"),           # 6 ← 2 + 1
+    "Croslite":     ("Croslite™",),                       # 3 ← 3
+    "Relaxed Fit":  ("Relaxed Fit®", "relaxed fit"),      # 0 ← 1 + 2
+    "Boost":        ("Boost™", "boost"),                  # 0 ← 1 + 0
+    "Luxe Foam":    ("Luxe Foam®",),                      # 0 ← 1
+    "Contagrip":    ("contagrip",),                       # 2 ← 0
+}
+
+# Значення, що лишились АТОМАМИ, хоч насправді містять кілька технологій.
+# Розбір комірки йде тільки за комою (див. _split_technologies_cell), а тут
+# роздільником була крапка — одруківка, яку не можна лікувати загальним
+# правилом, бо воно поламало б назви на кшталт «U.S. Grip».
+TECHNOLOGY_SPLITS: Final[dict[str, tuple[str, ...]]] = {
+    "gore-tex. Meta-Rocker": ("Gore-Tex", "Meta-Rocker"),  # 4 товари
+}
+
 CANONICAL_GROUPS: Final[dict[str, dict[str, tuple[str, ...]]]] = {
+    "technology":     TECHNOLOGY,
     "sole_type":      SOLE_TYPE,
     "toe_shape":      TOE_SHAPE,
     "fastening_type": FASTENING_TYPE,
