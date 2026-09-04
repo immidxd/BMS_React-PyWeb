@@ -79,6 +79,7 @@ backend/scripts/tread_migration_backup_*.json
 backend/scripts/product_technologies_backfill_*.json
 backend/scripts/shoe_variant_merge_backup_*.json
 backend/scripts/technology_merge_backup_*.json
+backend/scripts/autofill_eval_out/
 
 # Ghost-sweep backups (local)
 backend/scripts/ghost_sweep_backups/
