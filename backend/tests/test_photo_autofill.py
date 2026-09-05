@@ -194,3 +194,55 @@ def test_brand_is_canonicalised_before_comparing():
     from backend.services.brand_normalization import canonicalize_brand_name
     assert canonicalize_brand_name("HEY DUDE") == "Hey Dude"
     assert canonicalize_brand_name("hey dude") == "Hey Dude"
+
+
+# ── Захист від вигаданого артикула ──────────────────────────────────────────
+
+def test_article_without_anchor_is_refused(monkeypatch, tmp_path):
+    """Артикул без процитованого рядка з бирки НЕ пропонується.
+
+    Реальний випадок 06.09.2026: на чіткому фото бирки Adidas написано
+    «JQ8356», а модель видала «HQ8708» — не помилилась у символі, а вигадала
+    правдоподібний код. Поля із закритим переліком від цього захищені enum'ом;
+    текстові — ні, бо їх читають, а не обирають. Якір і є їхнім захистом.
+    """
+    monkeypatch.setattr(pa, "call_gemini", lambda *a, **k: {
+        "article_text": "HQ8708", "article_text_confidence": 0.9,
+        "article_source_text": None,            # ← контексту немає
+        "_usage": {"promptTokenCount": 100, "candidatesTokenCount": 10},
+    })
+    photo = tmp_path / "x_001.webp"; photo.write_bytes(b"f")
+    out = pa.extract_and_propose(_DB(spent=0.0), 7, [photo], api_key="k")
+    assert out["ok"] is True
+    assert not any(f == "marking" for f, *_ in out["proposed"]), \
+        "артикул без якоря потрапив у пропозиції"
+    assert any(f == "marking" for f, *_ in out["below_threshold"])
+
+
+def test_article_with_anchor_is_proposed(monkeypatch, tmp_path):
+    monkeypatch.setattr(pa, "call_gemini", lambda *a, **k: {
+        "article_text": "JQ8356", "article_text_confidence": 0.95,
+        "article_source_text": "LHG 029003 A JQ8356",
+        "_usage": {"promptTokenCount": 100, "candidatesTokenCount": 10},
+    })
+    photo = tmp_path / "x_001.webp"; photo.write_bytes(b"f")
+    out = pa.extract_and_propose(_DB(spent=0.0), 7, [photo], api_key="k")
+    assert ("marking", "JQ8356", 0.95) in out["proposed"]
+
+
+def test_text_fields_use_model_confidence_not_ours():
+    """Раніше для артикула й бренда стояло жорстке 0.9 — НАШЕ припущення
+    подавалось як оцінка моделі, і вигадка виглядала майже впевненою."""
+    import inspect
+    src = inspect.getsource(pa.extract_and_propose)
+    assert "0.9)" not in src and ", 0.9," not in src, \
+        "у коді лишилась захардкоджена певність для текстових полів"
+    assert 'pred.get(f"{src}_confidence")' in src
+
+
+def test_schema_asks_for_confidence_on_every_text_field():
+    """Кожне текстове поле мусить мати власну оцінку певності в схемі."""
+    import re
+    src = inspect_source = __import__("inspect").getsource(pa.build_schema)
+    for f in ("brand_text", "article_text", "model_text"):
+        assert f'props["{f}_confidence"]' in src, f"немає певності для {f}"

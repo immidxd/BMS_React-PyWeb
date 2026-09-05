@@ -131,12 +131,32 @@ def build_schema(db: Session) -> Dict[str, Any]:
         "description": ("технології, читані з бирки; порожній масив, якщо не видно. "
                         f"Відомі нам: {', '.join(known[:40])}"),
     }
+    # ⚠️ ТЕКСТОВІ ПОЛЯ НЕ МАЮТЬ ЗАХИСТУ ENUM. Для полів із закритим переліком
+    # модель фізично не поверне значення поза списком; тут вона просто читає — і
+    # може ВИГАДАТИ. Реальний випадок 06.09.2026: на чіткому фото бирки Adidas
+    # написано «JQ8356», а модель видала «HQ8708».
+    # Тому для кожного текстового поля вимагаємо ДВА додаткові: власну оцінку
+    # певності (а не наше припущення) і ЯКІР — дослівний рядок, у якому вона це
+    # побачила. Вигадка такого контексту не має, а людині досить глянути.
     props["brand_text"] = {"type": ["string", "null"],
                            "description": "бренд як НАПИСАНО на бирці/лого, дослівно"}
+    props["brand_text_confidence"] = {"type": "number", "minimum": 0, "maximum": 1,
+                                      "description": "певність щодо бренда"}
     props["article_text"] = {"type": ["string", "null"],
-                             "description": "артикул виробника з бирки, дослівно (напр. CW2288-111)"}
+                             "description": ("артикул виробника з бирки, дослівно (напр. CW2288-111). "
+                                             "Якщо бирки НЕ ВИДНО або текст нерозбірливий — null. "
+                                             "НЕ вгадуй код за брендом.")}
+    props["article_text_confidence"] = {"type": "number", "minimum": 0, "maximum": 1,
+                                        "description": "певність щодо артикула"}
+    props["article_source_text"] = {
+        "type": ["string", "null"],
+        "description": ("ДОСЛІВНО весь рядок бирки, у якому стоїть артикул, разом із "
+                        "сусідніми символами. Порожньо, якщо артикул не прочитано."),
+    }
     props["model_text"] = {"type": ["string", "null"],
                            "description": "назва моделі як написано на бирці"}
+    props["model_text_confidence"] = {"type": "number", "minimum": 0, "maximum": 1,
+                                      "description": "певність щодо назви моделі"}
     return {"type": "object", "additionalProperties": False,
             "required": list(props), "properties": props}
 
@@ -318,6 +338,16 @@ def extract_and_propose(db: Session, product_id: int, photos: List[pathlib.Path]
         val = pred.get(src)
         if not val:
             continue
+        # ⚠️ Раніше тут стояло жорстке 0.9 — тобто НАШЕ припущення подавалось як
+        # оцінка моделі, і вигаданий артикул виглядав майже впевненим. Тепер
+        # беремо те, що сказала вона сама; немає оцінки — вважаємо ненадійним.
+        conf = pred.get(f"{src}_confidence")
+        anchor = pred.get("article_source_text") if src == "article_text" else None
+        if src == "article_text" and not (anchor or "").strip():
+            # Немає якоря — немає підстав вірити. Артикул без процитованого
+            # контексту з бирки не пропонуємо взагалі.
+            below_threshold.append((upd_field, val, conf))
+            continue
         if upd_field == "brand_name":
             # Модель читає лого ДОСЛІВНО, тож бачить «HEY DUDE». Проводимо через
             # той самий нормалізатор, що й ручне введення, — інакше пропозиція
@@ -326,9 +356,11 @@ def extract_and_propose(db: Session, product_id: int, photos: List[pathlib.Path]
         if _same_as_current(current.get(upd_field), val):
             already.append((upd_field, val))
             continue
-        if field_proposals.propose(db, product_id, upd_field, val, 0.9,
-                                   model=model, source_photos=photo_names):
-            proposed.append((upd_field, val, 0.9))
+        if field_proposals.propose(db, product_id, upd_field, val, conf,
+                                   model=model, source_photos=photo_names, note=anchor):
+            proposed.append((upd_field, val, conf))
+        else:
+            below_threshold.append((upd_field, val, conf))
 
     return {"ok": True, "cost_usd": cost, "model": model,
             "proposed": proposed, "below_threshold": below_threshold,

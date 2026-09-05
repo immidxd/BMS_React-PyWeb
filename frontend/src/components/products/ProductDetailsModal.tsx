@@ -274,7 +274,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
   // Пропозиції автозаповнення з фото: {поле → пропозиція}. Ключ — ім'я поля
   // ProductUpdate, те саме, що в EditCell, тож чіп стає рівно під своїм полем.
   const [proposals, setProposals] = useState<Record<string, {
-    id: number; value: string; confidence: number | null; model?: string;
+    id: number; value: string; confidence: number | null; model?: string; note?: string;
   }>>({});
   const [proposalBusy, setProposalBusy] = useState<number | null>(null);
   const [autofillRunning, setAutofillRunning] = useState(false);
@@ -2129,12 +2129,23 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     const pct = pr.confidence != null ? Math.round(pr.confidence * 100) : null;
     return (
       <span
-        title={`Розпізнано з фото${pr.model ? ` (${pr.model})` : ''}. Приймається у картку лише вашим підтвердженням.`}
+        title={[
+          // Якір іде ПЕРШИМ: для текстових полів це головне, що треба звірити
+          // з фото. Модель уже одного разу вигадала артикул — тепер вона
+          // зобовʼязана процитувати рядок, у якому його побачила.
+          pr.note ? `Прочитано з бирки: «${pr.note}»` : null,
+          `Розпізнано з фото${pr.model ? ` (${pr.model})` : ''}.`,
+          'Приймається у картку лише вашим підтвердженням.',
+        ].filter(Boolean).join('\n')}
         className={`inline-flex items-center gap-1.5 mt-1 pl-2 pr-1 py-0.5 rounded-md w-fit max-w-full
           border border-dashed border-gray-300 dark:border-gray-600
           bg-gray-50/60 dark:bg-gray-800/40 ${busy ? 'opacity-50' : ''}`}
       >
         <span className="text-[11px] text-gray-600 dark:text-gray-300 truncate">{pr.value}</span>
+        {pr.note && (
+          <span className="text-[10px] text-gray-400 dark:text-gray-500 truncate max-w-[10rem]"
+                title={pr.note}>з «{pr.note}»</span>
+        )}
         {pct != null && (
           <span className="text-[10px] text-gray-400 dark:text-gray-500 tabular-nums shrink-0">{pct}%</span>
         )}

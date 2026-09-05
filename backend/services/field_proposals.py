@@ -44,7 +44,8 @@ def threshold_for(field: str) -> float:
 
 def propose(db: Session, product_id: int, field: str, value: Optional[str],
             confidence: Optional[float], *, model: Optional[str] = None,
-            source_photos: Optional[str] = None, source: str = "photo") -> bool:
+            source_photos: Optional[str] = None, source: str = "photo",
+            note: Optional[str] = None) -> bool:
     """Зберегти пропозицію. Повертає True, якщо її прийнято до розгляду.
 
     Відмовляємо мовчки й повертаємо False, якщо значення порожнє або певність
@@ -61,30 +62,33 @@ def propose(db: Session, product_id: int, field: str, value: Optional[str],
 
     db.execute(text("""
         INSERT INTO product_field_proposals
-              (product_id, field, value, confidence, status, source, model, source_photos)
-        VALUES (:pid, :f, :v, :c, 'pending', :src, :m, :ph)
+              (product_id, field, value, confidence, status, source, model, source_photos, note)
+        VALUES (:pid, :f, :v, :c, 'pending', :src, :m, :ph, :note)
         ON CONFLICT (product_id, field) WHERE status = 'pending'
         DO UPDATE SET value = EXCLUDED.value,
                       confidence = EXCLUDED.confidence,
                       model = EXCLUDED.model,
                       source_photos = EXCLUDED.source_photos,
+                      note = EXCLUDED.note,
                       updated_at = now()
     """), {"pid": product_id, "f": field, "v": val,
-           "c": confidence, "src": source, "m": model, "ph": source_photos})
+           "c": confidence, "src": source, "m": model, "ph": source_photos,
+           "note": note})
     return True
 
 
 def open_for_product(db: Session, product_id: int) -> List[Dict[str, Any]]:
     """Невирішені пропозиції товару — те, що картка покаже чіпами."""
     rows = db.execute(text("""
-        SELECT id, field, value, confidence, model, source_photos, created_at
+        SELECT id, field, value, confidence, model, source_photos, note, created_at
         FROM product_field_proposals
         WHERE product_id = :pid AND status = 'pending'
         ORDER BY field
     """), {"pid": product_id}).fetchall()
     return [{"id": r[0], "field": r[1], "value": r[2],
              "confidence": float(r[3]) if r[3] is not None else None,
-             "model": r[4], "source_photos": r[5], "created_at": r[6]} for r in rows]
+             "model": r[4], "source_photos": r[5], "note": r[6],
+             "created_at": r[7]} for r in rows]
 
 
 def accept(db: Session, proposal_id: int) -> Optional[Dict[str, Any]]:
