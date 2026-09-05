@@ -31,9 +31,11 @@ from sqlalchemy.orm import Session
 try:
     from services import ai_budget, field_proposals
     from services.shoe_attribute_normalization import is_dead_value
+    from services.brand_normalization import canonicalize_brand_name as _canonicalize_brand_name
 except ImportError:  # pragma: no cover
     from backend.services import ai_budget, field_proposals
     from backend.services.shoe_attribute_normalization import is_dead_value
+    from backend.services.brand_normalization import canonicalize_brand_name as _canonicalize_brand_name
 
 # поле схеми → (таблиця, колонка назви, FK у products, підпис, поле ProductUpdate)
 # ⚠️ Останній елемент — ім'я, яке приймає ProductUpdate. Без нього довелося б
@@ -51,6 +53,27 @@ CLOSED_FIELDS: Dict[str, Tuple[str, str, str, str, str]] = {
                        "підкладка", "lining_name"),
     "heel_type":      ("heel_types",      "heeltypename",      "heeltypeid",
                        "тип каблука", "heel_type_name"),
+}
+
+# Значення, що означають ВІДСУТНІСТЬ ознаки. У цій базі відсутність = ПОРОЖНЄ
+# поле, а не запис: 12111 товарів із 12177 мають порожній тип каблука, і лише
+# 32 кросівки з 4175 позначені «без каблука». Пропонувати такі значення означало
+# б засмічувати картку записом там, де конвенція — тиша.
+ABSENCE_VALUES: Dict[str, set] = {
+    "heel_type":      {"без каблука", "плоский"},
+    "fastening_type": {"без застібки"},
+    "lining":         {"без підкладки"},
+}
+
+# Визначення значень для моделі. Без них модель має лише слово й тяжіє до
+# найчастішого: «рифлена» проти «рельєфна» без пояснення не розрізняються ніяк.
+VALUE_HINTS: Dict[str, Dict[str, str]] = {
+    "tread_type": {
+        "рифлена":   "дрібні паралельні рівчаки або смужки, як на рифлених чіпсах; малюнок неглибокий",
+        "рельєфна":  "виражений об'ємний малюнок різної форми, але НЕ глибокі шашки",
+        "тракторна": "глибокі масивні шашки з широкими проміжками, як у протектора трактора",
+        "гладка":    "рівна поверхня без малюнка взагалі",
+    },
 }
 
 PROMPT = (
@@ -83,11 +106,14 @@ def build_schema(db: Session) -> Dict[str, Any]:
         )).fetchall()
         values = [(n or "").strip() for n, k in rows
                   if (n or "").strip() and k > 0 and not is_dead_value(field, n)]
+        hints = VALUE_HINTS.get(field, {})
+        detail = "; ".join(f"«{v}» — {hints[v]}" for v in values if v in hints)
         props[field] = {
             "type": ["string", "null"],
             # null у переліку — це і є «чесна відмова». Без нього модель мусить вгадувати.
             "enum": values + [None],
-            "description": f"{label}; null, якщо на знімках не видно однозначно",
+            "description": (f"{label}; null, якщо на знімках не видно однозначно"
+                            + (f". Значення: {detail}" if detail else "")),
         }
         props[f"{field}_confidence"] = {
             "type": "number", "minimum": 0, "maximum": 1,
@@ -197,6 +223,31 @@ def call_gemini(model: str, api_key: str, photos: List[pathlib.Path],
 
 # ── Оркестрація ─────────────────────────────────────────────────────────────
 
+def _current_values(db: Session, product_id: int) -> Dict[str, Optional[str]]:
+    """Що вже стоїть у картці — щоб не пропонувати вже правильне.
+
+    Пропозиція, яка повторює наявне значення, це чистий шум: вона просить
+    підтвердити те, що людина колись уже й вписала. Саме через це «Hey Dude»
+    отримував пропозицію «HEY DUDE» — модель читає лого дослівно.
+    """
+    sel = ", ".join(f"{t}.{c} AS {upd}" for _f, (t, c, _fk, _l, upd) in CLOSED_FIELDS.items())
+    joins = " ".join(f"LEFT JOIN {t} ON {t}.id = p.{fk}"
+                     for _f, (t, _c, fk, _l, _u) in CLOSED_FIELDS.items())
+    row = db.execute(text(
+        f"SELECT {sel}, b.brandname AS brand_name, p.marking "
+        f"FROM products p {joins} LEFT JOIN brands b ON b.id = p.brandid "
+        f"WHERE p.id = :pid"
+    ), {"pid": product_id}).mappings().fetchone()
+    return dict(row) if row else {}
+
+
+def _same_as_current(current: Optional[str], proposed: Optional[str]) -> bool:
+    """Порівняння без урахування регістру й країв — «HEY DUDE» = «Hey Dude»."""
+    a = (current or "").strip().casefold()
+    b = (proposed or "").strip().casefold()
+    return bool(a) and a == b
+
+
 def extract_and_propose(db: Session, product_id: int, photos: List[pathlib.Path],
                         *, model: str = None, purpose: str = "autofill",
                         api_key: Optional[str] = None) -> Dict[str, Any]:
@@ -235,11 +286,18 @@ def extract_and_propose(db: Session, product_id: int, photos: List[pathlib.Path]
         return {"ok": False, "reason": err, "cost_usd": cost}
 
     photo_names = ",".join(p.name for p in photos)
-    proposed, below_threshold = [], []
+    current = _current_values(db, product_id)
+    proposed, below_threshold, already = [], [], []
     for field, (_t, _c, _fk, _label, upd_field) in CLOSED_FIELDS.items():
         value = pred.get(field)
         conf = pred.get(f"{field}_confidence")
         if not value:
+            continue
+        # Відсутність ознаки в нас позначається порожнім полем, а не записом.
+        if value in ABSENCE_VALUES.get(field, ()):
+            continue
+        if _same_as_current(current.get(upd_field), value):
+            already.append((upd_field, value))
             continue
         if field_proposals.propose(db, product_id, upd_field, value, conf,
                                    model=model, source_photos=photo_names):
@@ -258,10 +316,20 @@ def extract_and_propose(db: Session, product_id: int, photos: List[pathlib.Path]
     # Текст із бирки. Артикул має найвищий поріг — помилка там найдорожча.
     for src, upd_field in (("article_text", "marking"), ("brand_text", "brand_name")):
         val = pred.get(src)
-        if val and field_proposals.propose(db, product_id, upd_field, val, 0.9,
-                                           model=model, source_photos=photo_names):
+        if not val:
+            continue
+        if upd_field == "brand_name":
+            # Модель читає лого ДОСЛІВНО, тож бачить «HEY DUDE». Проводимо через
+            # той самий нормалізатор, що й ручне введення, — інакше пропозиція
+            # «виправляла» б правильний «Hey Dude» на крик із коробки.
+            val = _canonicalize_brand_name(val) or val
+        if _same_as_current(current.get(upd_field), val):
+            already.append((upd_field, val))
+            continue
+        if field_proposals.propose(db, product_id, upd_field, val, 0.9,
+                                   model=model, source_photos=photo_names):
             proposed.append((upd_field, val, 0.9))
 
     return {"ok": True, "cost_usd": cost, "model": model,
             "proposed": proposed, "below_threshold": below_threshold,
-            "photos": len(photos)}
+            "already_correct": already, "photos": len(photos)}

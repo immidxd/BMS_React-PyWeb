@@ -3463,8 +3463,11 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                       {/* Тиха дія: розпізнавання допоміжне, тож кнопка не має
                           конкурувати вагою з самими характеристиками. */}
                       <button
-                        type="button" onClick={runAutofill} disabled={autofillRunning}
-                        title="Розпізнати характеристики за живими знімками. Значення потраплять у картку лише після вашого підтвердження."
+                        type="button" onClick={runAutofill}
+                        disabled={autofillRunning || realCount === 0}
+                        title={realCount === 0
+                          ? 'Немає живих фото — спершу додайте знімки товару'
+                          : `Розпізнати характеристики за ${realCount} живими знімками. Значення потраплять у картку лише після вашого підтвердження.`}
                         className="inline-flex items-center gap-1 text-[11px] px-1.5 py-0.5 rounded
                           text-gray-400 hover:text-gray-700 dark:text-gray-500 dark:hover:text-gray-200
                           hover:bg-gray-100 dark:hover:bg-gray-700/60 transition-colors

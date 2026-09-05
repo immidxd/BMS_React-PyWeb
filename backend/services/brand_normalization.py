@@ -15,6 +15,8 @@ from typing import Optional
 # індексу нижче, тому parser одночасно виправляє регістр і пунктуацію.
 CANONICAL_BRAND_GROUPS: dict[str, tuple[str, ...]] = {
     "HOKA": ("Нока",),
+    # Лого на взутті надруковане великими — модель читає його дослівно.
+    "Hey Dude": ("HEY DUDE", "hey dude", "Hey dude"),
     "Crocs": ("Сrocs",),
     "Tamaris": ("Тamaris",),
     "Karl Lagerfeld": ("Кarl Lagerfeld", "KARL LAGERFELD"),

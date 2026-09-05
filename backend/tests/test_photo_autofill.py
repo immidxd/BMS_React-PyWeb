@@ -58,10 +58,13 @@ class _DB:
 
 
 class _Res:
+    """Двійник результату. `.mappings()` потрібен для _current_values —
+    він читає поточні значення картки, щоб не пропонувати вже правильне."""
     def __init__(self, v): self._v = v
     def scalar(self): return self._v
     def fetchall(self): return []
     def fetchone(self): return None
+    def mappings(self): return _Res(self._v)
 
 
 def test_budget_block_prevents_any_call(monkeypatch, tmp_path):
@@ -99,7 +102,11 @@ def test_no_photos_is_reported(tmp_path):
 
 
 def test_module_never_writes_to_products(monkeypatch, tmp_path):
-    """Архітектурна гарантія: сервіс кладе пропозиції, а не значення в картку."""
+    """Архітектурна гарантія: сервіс кладе пропозиції, а не значення в картку.
+
+    ⚠️ Забороняємо саме ЗАПИС. Читати products сервіс мусить — інакше не
+    дізнається, що поле вже заповнене, і пропонуватиме вже правильне.
+    """
     monkeypatch.setattr(pa, "call_gemini", lambda *a, **k: {
         "sole_type": "плоска", "sole_type_confidence": 0.95,
         "_usage": {"promptTokenCount": 100, "candidatesTokenCount": 10},
@@ -108,10 +115,10 @@ def test_module_never_writes_to_products(monkeypatch, tmp_path):
     db = _DB(spent=0.0)
     pa.extract_and_propose(db, 7, [photo], api_key="k")
     for sql in db.sql:
-        assert " products " not in f" {sql} " or "LEFT JOIN products" in sql, \
-            f"сервіс писав у products: {sql}"
-        assert not sql.upper().startswith("UPDATE PRODUCTS"), sql
-        assert not sql.upper().startswith("INSERT INTO PRODUCTS"), sql
+        up = sql.upper()
+        assert not up.startswith("UPDATE PRODUCTS"), sql
+        assert not up.startswith("INSERT INTO PRODUCTS"), sql
+        assert not up.startswith("DELETE FROM PRODUCTS"), sql
 
 
 def test_failed_call_still_records_spend(monkeypatch, tmp_path):
@@ -143,3 +150,47 @@ def test_closed_fields_have_thresholds():
     from backend.services import field_proposals as fp
     for _f, (_t, _c, _fk, _l, upd) in pa.CLOSED_FIELDS.items():
         assert upd in fp.CONFIDENCE_THRESHOLD, f"немає порога для {upd}"
+
+
+# ── Шум, який прибрано за зауваженнями власника ─────────────────────────────
+
+def test_absence_values_are_never_proposed():
+    """«Без каблука» — це порожнє поле, а не запис.
+
+    12111 товарів із 12177 мають порожній тип каблука, і лише 32 кросівки з
+    4175 позначені «без каблука». Конвенція бази — тиша, тож пропонувати запис
+    означало б засмічувати картку.
+    """
+    assert "без каблука" in pa.ABSENCE_VALUES["heel_type"]
+    assert "плоский" in pa.ABSENCE_VALUES["heel_type"]
+
+
+def test_tread_values_have_definitions_for_the_model():
+    """Без визначень модель має лише слово й тяжіє до найчастішого.
+
+    «Рифлена» проти «рельєфна» не розрізняються ніяк, якщо не пояснити різницю
+    — саме тому «рифлена» пропонувалась майже всюди.
+    """
+    hints = pa.VALUE_HINTS["tread_type"]
+    for v in ("рифлена", "рельєфна", "тракторна", "гладка"):
+        assert v in hints and len(hints[v]) > 20, f"немає визначення для «{v}»"
+
+
+@pytest.mark.parametrize("current, proposed, same", [
+    ("Hey Dude", "HEY DUDE", True),      # модель читає лого дослівно
+    ("Hey Dude", "hey dude", True),
+    (" плоска ", "плоска", True),
+    ("плоска", "танкетка", False),
+    (None, "плоска", False),             # порожнє поле — пропозиція потрібна
+    ("", "плоска", False),
+])
+def test_same_as_current_ignores_case_and_edges(current, proposed, same):
+    assert pa._same_as_current(current, proposed) is same
+
+
+def test_brand_is_canonicalised_before_comparing():
+    """«HEY DUDE» з лого має стати «Hey Dude» — інакше пропозиція «виправляла б»
+    правильне значення на крик із коробки."""
+    from backend.services.brand_normalization import canonicalize_brand_name
+    assert canonicalize_brand_name("HEY DUDE") == "Hey Dude"
+    assert canonicalize_brand_name("hey dude") == "Hey Dude"

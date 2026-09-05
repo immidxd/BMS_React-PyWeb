@@ -84,8 +84,8 @@ def reject_proposal(product_id: int = Path(..., ge=1),
 
 @router.post("/api/products/{product_id}/autofill", response_model=Dict[str, Any])
 def run_autofill(product_id: int = Path(..., ge=1),
-                 photos: int = Query(3, ge=1, le=10,
-                                     description="скільки живих знімків надіслати"),
+                 photos: int = Query(10, ge=1, le=12,
+                                     description="скільки живих знімків надіслати (типово всі)"),
                  db: Session = Depends(get_db)):
     """Розпізнати товар за його живими знімками й скласти пропозиції.
 
@@ -103,9 +103,15 @@ def run_autofill(product_id: int = Path(..., ge=1),
     # інакше товар, у якого є тільки живі знімки, «не знаходить» своєї папки.
     type_name = getattr(product.type, "typename", None) if product.type else None
     category = resolve_category(product.productnumber, type_name)
+    # ⚠️ Беремо ВСІ кадри, а не перші N. Програма не вміє (і не має вміти)
+    # вгадувати, на якому знімку бирка: у #Ф4372 вона пʼята з пʼяти, і при
+    # ліміті в три артикул просто не потрапляв у кадр. Ліміт Google рахує
+    # ЗАПИТИ, а не токени, тож зайві знімки не коштують квоти — лише частки
+    # цента. Стеля в 12 — запобіжник від товару з півсотнею фото.
     paths = _kind_files(product.productnumber, category, "real")[:photos]
     if not paths:
-        return {"ok": False, "reason": "у товару немає живих знімків"}
+        return {"ok": False,
+                "reason": "у товару немає живих знімків — спершу додайте фото"}
 
     result = photo_autofill.extract_and_propose(db, product_id, paths)
     # Комітимо в БУДЬ-ЯКОМУ разі: навіть на провалі в сесії лежить запис про
