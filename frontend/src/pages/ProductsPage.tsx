@@ -71,6 +71,10 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
   // «Тільки з фото»: власне фото за номером АБО підтягнуте з товару-донора —
   // та сама умова, що дає іконку 📷 у таблиці (has_photo).
   const [onlyWithPhoto, setOnlyWithPhoto] = useState<boolean>(false);
+  // Товари з невирішеними пропозиціями автозаповнення. Після пакетного
+  // дозаповнення їх сотні, і без фільтра їх довелось би шукати наосліп,
+  // відкриваючи картки одну за одною.
+  const [onlyWithProposals, setOnlyWithProposals] = useState<boolean>(false);
   const [selectedShipmentId, setSelectedShipmentId] = useState<number | undefined>(undefined);
   const [visibleOnly, setVisibleOnly] = useState<boolean>(false);
   const [sortBy, setSortBy] = useState<string>('delivery_date');
@@ -126,6 +130,7 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
         only_problematic: onlyProblematic || undefined,
         only_rostovka: onlyRostovka || undefined,
         only_with_photo: onlyWithPhoto || undefined,
+        only_with_proposals: onlyWithProposals || undefined,
         shipment_id: selectedShipmentId,
         is_visible: visibleOnly ? true : (selectedFilters.is_visible || undefined),
         min_price: selectedFilters.min_price,
@@ -189,6 +194,7 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
       only_problematic: onlyProblematic || undefined,
       only_rostovka: onlyRostovka || undefined,
       only_with_photo: onlyWithPhoto || undefined,
+      only_with_proposals: onlyWithProposals || undefined,
       shipment_id: selectedShipmentId,
       is_visible: visibleOnly ? true : (selectedFilters.is_visible || undefined),
       min_price: selectedFilters.min_price,
@@ -1001,17 +1007,18 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
     setOnlyProblematic(false);
     setOnlyRostovka(false);
     setOnlyWithPhoto(false);
+    setOnlyWithProposals(false);
     setSelectedShipmentId(undefined);
     setVisibleOnly(false);
     setPage(1);
   };
     
-    useEffect(() => { fetchProducts(); }, [page, perPage, currentSearchTerm, selectedFilters, onlyUnsold, onlyProblematic, onlyRostovka, onlyWithPhoto, selectedShipmentId, visibleOnly, sortBy, sortDir]);
+    useEffect(() => { fetchProducts(); }, [page, perPage, currentSearchTerm, selectedFilters, onlyUnsold, onlyProblematic, onlyRostovka, onlyWithPhoto, onlyWithProposals, selectedShipmentId, visibleOnly, sortBy, sortDir]);
 
     // Динамічний фасет розмірів — оновлюємо при зміні будь-якого «звужуючого»
     // фільтра/пошуку (без page/sort: вони не впливають на наявні розміри).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    useEffect(() => { fetchAvailableFacets(); }, [currentSearchTerm, selectedFilters, onlyUnsold, onlyProblematic, onlyRostovka, onlyWithPhoto, selectedShipmentId, visibleOnly]);
+    useEffect(() => { fetchAvailableFacets(); }, [currentSearchTerm, selectedFilters, onlyUnsold, onlyProblematic, onlyRostovka, onlyWithPhoto, onlyWithProposals, selectedShipmentId, visibleOnly]);
 
     useEffect(() => () => {
       abortRef.current?.abort();
@@ -1098,6 +1105,7 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
       const op = params.get('only_problematic') === 'true';
       const or_ = params.get('only_rostovka') === 'true';
       const owp = params.get('only_with_photo') === 'true';
+      const owpr = params.get('only_with_proposals') === 'true';
       const sh = params.get('shipment_id') ? Number(params.get('shipment_id')) : undefined;
       const vo = params.get('visible_only') === 'true';
       setPage(pn);
@@ -1108,6 +1116,7 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
       setOnlyProblematic(op);
       setOnlyRostovka(or_);
       setOnlyWithPhoto(owp);
+      setOnlyWithProposals(owpr);
       setSelectedShipmentId(sh);
       setVisibleOnly(vo);
       // basic selected filters
@@ -1136,13 +1145,14 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
       if (onlyProblematic) params.set('only_problematic', 'true');
       if (onlyRostovka) params.set('only_rostovka', 'true');
       if (onlyWithPhoto) params.set('only_with_photo', 'true');
+      if (onlyWithProposals) params.set('only_with_proposals', 'true');
       if (selectedShipmentId) params.set('shipment_id', String(selectedShipmentId));
       if (visibleOnly) params.set('visible_only', 'true');
       Object.entries(selectedFilters).forEach(([k, v]) => {
         if (v !== undefined && v !== null && typeof v !== 'object') params.set(k, String(v));
       });
       navigate({ pathname: location.pathname, search: params.toString() }, { replace: true });
-    }, [page, perPage, sortBy, sortDir, onlyUnsold, onlyProblematic, onlyRostovka, onlyWithPhoto, selectedShipmentId, visibleOnly, selectedFilters, navigate, location.pathname]);
+    }, [page, perPage, sortBy, sortDir, onlyUnsold, onlyProblematic, onlyRostovka, onlyWithPhoto, onlyWithProposals, selectedShipmentId, visibleOnly, selectedFilters, navigate, location.pathname]);
 
     return (
     <MainLayout
@@ -1319,6 +1329,19 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
                   className="h-4 w-4 text-emerald-500 border-gray-300 rounded focus:ring-emerald-400 dark:focus:ring-emerald-400 dark:bg-gray-700 dark:border-gray-600"
                 />
                 <span className="ml-2">з фото</span>
+              </label>
+              {/* Нейтральний відтінок навмисно: три сусідні тумблери вже
+                  зайняли помаранчевий, синій і смарагдовий, а палітра BMS
+                  монохромна — четвертий колір був би шумом. */}
+              <label className="inline-flex items-center text-[13px] whitespace-nowrap text-gray-700 dark:text-gray-300"
+                title="Тільки товари з невирішеними пропозиціями автозаповнення">
+                <input
+                  type="checkbox"
+                  checked={onlyWithProposals}
+                  onChange={(e) => { setOnlyWithProposals(e.target.checked); setPage(1); }}
+                  className="h-4 w-4 text-gray-600 border-gray-300 rounded focus:ring-gray-400 dark:focus:ring-gray-400 dark:bg-gray-700 dark:border-gray-600"
+                />
+                <span className="ml-2">з пропозиціями</span>
               </label>
             </div>
             <div className="order-1 md:order-none justify-self-center flex justify-center">

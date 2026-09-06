@@ -103,3 +103,9 @@ backend/scripts/phantom_backup_*.json
 
 # Бекапи .env — містять секрети так само, як сам .env
 .env.bak.*
+
+# Sourcemap збірки фронтенду. `frontend/build` НАВМИСНО у git (десктоп-збірка
+# роздає саме його), але карти коду там зайві: 33 файли на 12 МБ, і вони туди
+# потрапляють щоразу, коли збірку запускають повз npm-скрипт — той вимикає їх
+# через GENERATE_SOURCEMAP=false. Збирати лише `npm run build`.
+frontend/build/**/*.map
