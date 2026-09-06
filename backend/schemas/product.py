@@ -597,6 +597,10 @@ class ProductFilter(BaseModel):
     # «Тільки з фото»: власне фото за номером АБО підтягнуте з товару-донора
     # (official_photos_from) — узгоджено з полем has_photo у видачі.
     only_with_photo: Optional[bool] = None
+    # Товари з НЕВИРІШЕНИМИ пропозиціями автозаповнення. Без цього фільтра
+    # пропозиції довелось би шукати наосліп, відкриваючи картки одну за одною —
+    # після пакетного дозаповнення їх сотні.
+    only_with_proposals: Optional[bool] = None
     shipment_id: Optional[int] = None
 
 # Модель для опцій фільтрів

@@ -645,6 +645,15 @@ def _build_product_where(filters: Optional["schemas.ProductFilter"]) -> tuple:
                 )
             )""")
 
+        if getattr(filters, 'only_with_proposals', None):
+            # ⚠️ Саме EXISTS, а не JOIN: у товару буває кілька невирішених
+            # пропозицій, і сполучення розмножило б рядок, зламавши і
+            # пагінацію, і лічильник total.
+            where_conditions.append("""EXISTS (
+                SELECT 1 FROM product_field_proposals fp
+                WHERE fp.product_id = p.id AND fp.status = 'pending'
+            )""")
+
         if filters.only_with_photo:
             # Дзеркало has_photo у видачі: власне фото за номером АБО підтягнуте
             # з товару-донора (official_photos_from). Фото живуть у файловій

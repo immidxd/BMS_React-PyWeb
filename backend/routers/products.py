@@ -79,6 +79,8 @@ def get_products(
     only_problematic: Optional[bool] = Query(None),
     only_rostovka: Optional[bool] = Query(None),
     only_with_photo: Optional[bool] = Query(None),
+    only_with_proposals: Optional[bool] = Query(None,
+        description="Лише товари з невирішеними пропозиціями автозаповнення"),
     shipment_id: Optional[int] = Query(None),
     sort_by: str = Query("delivery_date", description="Sort mode: delivery_date(=за датою завозу, дефолт), delivery_date_asc, created_at(=найновіші в базі), created_at_asc, last_sold, price_desc, price_asc, id"),
     sort_dir: str = Query("desc", description="Sort direction: asc|desc"),
@@ -138,6 +140,7 @@ def get_products(
             only_problematic=only_problematic,
             only_rostovka=only_rostovka,
             only_with_photo=only_with_photo,
+            only_with_proposals=only_with_proposals,
             shipment_id=shipment_id,
         )
 
@@ -217,6 +220,8 @@ def get_available_facets(
     only_problematic: Optional[bool] = Query(None),
     only_rostovka: Optional[bool] = Query(None),
     only_with_photo: Optional[bool] = Query(None),
+    only_with_proposals: Optional[bool] = Query(None,
+        description="Лише товари з невирішеними пропозиціями автозаповнення"),
     shipment_id: Optional[int] = Query(None),
     db: Session = Depends(get_db),
 ):
@@ -242,6 +247,7 @@ def get_available_facets(
             size_letter=size_letter, is_visible=is_visible, with_stock_only=with_stock_only,
             only_unsold=only_unsold, only_problematic=only_problematic,
             only_rostovka=only_rostovka, only_with_photo=only_with_photo,
+            only_with_proposals=only_with_proposals,
             shipment_id=shipment_id,
         )
         return {
