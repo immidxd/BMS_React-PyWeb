@@ -2889,6 +2889,39 @@ def _sizes_match(a, b) -> bool:
     return _size_canon(a) == _size_canon(b)
 
 
+def _letters_match(a, b) -> bool:
+    """`_sizes_match` для БУКВЕНОГО розміру.
+
+    ⚠️ ЧОМУ ЦЕ ІСНУЄ. Ключ тотожності роками дивився лише на `sizeeu`. Для
+    взуття це працює, бо розмір там числовий. Для одягу `sizeeu` порожній, а
+    розмір живе в `size_letter` — і два рядки аркуша «XL» та «M» під одним
+    номером виглядали для парсера ОДНАКОВИМИ: порожньо проти порожнього це
+    «нема даних → збіг». Спрацьовувала гілка дубліката, `quantity` ставало 2,
+    а буква дописувалась лише в порожнє поле — тобто M мовчки зникав.
+    Реальний випадок #Ф4384 (Karl Lagerfeld, 05.09.2026): в аркуші XL і M, у
+    базі один рядок «XL ×2».
+
+    Порожнє з будь-якого боку — як і в `_sizes_match`, «нема даних» → збіг:
+    інакше старі аркуші без колонки «Буквений» почали б розщеплювати записи.
+    """
+    na = _normalize_size_letter(a or "")
+    nb = _normalize_size_letter(b or "")
+    if not na or not nb:
+        return True
+    return na == nb
+
+
+def _same_size(p: "Product", size_val, letter_val) -> bool:
+    """Чи це той самий розмір — і числовий, і буквений.
+
+    ⚠️ Єдина точка порівняння розміру. Чотири місця парсера вирішують «той
+    самий товар», і буква мусить враховуватись у КОЖНОМУ: пара
+    `_sizes_match` + `_letters_match`, розписана по місцях, це рівно та форма
+    дірки, коли поле є у трьох умовах із чотирьох.
+    """
+    return _sizes_match(p.sizeeu, size_val) and _letters_match(p.size_letter, letter_val)
+
+
 def _parse_products_sheet(
     ws: gspread.Worksheet,
     session: Session,
@@ -3308,7 +3341,7 @@ def _parse_products_sheet(
                 and _fields_match(p.typeid,  type_id)
                 and _fields_match(p.conditionid, cond_id)
                 and _fields_match(p.colorid, color_id)
-                and _sizes_match(p.sizeeu,  size_val)
+                and _same_size(p, size_val, letter_val)
             )
 
         def _sold_guard(p: "Product") -> bool:
@@ -3328,7 +3361,7 @@ def _parse_products_sheet(
             if sold_status_id is None or p.statusid != sold_status_id:
                 return False
             return not (status_id == sold_status_id
-                        and _sizes_match(p.sizeeu, size_val))
+                        and _same_size(p, size_val, letter_val))
 
         def base_match(p: "Product") -> bool:
             """Same brand/type/condition/color but ANY size (ростовка check)."""
@@ -3813,7 +3846,7 @@ def _parse_products_sheet(
                     # DIFFERENT color (both non-NULL), it's a color variant —
                     # a genuinely separate product, not an attribute edit.
                     def _is_color_variant(p) -> bool:
-                        size_same = _sizes_match(p.sizeeu, size_val)
+                        size_same = _same_size(p, size_val, letter_val)
                         color_genuinely_differs = (
                             p.colorid is not None
                             and color_id is not None
@@ -3987,7 +4020,7 @@ def _parse_products_sheet(
                         if not _fields_match(p.typeid,      type_id):  score += 1
                         if not _fields_match(p.conditionid, cond_id):  score += 1
                         if not _fields_match(p.colorid,     color_id): score += 1
-                        if not _sizes_match(p.sizeeu,       size_val): score += 2  # size is heavier
+                        if not _same_size(p, size_val, letter_val): score += 2  # size is heavier
                         return score
 
                     target = min(brand_compat_updatable, key=_conflict_score)
