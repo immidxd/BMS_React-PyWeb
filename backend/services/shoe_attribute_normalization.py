@@ -160,6 +160,31 @@ def is_known_variant(attribute: str, value: Optional[str]) -> bool:
     return bool(key) and key in _INDEX.get(attribute, {})
 
 
+# Значення, що означають ВІДСУТНІСТЬ ознаки. У цій базі відсутність = ПОРОЖНЄ
+# поле, а не запис: 12111 товарів із 12177 мають порожній тип каблука, і лише
+# 32 кросівки з 4175 позначені «без каблука». Пропонувати такі значення означало
+# б засмічувати картку записом там, де конвенція — тиша.
+#
+# ⚠️ КЛЮЧ — ім'я поля ProductUpdate, і живе правило САМЕ ТУТ, а не в шарі.
+# Спершу воно стояло лише в `photo_autofill`, і шар профілю його не знав —
+# створив 25 пропозицій «без каблука», тобто рівно той шум, який прибирали.
+# Спільне правило мусить лежати в спільному місці.
+ABSENCE_VALUES: Final[dict[str, tuple[str, ...]]] = {
+    "heel_type_name":      ("без каблука", "плоский"),
+    "fastening_type_name": ("без застібки",),
+    "lining_name":         ("без підкладки",),
+}
+
+
+def is_absence_value(field: str, value: Optional[str]) -> bool:
+    """Чи це значення означає «ознаки немає» → у картці має бути порожньо."""
+    key = taxonomy_comparison_key(" ".join((value or "").strip().split()))
+    if not key:
+        return False
+    return any(taxonomy_comparison_key(v) == key
+               for v in ABSENCE_VALUES.get(field, ()))
+
+
 def is_dead_value(attribute: str, value: Optional[str]) -> bool:
     """Чи це значення довідника, за яким немає жодного товару."""
     key = taxonomy_comparison_key(" ".join((value or "").strip().split()))

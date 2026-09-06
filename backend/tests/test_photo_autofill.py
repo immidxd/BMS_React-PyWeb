@@ -161,8 +161,24 @@ def test_absence_values_are_never_proposed():
     4175 позначені «без каблука». Конвенція бази — тиша, тож пропонувати запис
     означало б засмічувати картку.
     """
-    assert "без каблука" in pa.ABSENCE_VALUES["heel_type"]
-    assert "плоский" in pa.ABSENCE_VALUES["heel_type"]
+    from backend.services.shoe_attribute_normalization import is_absence_value
+    assert is_absence_value("heel_type_name", "без каблука")
+    assert is_absence_value("heel_type_name", "плоский")
+    assert not is_absence_value("heel_type_name", "танкетка")
+
+
+def test_the_absence_rule_is_shared_between_layers():
+    """Правило живе в ОДНОМУ місці — інакше шар, що його не бачить, порушує.
+
+    Саме так і сталось: копія лежала лише в `photo_autofill`, шар профілю про
+    неї не знав і створив 25 пропозицій «без каблука».
+    """
+    import inspect
+    from backend.services import model_profile, shoe_attribute_normalization
+    assert not hasattr(pa, "ABSENCE_VALUES"), \
+        "у photo_autofill знову зʼявилась власна копія правила"
+    assert "is_absence_value" in inspect.getsource(model_profile.unanimous)
+    assert shoe_attribute_normalization.ABSENCE_VALUES
 
 
 def test_tread_values_have_definitions_for_the_model():

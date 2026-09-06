@@ -46,11 +46,11 @@ from sqlalchemy.orm import Session
 
 try:
     from services import ai_budget, barcode_reader, field_proposals, model_profile
-    from services.shoe_attribute_normalization import is_dead_value
+    from services.shoe_attribute_normalization import is_dead_value, is_absence_value
     from services.brand_normalization import canonicalize_brand_name as _canonicalize_brand_name
 except ImportError:  # pragma: no cover
     from backend.services import ai_budget, barcode_reader, field_proposals, model_profile
-    from backend.services.shoe_attribute_normalization import is_dead_value
+    from backend.services.shoe_attribute_normalization import is_dead_value, is_absence_value
     from backend.services.brand_normalization import canonicalize_brand_name as _canonicalize_brand_name
 
 # поле схеми → (таблиця, колонка назви, FK у products, підпис, поле ProductUpdate)
@@ -71,15 +71,10 @@ CLOSED_FIELDS: Dict[str, Tuple[str, str, str, str, str]] = {
                        "тип каблука", "heel_type_name"),
 }
 
-# Значення, що означають ВІДСУТНІСТЬ ознаки. У цій базі відсутність = ПОРОЖНЄ
-# поле, а не запис: 12111 товарів із 12177 мають порожній тип каблука, і лише
-# 32 кросівки з 4175 позначені «без каблука». Пропонувати такі значення означало
-# б засмічувати картку записом там, де конвенція — тиша.
-ABSENCE_VALUES: Dict[str, set] = {
-    "heel_type":      {"без каблука", "плоский"},
-    "fastening_type": {"без застібки"},
-    "lining":         {"без підкладки"},
-}
+# ⚠️ Правило «відсутність = порожнє поле» живе в
+# `shoe_attribute_normalization`, спільно з шаром профілю. Тримати тут власну
+# копію вже коштувало 25 пропозицій «без каблука» від шару, який тієї копії не
+# бачив. Псевдонім лишено заради тестів і читабельності викликів нижче.
 
 # Визначення значень для моделі. Без них модель має лише слово й тяжіє до
 # найчастішого: «рифлена» проти «рельєфна» без пояснення не розрізняються ніяк.
@@ -556,7 +551,7 @@ def extract_and_propose(db: Session, product_id: int, photos: List[pathlib.Path]
         if not value:
             continue
         # Відсутність ознаки в нас позначається порожнім полем, а не записом.
-        if value in ABSENCE_VALUES.get(field, ()):
+        if is_absence_value(upd_field, value):
             continue
         if _same_as_current(current.get(upd_field), value):
             already.append((upd_field, value))

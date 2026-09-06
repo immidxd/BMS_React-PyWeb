@@ -188,3 +188,33 @@ def test_silent_without_a_model_name(monkeypatch, tmp_path):
                         lambda db, b, m, exclude_id=None: calls.append(1) or {"records": 0})
     pa.extract_and_propose(_DB(spent=0.0), 7, [_photo(tmp_path)], api_key="k")
     assert calls == [], "шукали профіль за самим брендом"
+
+
+# ── Одностайне сміття ───────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("value, leaked", [
+    ("4.5", True),          # розмір, що затік у довідник пакування (2 товари)
+    ("719-04", True),       # код виробника в полі колекції (Anna Lucci «8101»)
+    ("530", True),
+    ("D", False),           # повнота — легітимна літера
+    ("2E", False),          # повнота теж буває з цифрою
+    ("Hoka One One", False),
+    ("Без рукавів", False), # блуза esmara — у базі не лише взуття
+    ("Шотландський", False),
+])
+def test_leaked_data_is_recognised(value, leaked):
+    assert mp.looks_like_leaked_data(value) is leaked
+
+
+def test_unanimous_garbage_is_still_garbage():
+    """Найважливіше обмеження шару, назване прямо.
+
+    Перевірка одностайності захищає від СУПЕРЕЧКИ між записами, але не від
+    послідовно НЕПРАВИЛЬНОГО значення. «4.5» у довіднику пакування стояло на
+    двох товарах — шар збирався додати його ще двом і підвищити сміття до
+    чотирьох.
+    """
+    prof = {"fields": {"packaging_name": _agg("4.5", 2, 2)}}
+    assert mp.unanimous(prof) == {}
+    # а справжня назва тієї ж групи проходить
+    assert mp.unanimous({"fields": {"packaging_name": _agg("коробка", 2, 2)}})

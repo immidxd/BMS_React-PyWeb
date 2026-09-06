@@ -16,11 +16,17 @@ Per-item поля (розмір, колір, ціна, стан, заміри) �
 """
 from __future__ import annotations
 
+import re
 from collections import Counter
 from typing import Any, Dict, Optional
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
+
+try:
+    from services.shoe_attribute_normalization import is_absence_value
+except ImportError:  # pragma: no cover
+    from backend.services.shoe_attribute_normalization import is_absence_value
 
 # Model-level поля, які агрегуємо. Порядок і склад узгоджені з карткою товару.
 FIELDS = ["type_name", "subtype_name", "style_name", "gender_name", "season",
@@ -167,6 +173,26 @@ def current_values(db: Session, product_id: int) -> Dict[str, Any]:
     return dict(row) if row else {}
 
 
+# Значення з самих цифр і роздільників. Категорія так не називається — це
+# завжди чужі дані, що затекли в довідник: розмір, код моделі, номер партії.
+_NUMERIC_ONLY = re.compile(r"^[\d\s.,/-]+$")
+
+
+def looks_like_leaked_data(value: str) -> bool:
+    """Чи це не назва категорії, а чуже значення, що затекло в довідник.
+
+    ⚠️ ЧОМУ ЦЕ ПОТРІБНО САМЕ ТУТ. Перевірка одностайності захищає від
+    СУПЕРЕЧКИ між записами, але не від послідовно НЕПРАВИЛЬНОГО значення: якщо
+    два товари мають однакове сміття, шар упевнено рознесе його далі. Так
+    знайшлось «4.5» у довіднику пакування (розмір, що затік на 2 товари) — шар
+    збирався додати його ще двом, підвищивши сміття до чотирьох.
+
+    `is_dead_value` тут не годиться: воно про значення БЕЗ товарів, а це — з
+    товарами. Ознака саме така: категорія ніколи не називається самими цифрами.
+    """
+    return bool(_NUMERIC_ONLY.match((value or "").strip()))
+
+
 def unanimous(profile: Dict[str, Any], min_records: int = MIN_RECORDS) -> Dict[str, tuple]:
     """Поля, на яких минулі записи СХОДЯТЬСЯ повністю → {поле: (значення, n)}.
 
@@ -185,8 +211,12 @@ def unanimous(profile: Dict[str, Any], min_records: int = MIN_RECORDS) -> Dict[s
         if total < min_records or int(agg.get("share") or 0) != total:
             continue
         value = (agg.get("value") or "").strip()
-        if value:
-            out[field] = (value, total)
+        if not value or looks_like_leaked_data(value):
+            continue
+        # «Без каблука» — це порожнє поле, а не запис; конвенція бази — тиша.
+        if is_absence_value(field, value):
+            continue
+        out[field] = (value, total)
     return out
 
 
