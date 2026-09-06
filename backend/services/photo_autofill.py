@@ -257,6 +257,57 @@ def call_gemini(model: str, api_key: str, photos: List[pathlib.Path],
     return out
 
 
+# ── Перечитування артикула ──────────────────────────────────────────────────
+
+# Схема з ОДНИМ питанням. Це не економія, а суть прийому: та сама модель на тих
+# самих знімках #Ф4372 при повній схемі з двадцяти полів видала «HQ8708», потім
+# «JQ8716», а при цій схемі — двічі правильний «JQ8356». Розпорошена увага і є
+# джерелом вигадки.
+ARTICLE_SCHEMA: Dict[str, Any] = {
+    "type": "object", "additionalProperties": False,
+    "required": ["article_text", "article_source_text"],
+    "properties": {
+        "article_text": {
+            "type": ["string", "null"],
+            "description": ("артикул виробника з бирки, ДОСЛІВНО (напр. CW2288-111). "
+                            "Якщо бирки не видно або текст нерозбірливий — null. "
+                            "НЕ вгадуй код за брендом."),
+        },
+        "article_source_text": {
+            "type": ["string", "null"],
+            "description": "дослівно весь рядок бирки, у якому стоїть артикул",
+        },
+    },
+}
+
+
+def verify_article(db: Session, model: str, api_key: str,
+                   photos: List[pathlib.Path], value: str,
+                   *, purpose: str, product_id: int) -> bool:
+    """Друге, незалежне прочитання артикула. True — обидва читання збіглись.
+
+    ⚠️ ЗАКРИТА ВІДМОВА. Помилка виклику (429, 5xx, розбір відповіді) означає
+    «не підтверджено», а не «нехай іде». Артикул — єдине поле без захисту
+    enum'ом, і ціна помилки в ньому найвища: він їде в аркуш і на маркетплейси.
+
+    Вибірка, на якій це перевірялось, мала лише чотири чисті точки (решту
+    зіпсували 429): три правильні прочитання збіглись, одне вигадане —
+    розійшлось. Правило свідомо схиляє до зайвого питання людині, а не до
+    зайвої довіри.
+    """
+    pred = call_gemini(model, api_key, photos, ARTICLE_SCHEMA)
+    usage = pred.pop("_usage", {}) or {}
+    err = pred.get("_error")
+    ai_budget.record(db, model=model, purpose=purpose, product_id=product_id,
+                     prompt_tokens=int(usage.get("promptTokenCount", 0)),
+                     output_tokens=int(usage.get("candidatesTokenCount", 0)),
+                     ok=not err, error=err)
+    if err:
+        return False
+    second = pred.get("article_text")
+    return bool(second) and _norm_code(second) == _norm_code(value)
+
+
 # ── Оркестрація ─────────────────────────────────────────────────────────────
 
 def _current_values(db: Session, product_id: int) -> Dict[str, Optional[str]]:
@@ -370,7 +421,7 @@ def _profile_layer(db: Session, product_id: int, pred: Dict[str, Any],
     for field, (value, n) in agreed.items():
         if _same_as_current(now.get(field), value):
             # Картка вже містить це значення — минулі записи його підтвердили.
-            confirmed.append((field, value))
+            confirmed.append((field, value, "profile"))
             continue
         conf = model_profile.confidence_for(n)
         note = f"{n} минулих записів «{src}» сходяться на «{value}»"
@@ -459,14 +510,17 @@ def extract_and_propose(db: Session, product_id: int, photos: List[pathlib.Path]
         marking_now = current.get("marking")
         if marking_now and _norm_code(marking_now) in {
                 _norm_code(c) for c in barcode_reader.article_candidates(hits)}:
-            confirmed.append(("marking", marking_now))
+            confirmed.append(("marking", marking_now, "barcode"))
         _profile_layer(db, product_id, pred_box, current,
                        proposed, already, confirmed, made)
         payload.setdefault("proposed", proposed)
         payload.setdefault("already_correct", already)
         payload["barcodes"] = [{"format": h.format, "text": h.text, "photo": h.photo}
                                for h in hits]
-        payload["confirmed_by_barcode"] = confirmed
+        # ⚠️ Ключ саме `confirmed`, а не `confirmed_by_barcode`: сюди пише й
+        # шар профілю. Третій елемент кортежу називає шар — інакше звіт
+        # приписував би штрихкоду те, що сказала власна база.
+        payload["confirmed"] = confirmed
         return payload
 
     api_key = api_key or os.getenv("GEMINI_API_KEY")
@@ -539,22 +593,31 @@ def extract_and_propose(db: Session, product_id: int, photos: List[pathlib.Path]
         conf = pred.get(f"{src}_confidence")
         anchor = pred.get("article_source_text") if src == "article_text" else None
         if src == "article_text":
+            # ⚠️ АРТИКУЛ НЕ ПРОХОДИТЬ З ОДНОГО СВІДКА. Це єдине поле без захисту
+            # enum'ом: решту модель ОБИРАЄ зі списку, а артикул ЧИТАЄ — і може
+            # вигадати. Зафіксовано на живих товарах: #Ф4372 отримав «HQ8708»,
+            # потім «JQ8716» при правді «JQ8356»; #Ф4128 — «1000200018-100070332»
+            # при правді «100033704». Обидві вигадки мали певність 0.95 і
+            # процитований якір, бо модель вигадує і якір теж.
             if _norm_code(val) in norm_codes:
-                # ДВА НЕЗАЛЕЖНІ ШАРИ ЗІЙШЛИСЬ. Модель прочитала очима те саме,
-                # що машина витягла зі штрихкоду з контрольною сумою. Вигадка
-                # так збігтися не може — саме заради цієї миті шар і будувався.
+                # СВІДОК ПЕРШИЙ І НАЙКРАЩИЙ: штрихкод із контрольною сумою.
+                # Вигадка так збігтися не може, і додаткових питань не треба.
                 conf = 1.0
                 anchor = f"{anchor or ''} · підтверджено штрихкодом".strip(" ·")
-            elif not (anchor or "").strip():
-                # Немає ані якоря, ані підтвердження кодом — немає підстав
-                # вірити. Артикул без процитованого контексту не пропонуємо.
+            elif verify_article(db, model, api_key, photos, val,
+                                purpose=purpose, product_id=product_id):
+                # СВІДОК ДРУГИЙ: незалежне перечитування вузькою схемою. Певність
+                # беремо власну, не 1.0 — це та сама модель, лише зосереджена.
+                conf = max(float(conf or 0), 0.90)
+                anchor = f"{anchor or ''} · підтверджено повторним прочитанням".strip(" ·")
+                if codes:
+                    anchor = f"{anchor} · у штрихкоді: {', '.join(codes)}"
+            else:
+                # Свідка немає. Пропозицію не створюємо взагалі: порожнє поле
+                # коштує людині кілька секунд, а впевнено неправильний артикул
+                # їде в аркуш і на маркетплейси.
                 below_threshold.append((upd_field, val, conf))
                 continue
-            elif codes:
-                # Розбіжність САМА ПО СОБІ не викриває вигадку: артикул часто
-                # надрукований на бирці, але у штрихкод не вкладений. Тому не
-                # відхиляємо, а показуємо людині обидві версії поруч.
-                anchor = f"{anchor} · у штрихкоді: {', '.join(codes)}"
         if upd_field == "brand_name":
             # Модель читає лого ДОСЛІВНО, тож бачить «HEY DUDE». Проводимо через
             # той самий нормалізатор, що й ручне введення, — інакше пропозиція

@@ -143,8 +143,7 @@ def test_profile_confirms_what_the_card_already_has(monkeypatch, tmp_path):
                  "lining_name": "текстиль"},
            profile_fields={"lining_name": _agg("текстиль", 4, 4)})
     out = pa.extract_and_propose(_DB(spent=0.0), 7, [_photo(tmp_path)], api_key="k")
-    assert ("lining_name", "текстиль") in out["confirmed_by_barcode"] or \
-           ("lining_name", "текстиль") in out["already_correct"] or True
+    assert ("lining_name", "текстиль", "profile") in out["confirmed"]
     assert not any(f == "lining_name" for f, *_ in out["proposed"])
 
 

@@ -197,37 +197,103 @@ def test_brand_is_canonicalised_before_comparing():
 
 
 # ── Захист від вигаданого артикула ──────────────────────────────────────────
+#
+# Артикул — ЄДИНЕ поле без захисту enum'ом: решту модель обирає зі списку, а
+# артикул читає, і тому може вигадати. Зафіксовано на живих товарах:
+#   #Ф4372 Adidas — «HQ8708», потім «JQ8716» при правді «JQ8356»;
+#   #Ф4128 Reebok — «1000200018-100070332» при правді «100033704».
+# Обидві вигадки мали певність 0.95 І процитований якір — модель вигадує і
+# якір теж, тож сам по собі він захистом не є. Захист — ДРУГИЙ СВІДОК.
 
-def test_article_without_anchor_is_refused(monkeypatch, tmp_path):
-    """Артикул без процитованого рядка з бирки НЕ пропонується.
+def _two_call_fake(main: dict, second_article):
+    """Двійник, що розрізняє основний виклик і перечитування артикула.
 
-    Реальний випадок 06.09.2026: на чіткому фото бирки Adidas написано
-    «JQ8356», а модель видала «HQ8708» — не помилилась у символі, а вигадала
-    правдоподібний код. Поля із закритим переліком від цього захищені enum'ом;
-    текстові — ні, бо їх читають, а не обирають. Якір і є їхнім захистом.
+    Перечитування йде вузькою `ARTICLE_SCHEMA` — саме за нею й розрізняємо.
     """
-    monkeypatch.setattr(pa, "call_gemini", lambda *a, **k: {
-        "article_text": "HQ8708", "article_text_confidence": 0.9,
-        "article_source_text": None,            # ← контексту немає
-        "_usage": {"promptTokenCount": 100, "candidatesTokenCount": 10},
-    })
-    photo = tmp_path / "x_001.webp"; photo.write_bytes(b"f")
-    out = pa.extract_and_propose(_DB(spent=0.0), 7, [photo], api_key="k")
+    def fake(model, api_key, photos, schema):
+        if schema is pa.ARTICLE_SCHEMA:
+            return {"article_text": second_article, "article_source_text": "x",
+                    "_usage": {"promptTokenCount": 10, "candidatesTokenCount": 1}}
+        out = dict(main)
+        out["_usage"] = {"promptTokenCount": 100, "candidatesTokenCount": 10}
+        return out
+    return fake
+
+
+def test_article_is_refused_when_the_reread_disagrees(monkeypatch, tmp_path):
+    """Два прочитання розійшлись → пропозиції немає взагалі.
+
+    Саме так поводився #Ф4128: «1000200018-100070332» проти «100070332».
+    Порожнє поле коштує людині кілька секунд, а впевнено неправильний артикул
+    їде в аркуш і на маркетплейси.
+    """
+    monkeypatch.setattr(pa, "call_gemini", _two_call_fake(
+        {"article_text": "HQ8708", "article_text_confidence": 0.95,
+         "article_source_text": "LHG 029003 A HQ8708"}, "JQ8716"))
+    out = pa.extract_and_propose(_DB(spent=0.0), 7, [_photo(tmp_path)], api_key="k")
     assert out["ok"] is True
     assert not any(f == "marking" for f, *_ in out["proposed"]), \
-        "артикул без якоря потрапив у пропозиції"
+        "артикул без другого свідка потрапив у пропозиції"
     assert any(f == "marking" for f, *_ in out["below_threshold"])
 
 
-def test_article_with_anchor_is_proposed(monkeypatch, tmp_path):
-    monkeypatch.setattr(pa, "call_gemini", lambda *a, **k: {
-        "article_text": "JQ8356", "article_text_confidence": 0.95,
-        "article_source_text": "LHG 029003 A JQ8356",
-        "_usage": {"promptTokenCount": 100, "candidatesTokenCount": 10},
-    })
-    photo = tmp_path / "x_001.webp"; photo.write_bytes(b"f")
-    out = pa.extract_and_propose(_DB(spent=0.0), 7, [photo], api_key="k")
-    assert ("marking", "JQ8356", 0.95) in out["proposed"]
+def test_article_is_refused_when_the_reread_fails(monkeypatch, tmp_path):
+    """Помилка перечитування (429, 5xx) — це «не підтверджено», а не «нехай іде».
+
+    Закрита відмова: збій мережі не має ставати мовчазним дозволом.
+    """
+    def fake(model, api_key, photos, schema):
+        if schema is pa.ARTICLE_SCHEMA:
+            return {"_error": "HTTP 429: quota", "_usage": {"promptTokenCount": 10}}
+        return {"article_text": "HQ8708", "article_text_confidence": 0.95,
+                "article_source_text": "LHG 029003 A HQ8708",
+                "_usage": {"promptTokenCount": 100, "candidatesTokenCount": 10}}
+    monkeypatch.setattr(pa, "call_gemini", fake)
+    out = pa.extract_and_propose(_DB(spent=0.0), 7, [_photo(tmp_path)], api_key="k")
+    assert not any(f == "marking" for f, *_ in out["proposed"])
+
+
+def test_article_passes_when_the_reread_agrees(monkeypatch, tmp_path):
+    """Обидва прочитання збіглись — свідок є. Певність не нижча за 0.90, але й
+    не 1.0: це та сама модель, лише зосереджена вузькою схемою."""
+    monkeypatch.setattr(pa, "call_gemini", _two_call_fake(
+        {"article_text": "JQ8356", "article_text_confidence": 0.7,
+         "article_source_text": "LHG 029003 A JQ8356"}, "jq-8356"))
+    out = pa.extract_and_propose(_DB(spent=0.0), 7, [_photo(tmp_path)], api_key="k")
+    assert ("marking", "JQ8356", 0.90) in out["proposed"]
+
+
+def test_barcode_spares_the_extra_call(monkeypatch, tmp_path):
+    """Штрихкод — кращий свідок за перечитування, і зайвий виклик не потрібен."""
+    calls = []
+    def fake(model, api_key, photos, schema):
+        calls.append("вузька" if schema is pa.ARTICLE_SCHEMA else "повна")
+        return {"article_text": "JQ8356", "article_text_confidence": 0.95,
+                "article_source_text": "LHG 029003 A JQ8356",
+                "_usage": {"promptTokenCount": 100, "candidatesTokenCount": 10}}
+    monkeypatch.setattr(pa, "call_gemini", fake)
+    monkeypatch.setattr(pa.barcode_reader, "read_photos",
+                        lambda ps: [_bc("Code128", "F2 JQ8356")])
+    out = pa.extract_and_propose(_DB(spent=0.0), 7, [_photo(tmp_path)], api_key="k")
+    assert ("marking", "JQ8356", 1.0) in out["proposed"]
+    assert calls == ["повна"], f"зайвий виклик при наявному штрихкоді: {calls}"
+
+
+def test_the_verification_call_is_billed(monkeypatch, tmp_path):
+    """Другий виклик коштує грошей — стеля має про нього знати."""
+    monkeypatch.setattr(pa, "call_gemini", _two_call_fake(
+        {"article_text": "JQ8356", "article_text_confidence": 0.95,
+         "article_source_text": "x"}, "JQ8356"))
+    db = _DB(spent=0.0)
+    pa.extract_and_propose(db, 7, [_photo(tmp_path)], api_key="k")
+    assert sum(1 for q in db.sql if "INSERT INTO ai_spend_log" in q) == 2, \
+        "перечитування не записане у витрати"
+
+
+def test_article_schema_asks_one_thing(monkeypatch):
+    """Сенс вузької схеми саме у вузькості: на #Ф4372 повна схема з двадцяти
+    полів дала «HQ8708» і «JQ8716», а ця — двічі правильний «JQ8356»."""
+    assert set(pa.ARTICLE_SCHEMA["properties"]) == {"article_text", "article_source_text"}
 
 
 def test_text_fields_use_model_confidence_not_ours():
@@ -398,5 +464,5 @@ def test_barcode_confirms_existing_marking_without_the_ai(monkeypatch, tmp_path)
                         lambda ps: [_bc("DataMatrix", "F2,0225,196432723249,POP454928,GR530AA")])
     monkeypatch.setattr(pa, "_current_values", lambda db, pid: {"marking": "GR530AA"})
     out = pa.extract_and_propose(_DB(), 7, [_photo(tmp_path)], api_key=None)
-    assert out["confirmed_by_barcode"] == [("marking", "GR530AA")]
+    assert out["confirmed"] == [("marking", "GR530AA", "barcode")]
     assert out["proposed"] == [], "підтвердження не має ставати пропозицією"
