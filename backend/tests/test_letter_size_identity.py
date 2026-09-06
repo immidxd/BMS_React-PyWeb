@@ -115,3 +115,51 @@ def test_every_identity_check_uses_the_shared_comparison():
 
 def test_same_size_is_actually_used():
     assert PARSER_SRC.count("_same_size(p, size_val, letter_val)") >= 4
+
+
+# ── Унікальний ключ у БД мусить знати про букву ─────────────────────────────
+#
+# ⚠️ ЧОМУ ЦЬОГО ФАЙЛУ БУЛО ЗАМАЛО. Тести нижче спершу проходили ВСІ, а парсер
+# усе одно склеював XL і M. Порівняння працювало, `id_match` чесно казав
+# «різні» — але вставка другого рядка падала на унікальному індексі
+# `(номер, sizeeu, колір)`, а обробник IntegrityError шукав «той самий» рядок
+# ТИМ САМИМ неповним ключем і піднімав quantity наявному. Вада була на два
+# поверхи нижче, ніж перевіряли тести.
+#
+# Наскрізна перевірка живе в `backend/scripts/verify_parser_size_branching.py`
+# (потребує БД). Тут закріплюємо лише те, що можна перевірити статично.
+
+def test_unique_index_declaration_includes_letter():
+    """Оголошення індексу в database.py мусить містити size_letter."""
+    src = (BACKEND / "models" / "database.py").read_text(encoding="utf-8")
+    assert "uix_products_num_size_color_letter" in src
+    idx = next(ln for ln in src.splitlines()
+               if "create unique index" in ln and "uix_products_num_size_color_letter" in ln)
+    for col in ("productnumber", "sizeeu", "size_letter", "colorid"):
+        assert col in idx, f"індекс не враховує {col}"
+    assert "drop index if exists uix_products_num_size_color" in src, \
+        "старий індекс не прибирається — наявні бази лишаться на вужчому ключі"
+
+
+def test_conflict_lookup_mirrors_the_index():
+    """Запит після IntegrityError шукає рядок ТИМ САМИМ ключем, що й індекс.
+
+    Розбіжність тут означає: вставка впала через одне поле, а «винуватця»
+    шукають за іншим — і знаходять чужий рядок.
+    """
+    body = ast.get_source_segment(
+        PARSER_SRC,
+        next(n for n in ast.parse(PARSER_SRC).body
+             if isinstance(n, ast.FunctionDef) and n.name == "_row_by_unique_key"))
+    for col in ("productnumber", "sizeeu", "size_letter", "colorid"):
+        assert f"Product.{col}" in body, f"пошук конфлікту не враховує {col}"
+
+
+def test_no_hand_rolled_conflict_lookups_remain():
+    """Усі обробники конфлікту йдуть через спільний помічник.
+
+    Чотири копії запиту — рівно та форма дірки, коли поле додали у три з них.
+    """
+    assert "Product.colorid == color_id," in PARSER_SRC
+    stray = PARSER_SRC.count("Product.sizeeu == (size_val or None),\n                        Product.colorid")
+    assert stray == 0, "лишився запит конфлікту повз _row_by_unique_key"

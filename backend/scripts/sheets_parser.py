@@ -2922,6 +2922,25 @@ def _same_size(p: "Product", size_val, letter_val) -> bool:
     return _sizes_match(p.sizeeu, size_val) and _letters_match(p.size_letter, letter_val)
 
 
+def _row_by_unique_key(session, Product, pnum, size_val, letter_val, color_id):
+    """Рядок, що виграв гонку на унікальному індексі.
+
+    ⚠️ ДЗЕРКАЛО `uix_products_num_size_color_letter`. Викликається лише з
+    обробників IntegrityError: вставка не пройшла, бо такий рядок уже є — і
+    треба знайти саме ТОЙ, з яким стався конфлікт.
+
+    Тому набір полів мусить збігатися з індексом ТОЧНО. Поки буква не входила
+    ні туди, ні сюди, запит знаходив рядок «XL» для рядка журналу «M» і піднімав
+    йому `quantity` — так #Ф4384 і став «XL ×2».
+    """
+    return session.query(Product).filter(
+        Product.productnumber == pnum,
+        Product.sizeeu == (size_val or None),
+        Product.size_letter == (letter_val or None),
+        Product.colorid == color_id,
+    ).first()
+
+
 def _parse_products_sheet(
     ws: gspread.Worksheet,
     session: Session,
@@ -3661,11 +3680,8 @@ def _parse_products_sheet(
                     # Conflict on uix_products_num_size_color: record was inserted by a
                     # previous row in this batch (flush not yet visible to query).
                     # Find it now and set quantity via seen_in_run.
-                    existing_now = session.query(Product).filter(
-                        Product.productnumber == pnum,
-                        Product.sizeeu == (size_val or None),
-                        Product.colorid == color_id,
-                    ).first()
+                    existing_now = _row_by_unique_key(
+                        session, Product, pnum, size_val, letter_val, color_id)
                     if existing_now:
                         cnt = seen_in_run.get(existing_now.id, 0) + 1
                         seen_in_run[existing_now.id] = cnt
@@ -3767,11 +3783,8 @@ def _parse_products_sheet(
                     sp_add.rollback()
                     if product in session:
                         session.expunge(product)
-                    existing_now = session.query(Product).filter(
-                        Product.productnumber == base_pnum,
-                        Product.sizeeu == (size_val or None),
-                        Product.colorid == color_id,
-                    ).first()
+                    existing_now = _row_by_unique_key(
+                        session, Product, base_pnum, size_val, letter_val, color_id)
                     if existing_now:
                         cnt = seen_in_run.get(existing_now.id, 0) + 1
                         seen_in_run[existing_now.id] = cnt
@@ -3969,11 +3982,8 @@ def _parse_products_sheet(
                             sp_add.rollback()
                             if product in session:
                                 session.expunge(product)
-                            existing_now = session.query(Product).filter(
-                                Product.productnumber == target_pnum,
-                                Product.sizeeu == (size_val or None),
-                                Product.colorid == color_id,
-                            ).first()
+                            existing_now = _row_by_unique_key(
+                                session, Product, target_pnum, size_val, letter_val, color_id)
                             if existing_now:
                                 cnt = seen_in_run.get(existing_now.id, 0) + 1
                                 seen_in_run[existing_now.id] = cnt
@@ -4143,11 +4153,8 @@ def _parse_products_sheet(
                         sp_add.rollback()
                         if product in session:
                             session.expunge(product)
-                        existing_now = session.query(Product).filter(
-                            Product.productnumber == target_pnum,
-                            Product.sizeeu == (size_val or None),
-                            Product.colorid == color_id,
-                        ).first()
+                        existing_now = _row_by_unique_key(
+                            session, Product, target_pnum, size_val, letter_val, color_id)
                         if existing_now:
                             cnt = seen_in_run.get(existing_now.id, 0) + 1
                             seen_in_run[existing_now.id] = cnt

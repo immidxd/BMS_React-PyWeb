@@ -116,7 +116,14 @@ def init_db():
             conn.execute(text("alter table if exists orders add column if not exists source_fingerprint varchar(64)"))
             conn.execute(text("create index if not exists ix_orders_source_fingerprint on orders (source_fingerprint)"))
             conn.execute(text("DROP INDEX IF EXISTS uix_products_num_size"))
-            conn.execute(text("create unique index if not exists uix_products_num_size_color on products (productnumber, COALESCE(sizeeu, ''), COALESCE(colorid, 0))"))
+            # ⚠️ БУКВЕНИЙ РОЗМІР — ЧАСТИНА КЛЮЧА. Без нього два рядки журналу
+            # під одним номером, XL і M, стикались тут: у одягу `sizeeu`
+            # порожній з обох боків. Парсер ловив IntegrityError і замість
+            # другого рядка піднімав `quantity` наявному, через що #Ф4384
+            # показувався як «XL ×2», а M зникав. Старий індекс прибираємо, щоб
+            # наявні бази зійшлись на новому.
+            conn.execute(text("drop index if exists uix_products_num_size_color"))
+            conn.execute(text("create unique index if not exists uix_products_num_size_color_letter on products (productnumber, COALESCE(sizeeu, ''), COALESCE(size_letter, ''), COALESCE(colorid, 0))"))
             # Розширюємо поля довідників — в Google Sheets значення можуть бути довшими за 50 символів
             conn.execute(text("alter table if exists colors alter column colorname type varchar(100)"))
             conn.execute(text("alter table if exists brands alter column brandname type varchar(150)"))
