@@ -246,3 +246,157 @@ def test_schema_asks_for_confidence_on_every_text_field():
     src = inspect_source = __import__("inspect").getsource(pa.build_schema)
     for f in ("brand_text", "article_text", "model_text"):
         assert f'props["{f}_confidence"]' in src, f"немає певності для {f}"
+
+
+# ── Шар штрихкодів і зустріч двох шарів ─────────────────────────────────────
+
+def _bc(fmt, text, photo="x_001.webp"):
+    from backend.services.barcode_reader import BarcodeHit
+    return BarcodeHit(fmt, text, photo)
+
+
+def _photo(tmp_path):
+    p = tmp_path / "x_001.webp"
+    p.write_bytes(b"f")
+    return p
+
+
+def test_gtin_from_barcode_is_proposed(monkeypatch, tmp_path):
+    """EAN13 → поле gtin із певністю 1.0. Контрольна сума не «майже певна»."""
+    monkeypatch.setattr(pa.barcode_reader, "read_photos",
+                        lambda ps: [_bc("EAN13", "4895245119084")])
+    monkeypatch.setattr(pa, "call_gemini", lambda *a, **k: {
+        "_usage": {"promptTokenCount": 10, "candidatesTokenCount": 1}})
+    out = pa.extract_and_propose(_DB(spent=0.0), 7, [_photo(tmp_path)], api_key="k")
+    assert ("gtin", "4895245119084", 1.0) in out["proposed"]
+
+
+def test_barcode_layer_survives_exhausted_budget(monkeypatch, tmp_path):
+    """Головне в багатошаровості: вимкнена модель не гасить безкоштовний шар.
+
+    Зчитування коду не коштує нічого й не залежить від провайдера — блокувати
+    його разом із платним шаром означало б втратити єдине джерело `gtin`.
+    """
+    monkeypatch.setattr(pa.barcode_reader, "read_photos",
+                        lambda ps: [_bc("EAN13", "4895245119084")])
+    called = []
+    monkeypatch.setattr(pa, "call_gemini", lambda *a, **k: called.append(1) or {})
+
+    from backend.services import ai_budget
+    out = pa.extract_and_propose(_DB(spent=ai_budget.MONTHLY_CAP_USD), 7,
+                                 [_photo(tmp_path)], api_key="k")
+    assert out["budget_blocked"] is True
+    assert called == [], "платний шар усе одно викликали"
+    assert ("gtin", "4895245119084", 1.0) in out["proposed"]
+
+
+def test_barcode_layer_survives_missing_key(monkeypatch, tmp_path):
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.setattr(pa.barcode_reader, "read_photos",
+                        lambda ps: [_bc("EAN13", "4895245119084")])
+    out = pa.extract_and_propose(_DB(), 7, [_photo(tmp_path)], api_key=None)
+    assert out["ok"] is False
+    assert ("gtin", "4895245119084", 1.0) in out["proposed"]
+
+
+def test_barcode_confirms_article_without_anchor(monkeypatch, tmp_path):
+    """Збіг двох незалежних шарів замінює якір і піднімає певність до 1.0.
+
+    Модель прочитала очима те саме, що машина витягла з коду. Так збігтися
+    вигадка не може — це сильніше свідчення, ніж процитований рядок бирки.
+    """
+    monkeypatch.setattr(pa.barcode_reader, "read_photos",
+                        lambda ps: [_bc("DataMatrix", "F2,0225,POP454928,JQ8356")])
+    monkeypatch.setattr(pa, "call_gemini", lambda *a, **k: {
+        "article_text": "jq-8356",            # інше написання того самого коду
+        "article_text_confidence": 0.4,       # модель сама собі не вірить
+        "article_source_text": None,          # якоря немає
+        "_usage": {"promptTokenCount": 10, "candidatesTokenCount": 1}})
+    out = pa.extract_and_propose(_DB(spent=0.0), 7, [_photo(tmp_path)], api_key="k")
+    assert ("marking", "jq-8356", 1.0) in out["proposed"]
+
+
+def test_disagreement_is_shown_not_hidden(monkeypatch, tmp_path):
+    """Розбіжність не викриває вигадку — артикул часто не вкладений у код.
+
+    Тому пропозицію не знімаємо, але поруч показуємо, що саме лежить у коді.
+    """
+    seen = {}
+    monkeypatch.setattr(pa.barcode_reader, "read_photos",
+                        lambda ps: [_bc("DataMatrix", "F2,POP454928")])
+    monkeypatch.setattr(pa.field_proposals, "propose",
+                        lambda db, pid, f, v, c, **kw: seen.update({f: kw}) or True)
+    monkeypatch.setattr(pa, "call_gemini", lambda *a, **k: {
+        "article_text": "JQ8356", "article_text_confidence": 0.95,
+        "article_source_text": "LHG 029003 A JQ8356",
+        "_usage": {"promptTokenCount": 10, "candidatesTokenCount": 1}})
+    pa.extract_and_propose(_DB(spent=0.0), 7, [_photo(tmp_path)], api_key="k")
+    assert "POP454928" in seen["marking"]["note"]
+    assert "LHG 029003 A JQ8356" in seen["marking"]["note"]
+
+
+def test_barcode_does_not_repeat_a_filled_gtin(monkeypatch, tmp_path):
+    """Код уже стоїть у картці — пропозиція була б чистим шумом."""
+    monkeypatch.setattr(pa.barcode_reader, "read_photos",
+                        lambda ps: [_bc("EAN13", "4895245119084")])
+    monkeypatch.setattr(pa, "_current_values",
+                        lambda db, pid: {"gtin": "4895245119084"})
+    monkeypatch.setattr(pa, "call_gemini", lambda *a, **k: {
+        "_usage": {"promptTokenCount": 10, "candidatesTokenCount": 1}})
+    out = pa.extract_and_propose(_DB(spent=0.0), 7, [_photo(tmp_path)], api_key="k")
+    assert out["proposed"] == []
+    assert ("gtin", "4895245119084") in out["already_correct"]
+
+
+@pytest.mark.parametrize("a, b, same", [
+    ("CW2288-111", "cw2288 111", True),
+    ("JQ8356", "jq-8356", True),
+    ("JQ8356", "HQ8708", False),
+])
+def test_norm_code_ignores_punctuation_and_case(a, b, same):
+    assert (pa._norm_code(a) == pa._norm_code(b)) is same
+
+
+def test_gtin_threshold_forbids_a_guessed_code():
+    """Поріг 0.99 — заборона на майбутнє: «прочитати цифри очима» не пройде."""
+    from backend.services import field_proposals as fp
+    assert fp.threshold_for("gtin") > 0.95
+
+
+@pytest.mark.parametrize("in_card, scanned, same", [
+    # #Ф2523: у картці UPC-A (12 цифр), сканер дає EAN-13 із провідним нулем.
+    ("197002067565", "0197002067565", True),
+    ("0197002067565", "197002067565", True),
+    ("4895245119084", "4895245119084", True),
+    ("4895245119084", "2230059181797", False),
+])
+def test_gtin_lengths_are_the_same_number(in_card, scanned, same):
+    """GTIN-8/-12/-13/-14 — один номер, доповнений нулями до різної довжини."""
+    assert (pa._norm_gtin(in_card) == pa._norm_gtin(scanned)) is same
+
+
+def test_padded_gtin_is_not_offered_as_a_correction(monkeypatch, tmp_path):
+    """Реальний #Ф2523: пропозиція «виправити» код на нього ж — чистий шум."""
+    monkeypatch.setattr(pa.barcode_reader, "read_photos",
+                        lambda ps: [_bc("EAN13", "0197002067565")])
+    monkeypatch.setattr(pa, "_current_values",
+                        lambda db, pid: {"gtin": "197002067565"})
+    monkeypatch.setattr(pa, "call_gemini", lambda *a, **k: {
+        "_usage": {"promptTokenCount": 10, "candidatesTokenCount": 1}})
+    out = pa.extract_and_propose(_DB(spent=0.0), 7, [_photo(tmp_path)], api_key="k")
+    assert out["proposed"] == []
+
+
+def test_barcode_confirms_existing_marking_without_the_ai(monkeypatch, tmp_path):
+    """Підтвердження — факт чистого шару, і воно не має зникати без моделі.
+
+    Реальний #Ф4132: DataMatrix містить «GR530AA», рівно той артикул, що вже
+    вписаний у картку.
+    """
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.setattr(pa.barcode_reader, "read_photos",
+                        lambda ps: [_bc("DataMatrix", "F2,0225,196432723249,POP454928,GR530AA")])
+    monkeypatch.setattr(pa, "_current_values", lambda db, pid: {"marking": "GR530AA"})
+    out = pa.extract_and_propose(_DB(), 7, [_photo(tmp_path)], api_key=None)
+    assert out["confirmed_by_barcode"] == [("marking", "GR530AA")]
+    assert out["proposed"] == [], "підтвердження не має ставати пропозицією"

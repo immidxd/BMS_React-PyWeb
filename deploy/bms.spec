@@ -43,6 +43,7 @@ _COLLECT = [
     "oauth2client",
     "PIL",             # Pillow
     "pillow_heif",     # HEIC (iPhone-фото)
+    "zxingcpp",        # штрихкоди на фото → шар автозаповнення (бінарне розширення)
     "pydantic",
     "pydantic_core",
     "sqlalchemy",

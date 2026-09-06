@@ -18,12 +18,12 @@ try:
     from models.database import get_db
     from models import models
     from schemas import product as schemas
-    from services import product_service, catalog_sync_service, journal_sync
+    from services import product_service, catalog_sync_service, journal_sync, model_profile
 except ImportError:
     from backend.models.database import get_db
     from backend.models import models
     from backend.schemas import product as schemas
-    from backend.services import product_service, catalog_sync_service, journal_sync
+    from backend.services import product_service, catalog_sync_service, journal_sync, model_profile
 
 logger = logging.getLogger(__name__)
 
@@ -762,84 +762,13 @@ def get_model_profile(
     """«Профіль моделі» (1.5): агрегат по ВСІХ записах бренд+модель у базі —
     найчастіші model-level характеристики + матеріали. Живить розумне
     заповнення картки/QuickAdd (підтяг у ПОРОЖНІ поля; нічого не пише сам).
-    Per-item поля (розмір/колір/ціна/стан/заміри) свідомо НЕ включені."""
-    rows = db.execute(text("""
-        SELECT p.id, p.productnumber,
-               t.typename AS type_name, st.subtypename AS subtype_name,
-               sty.stylename AS style_name, g.gendername AS gender_name,
-               p.season, p.collection, p.geometric_shape, p.width,
-               mc.countryname AS manufacturer_country_name,
-               ht.heeltypename AS heel_type_name, lt.lacetypename AS lace_type_name,
-               so.soletypename AS sole_type_name, tsh.toeshapename AS toe_shape_name,
-               trd.treadtypename AS tread_type_name,
-               ft.fasteningtypename AS fastening_type_name, li.liningname AS lining_name,
-               (SELECT string_agg(t2.technologyname, ', ' ORDER BY pt.ord)
-                  FROM product_technologies pt
-                  JOIN technologies t2 ON t2.id = pt.technology_id
-                 WHERE pt.product_id = p.id) AS technology_name,
-               pk.packagingname AS packaging_name
-        FROM products p
-        JOIN brands b ON b.id = p.brandid
-        LEFT JOIN types t ON t.id = p.typeid
-        LEFT JOIN subtypes st ON st.id = p.subtypeid
-        LEFT JOIN styles sty ON sty.id = p.styleid
-        LEFT JOIN genders g ON g.id = p.genderid
-        LEFT JOIN countries mc ON mc.id = p.manufacturercountryid
-        LEFT JOIN heel_types ht ON ht.id = p.heeltypeid
-        LEFT JOIN lace_types lt ON lt.id = p.lacetypeid
-        LEFT JOIN sole_types so ON so.id = p.soletypeid
-        LEFT JOIN tread_types trd ON trd.id = p.treadtypeid
-        LEFT JOIN toe_shapes tsh ON tsh.id = p.toeshapeid
-        LEFT JOIN fastening_types ft ON ft.id = p.fasteningtypeid
-        LEFT JOIN linings li ON li.id = p.liningid
-        LEFT JOIN technologies tech ON tech.id = p.technologyid
-        LEFT JOIN packaging_types pk ON pk.id = p.packagingid
-        WHERE lower(btrim(b.brandname)) = lower(btrim(:brand))
-          AND lower(btrim(coalesce(p.model, ''))) = lower(btrim(:model))
-          AND (CAST(:exclude_id AS int) IS NULL OR p.id != :exclude_id)
-    """), {"brand": brand_name, "model": model, "exclude_id": exclude_id}).mappings().all()
+    Per-item поля (розмір/колір/ціна/стан/заміри) свідомо НЕ включені.
 
-    if not rows:
-        return {"records": 0, "numbers": [], "fields": {}, "materials": {}}
-
-    from collections import Counter
-    FIELDS = ["type_name", "subtype_name", "style_name", "gender_name", "season",
-              "collection", "geometric_shape", "width", "manufacturer_country_name",
-              "heel_type_name", "lace_type_name", "sole_type_name", "toe_shape_name",
-              "tread_type_name",
-              "fastening_type_name", "lining_name", "technology_name", "packaging_name"]
-    fields_out: Dict[str, Any] = {}
-    for f in FIELDS:
-        vals = [str(r[f]).strip() for r in rows if r[f] is not None and str(r[f]).strip()]
-        if not vals:
-            continue
-        cnt = Counter(vals)
-        top, n = cnt.most_common(1)[0]
-        fields_out[f] = {"value": top, "share": n, "total": len(vals),
-                         "options": dict(cnt.most_common(3))}
-
-    # Матеріали: CSV на (товар, позиція) → мода по позиції
-    ids = [r["id"] for r in rows]
-    mat_rows = db.execute(text("""
-        SELECT pm.product_id, pm.position, m.materialname
-        FROM product_materials pm JOIN materials m ON m.id = pm.material_id
-        WHERE pm.product_id = ANY(:ids)
-        ORDER BY pm.product_id, pm.position, pm.ord
-    """), {"ids": ids}).fetchall()
-    per_prod: Dict[tuple, list] = {}
-    for pid, pos, name in mat_rows:
-        per_prod.setdefault((pid, pos), []).append(name)
-    by_pos: Dict[str, Counter] = {}
-    for (_pid, pos), names in per_prod.items():
-        by_pos.setdefault(pos, Counter())[", ".join(names)] += 1
-    materials_out = {}
-    for pos, cnt in by_pos.items():
-        top, n = cnt.most_common(1)[0]
-        materials_out[pos] = {"value": top, "share": n, "total": sum(cnt.values())}
-
-    numbers = sorted({r["productnumber"] for r in rows})
-    return {"records": len(rows), "numbers": numbers[:10],
-            "fields": fields_out, "materials": materials_out}
+    ⚠️ Логіка живе в `services.model_profile` і НЕ дублюється тут: той самий
+    агрегат читає третій шар автозаповнення. Дві копії розійшлися б, і картка
+    показувала б людині одне, а пропозиції спирались на інше.
+    """
+    return model_profile.profile_for(db, brand_name, model, exclude_id)
 
 
 @router.get("/api/products/{product_id}/journal-url")

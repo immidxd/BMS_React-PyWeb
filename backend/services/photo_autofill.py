@@ -11,6 +11,22 @@
 Модуль НЕ пише в products. Він кладе пропозиції, і на цьому його роль
 закінчується — рішення завжди за людиною.
 
+ДВА ШАРИ, НЕ ОДИН. Крім моделі тут працює `barcode_reader` — детерміноване
+зчитування штрихкоду. Він безкоштовний, не помиляється (контрольна сума) і
+працює навіть коли модель вимкнена, без ключа або за вичерпаною стелею. Коли
+обидва шари сходяться на артикулі — це підтвердження, якого сама модель дати не
+може; коли розходяться — людина бачить обидві версії. Спрацьовує шар приблизно
+на кожному десятому товарі, тож він саме ДОДАТКОВИЙ, а не заміна.
+
+ТРЕТІЙ ШАР — `model_profile`: що каже наша власна база про цю саму модель.
+Теж безкоштовний, теж не залежить від провайдера, і єдиний, чиї дані ввела
+людина. Він озивається лише там, де минулі записи бренда+моделі СХОДЯТЬСЯ
+повністю, — інакше мовчить.
+
+Усі три шари сходяться в одному місці — `extract_and_propose`. Збіг двох шарів
+підіймає певність; розбіжність нічого не приховує, а показує людині обидві
+версії поруч.
+
 ЄДИНЕ ДЖЕРЕЛО СХЕМИ. Побудова переліків живе саме тут, а скрипт виміру
 (`scripts/autofill_eval.py`) імпортує її звідси. Якби кожен будував свою, вимір
 показував би якість на одній схемі, а бойовий шлях працював на іншій — і
@@ -29,11 +45,11 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 try:
-    from services import ai_budget, field_proposals
+    from services import ai_budget, barcode_reader, field_proposals, model_profile
     from services.shoe_attribute_normalization import is_dead_value
     from services.brand_normalization import canonicalize_brand_name as _canonicalize_brand_name
 except ImportError:  # pragma: no cover
-    from backend.services import ai_budget, field_proposals
+    from backend.services import ai_budget, barcode_reader, field_proposals, model_profile
     from backend.services.shoe_attribute_normalization import is_dead_value
     from backend.services.brand_normalization import canonicalize_brand_name as _canonicalize_brand_name
 
@@ -254,11 +270,137 @@ def _current_values(db: Session, product_id: int) -> Dict[str, Optional[str]]:
     joins = " ".join(f"LEFT JOIN {t} ON {t}.id = p.{fk}"
                      for _f, (t, _c, fk, _l, _u) in CLOSED_FIELDS.items())
     row = db.execute(text(
-        f"SELECT {sel}, b.brandname AS brand_name, p.marking "
+        f"SELECT {sel}, b.brandname AS brand_name, p.marking, p.gtin, p.model "
         f"FROM products p {joins} LEFT JOIN brands b ON b.id = p.brandid "
         f"WHERE p.id = :pid"
     ), {"pid": product_id}).mappings().fetchone()
     return dict(row) if row else {}
+
+
+def _norm_code(v: Optional[str]) -> str:
+    """Артикул до порівнянного вигляду: лише літери й цифри, у верхньому.
+
+    «CW2288-111», «cw2288 111» і «CW2288111» — той самий код, надрукований
+    по-різному на бирці, у штрихкоді й у нашій картці.
+    """
+    return "".join(ch for ch in (v or "") if ch.isalnum()).upper()
+
+
+def _norm_gtin(v: Optional[str]) -> str:
+    """GTIN до порівнянного вигляду: цифри без провідних нулів.
+
+    ⚠️ GTIN-8, -12, -13 і -14 — це ОДИН І ТОЙ САМИЙ номер, доповнений нулями до
+    різної довжини. Реальний випадок #Ф2523: у картці стоїть «197002067565»
+    (дванадцять цифр, UPC-A), а сканер віддає «0197002067565» (тринадцять,
+    EAN-13). Порівняння рядків вважає їх різними — і шар пропонує «виправити»
+    правильне значення на нього ж. Це рівно той шум, який ми прибирали з решти
+    полів, тільки тут його не видно оком.
+    """
+    return "".join(ch for ch in (v or "") if ch.isdigit()).lstrip("0")
+
+
+def _read_barcodes(photos: List[pathlib.Path]):
+    """Зчитування кодів у ФОНІ, паралельно з викликом моделі.
+
+    Це не передчасна оптимізація, а точний збіг характеру двох робіт: виклик
+    моделі — це чекання мережі, а декодування — процесор у C++-розширенні, яке
+    відпускає GIL. Послідовно вони дали б 10–16 секунд зверху на кожен товар;
+    паралельно шар штрихкодів не коштує майже нічого за часом.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+    pool = ThreadPoolExecutor(max_workers=1)
+    try:
+        return pool.submit(barcode_reader.read_photos, photos)
+    finally:
+        pool.shutdown(wait=False)
+
+
+def _propose_gtin(db: Session, product_id: int, hits, current: Dict[str, Any],
+                  proposed: list, already: list) -> None:
+    """Роздрібний штрихкод → поле `gtin`. Певність 1.0, і це не перебільшення.
+
+    EAN-13 несе контрольну суму: він або сходиться, або не декодується взагалі.
+    Тут нема чого «оцінювати» — на відміну від прочитаного моделлю тексту.
+
+    Поле важливе саме тому, що досі порожнє майже всюди (0.2%): жоден інший шар
+    його не заповнює, бо вручну переписувати тринадцять цифр ніхто не буде.
+    """
+    g = barcode_reader.pick_gtin(hits)
+    if not g:
+        return
+    if _norm_gtin(current.get("gtin")) == _norm_gtin(g.text):
+        already.append(("gtin", g.text))
+        return
+    if field_proposals.propose(db, product_id, "gtin", g.text, 1.0,
+                               model=None, source="barcode",
+                               source_photos=g.photo,
+                               note=f"{g.format} зчитано з {g.photo}"):
+        proposed.append(("gtin", g.text, 1.0))
+
+
+def _profile_layer(db: Session, product_id: int, pred: Dict[str, Any],
+                   current: Dict[str, Any], proposed: list, already: list,
+                   confirmed: list, made: Dict[str, tuple]) -> None:
+    """Третій шар: що каже наша власна база про цю саму модель.
+
+    КЛЮЧ ПОШУКУ. Спершу беремо бренд і модель із самої картки. Якщо їх там ще
+    немає — а для нового товару їх зазвичай і немає, — беремо прочитане
+    моделлю. Це не робить шар залежним від здогаду: сам ФАКТ, що прочитана
+    назва знайшлась у нашому каталозі, є її перевіркою. Вигадана назва просто
+    ні на що не натрапить, і шар промовчить.
+
+    ЩО РОБИМО ПРИ РОЗБІЖНОСТІ. Пропозицію моделі не затираємо: вона дивилась на
+    ЦЮ пару, а профіль — на інші пари тієї ж моделі. Натомість дописуємо
+    альтернативу в якір, щоб людина бачила обидві версії поруч і не мусила
+    відкривати минулі записи руками.
+    """
+    brand = (current.get("brand_name") or pred.get("brand_text") or "").strip()
+    model_name = (current.get("model") or pred.get("model_text") or "").strip()
+    if not brand or len(model_name) < 2:
+        return
+    prof = model_profile.profile_for(db, brand, model_name, exclude_id=product_id)
+    if not prof.get("records"):
+        return
+    agreed = model_profile.unanimous(prof)
+    if not agreed:
+        return
+
+    now = model_profile.current_values(db, product_id)
+    src = f"{brand} {model_name}"
+    for field, (value, n) in agreed.items():
+        if _same_as_current(now.get(field), value):
+            # Картка вже містить це значення — минулі записи його підтвердили.
+            confirmed.append((field, value))
+            continue
+        conf = model_profile.confidence_for(n)
+        note = f"{n} минулих записів «{src}» сходяться на «{value}»"
+
+        if field in made:
+            ai_value, ai_conf, ai_note = made[field]
+            if _same_as_current(ai_value, value):
+                # ДВА НЕЗАЛЕЖНІ ШАРИ ЗІЙШЛИСЬ: модель побачила на фото те саме,
+                # що люди вписували в минулі пари цієї моделі. Підіймаємо
+                # певність до кращої з двох і кажемо людині, чому.
+                best = max(conf, float(ai_conf or 0))
+                field_proposals.propose(db, product_id, field, value, best,
+                                        source="photo+profile",
+                                        note=f"{ai_note + ' · ' if ai_note else ''}{note}")
+                proposed[:] = [(f, v, best) if f == field else (f, v, c)
+                               for f, v, c in proposed]
+                made[field] = (value, best, note)
+            else:
+                # Розбіжність. Рішення лишаємо за моделлю (вона бачила саме цю
+                # пару), але альтернативу показуємо поруч.
+                merged = f"{ai_note + ' · ' if ai_note else ''}у минулих записах «{src}»: {value}"
+                field_proposals.propose(db, product_id, field, ai_value, ai_conf,
+                                        source="photo", note=merged)
+            continue
+
+        # Модель тут нічого не сказала — пропонує профіль, і це безкоштовно.
+        if field_proposals.propose(db, product_id, field, value, conf,
+                                   source="profile", note=note):
+            proposed.append((field, value, conf))
+            made[field] = (value, conf, note)
 
 
 def _same_as_current(current: Optional[str], proposed: Optional[str]) -> bool:
@@ -277,18 +419,65 @@ def extract_and_propose(db: Session, product_id: int, photos: List[pathlib.Path]
     й скільки відсіяв поріг певності.
     """
     model = model or DEFAULT_MODEL
-    api_key = api_key or os.getenv("GEMINI_API_KEY")
-    if not api_key:
-        return {"ok": False, "reason": "немає GEMINI_API_KEY"}
     photos = [p for p in photos if p.exists()]
     if not photos:
         return {"ok": False, "reason": "немає знімків"}
 
+    current = _current_values(db, product_id)
+    proposed, below_threshold, already, confirmed = [], [], [], []
+    # ⚠️ Що саме запропонувала модель: поле → (значення, певність, якір).
+    # Потрібне шару профілю: `propose()` робить upsert по (товар, поле), тож
+    # без цього третій шар сліпо затирав би пропозицію другого.
+    made: Dict[str, tuple] = {}
+
+    # ⚠️ ПОРЯДОК ТУТ ЗМІСТОВНИЙ. Шар штрихкодів іде ПЕРШИМ і не залежить від
+    # моделі ні в чому: він безкоштовний і працює навіть без ключа та за
+    # вичерпаною стелею. Тому обидві відмови нижче повертають те, що він
+    # устиг знайти, — інакше вимкнена модель гасила б і безкоштовний шар.
+    barcode_future = _read_barcodes(photos)
+    _box: list = []
+    # Те, що прочитала модель, — щоб шар профілю міг це врахувати. Порожньо,
+    # якщо модель не викликалась узагалі (немає ключа, вичерпана стеля).
+    pred_box: Dict[str, Any] = {}
+
+    def _hits():
+        """Дочекатись фонового читання. Результат беремо один раз."""
+        if not _box:
+            _box.append(barcode_future.result())
+        return _box[0]
+
+    def _finish(payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Спільний вихід: чим би не скінчилась модель, штрихкоди зберігаються."""
+        hits = _hits()
+        _propose_gtin(db, product_id, hits, current, proposed, already)
+        # ⚠️ Підтвердження рахуємо САМЕ ТУТ, а не поруч із перехресною
+        # перевіркою нижче: це факт чистого шару штрихкодів, і він не має
+        # зникати через те, що модель вимкнена або стеля вичерпана.
+        # Реальний випадок #Ф4132: DataMatrix New Balance містить «GR530AA» —
+        # рівно той артикул, що вписаний руками. Пропонувати нічого, але знати,
+        # що значення перевірене машиною, корисно.
+        marking_now = current.get("marking")
+        if marking_now and _norm_code(marking_now) in {
+                _norm_code(c) for c in barcode_reader.article_candidates(hits)}:
+            confirmed.append(("marking", marking_now))
+        _profile_layer(db, product_id, pred_box, current,
+                       proposed, already, confirmed, made)
+        payload.setdefault("proposed", proposed)
+        payload.setdefault("already_correct", already)
+        payload["barcodes"] = [{"format": h.format, "text": h.text, "photo": h.photo}
+                               for h in hits]
+        payload["confirmed_by_barcode"] = confirmed
+        return payload
+
+    api_key = api_key or os.getenv("GEMINI_API_KEY")
+    if not api_key:
+        return _finish({"ok": False, "reason": "немає GEMINI_API_KEY"})
+
     verdict = ai_budget.guard(db, purpose=purpose)
     if not verdict.allowed:
         # Відмова бюджету — НЕ помилка. Автозаповнення просто вимикається.
-        return {"ok": False, "reason": verdict.reason, "budget_blocked": True,
-                "spent_usd": verdict.spent_usd}
+        return _finish({"ok": False, "reason": verdict.reason, "budget_blocked": True,
+                        "spent_usd": verdict.spent_usd})
 
     schema = build_schema(db)
     pred = call_gemini(model, api_key, photos, schema)
@@ -303,11 +492,10 @@ def extract_and_propose(db: Session, product_id: int, photos: List[pathlib.Path]
         ok=not err, error=err,
     )
     if err:
-        return {"ok": False, "reason": err, "cost_usd": cost}
+        return _finish({"ok": False, "reason": err, "cost_usd": cost})
 
+    pred_box.update(pred)
     photo_names = ",".join(p.name for p in photos)
-    current = _current_values(db, product_id)
-    proposed, below_threshold, already = [], [], []
     for field, (_t, _c, _fk, _label, upd_field) in CLOSED_FIELDS.items():
         value = pred.get(field)
         conf = pred.get(f"{field}_confidence")
@@ -322,6 +510,7 @@ def extract_and_propose(db: Session, product_id: int, photos: List[pathlib.Path]
         if field_proposals.propose(db, product_id, upd_field, value, conf,
                                    model=model, source_photos=photo_names):
             proposed.append((upd_field, value, conf))
+            made[upd_field] = (value, conf, None)
         else:
             below_threshold.append((upd_field, value, conf))
 
@@ -332,6 +521,12 @@ def extract_and_propose(db: Session, product_id: int, photos: List[pathlib.Path]
         if csv and field_proposals.propose(db, product_id, "technology_name", csv,
                                            None, model=model, source_photos=photo_names):
             proposed.append(("technology_name", csv, None))
+            made["technology_name"] = (csv, None, None)
+
+    # Другий шар зустрічається з першим. Тут і тільки тут ми чекаємо на фонове
+    # читання — далі йде єдине місце, де його результат щось вирішує.
+    codes = barcode_reader.article_candidates(_hits())
+    norm_codes = {_norm_code(c) for c in codes}
 
     # Текст із бирки. Артикул має найвищий поріг — помилка там найдорожча.
     for src, upd_field in (("article_text", "marking"), ("brand_text", "brand_name")):
@@ -343,11 +538,23 @@ def extract_and_propose(db: Session, product_id: int, photos: List[pathlib.Path]
         # беремо те, що сказала вона сама; немає оцінки — вважаємо ненадійним.
         conf = pred.get(f"{src}_confidence")
         anchor = pred.get("article_source_text") if src == "article_text" else None
-        if src == "article_text" and not (anchor or "").strip():
-            # Немає якоря — немає підстав вірити. Артикул без процитованого
-            # контексту з бирки не пропонуємо взагалі.
-            below_threshold.append((upd_field, val, conf))
-            continue
+        if src == "article_text":
+            if _norm_code(val) in norm_codes:
+                # ДВА НЕЗАЛЕЖНІ ШАРИ ЗІЙШЛИСЬ. Модель прочитала очима те саме,
+                # що машина витягла зі штрихкоду з контрольною сумою. Вигадка
+                # так збігтися не може — саме заради цієї миті шар і будувався.
+                conf = 1.0
+                anchor = f"{anchor or ''} · підтверджено штрихкодом".strip(" ·")
+            elif not (anchor or "").strip():
+                # Немає ані якоря, ані підтвердження кодом — немає підстав
+                # вірити. Артикул без процитованого контексту не пропонуємо.
+                below_threshold.append((upd_field, val, conf))
+                continue
+            elif codes:
+                # Розбіжність САМА ПО СОБІ не викриває вигадку: артикул часто
+                # надрукований на бирці, але у штрихкод не вкладений. Тому не
+                # відхиляємо, а показуємо людині обидві версії поруч.
+                anchor = f"{anchor} · у штрихкоді: {', '.join(codes)}"
         if upd_field == "brand_name":
             # Модель читає лого ДОСЛІВНО, тож бачить «HEY DUDE». Проводимо через
             # той самий нормалізатор, що й ручне введення, — інакше пропозиція
@@ -359,9 +566,9 @@ def extract_and_propose(db: Session, product_id: int, photos: List[pathlib.Path]
         if field_proposals.propose(db, product_id, upd_field, val, conf,
                                    model=model, source_photos=photo_names, note=anchor):
             proposed.append((upd_field, val, conf))
+            made[upd_field] = (val, conf, anchor)
         else:
             below_threshold.append((upd_field, val, conf))
 
-    return {"ok": True, "cost_usd": cost, "model": model,
-            "proposed": proposed, "below_threshold": below_threshold,
-            "already_correct": already, "photos": len(photos)}
+    return _finish({"ok": True, "cost_usd": cost, "model": model,
+                    "below_threshold": below_threshold, "photos": len(photos)})

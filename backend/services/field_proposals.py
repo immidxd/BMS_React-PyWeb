@@ -32,6 +32,12 @@ CONFIDENCE_THRESHOLD: Dict[str, float] = {
     "technology_name":     0.80,   # читається з бирки: або видно, або ні
     "brand_name":          0.80,
     "marking":             0.85,   # артикул: помилка тут найдорожча
+    # Штрихкод приймаємо ЛИШЕ від детермінованого читання з контрольною сумою.
+    # Поріг 0.99 — це заборона на майбутнє: якщо колись зʼявиться спокуса дати
+    # моделі «прочитати цифри очима», вона не пройде сюди навіть із певністю
+    # 0.95. Тринадцять цифр, у яких помилка в одній не помітна оком, — рівно
+    # той випадок, де здогад неприпустимий.
+    "gtin":                0.99,
 }
 DEFAULT_THRESHOLD = 0.80
 
@@ -80,15 +86,19 @@ def propose(db: Session, product_id: int, field: str, value: Optional[str],
 def open_for_product(db: Session, product_id: int) -> List[Dict[str, Any]]:
     """Невирішені пропозиції товару — те, що картка покаже чіпами."""
     rows = db.execute(text("""
-        SELECT id, field, value, confidence, model, source_photos, note, created_at
+        SELECT id, field, value, confidence, model, source_photos, note, created_at,
+               source
         FROM product_field_proposals
         WHERE product_id = :pid AND status = 'pending'
         ORDER BY field
     """), {"pid": product_id}).fetchall()
+    # ⚠️ `source` віддаємо обовʼязково: у картці чіп мусить назвати ШАР, який
+    # заговорив. «Штрихкод» і «модель прочитала» — це різна міра довіри, і
+    # людина ухвалює рішення саме за нею.
     return [{"id": r[0], "field": r[1], "value": r[2],
              "confidence": float(r[3]) if r[3] is not None else None,
              "model": r[4], "source_photos": r[5], "note": r[6],
-             "created_at": r[7]} for r in rows]
+             "created_at": r[7], "source": r[8]} for r in rows]
 
 
 def accept(db: Session, proposal_id: int) -> Optional[Dict[str, Any]]:

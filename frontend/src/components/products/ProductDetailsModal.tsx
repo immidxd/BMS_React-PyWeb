@@ -271,10 +271,13 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
   const [profileNote, setProfileNote] = useState<string | null>(null);
   const [promBusy, setPromBusy] = useState(false);  // експорт/видалення товару на Prom
   const [promPublished, setPromPublished] = useState(false);  // чіп-стан «на Prom»
-  // Пропозиції автозаповнення з фото: {поле → пропозиція}. Ключ — ім'я поля
+  // Пропозиції автозаповнення: {поле → пропозиція}. Ключ — ім'я поля
   // ProductUpdate, те саме, що в EditCell, тож чіп стає рівно під своїм полем.
+  // `source` — ЯКИЙ ШАР заговорив; від нього залежить міра довіри, і людина
+  // ухвалює рішення саме за ним.
   const [proposals, setProposals] = useState<Record<string, {
     id: number; value: string; confidence: number | null; model?: string; note?: string;
+    source?: string;
   }>>({});
   const [proposalBusy, setProposalBusy] = useState<number | null>(null);
   const [autofillRunning, setAutofillRunning] = useState(false);
@@ -2127,14 +2130,28 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     if (!pr) return null;
     const busy = proposalBusy === pr.id;
     const pct = pr.confidence != null ? Math.round(pr.confidence * 100) : null;
+    // Шар, який дав це значення. Міра довіри в них РІЗНА, і назвати її треба
+    // прямо: штрихкод декодовано з контрольною сумою й він не помиляється;
+    // база спирається на минулі записи тієї ж моделі, введені людиною; модель
+    // просто дивилась на фото — і саме вона одного разу вигадала артикул.
+    const LAYER: Record<string, { мітка: string; пояснення: string }> = {
+      barcode: { мітка: 'штрихкод',
+        пояснення: 'Зчитано зі штрихкоду на фото — з контрольною сумою, без розпізнавання.' },
+      profile: { мітка: 'база',
+        пояснення: 'Взято з минулих записів цієї ж моделі у вашій базі — модель фото не дивилась.' },
+      'photo+profile': { мітка: 'фото + база',
+        пояснення: 'Два незалежні шари зійшлись: модель побачила це на фото, і минулі записи цієї ж моделі кажуть те саме.' },
+    };
+    const layer = LAYER[pr.source || ''] ??
+      { мітка: 'фото', пояснення: `Розпізнано з фото${pr.model ? ` (${pr.model})` : ''}.` };
     return (
       <span
         title={[
-          // Якір іде ПЕРШИМ: для текстових полів це головне, що треба звірити
-          // з фото. Модель уже одного разу вигадала артикул — тепер вона
-          // зобовʼязана процитувати рядок, у якому його побачила.
-          pr.note ? `Прочитано з бирки: «${pr.note}»` : null,
-          `Розпізнано з фото${pr.model ? ` (${pr.model})` : ''}.`,
+          layer.пояснення,
+          // Якір/підстава йде другим рядком: для текстових полів це головне,
+          // що треба звірити з фото. Модель уже одного разу вигадала артикул —
+          // тепер вона зобовʼязана процитувати рядок, у якому його побачила.
+          pr.note || null,
           'Приймається у картку лише вашим підтвердженням.',
         ].filter(Boolean).join('\n')}
         className={`inline-flex items-center gap-1.5 mt-1 pl-2 pr-1 py-0.5 rounded-md w-fit max-w-full
@@ -2142,10 +2159,12 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
           bg-gray-50/60 dark:bg-gray-800/40 ${busy ? 'opacity-50' : ''}`}
       >
         <span className="text-[11px] text-gray-600 dark:text-gray-300 truncate">{pr.value}</span>
-        {pr.note && (
-          <span className="text-[10px] text-gray-400 dark:text-gray-500 truncate max-w-[10rem]"
-                title={pr.note}>з «{pr.note}»</span>
-        )}
+        {/* Назва шару замість сирої нотатки: нотатка буває довгою («4 минулих
+            записів … сходяться на …») і в рядку перетворюється на кашу. Повний
+            текст лишається в підказці над чіпом. */}
+        <span className="text-[10px] text-gray-400 dark:text-gray-500 shrink-0">
+          {layer.мітка}
+        </span>
         {pct != null && (
           <span className="text-[10px] text-gray-400 dark:text-gray-500 tabular-nums shrink-0">{pct}%</span>
         )}
