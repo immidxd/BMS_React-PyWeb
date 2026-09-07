@@ -4,7 +4,7 @@ import type { Product, ProductFilters } from '../../types/product';
 import { Tag, Image, Tooltip, message } from 'antd';
 import { CloseOutlined, PictureOutlined, LeftOutlined, RightOutlined, WarningOutlined, EditOutlined, CheckOutlined, PlusOutlined, SyncOutlined, EyeOutlined, EyeInvisibleOutlined, StarFilled, ShoppingOutlined, TableOutlined, InboxOutlined, TagOutlined, DownloadOutlined, CopyOutlined, LoadingOutlined, RotateLeftOutlined, RotateRightOutlined, SwapOutlined } from '@ant-design/icons';
 import { copyImageToClipboard, saveProductPhoto, saveProductPhotosZip } from '../../services/imageTransfer';
-import { CopyOnClick, formatBrandName, getProductDisplayStatus, getProductStock, getConditionColor, effectiveProductNumber } from '../common/displayHelpers';
+import { CopyOnClick, formatBrandName, getProductDisplayStatus, getProductStock, getConditionColor, effectiveProductNumber, visibleGalleryPhotos } from '../common/displayHelpers';
 import { hiddenFieldsForType } from './productCategory';
 import { taskManager, emitProductPhotosChanged } from '../../services/taskManager';
 import {
@@ -911,22 +911,27 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     [gallery, product?.id],
   );
 
-  const officialCount = useMemo(() => allImages.filter((i) => (i.kind ?? 'official') === 'official').length, [allImages]);
-  const realCount = useMemo(() => allImages.filter((i) => i.kind === 'real').length, [allImages]);
+  // Лічильники вкладок рахують ВИДИМЕ: вони керують перемикачем «Офіційні /
+  // Реальні» у верхній галереї, і сховане не має роздувати число, за яким
+  // людина очікує стільки ж кадрів у стрічці.
+  const officialCount = useMemo(() => allImages.filter((i) => !i.hidden && (i.kind ?? 'official') === 'official').length, [allImages]);
+  const realCount = useMemo(() => allImages.filter((i) => !i.hidden && i.kind === 'real').length, [allImages]);
   const hasBothKinds = officialCount > 0 && realCount > 0;
 
   // Visible images:
   //   • активна галерея (official/real) — її фото;
-  //   • дефекти — спільні для обох, показуються лише коли увімкнено ⚠.
-  const images = useMemo(() => {
-    return allImages.filter((i) => {
-      const k = (i.kind ?? 'official') as GalleryKind;
-      // 'defect' як активна галерея (edit-режим) → показуємо дефекти напряму;
-      // інакше дефекти — лише як оверлей ⚠ (showDefects).
-      if (k === 'defect') return showDefects || activeKind === 'defect';
-      return k === activeKind;
-    });
-  }, [allImages, showDefects, activeKind]);
+  //   • дефекти — спільні для обох, показуються лише коли увімкнено ⚠;
+  //   • ПРИХОВАНІ — ніколи.
+  //
+  // ⚠️ У картці ДВІ галереї, і приховане їм потрібне по-різному. Ця, верхня —
+  // штатний перегляд: те саме, що побачить покупець, тож сховане тут не місце.
+  // Нижня (менеджер фото) бере `officialImages` і приховане ПОКАЗУЄ сірим —
+  // інакше його неможливо було б повернути. Тому фільтр стоїть саме тут, а не
+  // в `allImages`, спільному для обох.
+  const images = useMemo(
+    () => visibleGalleryPhotos(allImages, activeKind, showDefects),
+    [allImages, showDefects, activeKind],
+  );
   const defectCount = useMemo(() => allImages.filter((i) => i.is_defect).length, [allImages]);
 
   // Префетч сусідніх кадрів: ←/→ має бути миттєвим, а не «чекай, поки доїде».
@@ -1439,6 +1444,9 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     try {
       await productService.setProductPhotoHidden(productId, filename, hidden);
       await loadImages(true);
+      // Сховали активний кадр — стрічка стала коротшою, і старий індекс міг би
+      // вказувати за її межі. Повертаємось на початок, як і після видалення.
+      setActiveIdx(0);
     } catch (e) { console.error('hide photo failed', e); }
     finally { setPhotoBusy(false); }
   }, [productId, loadImages]);
@@ -1456,6 +1464,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
       }
       clearPhotoSelection();
       await loadImages(true);
+      setActiveIdx(0);
     } finally { setPhotoBusy(false); }
   }, [productId, mgrOrder, selectedPhotos, clearPhotoSelection, loadImages]);
 
