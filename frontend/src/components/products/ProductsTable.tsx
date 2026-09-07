@@ -587,14 +587,19 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
                 return <span className="text-xs text-gray-600 dark:text-gray-400">{names.join(', ')}</span>;
             }},
         price: { title: 'Ціна', dataIndex: 'price', key: 'price', width: 70, sorter: true,
+            // ⚠️ НУЛЬ — ЦЕ «ЩЕ НЕ ОЦІНЕНО», А НЕ «КОШТУЄ НУЛЬ». У базі 747 товарів
+            // із ціною 0 і лише 3 з порожньою, тобто нуль тут і є ознакою
+            // невиставленої ціни (696 із них — непродані, чекають на неї).
+            // Картка завозу й колонка «Стара ціна» вже малюють для нуля «—»;
+            // ця колонка була третьою й показувала «0₴».
             render: (price: number, record: Product) => (
                 <span className="text-xs">
-                    {price !== undefined && price !== null && (
+                    {Number(price) > 0 ? (
                         <CopyOnClick
                             value={Number(price).toFixed(0)}
                             display={<PriceText>{Number(price).toFixed(0)}₴</PriceText>}
                         />
-                    )}
+                    ) : <span className="text-gray-300">—</span>}
                 </span>
             )},
         oldprice: { title: 'Стара ціна', dataIndex: 'oldprice', key: 'oldprice', width: 90,
