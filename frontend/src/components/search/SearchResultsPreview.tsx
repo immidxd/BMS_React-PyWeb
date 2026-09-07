@@ -58,7 +58,9 @@ const SearchResultsPreview: React.FC<SearchResultsPreviewProps> = ({
         </div>
       </div>
       <div className="text-right">
-        {item.price && (
+        {/* `> 0`, не просто `item.price`: у JSX 0 — це значення, і React
+            надрукував би його як текст поруч із порожньою ціною. */}
+        {Number(item.price) > 0 && (
           <div className="text-sm font-medium text-green-600 dark:text-green-400">
             {formatPrice(item.price)}
           </div>
@@ -99,7 +101,7 @@ const SearchResultsPreview: React.FC<SearchResultsPreviewProps> = ({
           {item.status && <span> • {item.status}</span>}
         </div>
       </div>
-      {item.total_amount && (
+      {Number(item.total_amount) > 0 && (
         <div className="text-sm font-medium text-green-600 dark:text-green-400">
           {formatPrice(item.total_amount)}
         </div>

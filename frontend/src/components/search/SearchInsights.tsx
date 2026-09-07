@@ -92,7 +92,7 @@ const SearchInsights: React.FC<SearchInsightsProps> = ({
                 </div>
               )}
               
-              {insights.orders.total_value && (
+              {Number(insights.orders.total_value) > 0 && (
                 <div className="text-xs text-green-600 dark:text-green-400 font-medium">
                   {formatPrice(insights.orders.total_value)}
                 </div>

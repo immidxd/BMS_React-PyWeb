@@ -455,7 +455,10 @@ const DeliveryCardModal: React.FC<Props> = ({ shipment, open, onClose }) => {
                         </td>
                         <td className="px-2 py-2 text-right tabular-nums">
                           {p.price ? fmtPrice(p.price) : '—'}
-                          {qtyOf(p) > 1 && p.price && (
+                          {/* ⚠️ Саме `> 0`, а не `&& p.price`. У JSX `true && 0`
+                              повертає 0, і React друкує цей нуль як текст —
+                              рядок із ціною 0 і кількістю >1 показував «—0». */}
+                          {qtyOf(p) > 1 && Number(p.price) > 0 && (
                             <span className="block text-[11px] text-gray-400">
                               = {fmtPrice(Number(p.price) * qtyOf(p))}
                             </span>
