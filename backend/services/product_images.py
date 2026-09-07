@@ -40,6 +40,7 @@ class ImageEntry:
     index: int  # порядковий номер у галереї (0 = головна)
     is_defect: bool = False  # фото дефекту (filename типу `<pnum>_defN.<ext>`)
     kind: str = "official"  # 'official' | 'real' | 'defect'
+    hidden: bool = False  # прихований від публіки; у картці показується сірим
     # Convention:
     #   <pnum>_NN.<ext>     → official (студійні, для постів)
     #   <pnum>_00NN.<ext>   → real     (мої фото, два нулі на початку)
@@ -242,6 +243,68 @@ _IMAGE_LIST_CACHE: "OrderedDict[str, tuple[float, List[ImageEntry]]]" = OrderedD
 _IMAGE_LIST_CACHE_LOCK = threading.Lock()
 
 
+# ── Приховані знімки ────────────────────────────────────────────────────────
+# ЄДИНЕ МІСЦЕ, ДЕ ВИРІШУЄТЬСЯ «показувати чи ні». Через `list_images` проходить
+# УСЕ: галерея картки, контент-план, Prom (а з ним OLX і Shafa) і Telegram. Тож
+# фільтр стоїть саме тут, а не в кожного споживача — інакше це була б та сама
+# дірка, коли ознака врахована в чотирьох місцях із восьми.
+#
+# ⚠️ Файл при цьому НЕ видаляється ні з диска, ні з R2. Це свідомо: вже
+# опубліковані оголошення на маркетплейсах тримаються за URL, і видалення
+# показало б там биту картинку замість фото. Приховане просто перестає
+# пропонуватись будь-де надалі.
+_HIDDEN_TTL = float(os.getenv("PHOTO_HIDDEN_TTL", "30"))
+_HIDDEN_CACHE: dict = {"at": 0.0, "keys": frozenset()}
+_HIDDEN_LOCK = threading.Lock()
+
+
+def _hidden_keys(force: bool = False) -> frozenset:
+    """{(номер, ім'я файлу)} у нижньому регістрі. Порожньо, якщо БД недоступна."""
+    now = time.monotonic()
+    with _HIDDEN_LOCK:
+        if not force and now - _HIDDEN_CACHE["at"] < _HIDDEN_TTL:
+            return _HIDDEN_CACHE["keys"]
+    try:
+        try:
+            from models.database import SessionLocal
+        except ImportError:  # pragma: no cover
+            from backend.models.database import SessionLocal
+        from sqlalchemy import text as _text
+        db = SessionLocal()
+        try:
+            # ⚠️ Опускаємо регістр у PYTHON, а не в SQL. База створена з локаллю
+            # C, де `lower()` не чіпає кирилицю: 'Ф4384' лишається 'Ф4384', тоді
+            # як Python дає 'ф4384'. Ключі просто ніколи не збігались, і
+            # приховування мовчки не діяло.
+            rows = db.execute(_text(
+                "SELECT productnumber, filename FROM product_photo_hidden"
+            )).fetchall()
+        finally:
+            db.close()
+        keys = frozenset(((a or "").strip().lower(), (b or "").strip().lower())
+                         for a, b in rows)
+    except Exception as exc:  # noqa: BLE001
+        # ⚠️ Помилка БД НЕ має ховати всі фото — це зробило б збій бази
+        # видимим покупцям. Порожній набір означає «нічого не приховано».
+        logger.warning("Не вдалось прочитати приховані фото: %s", exc)
+        keys = frozenset()
+    with _HIDDEN_LOCK:
+        _HIDDEN_CACHE["at"] = now
+        _HIDDEN_CACHE["keys"] = keys
+    return keys
+
+
+def is_hidden(productnumber: str, filename: str) -> bool:
+    key = (_normalize_number(productnumber).lower(), (filename or "").strip().lower())
+    return key in _hidden_keys()
+
+
+def invalidate_hidden_cache() -> None:
+    """Скинути кеш прихованих — після приховування/повернення."""
+    with _HIDDEN_LOCK:
+        _HIDDEN_CACHE["at"] = 0.0
+
+
 def invalidate_image_list_cache(*productnumbers: str) -> None:
     """Скинути кеш конкретних номерів; без аргументів — увесь кеш списків."""
     with _IMAGE_LIST_CACHE_LOCK:
@@ -254,7 +317,7 @@ def invalidate_image_list_cache(*productnumbers: str) -> None:
                 _IMAGE_LIST_CACHE.pop(key, None)
 
 
-def list_images(productnumber: str) -> List[ImageEntry]:
+def list_images(productnumber: str, include_hidden: bool = False) -> List[ImageEntry]:
     """Об'єднаний список фото товару (локально + Drive) з дедуплікацією за filename.
 
     Принцип:
@@ -262,6 +325,10 @@ def list_images(productnumber: str) -> List[ImageEntry]:
       • Drive додається тільки для тих filename-ів, яких НЕ було локально.
       • Якщо локальної папки немає (інший комп) — буде лише Drive автоматично.
       • Сортування — натуральне за суфіксним числом → головне фото index=0.
+
+    `include_hidden=True` віддає й приховані (з `hidden=True`) — це потрібно
+    РІВНО одному споживачу, галереї картки, щоб показати їх сірими. Усі інші
+    шляхи лишаються з типовим False і приховане не бачать.
     """
     target = _normalize_number(productnumber)
     if not target:
@@ -275,7 +342,9 @@ def list_images(productnumber: str) -> List[ImageEntry]:
             _IMAGE_LIST_CACHE.move_to_end(cache_key)
             # Не віддаємо сам кешований list: споживач може сортувати/обрізати
             # його локально, але не повинен змінити наступний lookup.
-            return list(cached[1])
+            # ⚠️ Кеш тримає ПОВНИЙ список із прапорцями, а відсів іде на виході:
+            # інакше довелось би тримати два кеші, і вони б розійшлися.
+            return _apply_hidden(target, cached[1], include_hidden)
         if cached:
             _IMAGE_LIST_CACHE.pop(cache_key, None)
 
@@ -295,7 +364,8 @@ def list_images(productnumber: str) -> List[ImageEntry]:
     )
     # Re-index sequentially (0..N) on the merged result
     result = [
-        ImageEntry(filename=e.filename, url=e.url, index=i, is_defect=e.is_defect, kind=e.kind)
+        ImageEntry(filename=e.filename, url=e.url, index=i, is_defect=e.is_defect,
+                   kind=e.kind, hidden=e.hidden)
         for i, e in enumerate(merged_sorted)
     ]
     with _IMAGE_LIST_CACHE_LOCK:
@@ -303,7 +373,27 @@ def list_images(productnumber: str) -> List[ImageEntry]:
         _IMAGE_LIST_CACHE.move_to_end(cache_key)
         while len(_IMAGE_LIST_CACHE) > max(1, _IMAGE_LIST_CACHE_MAX):
             _IMAGE_LIST_CACHE.popitem(last=False)
-    return list(result)
+    return _apply_hidden(target, result, include_hidden)
+
+
+def _apply_hidden(target: str, entries: List[ImageEntry],
+                  include_hidden: bool) -> List[ImageEntry]:
+    """Проставити `hidden` і, якщо не просили інакше, прибрати приховані.
+
+    Індекси перераховуються ПІСЛЯ відсіву: споживачі беруть «перше фото» за
+    index=0, і приховане головне не має лишати діру на початку стрічки.
+    """
+    hidden = _hidden_keys()
+    key = target.lower()
+    marked = [
+        ImageEntry(filename=e.filename, url=e.url, index=e.index, is_defect=e.is_defect,
+                   kind=e.kind, hidden=(key, e.filename.lower()) in hidden)
+        for e in entries
+    ]
+    if not include_hidden:
+        marked = [e for e in marked if not e.hidden]
+    from dataclasses import replace as _replace
+    return [_replace(e, index=i) for i, e in enumerate(marked)]
 
 
 def read_image_bytes(entry: ImageEntry) -> Optional[bytes]:

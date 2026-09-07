@@ -57,6 +57,9 @@ interface GalleryImage {
   index: number;
   is_defect?: boolean;
   kind?: GalleryKind;
+  // Приховане від публіки: у картці показується сірим, але ніде інде його
+  // немає — ані в каталозі, ані на маркетплейсах, ані в постах.
+  hidden?: boolean;
 }
 
 /** Людське пояснення, чому картка ще не збігається з журналом. */
@@ -1427,6 +1430,34 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     } catch (e) { console.error('delete photo failed', e); }
     finally { setPhotoBusy(false); }
   }, [productId, loadImages]);
+
+  // Приховати/повернути один знімок. Файл не зникає — лишається на диску й у
+  // R2, тож уже опубліковані оголошення не покажуть биту картинку.
+  const handleTogglePhotoHidden = React.useCallback(async (filename: string, hidden: boolean) => {
+    if (!productId) return;
+    setPhotoBusy(true);
+    try {
+      await productService.setProductPhotoHidden(productId, filename, hidden);
+      await loadImages(true);
+    } catch (e) { console.error('hide photo failed', e); }
+    finally { setPhotoBusy(false); }
+  }, [productId, loadImages]);
+
+  // Пакетно — поруч із «Видалити». Якщо у виділенні є і сховані, і видимі,
+  // ховаємо всі: дія без сюрпризів, а повернути можна по одному.
+  const handleHideSelectedPhotos = React.useCallback(async (hidden: boolean) => {
+    const names = mgrOrder.filter((fn) => selectedPhotos.has(fn));
+    if (!productId || names.length === 0) return;
+    setPhotoBusy(true);
+    try {
+      for (const fn of names) {
+        try { await productService.setProductPhotoHidden(productId, fn, hidden); }
+        catch (e) { console.error('hide photo failed', fn, e); }
+      }
+      clearPhotoSelection();
+      await loadImages(true);
+    } finally { setPhotoBusy(false); }
+  }, [productId, mgrOrder, selectedPhotos, clearPhotoSelection, loadImages]);
 
   const handleReplacePhoto = React.useCallback(async (filename: string, file: File | null) => {
     if (!productId || !file) return;
@@ -3180,6 +3211,22 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                                     ⇄ {k.label}
                                   </button>
                                 ))}
+                                {(() => {
+                                  // Якщо все виділене вже сховане — пропонуємо повернути.
+                                  const picked = mgrOrder.filter((fn) => selectedPhotos.has(fn));
+                                  const allHidden = picked.length > 0 && picked.every(
+                                    (fn) => allImages.find((im) => im.filename === fn)?.hidden);
+                                  return (
+                                    <button type="button" disabled={photoBusy}
+                                      onClick={() => handleHideSelectedPhotos(!allHidden)}
+                                      className="px-2 py-1 rounded-md text-[11px] bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-600 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50 transition-colors whitespace-nowrap"
+                                      title={allHidden
+                                        ? 'Повернути виділені у публічний показ'
+                                        : 'Сховати виділені від публіки: каталог, маркетплейси й пости їх не побачать'}>
+                                      {allHidden ? '👁 Показати' : '🚫 Сховати'} ({selectedPhotos.size})
+                                    </button>
+                                  );
+                                })()}
                                 <button type="button" disabled={photoBusy}
                                   onClick={handleDeleteSelectedPhotos}
                                   className="px-2 py-1 rounded-md text-[11px] bg-red-600 hover:bg-red-700 !text-white disabled:opacity-50 transition-colors whitespace-nowrap"
@@ -3214,9 +3261,17 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                                   onClick={(e) => selectPhoto(img.filename, e)}
                                   className={`relative group/ph aspect-square rounded-lg overflow-hidden border bg-white dark:bg-gray-900 ${isPicked ? 'border-primary-500 ring-2 ring-primary-500' : (i === 0 ? 'border-primary-500' : 'border-gray-200 dark:border-gray-700')} ${dragging ? 'opacity-40' : 'shadow-sm hover:shadow-md'} ${isOver ? 'ring-2 ring-primary-500 scale-105 z-10' : ''} transition-[box-shadow,transform,opacity] duration-150 cursor-grab active:cursor-grabbing`}
                                   title={img.filename}>
+                                  {/* Сховане знеколорюємо й притлумлюємо — видно, що
+                                      знімок є, але в показ він не піде. */}
                                   <SmartImage src={img.url} thumb={96} thumbOnly draggable={false}
                                     alt={img.filename}
-                                    className="w-full h-full pointer-events-none select-none" />
+                                    className={`w-full h-full pointer-events-none select-none ${
+                                      img.hidden ? 'grayscale opacity-40' : ''}`} />
+                                  {img.hidden && (
+                                    <span className="absolute inset-x-0 top-0 text-center text-[9px] bg-gray-700/85 text-white py-0.5 pointer-events-none">
+                                      сховано
+                                    </span>
+                                  )}
                                   {/* Позначка виділення. Клікабельна сама по собі —
                                       щоб виділяти можна було й без клавіатури. */}
                                   <button type="button" disabled={photoBusy}
@@ -3254,6 +3309,14 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                                       className="w-5 h-5 inline-flex items-center justify-center rounded bg-white/90 dark:bg-gray-900/90 text-gray-700 dark:text-gray-200 hover:bg-white shadow"
                                       title="Замінити цей файл">
                                       <SyncOutlined style={{ fontSize: 10 }} />
+                                    </button>
+                                    <button type="button" disabled={photoBusy}
+                                      onClick={() => handleTogglePhotoHidden(img.filename, !img.hidden)}
+                                      className="w-5 h-5 inline-flex items-center justify-center rounded bg-white/90 dark:bg-gray-900/90 text-gray-700 dark:text-gray-200 hover:bg-white shadow text-[10px] leading-none"
+                                      title={img.hidden
+                                        ? 'Повернути у публічний показ'
+                                        : 'Сховати від публіки — каталог, маркетплейси й пости цього фото не побачать'}>
+                                      {img.hidden ? '👁' : '🚫'}
                                     </button>
                                     <button type="button" disabled={photoBusy}
                                       onClick={async () => { if ((await confirmDialog(`Видалити фото ${img.filename}?`))) handleDeletePhoto(img.filename); }}

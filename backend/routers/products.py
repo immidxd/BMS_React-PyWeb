@@ -292,7 +292,10 @@ def _product_gallery(product_id: int, db: Session):
         raise HTTPException(status_code=404, detail=f"Товар з ID {product_id} не знайдено")
 
     productnumber = product.productnumber or ""
-    own_images = list_images(productnumber)
+    # ⚠️ include_hidden=True саме тут і БІЛЬШЕ НІДЕ: картка — єдине місце, де
+    # приховане треба показати (сірим), щоб його можна було повернути. Усі інші
+    # шляхи ходять у list_images із типовим False.
+    own_images = list_images(productnumber, include_hidden=True)
     borrowed_from = (getattr(product, "official_photos_from", None) or "").strip()
 
     # Якщо заповнено official_photos_from — викидаємо власні official
@@ -300,7 +303,10 @@ def _product_gallery(product_id: int, db: Session):
     # Захист від циклу: НЕ дивимось у donor.official_photos_from — один хоп.
     if borrowed_from and borrowed_from.lstrip("#").lower() != productnumber.lstrip("#").lower():
         own_images = [e for e in own_images if e.kind != "official"]
-        donor_all = list_images(borrowed_from)
+        # Позичені студійні фото донора: приховане в донора лишається
+        # прихованим і в позичальника — рішення власника про знімок, а не про
+        # конкретну картку.
+        donor_all = list_images(borrowed_from, include_hidden=True)
         donor_official = [e for e in donor_all if e.kind == "official"]
         merged = own_images + donor_official
         # Перетасовуємо у єдину стрічку: спершу official, потім real, потім defect
@@ -340,9 +346,14 @@ def get_product_images(
                 "index": img.index,
                 "is_defect": img.is_defect,
                 "kind": img.kind,
+                # ⚠️ Серіалізація тут РУЧНА: нове поле, якого немає в цьому
+                # словнику, у картку просто не доїде — мовчки.
+                "hidden": img.hidden,
             }
             for img in images
         ],
+        # Скільки з них приховано — щоб картка могла це показати одним числом.
+        "hidden_count": sum(1 for img in images if img.hidden),
     }
 
 
@@ -756,6 +767,64 @@ def delete_product_photo(
         raise HTTPException(status_code=400, detail=str(e))
     _invalidate_photo_cache(pnum, membership_changed=True)
     return {"deleted": filename}
+
+
+@router.post("/api/products/{product_id}/photos/{filename}/hidden")
+def set_photo_hidden(
+    product_id: int = Path(..., ge=1),
+    filename: str = Path(..., min_length=1),
+    hidden: bool = Query(..., description="true — сховати, false — повернути"),
+    db: Session = Depends(get_db),
+):
+    """Сховати знімок від публіки або повернути його.
+
+    Файл НЕ видаляється ні з диска, ні з R2 — і це свідомо. Вже опубліковані
+    оголошення тримаються за URL; видалення показало б там биту картинку.
+    Приховане просто перестає пропонуватись будь-де надалі: галерея каталогу,
+    Prom, OLX, Shafa, Telegram і контент-план ходять через `list_images`, а він
+    приховане не віддає.
+    """
+    try:
+        from services.product_images import invalidate_hidden_cache
+        from services.photo_manager import photo_belongs_to
+    except ImportError:  # pragma: no cover
+        from backend.services.product_images import invalidate_hidden_cache
+        from backend.services.photo_manager import photo_belongs_to
+
+    pnum, _borrowed, images = _product_gallery(product_id, db)
+    # Знімок може бути позиченим у донора — тоді ховаємо його під ЙОГО номером,
+    # інакше запис не збігся б із тим, що шукає фільтр.
+    entry = next((e for e in images if e.filename == filename), None)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="Такого фото немає в галереї товару")
+    owner = pnum if photo_belongs_to(pnum, filename) else None
+    if owner is None:
+        owner = (getattr(db.query(models.Product).get(product_id), "official_photos_from", "") or "").strip()
+    if not owner:
+        raise HTTPException(status_code=400, detail="Не вдалось визначити власника фото")
+
+    norm = owner.strip().lstrip("#").strip()
+    if hidden:
+        db.execute(text("""
+            INSERT INTO product_photo_hidden (productnumber, filename)
+            VALUES (:p, :f)
+            -- ⚠️ Вираз мусить збігатися з унікальним індексом ДОСЛІВНО,
+            -- включно з COLLATE, інакше Postgres не знайде цілі конфлікту.
+            ON CONFLICT (lower(productnumber COLLATE "und-x-icu"),
+                         lower(filename COLLATE "und-x-icu")) DO NOTHING
+        """), {"p": norm, "f": filename})
+    else:
+        db.execute(text("""
+            DELETE FROM product_photo_hidden
+            -- COLLATE "und-x-icu" обов'язковий: у локалі C lower() не опускає
+            -- кирилицю, і 'Ф4384' проти 'ф4384' не збіглись би.
+            WHERE lower(productnumber COLLATE "und-x-icu") = lower(:p COLLATE "und-x-icu")
+              AND lower(filename COLLATE "und-x-icu") = lower(:f COLLATE "und-x-icu")
+        """), {"p": norm, "f": filename})
+    db.commit()
+    invalidate_hidden_cache()
+    _invalidate_photo_cache(pnum)
+    return {"ok": True, "filename": filename, "hidden": hidden, "owner": norm}
 
 
 @router.get("/api/products/model-profile")

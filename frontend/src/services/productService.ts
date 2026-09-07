@@ -258,6 +258,21 @@ export const productService = {
     },
 
     /**
+     * Сховати знімок від публіки або повернути його.
+     *
+     * Файл лишається на диску й у R2 — уже опубліковані оголошення тримаються
+     * за URL і не зламаються. Приховане просто перестає пропонуватись будь-де:
+     * каталог, Prom, OLX, Shafa, Telegram і контент-план його не бачать.
+     */
+    async setProductPhotoHidden(id: number, filename: string, hidden: boolean):
+        Promise<{ ok: boolean; filename: string; hidden: boolean }> {
+        const res = await axios.post(
+            `${API_URL}/${id}/photos/${encodeURIComponent(filename)}/hidden`,
+            null, { params: { hidden } });
+        return res.data;
+    },
+
+    /**
      * Створити новий товар
      */
     async createProduct(productData: Partial<Product>): Promise<Product> {
