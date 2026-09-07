@@ -275,6 +275,27 @@ def get_cached_drive_pnums() -> set:
     return set(_index_state.get("by_pnum") or {})
 
 
+def get_cached_drive_official_pnums() -> set:
+    """Те саме, але лише номери зі СТУДІЙНИМ знімком (`<pnum>_NN`).
+
+    Вид визначається з імені файлу тим самим правилом, що й локально, тож
+    `_00N` (реальні) і `_defN` (дефекти) сюди не потрапляють. Скану немає —
+    читаємо вже прогрітий індекс.
+    """
+    try:
+        from backend.services.product_images import _classify, _pnum_token_from_filename
+    except ImportError:
+        from services.product_images import _classify, _pnum_token_from_filename
+    official: set = set()
+    for pnum, files in (_index_state.get("by_pnum") or {}).items():
+        for filename, _file_id in files or []:
+            token = _pnum_token_from_filename(filename) or pnum
+            if _classify(filename, token) == "official":
+                official.add(pnum)
+                break
+    return official
+
+
 # ── Public API ────────────────────────────────────────────────────────────────
 def list_drive_images_for(target_normalized: str) -> List[DriveImageEntry]:
     """Знайти фото товару в Drive за normalized productnumber (без #, lowercase).

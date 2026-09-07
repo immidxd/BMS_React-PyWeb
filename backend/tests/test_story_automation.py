@@ -123,3 +123,106 @@ def test_batch_slots_are_spread_apart_not_fired_together():
     # Десять Stories мають розтягтися помітно довше за виміряні ~3 хвилини,
     # у які Meta вкладає свій ліміт застосунку.
     assert (slots[-1] - slots[0]) > timedelta(minutes=3)
+
+
+
+# ─── Студійне фото як умова допуску ──────────────────────────────────────────
+#
+# Реальні фото («як є», `<pnum>_00N`) знімаються для картки, замірів і Telegram.
+# У відкриту стрічку вони не йдуть: знімок на килимі вдома неможливо забрати з
+# чужої стрічки назад. Тому вимога стоїть ДВІЧІ — у запиті й перед відправленням.
+
+def _patch_service(monkeypatch, module: str, attr: str, value) -> None:
+    """Підмінити атрибут в обох подобах модуля — `services.X` і `backend.services.X`.
+
+    Код під тестом імпортує `services.X` із запасним `backend.services.X`, і це
+    ДВА різні об'єкти: підміна лише в одному не діє на інший. Який саме з них
+    резолвиться, залежить від того, звідки запущено pytest.
+    """
+    import importlib
+
+    patched = False
+    for prefix in ("services", "backend.services"):
+        try:
+            mod = importlib.import_module(f"{prefix}.{module}")
+        except ImportError:
+            continue
+        monkeypatch.setattr(mod, attr, value)
+        patched = True
+    assert patched, f"модуль {module} не імпортується в жодній подобі"
+
+
+class _FakeResult:
+    def __init__(self, rows): self._rows = rows
+    def mappings(self): return self
+    def all(self): return self._rows
+
+
+class _RecordingSession:
+    """Мінімальна заглушка сесії: запам'ятовує SQL і параметри, нічого не читає."""
+
+    def __init__(self):
+        self.sql = ""
+        self.params = {}
+
+    def execute(self, statement, params=None):
+        self.sql = str(statement)
+        self.params = params or {}
+        return _FakeResult([])
+
+
+def test_a_home_photo_never_goes_into_the_open_feed(monkeypatch):
+    """Товар лише з реальними фото непридатний, хоч знімки в нього і є."""
+    for kind, expected in (("official", True), ("real", False), ("none", False)):
+        _patch_service(monkeypatch, "telegram_publisher", "_photo_entries",
+                       lambda _bms, _k=kind: ([object()], _k))
+        assert sa._official_photo_ready({"productnumber": "Ф42"}) is expected, kind
+
+
+def test_the_studio_requirement_sits_in_the_query_not_after_it(monkeypatch):
+    """Умова має бути в SQL, інакше межа пулу зріже добір до товарів із фото.
+
+    Саме так канал і став 07.09.2026: перші 200 кандидатів були поспіль без
+    знімків, а перший придатний стояв 202-м — за межею LIMIT.
+    """
+    _patch_service(monkeypatch, "product_images", "get_official_photo_pnum_set",
+                   lambda *_a, **_k: frozenset({"ф3635", "а80"}))
+    db = _RecordingSession()
+    sa.candidate_rows(db, {}, 30)
+
+    assert ":official_pnums" in db.sql
+    assert db.params["official_pnums"] == ["а80", "ф3635"]
+    # Донор студійних фото рахується нарівні з власним номером: публікатор бере
+    # знімок звідти так само.
+    assert "official_photos_from" in db.sql
+    # Кирилиця в локалі C не опускається без ICU — без COLLATE збігалися б лише
+    # суто цифрові номери, і весь добір по «Ф…» мовчки спорожнів би.
+    assert 'COLLATE "und-x-icu"' in db.sql
+
+
+def test_without_a_known_photo_set_the_slot_is_skipped_rather_than_guessed(monkeypatch):
+    """Немає певності про фото — немає публікації. Пропущений слот дешевший."""
+    _patch_service(monkeypatch, "product_images", "get_official_photo_pnum_set",
+                   lambda *_a, **_k: frozenset())
+    db = _RecordingSession()
+    sa.candidate_rows(db, {}, 30)
+
+    assert "FALSE" in db.sql
+    assert "official_pnums" not in db.params
+
+
+def test_only_studio_indexes_count_as_studio(tmp_path, monkeypatch):
+    """`_01` — студійне, `_001` — реальне, `_def1` — дефект. Різниця в нулях."""
+    from backend.services import product_images
+
+    monkeypatch.setenv("PRODUCT_IMAGES_DIR", str(tmp_path))
+    for name in ("Ф100_01.jpg", "Ф200_001.jpg", "Ф300_def1.jpg", "Ф400_002.jpg", "Ф400_03.jpg"):
+        (tmp_path / name).write_bytes(b"")
+    try:
+        official = product_images.get_official_photo_pnum_set(force=True)
+    finally:
+        product_images._OFFICIAL_SET_CACHE["valid"] = False
+
+    assert official == {"ф100", "ф400"}   # Ф400 має і реальні, і студійні — рахується
+    assert "ф200" not in official          # лише «як є»
+    assert "ф300" not in official          # лише дефект

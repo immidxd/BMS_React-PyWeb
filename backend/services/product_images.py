@@ -421,6 +421,68 @@ def get_photo_pnum_set(force: bool = False) -> frozenset:
     return frozen
 
 
+# Окремий кеш для студійних: множина інша, а TTL і спосіб побудови ті самі.
+_OFFICIAL_SET_CACHE: dict = {"set": frozenset(), "ts": 0.0, "valid": False}
+
+
+def get_official_photo_pnum_set(force: bool = False) -> frozenset:
+    """Множина номерів, що мають ≥1 СТУДІЙНЕ фото (`<pnum>_NN`).
+
+    Відрізняється від `get_photo_pnum_set` рівно одним: `_00N` (реальні, «як є»)
+    і `_defN` (дефекти) не рахуються. Потрібна там, де знімок іде у відкриту
+    вітрину й домашнє фото на килимі не годиться, — автоматичні Stories.
+
+    ⚠️ Це ДЕШЕВИЙ переднабір для SQL, а не остаточний вердикт: ключем тут
+    служить провідний токен імені файлу, а `list_images` матчить трохи ширше
+    (номери з пробілами). Тому множина може віддати зайвий номер — і саме тому
+    в добірці за нею йде жива перевірка `kind` по конкретному товару.
+    """
+    now = time.time()
+    if not force and _OFFICIAL_SET_CACHE["valid"] and (now - _OFFICIAL_SET_CACHE["ts"]) < _PHOTO_SET_TTL:
+        return _OFFICIAL_SET_CACHE["set"]
+
+    result: set = set()
+    images_dir = get_images_dir()
+    if os.path.isdir(images_dir):
+        scan_dirs = [images_dir]
+        try:
+            for entry in os.scandir(images_dir):
+                if entry.is_dir():
+                    scan_dirs.append(entry.path)
+        except OSError as e:
+            logger.warning(f"official-photo-set: failed to list subfolders of {images_dir}: {e}")
+        for d in scan_dirs:
+            try:
+                for entry in os.scandir(d):
+                    if not entry.is_file():
+                        continue
+                    if os.path.splitext(entry.name)[1].lower() not in IMAGE_EXTENSIONS:
+                        continue
+                    tok = _pnum_token_from_filename(entry.name)
+                    if tok and _classify(entry.name, tok) == "official":
+                        result.add(tok)
+            except OSError:
+                continue
+
+    # Drive — лише вже прогрітий індекс, як і в `get_photo_pnum_set`.
+    try:
+        from backend.services.product_images_drive import get_cached_drive_official_pnums
+    except ImportError:
+        try:
+            from services.product_images_drive import get_cached_drive_official_pnums
+        except ImportError:
+            get_cached_drive_official_pnums = None  # type: ignore
+    if get_cached_drive_official_pnums is not None:
+        try:
+            result.update(get_cached_drive_official_pnums())
+        except Exception as e:
+            logger.debug(f"official-photo-set: drive pnums unavailable: {e}")
+
+    frozen = frozenset(result)
+    _OFFICIAL_SET_CACHE.update(set=frozen, ts=now, valid=True)
+    return frozen
+
+
 def product_has_photo(productnumber: Optional[str], photo_set: Optional[frozenset] = None) -> bool:
     """Чи має товар фото (за номером). `photo_set` можна передати ззовні, щоб не
     тягати кеш на кожен рядок."""

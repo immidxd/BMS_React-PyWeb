@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict, List, Optional, Sequence
 
 from sqlalchemy import text
@@ -28,14 +29,21 @@ except ImportError:
         PAID_STATUS_ID, STATUS_CONFIRMED, STATUS_GIFT, STATUS_RETURNED,
     )
 
+logger = logging.getLogger(__name__)
+
 DEFAULT_INTERVAL_HOURS = 24
 DEFAULT_COOLDOWN_DAYS = 30
 DEFAULT_LOCAL_TIME = "11:00"
 DEFAULT_TIMEZONE = "Europe/Kyiv"
 PLATFORMS = ("instagram", "facebook")
-# Скільки кандидатів тягнемо з БД під одну Story. Фото не індексовані в базі,
-# тож придатність знімків перевіряється вже в Python партіями — запас потрібен
-# на випадок, коли в голови черги фото не виявиться.
+# Скільки кандидатів тягнемо з БД під одну Story. Запас потрібен на випадок,
+# коли в голови черги знімок таки не підійде при живій перевірці.
+#
+# ⚠️ Вимога студійного фото стоїть у САМОМУ запиті, а не після нього. Поки вона
+# була лише перевіркою в Python, ця межа різала добір раніше, ніж він доходив
+# до товарів із фото: 07.09.2026 перші 200 кандидатів були поспіль без знімків,
+# а перший придатний стояв 202-м — обидва майданчики стали намертво з
+# «Без придатного фото пропущено 200 товарів».
 CANDIDATE_POOL = 200
 RESERVE_COUNT = 5
 
@@ -158,6 +166,32 @@ def candidate_rows(
             "'\\s*,\\s*', ',', 'g'), ',') && :seasons_arr"
         )
         params["seasons_arr"] = filters["seasons"]
+    # Студійне фото — умова допуску, а не побажання. Фото живуть у файловій
+    # системі, не в БД, тож множину номерів (кешовану) вносимо ПАРАМЕТРОМ — той
+    # самий прийом, що й у фільтрі «лише з фото» списку товарів. Донор
+    # (`official_photos_from`) рахується нарівні з власним номером: публікатор
+    # бере знімок звідти так само.
+    try:
+        from services.product_images import get_official_photo_pnum_set
+    except ImportError:
+        from backend.services.product_images import get_official_photo_pnum_set
+    try:
+        official_pnums = sorted(get_official_photo_pnum_set())
+    except Exception:  # noqa: BLE001 — без певності про фото не публікуємо взагалі
+        logger.warning("Stories: множина студійних фото недоступна — добір порожній")
+        official_pnums = []
+    if official_pnums:
+        # COLLATE "und-x-icu" обов'язковий: база в локалі C, де lower() не
+        # опускає кирилицю, і без ICU збіглися б лише суто цифрові номери.
+        conditions.append("""(
+            lower(btrim(ltrim(btrim(p.productnumber), '#') COLLATE "und-x-icu")) = ANY(:official_pnums)
+            OR lower(btrim(ltrim(btrim(COALESCE(p.official_photos_from, '')), '#') COLLATE "und-x-icu")) = ANY(:official_pnums)
+        )""")
+        params["official_pnums"] = official_pnums
+    else:
+        # Порожня множина — чесний нуль. Мовчазна публікація «як є» гірша за
+        # пропущений слот: знімок із дому не забрати з чужої стрічки назад.
+        conditions.append("FALSE")
     filter_sql = ("AND " + " AND ".join(conditions)) if conditions else ""
 
     rows = db.execute(text(f"""
@@ -229,13 +263,21 @@ def candidate_rows(
     return [dict(row) for row in rows]
 
 
-def _photo_ready(bms: Dict[str, Any]) -> bool:
+def _official_photo_ready(bms: Dict[str, Any]) -> bool:
+    """Чи піде в кадр студійний знімок — і лише він.
+
+    Друга лінія після умови в запиті: множина номерів кешується на кілька
+    хвилин і може відстати від теки. Тут дивимось на живі файли й на той самий
+    `kind`, яким публікатор обирає знімок, — тож «придатний» тут означає рівно
+    те, що поїде в стрічку. Реальні фото («як є») лишаються для картки, Telegram
+    і замірів; у відкриту вітрину вони не йдуть.
+    """
     try:
         from services import telegram_publisher as tg
     except ImportError:
         from backend.services import telegram_publisher as tg
-    photos, _kind = tg._photo_entries(bms)
-    return bool(photos)
+    _photos, kind = tg._photo_entries(bms)
+    return kind == "official"
 
 
 def select_for_slot(
@@ -249,10 +291,11 @@ def select_for_slot(
     candidates = candidate_rows(db, filters, cooldown_days)
     chosen: List[Dict[str, Any]] = []
     no_photo = 0
-    # Фото лежать на диску, не в базі, тож перевіряємо їх партіями й спиняємось
-    # щойно набрали головний товар із запасом — а не проходимо весь пул.
+    # Запит уже відсіяв усе без студійного фото, тож тут відсівається лише те,
+    # що встигло змінитись після побудови кешу. Спиняємось щойно набрали
+    # головний товар із запасом — а не проходимо весь пул.
     for row in candidates:
-        if _photo_ready(row):
+        if _official_photo_ready(row):
             chosen.append(row)
             if len(chosen) > reserve_count:
                 break
@@ -261,9 +304,9 @@ def select_for_slot(
 
     warnings: List[str] = []
     if no_photo:
-        warnings.append(f"Без придатного фото пропущено {no_photo} товарів.")
+        warnings.append(f"Без студійного фото пропущено {no_photo} товарів.")
     if not chosen:
-        warnings.append("Під цей добір немає жодного товару з фото.")
+        warnings.append("Під цей добір немає жодного товару зі студійним фото.")
     elif len(chosen) == 1:
         warnings.append("Запасних товарів немає: пул добору майже вичерпано.")
 

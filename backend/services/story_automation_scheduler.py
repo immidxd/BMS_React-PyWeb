@@ -337,7 +337,7 @@ def create_draft(
         "cooldown_days": int(config["cooldown_days"]),
         "filters": config["filters"],
         "requires_available_stock": True,
-        "requires_photo": True,
+        "requires_official_photo": True,
         "revalidate_before_publish": True,
         "auto_publish": bool(config.get("auto_publish")),
     }
@@ -463,15 +463,33 @@ def revalidate_draft(db: Session, draft: Dict[str, Any]) -> Dict[str, Any]:
     )
     eligible = {story_automation.normalize_number(row["productnumber"]): row for row in fresh}
 
+    # Причина вибуття потрібна названою: відколи студійне фото стало умовою,
+    # «уже недоступний» писалося б і про товар, що спокійно лежить на складі, —
+    # і шукати справжню причину довелося б руками.
+    try:
+        from services.product_images import get_official_photo_pnum_set
+    except ImportError:
+        from backend.services.product_images import get_official_photo_pnum_set
+    try:
+        official = get_official_photo_pnum_set()
+    except Exception:  # noqa: BLE001 — причина в повідомленні не варта падіння
+        official = frozenset()
+
+    def why(number: Any) -> str:
+        if story_automation.normalize_number(number) not in official:
+            return "немає студійного фото"
+        return "продано або більше не підходить під добір"
+
     def pick(number: Any) -> Optional[Dict[str, Any]]:
         row = eligible.get(story_automation.normalize_number(number))
-        return row if row and story_automation._photo_ready(row) else None
+        return row if row and story_automation._official_photo_ready(row) else None
 
     warnings: List[str] = []
     chosen = pick(draft.get("productnumber"))
     replaced_from = None
     if chosen is None:
-        warnings.append(f"#{str(draft.get('productnumber')).lstrip('#')} уже недоступний.")
+        number = str(draft.get("productnumber")).lstrip("#")
+        warnings.append(f"#{number} не піде: {why(draft.get('productnumber'))}.")
         for reserve in draft.get("reserves") or []:
             chosen = pick(reserve.get("productnumber"))
             if chosen is not None:
