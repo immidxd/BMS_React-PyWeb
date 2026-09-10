@@ -1627,6 +1627,23 @@ def _facebook_pub():
     return facebook_publisher
 
 
+@router.get("/api/publications/telegram/undelivered")
+def telegram_undelivered(
+    since: Optional[str] = Query(None, description="Від якої дати дивитись, напр. 2026-08-01"),
+    db: Session = Depends(get_db),
+):
+    """Товари, підготовлені у форумі, але так і не опубліковані в каналі.
+
+    Це ЄДИНИЙ спосіб побачити провал: канал наповнює сам Telegram із нашого
+    `schedule=`, і якщо його відправка не вдалась, ми не дізнаємось — стан у
+    `telegram_scheduled_posts` не оновлюється, а черга запланованого в Telegram
+    приватна для адміна, який її створив. Так 26.08.2026 тихо загубилось 65
+    товарів.
+    """
+    rows = _tg_pub().undelivered_to_channel(db, since=since)
+    return {"ok": True, "count": len(rows), "items": rows}
+
+
 @router.get("/api/publications/telegram/threads")
 def telegram_threads(db: Session = Depends(get_db)):
     """Кеш гілок форуму — без мережі, миттєво."""

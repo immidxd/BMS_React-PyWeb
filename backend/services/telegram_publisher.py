@@ -1461,6 +1461,54 @@ def _selected_photo_entries(bms: dict, payload: dict) -> Tuple[List[Any], str]:
     return photos, image_kind
 
 
+def undelivered_to_channel(db: Session, since: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Товари, для яких пост у ФОРУМІ є, а в КАНАЛІ немає.
+
+    ⚠️ НАВІЩО ЦЕ ПОТРІБНО. Ми не надсилаємо в канал самі: віддаємо Telegram
+    форвард із `schedule=`, і далі надсилає ВІН. Якщо його відправка провалиться
+    (зникло вихідне повідомлення форуму, вичерпано ліміт у 100 запланованих,
+    FloodWait), ми про це не дізнаємось НІКОЛИ: `telegram_scheduled_posts.state`
+    так і лишається 'scheduled', бо його ніхто не оновлює, а черга запланованого
+    в Telegram приватна для того адміна, який її створив, — з сесії програми
+    чужу навіть не видно.
+
+    Так 26.08.2026 тихо загубилось 65 товарів: пости у форумі створені, у каналі
+    їх немає, і жодного сигналу.
+
+    ⚠️ Зіставлення ЛИШЕ за `product_id`. Порівнювати за номером НЕ МОЖНА:
+    `telegram_posts.product_number_raw` зберігає номер без префікса ('4229'), а
+    в цій базі '#4229' і '#Ф4229' — РІЗНІ товари. Зіставлення за цифрами дає
+    впевнено неправильний список (перевірено: 65 справжніх проти 64 вигаданих,
+    і майже без перетину).
+    """
+    rows = db.execute(text("""
+        WITH forum AS (
+            SELECT product_id, max(message_date) AS posted_at
+            FROM telegram_posts
+            WHERE chat_id = :forum AND product_id IS NOT NULL
+              AND (:since IS NULL OR message_date >= CAST(:since AS timestamp))
+            GROUP BY product_id),
+        chan AS (
+            SELECT DISTINCT product_id FROM telegram_posts
+            WHERE chat_id = :channel AND product_id IS NOT NULL)
+        SELECT p.id, p.productnumber, b.brandname, p.model, p.price, f.posted_at
+        FROM forum f
+        LEFT JOIN chan c ON c.product_id = f.product_id
+        JOIN products p ON p.id = f.product_id
+        LEFT JOIN brands b ON b.id = p.brandid
+        LEFT JOIN statuses st ON st.id = p.statusid
+        WHERE c.product_id IS NULL
+          AND COALESCE(st.statusname, '') = 'Непродано'
+          AND COALESCE(p.price, 0) > 0
+        ORDER BY f.posted_at, p.productnumber
+    """), {"forum": FORUM_CHAT_ID, "channel": CHANNEL_CHAT_ID, "since": since}).mappings().all()
+    return [{"product_id": r["id"], "productnumber": r["productnumber"],
+             "brand": r["brandname"], "model": r["model"],
+             "price": float(r["price"]) if r["price"] is not None else None,
+             "forum_posted_at": r["posted_at"].isoformat() if r["posted_at"] else None}
+            for r in rows]
+
+
 async def _channel_schedule_capacity_error(scanner: Any, required: int) -> Optional[str]:
     """Перевірити квоту Telegram до створення форумного оригіналу.
 
