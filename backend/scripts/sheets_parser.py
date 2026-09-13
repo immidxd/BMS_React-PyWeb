@@ -2951,9 +2951,15 @@ def _parse_products_sheet(
     shipment_id: Optional[int] = None,
     prefetched_rows: Optional[list] = None,
     commit: bool = True,
+    journal_nums: Optional[set] = None,
 ) -> dict:
     """
     Parse one batch sheet from Журнал into products table.
+
+    `journal_nums` — канонічні номери ВСЬОГО журналу (`_journal_all_numbers`).
+    Потрібні реклейму при перейменуванні номера (`_pick_clone_reclaim`): без них
+    неможливо знати, що старий номер зник з аркуша, тож None = реклейм вимкнено
+    і парсер поводиться як раніше (може створити двійника).
 
     Duplication logic (per sheet AND across sheets / re-parse):
     ──────────────────────────────────────────────────────────
@@ -3412,6 +3418,17 @@ def _parse_products_sheet(
                 or bool(re.fullmatch(re.escape(base_no_hash) + r"\s*-\s*\d+", p_stripped))
             )
         existing_base = [p for p in existing_all if _is_base_match(p.productnumber)]
+        # Запис, який цього ж прогону успадкував рядок за клоном (див.
+        # [clone-rename] нижче), у БД ще зветься СТАРИМ номером — перейменування
+        # відкладене. Без цього другий рядок ростовки того ж номера його не бачить
+        # і створює двійника, а відкладене перейменування потім впирається в нього.
+        _in_flight = {p.id for p in existing_base}
+        for _pid, _desired in pending_renames.items():
+            if _pid not in _in_flight and _is_base_match(_desired):
+                _moving = session.get(Product, _pid)
+                if _moving is not None:
+                    existing_base.append(_moving)
+                    _in_flight.add(_pid)
         # Спершу «свій» запис (точний номер), потім суфіксовані двійники — щоб
         # рядок аркуша не чіплявся до фантома замість власного запису. Див.
         # _number_affinity: без цього #В51 віддавав оновлення фантому #В51-2.
@@ -3419,6 +3436,36 @@ def _parse_products_sheet(
 
         # ── Decision logic ─────────────────────────────────────────────────
         full_match = next((p for p in existing_base if id_match(p)), None)
+
+        # ── Перейменований номер: старий у «Номера-клони», в журналі його нема ──
+        # За новим номером збігу нема, але запис із СТАРИМ номером — той самий
+        # товар (тотожність + клон оголошено в аркуші + старого номера в журналі
+        # більше немає). Успадковуємо його як full_match: id і всі посилання
+        # лишаються, номер поїде через pending_renames. Інакше — двійник назавжди.
+        if full_match is None and clones and journal_nums is not None:
+            _clone_nums = _declared_clone_numbers(clones, pnum)
+            if _clone_nums:
+                _clone_cands = [
+                    p for p in session.query(Product).filter(
+                        Product.productnumber.in_(
+                            [n for c in _clone_nums for n in (c, "#" + c)]
+                        )
+                    ).all()
+                    if id_match(p)
+                ]
+                reclaimed = _pick_clone_reclaim(_clone_cands, seen_in_run, journal_nums)
+                if reclaimed is not None:
+                    logger.info(
+                        f"[clone-rename] id={reclaimed.id} '{reclaimed.productnumber}' → '{pnum}': "
+                        f"старий номер оголошено клоном у '{ws.title}', у журналі його більше нема"
+                    )
+                    full_match = reclaimed
+                elif _clone_cands:
+                    logger.warning(
+                        f"[clone-rename] '{pnum}' ({ws.title}): клони {_clone_nums} мають "
+                        f"{len(_clone_cands)} записів у БД, але однозначного спадкоємця нема — "
+                        f"рядок піде окремим записом"
+                    )
 
         if full_match:
             # Case 1: exact duplicate — SET quantity = кількість появ у цьому run
@@ -6216,6 +6263,15 @@ def run_products_parsing(
     # Передається у _parse_products_sheet щоб quantity = кількість появ
     # по всьому журналу, а не лише в одному аркуші.
     seen_in_run: dict = {}
+    # Номери всього журналу — для реклейму перейменованих номерів (клон у
+    # «Номера-клони», старого номера в аркуші нема). Один пакет читань на прогін;
+    # не вдалося — реклейм вимкнено на цей прогін, парс іде далі.
+    try:
+        journal_nums: Optional[set] = _journal_all_numbers(sh)
+    except Exception as e:  # noqa: BLE001 — діагностика не сміє валити парс
+        journal_nums = None
+        logger.warning(f"[products] скан номерів журналу не вдався ({e}) — "
+                       f"реклейм перейменованих номерів вимкнено на цей прогін")
 
     shipment_ids = []
     for idx, ws, all_rows in _iter_sheets_with_rows(sh, batch_sheets):
@@ -6245,7 +6301,8 @@ def run_products_parsing(
                 overall = int((_idx / total_sheets + done / total / total_sheets) * 100)
                 progress_cb(overall, f"{_ws.title}: {done}/{total}")
 
-        result = _parse_products_sheet(ws, session, sheet_date, _cb, seen_in_run, supplier_id, shipment_id, prefetched_rows=all_rows)
+        result = _parse_products_sheet(ws, session, sheet_date, _cb, seen_in_run, supplier_id, shipment_id,
+                                       prefetched_rows=all_rows, journal_nums=journal_nums)
         total_added   += result["added"]
         total_updated += result["updated"]
         total_skipped += result["skipped"]
@@ -6746,6 +6803,48 @@ def run_workspace_parsing(
 def _canon_sheet_num(s) -> str:
     """Номер у порівнянному вигляді: без '#', без ';', UPPER."""
     return (s or "").strip().lstrip("#").rstrip(";").strip().upper()
+
+
+def _declared_clone_numbers(clones: str, pnum: str = "") -> list:
+    """Канонічні номери з колонки «Номера-клони» (без '#', UPPER), крім самого `pnum`.
+
+    Клітинка — список через ';' або ','. Це ЄДИНЕ місце в аркуші, де людина явно
+    каже «цей рядок раніше звався інакше» — саме на це спирається реклейм при
+    перейменуванні номера (див. `_pick_clone_reclaim`).
+    """
+    own = _canon_sheet_num(pnum)
+    out, seen = [], set()
+    for part in re.split(r"[;,]", clones or ""):
+        n = _canon_sheet_num(part)
+        if n and n != own and n not in seen:
+            seen.add(n)
+            out.append(n)
+    return out
+
+
+def _pick_clone_reclaim(candidates: list, seen_in_run: dict, journal_nums: set):
+    """Який запис зі СТАРИМ номером успадковує рядок аркуша після перейменування.
+
+    Перейменування номера у вкладці (Ф4336 → #Ф4350, старий у «Номера-клони»)
+    парсер не бачить: за новим номером нічого нема → створює нові рядки, а старі
+    лишаються назавжди, опубліковані у вітрині й на маркетплейсах, і задвоюють
+    залишок (13.09.2026 — 10 фантомних пар Ecco). Тому перед створенням «нового»
+    товару дивимось на клони: якщо запис зі старим номером
+      (а) збігається тотожністю (бренд/вид/стан/колір/розмір — фільтрує викликач),
+      (б) ще НЕ зустрічався в цьому прогоні (не живий рядок іншої вкладки),
+      (в) а самого старого номера в журналі більше НЕМАЄ ніде,
+    то це той самий фізичний товар — його треба ПЕРЕЙМЕНУВАТИ, зберігши id
+    (замовлення, публікації, фото лишаються на місці), а не плодити двійника.
+
+    Двоє й більше придатних — неоднозначно: краще двійник, якого видно, ніж
+    злиття навмання. Повертає запис або None.
+    """
+    fit = [
+        p for p in candidates
+        if p.id not in seen_in_run
+        and _canon_sheet_num(p.productnumber) not in journal_nums
+    ]
+    return fit[0] if len(fit) == 1 else None
 
 
 def _num_base(n: str) -> str:
@@ -7342,11 +7441,20 @@ def _sync_one_delivery_tab_locked(session: Session, deliveryname: str) -> dict:
         purchase_cost=financials["purchase_cost"], delivery_cost=financials["delivery_cost"],
         sheet_gid=ws.id,
     )
+    # Номери всього журналу читаємо ДО парсу: вони потрібні і реклейму
+    # перейменованих номерів у самому парсі, і прибиранню орфанів після нього.
+    scan_failed = None
+    try:
+        journal_nums, journal_counts = _journal_number_index(sh)
+    except Exception as e:  # noqa: BLE001
+        journal_nums, journal_counts, scan_failed = None, {}, str(e)
+        logger.warning(f"[sync] скан журналу не вдався ({e}) — прибирання орфанів пропущено")
     protected_ids = _candidate_product_ids_for_rows(session, all_rows)
     locked_snapshot = _snapshot_product_locks(session, protected_ids)
     aggregate_snapshot = _snapshot_product_aggregates(session, protected_ids)
     res = _parse_products_sheet(ws, session, sheet_date, None, {}, supplier_id,
-                                shipment_id, prefetched_rows=all_rows, commit=False)
+                                shipment_id, prefetched_rows=all_rows, commit=False,
+                                journal_nums=journal_nums)
     restored = _restore_product_locks(session, locked_snapshot, commit=False)
     session.flush()
 
@@ -7354,14 +7462,9 @@ def _sync_one_delivery_tab_locked(session: Session, deliveryname: str) -> dict:
     # переїхати рядком в іншу вкладку, а `deliveryid` лишитись старим — саме на
     # цій хибній засаді 19.08.2026 згоріло 135 живих товарів. Не змогли прочитати
     # журнал — не видаляємо нічого (адди/правки цієї вкладки все одно застосовані).
-    deleted, scan_failed = 0, None
+    deleted = 0
     aggregate_restored = 0
     if shipment_id:
-        try:
-            journal_nums, journal_counts = _journal_number_index(sh)
-        except Exception as e:  # noqa: BLE001
-            journal_nums, journal_counts, scan_failed = None, {}, str(e)
-            logger.warning(f"[sync] скан журналу не вдався ({e}) — прибирання орфанів пропущено")
         current_counts = _number_counts_from_rows(all_rows)
         # Якщо скан не вдався, зберігаємо всі старі агрегати: частковий аркуш не
         # має права занижувати quantity/status або пересаджувати deliveryid.
