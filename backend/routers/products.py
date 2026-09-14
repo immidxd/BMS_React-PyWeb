@@ -1184,47 +1184,9 @@ def update_product(
         if not updated_product:
             raise HTTPException(status_code=404, detail=f"Товар з ID {product_id} не знайдено")
 
-        # Поля для write-back: ті, що реально записані+залочені цим викликом
-        # (включно з авто-похідним oldprice від правила уцінки)
-        edited_lockable = set(getattr(updated_product, "_writeback_fields", set()))
-
-        # Матеріали по позиціях → синтетичні поля material_<pos> для write-back
-        # (значення = CSV назв; колонка резолвиться через WRITEBACK_FIELD_HEADERS).
-        material_writeback = getattr(updated_product, "_material_writeback", {}) or {}
-        # Заміри → синтетичні meas_<name> (значення = рядок-діапазон).
-        measurement_writeback = getattr(updated_product, "_measurement_writeback", {}) or {}
-        # Технології — синтетичне поле: значення вже зібране в CSV сервісом,
-        # бо скаляра technologyid більше немає (many-to-many).
-        technology_writeback = getattr(updated_product, "_technology_writeback", None)
-
-        # Phase 2b: write-back у журнал — через чергу, щоб PUT відповідав миттєво
-        # (запис в аркуш ~2-3с мережі не має блокувати UI). Раніше тут стартував
-        # daemon-потік напряму: якщо він падав (токен/SSL/мережа), правка лишалась
-        # тільки в БД і аркуш відставав назавжди. Тепер поля лягають у
-        # journal_writeback_queue, а воркер несе їх в аркуш і повторює спроби.
-        if edited_lockable or material_writeback or measurement_writeback \
-                or technology_writeback is not None:
-            sheet_title = product_service.get_delivery_name(db, updated_product.deliveryid)
-            pnum = updated_product.productnumber
-            # Shoe-lookup FKs are written back as the canonical NAME, not the id.
-            # Resolve now (request scope, session alive) — the write-back runs in a
-            # background thread where lazy relationship loads would fail.
-            field_values = {}
-            for f in edited_lockable:
-                v = getattr(updated_product, f)
-                if f in product_service.SHOE_FK_NAME_FIELDS:
-                    v = product_service.resolve_lookup_name(db, f, v)
-                field_values[f] = v
-            for pos, csv in material_writeback.items():
-                field_values[f"material_{pos}"] = csv
-            if technology_writeback is not None:
-                field_values["technologyid"] = technology_writeback
-            for mkey, rng in measurement_writeback.items():
-                field_values[mkey] = rng   # mkey уже 'meas_<name>'
-
-            journal_sync.enqueue_many(db, updated_product.id, pnum, sheet_title, field_values)
-            db.commit()
-            journal_sync.kick()
+        # ⚠️ Write-back у Журнал — через спільну функцію сервісу, а не тут:
+        # цей самий шлях мусить проходити й прийняття пропозицій автозаповнення.
+        product_service.enqueue_writeback_for(db, updated_product)
 
         return updated_product
     except HTTPException:

@@ -1696,6 +1696,56 @@ def get_delivery_name(db: Session, delivery_id: Optional[int]) -> Optional[str]:
     return row[0] if row else None
 
 
+def enqueue_writeback_for(db: Session, updated_product) -> Dict[str, Any]:
+    """Поставити в чергу write-back усе, що ЦЕЙ виклик update_product записав.
+
+    ⚠️ ЄДИНЕ МІСЦЕ, ЗВІДКИ ПРАВКА ЇДЕ В ЖУРНАЛ. `update_product` сам у чергу
+    не пише — лише позначає на обʼєкті `_writeback_fields`, `_material_writeback`,
+    `_measurement_writeback`, `_technology_writeback`. Раніше цю розмітку читав
+    ТІЛЬКИ роутер PUT /api/products/{id}, і будь-який інший шлях у картку
+    (прийняття пропозиції автозаповнення) лочив поле в базі, але в Журнал його
+    не відправляв: #Ф2084 — пʼять прийнятих полів, у черзі нуль, а лок далі не
+    дає парсеру вирівняти це з боку аркуша. Тому логіка тут, а роутери лише
+    викликають.
+
+    Повертає {поле: значення}, яке пішло в чергу, — для відповіді клієнту.
+    """
+    try:
+        from services import journal_sync
+    except ImportError:  # pragma: no cover
+        from backend.services import journal_sync
+
+    edited_lockable = set(getattr(updated_product, "_writeback_fields", set()) or set())
+    material_writeback = getattr(updated_product, "_material_writeback", {}) or {}
+    measurement_writeback = getattr(updated_product, "_measurement_writeback", {}) or {}
+    technology_writeback = getattr(updated_product, "_technology_writeback", None)
+
+    if not (edited_lockable or material_writeback or measurement_writeback
+            or technology_writeback is not None):
+        return {}
+
+    sheet_title = get_delivery_name(db, updated_product.deliveryid)
+    pnum = updated_product.productnumber
+    # Shoe-lookup FK пишуться назвою, не id. Резолвимо ЗАРАЗ, поки сесія жива:
+    # воркер працює у фоновому потоці, де ледачі звʼязки вже не завантажаться.
+    field_values: Dict[str, Any] = {}
+    for f in edited_lockable:
+        v = getattr(updated_product, f)
+        if f in SHOE_FK_NAME_FIELDS:
+            v = resolve_lookup_name(db, f, v)
+        field_values[f] = v
+    for pos, csv in material_writeback.items():
+        field_values[f"material_{pos}"] = csv
+    if technology_writeback is not None:
+        field_values["technologyid"] = technology_writeback
+    for mkey, rng in measurement_writeback.items():
+        field_values[mkey] = rng
+    journal_sync.enqueue_many(db, updated_product.id, pnum, sheet_title, field_values)
+    db.commit()
+    journal_sync.kick()
+    return field_values
+
+
 def update_product(db: Session, product_id: int, product: schemas.ProductUpdate) -> Optional[models.Product]:
     """Update an existing product.
 

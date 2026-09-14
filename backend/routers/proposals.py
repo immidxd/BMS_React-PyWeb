@@ -61,12 +61,13 @@ def accept_proposal(product_id: int = Path(..., ge=1),
     if not updated:
         raise HTTPException(status_code=404, detail="Товар не знайдено")
 
-    # ⚠️ Далі роутер товарів сам поставить задачі write-back — тут ми свідомо
-    # НЕ дублюємо цю логіку, щоб не зʼявилось другого місця, яке треба
-    # синхронізувати. Прийняття проходить рівно тим самим шляхом, що й правка
-    # руками, включно з локом і чергою.
-    field_values = getattr(updated, "_writeback_fields", set()) or set()
-    return {"ok": True, "applied": payload["update"], "locked_fields": sorted(field_values)}
+    # ⚠️ БУЛО НЕПРАВИЛЬНО. Попередній коментар тут стверджував, що «роутер
+    # товарів сам поставить задачі write-back». Ні: той код виконується лише на
+    # PUT /api/products/{id}, а ми викликаємо update_product НАПРЯМУ. Прийняте
+    # лочилось у базі, а в Журнал не їхало — #Ф2084, пʼять полів, у черзі нуль.
+    # Тепер черга ставиться спільною функцією сервісу — тією ж, що й для PUT.
+    queued = product_service.enqueue_writeback_for(db, updated)
+    return {"ok": True, "applied": payload["update"], "locked_fields": sorted(queued)}
 
 
 @router.post("/api/products/{product_id}/proposals/{proposal_id}/reject",
