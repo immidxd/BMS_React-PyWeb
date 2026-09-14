@@ -46,11 +46,11 @@ from sqlalchemy.orm import Session
 
 try:
     from services import ai_budget, barcode_reader, field_proposals, model_profile
-    from services.shoe_attribute_normalization import is_dead_value, is_absence_value
+    from services.shoe_attribute_normalization import is_dead_value, is_absence_value, is_misplaced_value
     from services.brand_normalization import canonicalize_brand_name as _canonicalize_brand_name
 except ImportError:  # pragma: no cover
     from backend.services import ai_budget, barcode_reader, field_proposals, model_profile
-    from backend.services.shoe_attribute_normalization import is_dead_value, is_absence_value
+    from backend.services.shoe_attribute_normalization import is_dead_value, is_absence_value, is_misplaced_value
     from backend.services.brand_normalization import canonicalize_brand_name as _canonicalize_brand_name
 
 # поле схеми → (таблиця, колонка назви, FK у products, підпис, поле ProductUpdate)
@@ -79,6 +79,18 @@ CLOSED_FIELDS: Dict[str, Tuple[str, str, str, str, str]] = {
 # Визначення значень для моделі. Без них модель має лише слово й тяжіє до
 # найчастішого: «рифлена» проти «рельєфна» без пояснення не розрізняються ніяк.
 VALUE_HINTS: Dict[str, Dict[str, str]] = {
+    # Підошва: модель бачить «товсту» і каже «платформа», хоча в нас платформа
+    # — це суцільна товста підошва БЕЗ вирізу під склепінням. Туфлі з окремим
+    # блоком ззаду люди позначають «каблук» (17 із 21), а вже тип каблука —
+    # блок / низький / шпилька. Реальний випадок: лофери DeeZee з тракторною
+    # підошвою і вирізом отримали «платформа» замість «каблук».
+    "sole_type": {
+        "платформа": "суцільна потовщена підошва однакової товщини спереду і ззаду, БЕЗ вирізу під склепінням і БЕЗ окремого каблука",
+        "танкетка":  "суцільна підошва, що плавно товщає до пʼяти, без вирізу під склепінням",
+        "каблук":    "є ОКРЕМИЙ каблук ззаду і виріз під склепінням між ним і передньою частиною — будь-якої висоти, включно з низьким блоком",
+        "плоска":    "тонка рівна підошва без потовщення і без каблука",
+        "спортивна": "кросівкова підошва з амортизацією, типово з піни",
+    },
     "tread_type": {
         "рифлена":   "дрібні паралельні рівчаки або смужки, як на рифлених чіпсах; малюнок неглибокий",
         "рельєфна":  "виражений об'ємний малюнок різної форми, але НЕ глибокі шашки",
@@ -115,8 +127,12 @@ def build_schema(db: Session) -> Dict[str, Any]:
             f"SELECT l.{col}, count(p.id) FROM {table} l "
             f"LEFT JOIN products p ON p.{fk} = l.id GROUP BY l.{col} ORDER BY l.{col}"
         )).fetchall()
+        # У перелік не потрапляють ані мертві значення, ані ті, що лежать не в
+        # тому довіднику: «платформа» в типах каблука — це підошва, і модель
+        # пропонувала її як каблук лише тому, що бачила в списку.
         values = [(n or "").strip() for n, k in rows
-                  if (n or "").strip() and k > 0 and not is_dead_value(field, n)]
+                  if (n or "").strip() and k > 0 and not is_dead_value(field, n)
+                  and not is_misplaced_value(_upd, n)]
         hints = VALUE_HINTS.get(field, {})
         detail = "; ".join(f"«{v}» — {hints[v]}" for v in values if v in hints)
         props[field] = {

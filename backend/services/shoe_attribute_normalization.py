@@ -171,9 +171,30 @@ def is_known_variant(attribute: str, value: Optional[str]) -> bool:
 # Спільне правило мусить лежати в спільному місці.
 ABSENCE_VALUES: Final[dict[str, tuple[str, ...]]] = {
     "heel_type_name":      ("без каблука", "плоский"),
-    "fastening_type_name": ("без застібки",),
+    # «Сліпони» — не застібка, а її відсутність. 1839 із 1924 мокасинів,
+    # лоферів, сабо, балеток і туфель мають порожню застібку; до того ж
+    # «сліпони» уже є підтипом, і в застібці воно лише дублювало б його.
+    "fastening_type_name": ("без застібки", "сліпони"),
     "lining_name":         ("без підкладки",),
 }
+
+# Значення, що лежать НЕ В ТОМУ довіднику. Каблук — це блок, шпилька, низький,
+# конусний; «платформа», «танкетка», «тракторний» — поняття ПІДОШВИ й
+# протектора, що затекли в heel_types (9 товарів, у 6 із них підошва вже каже
+# те саме). Модель їх бачила в переліку й пропонувала як тип каблука.
+MISPLACED_VALUES: Final[dict[str, tuple[str, ...]]] = {
+    "heel_type_name": ("платформа", "танкетка", "тракторний", "тракторна"),
+}
+
+
+def is_misplaced_value(field: str, value: Optional[str]) -> bool:
+    """Чи це значення з чужого довідника — його не можна ані пропонувати,
+    ані вважати одностайним свідченням."""
+    key = taxonomy_comparison_key(" ".join((value or "").strip().split()))
+    if not key:
+        return False
+    return any(taxonomy_comparison_key(v) == key
+               for v in MISPLACED_VALUES.get(field, ()))
 
 
 def is_absence_value(field: str, value: Optional[str]) -> bool:

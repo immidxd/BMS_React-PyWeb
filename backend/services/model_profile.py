@@ -24,9 +24,9 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 try:
-    from services.shoe_attribute_normalization import is_absence_value
+    from services.shoe_attribute_normalization import is_absence_value, is_misplaced_value
 except ImportError:  # pragma: no cover
-    from backend.services.shoe_attribute_normalization import is_absence_value
+    from backend.services.shoe_attribute_normalization import is_absence_value, is_misplaced_value
 
 # Model-level поля, які агрегуємо. Порядок і склад узгоджені з карткою товару.
 FIELDS = ["type_name", "subtype_name", "style_name", "gender_name", "season",
@@ -214,7 +214,7 @@ def unanimous(profile: Dict[str, Any], min_records: int = MIN_RECORDS) -> Dict[s
         if not value or looks_like_leaked_data(value):
             continue
         # «Без каблука» — це порожнє поле, а не запис; конвенція бази — тиша.
-        if is_absence_value(field, value):
+        if is_absence_value(field, value) or is_misplaced_value(field, value):
             continue
         out[field] = (value, total)
     return out

@@ -482,3 +482,52 @@ def test_barcode_confirms_existing_marking_without_the_ai(monkeypatch, tmp_path)
     out = pa.extract_and_propose(_DB(), 7, [_photo(tmp_path)], api_key=None)
     assert out["confirmed"] == [("marking", "GR530AA", "barcode")]
     assert out["proposed"] == [], "підтвердження не має ставати пропозицією"
+
+
+# ── Три рішення власника від 14.09.2026 ─────────────────────────────────────
+
+def test_slip_on_is_an_absence_not_a_fastening():
+    """«Сліпони» — не застібка, а її відсутність. 1839 із 1924 мокасинів,
+    лоферів, сабо, балеток і туфель мають порожню застібку; до того ж
+    «сліпони» уже є підтипом, і в застібці воно лише дублювало б його."""
+    from backend.services.shoe_attribute_normalization import is_absence_value
+    assert is_absence_value("fastening_type_name", "сліпони")
+    assert is_absence_value("fastening_type_name", "Сліпони")
+    assert not is_absence_value("fastening_type_name", "шнурівка")
+
+
+@pytest.mark.parametrize("value", ["платформа", "танкетка", "тракторний"])
+def test_sole_concepts_are_never_heel_types(value):
+    """Каблук — це блок, шпилька, низький, конусний. «Платформа» й «танкетка» —
+    підошва, «тракторний» — протектор; вони затекли в heel_types на 9 товарів,
+    і модель пропонувала їх як каблук лише тому, що бачила в переліку."""
+    from backend.services.shoe_attribute_normalization import is_misplaced_value
+    assert is_misplaced_value("heel_type_name", value)
+    assert not is_misplaced_value("heel_type_name", "блок")
+    # для підошви «платформа» — легітимна
+    assert not is_misplaced_value("sole_type_name", "платформа")
+
+
+def test_schema_excludes_misplaced_values_from_enum():
+    """Модель фізично не має побачити «платформа» серед типів каблука."""
+    import inspect
+    src = inspect.getsource(pa.build_schema)
+    assert "is_misplaced_value(_upd, n)" in src
+
+
+def test_sole_type_hints_distinguish_platform_from_heel():
+    """Лофери DeeZee з тракторною підошвою і вирізом під склепінням отримали
+    «платформа» замість «каблук»: модель бачить товсту підошву, а різницю їй
+    ніхто не пояснював. Платформа в цій базі — суцільна, БЕЗ вирізу; є окремий
+    блок ззаду — це «каблук» (так позначено 17 із 21 туфель із каблуком)."""
+    h = pa.VALUE_HINTS["sole_type"]
+    assert "БЕЗ вирізу" in h["платформа"]
+    assert "ОКРЕМИЙ каблук" in h["каблук"] and "виріз" in h["каблук"]
+    assert "танкетка" in h and "плоска" in h and "спортивна" in h
+
+
+def test_profile_layer_also_refuses_misplaced_values():
+    """Одностайні 4 записи з «платформа» в каблуку — усе одно чуже значення."""
+    from backend.services import model_profile as mp
+    prof = {"fields": {"heel_type_name": {"value": "платформа", "share": 4, "total": 4}}}
+    assert mp.unanimous(prof) == {}
