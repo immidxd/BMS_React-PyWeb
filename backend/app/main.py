@@ -31,8 +31,10 @@ from routers import journal_sync as journal_sync_router
 # відсутність таблиці не має валити старт застосунку.
 try:
     from routers import proposals as proposals_router
+    from routers import photo_staging as photo_staging_router
 except Exception:  # noqa: BLE001  # pragma: no cover
     proposals_router = None
+    photo_staging_router = None
 try:
     from routers import deliveries  # optional
 except Exception:
@@ -235,6 +237,8 @@ if studio:
     app.include_router(studio.router, tags=["studio"])  # routes already prefixed with /api
 if proposals_router:
     app.include_router(proposals_router.router, tags=["autofill"])  # routes already prefixed with /api
+if photo_staging_router:
+    app.include_router(photo_staging_router.router, tags=["photo-staging"])
 
 # Mount product images directory (local + Google Drive overlay; abstraction in services/product_images.py)
 try:

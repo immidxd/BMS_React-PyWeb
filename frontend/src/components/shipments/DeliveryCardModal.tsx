@@ -7,6 +7,7 @@ import {
   getDeliveryInfo, updateDeliveryInfo, type DeliveryInfoField, type Shipment,
 } from '../../services/referenceService';
 import QuickAddProductForm from './QuickAddProductForm';
+import PhotoStagingModal from './PhotoStagingModal';
 import ProductDetailsModal from '../products/ProductDetailsModal';
 import { alertDialog, confirmDialog, notify } from '../../ui/feedback';
 import LoadingSpinner from '../common/LoadingSpinner';
@@ -95,6 +96,7 @@ const fmtPrice = (n?: number | null) =>
 
 const DeliveryCardModal: React.FC<Props> = ({ shipment, open, onClose }) => {
   const [products, setProducts] = useState<Product[]>([]);
+  const [stagingOpen, setStagingOpen] = useState(false);
   // Речей у завозі = сума quantity (ростовка з 5 розмірів може бути 10 пар).
   const itemsCount = useMemo(() => products.reduce((s, p) => s + qtyOf(p), 0), [products]);
   const [loading, setLoading] = useState(false);
@@ -330,6 +332,11 @@ const DeliveryCardModal: React.FC<Props> = ({ shipment, open, onClose }) => {
               className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 disabled:opacity-50">
               {sorting ? '…' : '⇅'} Впорядкувати
             </button>
+            <button onClick={() => setStagingOpen(true)} disabled={loading}
+              title="Розкласти знімки з теки «до розбору» по товарах цього завозу"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 disabled:opacity-50">
+              🖼 Розкласти фото
+            </button>
             <button onClick={() => setShowForm(s => !s)} disabled={loading}
               className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium bg-black text-white hover:bg-gray-800 disabled:opacity-50">
               <span className="text-base leading-none">＋</span> Додати товар
@@ -380,6 +387,11 @@ const DeliveryCardModal: React.FC<Props> = ({ shipment, open, onClose }) => {
             ))}
           </div>
         )}
+
+        {/* Розкладання фото — окремий модал, НЕ всередині форми додавання:
+            інакше він рендерився б лише поки та форма розгорнута. */}
+        <PhotoStagingModal open={stagingOpen} onClose={() => setStagingOpen(false)}
+          products={products} onAttached={loadProducts} />
 
         {showForm && (
           <div className="px-6 py-4 border-b border-gray-100 dark:border-gray-800 bg-gray-50 dark:bg-gray-800/40">
