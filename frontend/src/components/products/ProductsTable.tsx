@@ -27,7 +27,7 @@ import ProductHoverPreview from './ProductHoverPreview';
 import { LinkOutlined, LockFilled, PictureOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import { productService } from '../../services/productService';
-import { CopyOnClick, UnknownIf, isUnknownValue, BrandName, getProductDisplayStatus, getProductStock, effectiveProductNumber } from '../common/displayHelpers';
+import { CopyOnClick, UnknownIf, isUnknownValue, BrandName, getProductDisplayStatus, getProductStock, effectiveProductNumber, vanishedItemAnchor } from '../common/displayHelpers';
 import { notify } from '../../ui/feedback';
 import LoadingSpinner from '../common/LoadingSpinner';
 // Pagination is rendered at page level
@@ -237,6 +237,16 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
     // Відкладене відкриття картки після крос-сторінкового переходу:
     // 'first' → відкрити першу картку нової сторінки, 'last' → останню.
     const pendingNavRef = useRef<null | 'first' | 'last'>(null);
+    // Остання ВІДОМА позиція відкритого товару в списку. Потрібна, коли товар
+    // зі списку вибув, а картка ще відкрита: за фільтром «з пропозиціями»
+    // прийняте одразу перестає йому відповідати, список перечитується без
+    // нього — і навігація без цієї памʼяті просто не знала б, звідки гортати.
+    const lastIdxRef = useRef<number>(0);
+    useEffect(() => {
+        if (detailsId == null) return;
+        const idx = (products.items || []).findIndex((it) => it.id === detailsId);
+        if (idx !== -1) lastIdxRef.current = idx;
+    }, [products.items, detailsId]);
     // Після того як батько підвантажив нову сторінку (products.items змінився) —
     // відкриваємо відповідну картку. Спрацьовує лише після крос-сторінкової навігації.
     useEffect(() => {
@@ -798,8 +808,14 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
     const navigateDetails = (dir: 1 | -1) => {
         const items = products.items || [];
         if (items.length === 0 || detailsId == null) return;
-        const idx = items.findIndex((it) => it.id === detailsId);
-        if (idx === -1) return;
+        let idx = items.findIndex((it) => it.id === detailsId);
+        if (idx === -1) {
+            // Товар вибув зі списку (прийняли пропозиції під фільтром «з
+            // пропозиціями», продали під «непродані» тощо). Гортаємо від
+            // місця, де він стояв. Раніше тут був мовчазний return, і людині
+            // доводилось закривати картку й відкривати наступну руками.
+            idx = vanishedItemAnchor(items.length, lastIdxRef.current, dir);
+        }
         const nextIdx = idx + dir;
         // У межах поточної сторінки
         if (nextIdx >= 0 && nextIdx < items.length) {
@@ -821,7 +837,12 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
             onPageChange(curPage <= 1 ? totalPages : curPage - 1);
         }
     };
-    const canNavigate = detailsId != null && ((products.items?.length ?? 0) > 1 || totalPages > 1);
+    // Гортати можна, коли є куди: інші товари на сторінці, інші сторінки — АБО
+    // відкритий товар зі списку вже вибув, і навіть єдиний, що лишився, це «куди».
+    const canNavigate = detailsId != null && (products.items?.length ?? 0) > 0 && (
+        (products.items?.length ?? 0) > 1 || totalPages > 1
+        || !(products.items || []).some((it) => it.id === detailsId)
+    );
 
     return (
         <TableContainer className="max-h-[calc(100vh-220px)]">

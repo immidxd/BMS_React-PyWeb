@@ -1,4 +1,4 @@
-import { getProductDisplayStatus, visibleGalleryPhotos } from './displayHelpers';
+import { getProductDisplayStatus, visibleGalleryPhotos, vanishedItemAnchor } from './displayHelpers';
 
 describe('getProductDisplayStatus', () => {
   it('shows a live paid sale even when the journal snapshot is still unsold', () => {
@@ -82,5 +82,30 @@ describe('visibleGalleryPhotos', () => {
 
     it('відсутній kind вважається офіційним', () => {
         expect(visibleGalleryPhotos([{ hidden: false }], 'official', false)).toHaveLength(1);
+    });
+});
+
+// ── Гортання після того, як товар вибув зі списку ───────────────────────────
+//
+// Під фільтром «з пропозиціями» прийняте одразу перестає йому відповідати,
+// список перечитується без товару — і навігація без памʼяті про позицію
+// мовчки зупинялась. Ці тести описують, куди саме вона має вести.
+describe('vanishedItemAnchor', () => {
+    // сторінка з 5 товарів (індекси 0..4); викликач робить nextIdx = anchor + dir
+    it('вибув усередині: «далі» веде на того, хто зсунувся на його місце', () => {
+        expect(vanishedItemAnchor(5, 2, 1) + 1).toBe(2);
+    });
+    it('вибув усередині: «назад» веде на того, що стояв перед ним', () => {
+        expect(vanishedItemAnchor(5, 2, -1) - 1).toBe(1);
+    });
+    it('вибув перший: «назад» виходить за межу сторінки (закільцювання/попередня)', () => {
+        expect(vanishedItemAnchor(5, 0, -1) - 1).toBe(-1);
+    });
+    it('вибув останній: «далі» виходить за межу сторінки, а не на попередній', () => {
+        // список мав 6, тепер 5; останній стояв на 5
+        expect(vanishedItemAnchor(5, 5, 1) + 1).toBe(5);
+    });
+    it('вибув останній: «назад» веде на нового останнього', () => {
+        expect(vanishedItemAnchor(5, 5, -1) - 1).toBe(4);
     });
 });
