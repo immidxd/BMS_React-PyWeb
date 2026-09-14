@@ -282,6 +282,14 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     id: number; value: string; confidence: number | null; model?: string; note?: string;
     source?: string;
   }>>({});
+  // Чи є пропозиції на поля блоку «Інше» — щоб він розгорнувся навіть для
+  // товару, у якого ці поля ще порожні.
+  const OTHER_FIELDS = ['sole_type_name', 'tread_type_name', 'toe_shape_name', 'fastening_type_name',
+    'lining_name', 'heel_type_name', 'lace_type_name', 'packaging_name', 'technology_name', 'sole_color_name'];
+  const hasOtherProposals = useMemo(
+    () => OTHER_FIELDS.some((f) => !!proposals[f]),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [proposals]);
   const [proposalBusy, setProposalBusy] = useState<number | null>(null);
   const [autofillRunning, setAutofillRunning] = useState(false);
   const [promPublishing, setPromPublishing] = useState(false);  // публікація в процесі (фон, до ~3.6хв)
@@ -3676,7 +3684,11 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
 
                   {/* Інше — решта характеристик (взуття + усі виміри), єдиним підрозділом без
                       окремих заголовків «Взуття»/«Виміри одягу» (згорнуто за замовчуванням). */}
-                  {(editMode || p.sole_type_name || p.tread_type_name || p.toe_shape_name || p.fastening_type_name || p.lining_name ||
+                  {/* ⚠️ Блок показується й тоді, коли поля ПОРОЖНІ, але на них є пропозиції
+                      автозаповнення. Без цього для нового товару — головного сценарію — усі
+                      шість чіпів (підошва, каблук, застібка, протектор, носок, підкладка)
+                      були сховані, і людина бачила лише бренд: «якийсь малоефективний ШІ». */}
+                  {(editMode || hasOtherProposals || p.sole_type_name || p.tread_type_name || p.toe_shape_name || p.fastening_type_name || p.lining_name ||
                     p.heel_type_name || p.lace_type_name || p.packaging_name || p.technology_name || p.sole_color_name ||
                     p.measurements_height_min != null || p.measurements_sole_thickness_min != null || p.measurements_heel_min != null ||
                     p.measurements_insole_width_min != null || p.measurements_shaft_circumference_min != null ||

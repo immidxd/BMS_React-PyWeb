@@ -2426,6 +2426,27 @@ def _is_garbage_brand_value(value: str) -> bool:
     return False
 
 
+def _is_known_taxonomy_name(session, model, value: str) -> bool:
+    """Чи є `value` назвою вже існуючого Type/Subtype (без урахування регістру).
+
+    Локаль БД — C, тож порівнюємо в Python. Довідники малі.
+    """
+    if not value:
+        return False
+    # ⚠️ Порівнюємо за таблицею, а не за тотожністю класу: `models.models.Type`
+    # і `backend.models.models.Type` — різні обʼєкти (подвійний імпорт), і
+    # словник {Type: …} по одному з них мовчки повертав би None.
+    col = {"types": "typename", "subtypes": "subtypename"}.get(getattr(model, "__tablename__", ""))
+    if not col:
+        return False
+    key = " ".join(value.strip().lower().split())
+    for row in session.query(model).all():
+        name = " ".join((getattr(row, col, None) or "").strip().lower().split())
+        if name and name == key:
+            return True
+    return False
+
+
 def _looks_like_brand_name(session, value: str) -> bool:
     """Return True if value matches an existing brand (case-insensitive, normalized).
     Used to prevent brand names from being mistakenly stored as subtypes/types
@@ -2519,9 +2540,21 @@ def _get_or_create(session: Session, model, unique_field: str, value: str):
         return None
 
     # Reject brand-matching values from being stored as Type/Subtype (column shift in sheet)
+    #
+    # ⚠️ АЛЕ НЕ ДЛЯ ВЖЕ ВІДОМОГО ВИДУ. Реальний випадок 15.09.2026: у #Я30 в
+    # колонці «Бренд» стояло «Ботинки», парсер створив із цього бренд — і далі
+    # цей запобіжник відкидав вид «Ботинки» для КОЖНОГО нового товару, хоча
+    # такий вид мають 1844 товари. Одна комірка зламала присвоєння
+    # найпоширенішого виду взуття, і ніхто не помітив: у логу лише warning.
+    # Тому бренд-двійник блокує лише НОВИЙ вид; відомий — приймається, а
+    # сміттєвий бренд відсіює симетричний запобіжник нижче.
     if model in (Type, Subtype) and _looks_like_brand_name(session, value):
-        logger.warning(f"[parser-guard] Rejected {model.__name__} '{value}' — matches existing brand")
-        return None
+        if _is_known_taxonomy_name(session, model, value):
+            logger.warning(f"[parser-guard] {model.__name__} '{value}' збігається з брендом, "
+                           f"але це відомий вид — приймаю; бренд-двійник треба прибрати")
+        else:
+            logger.warning(f"[parser-guard] Rejected {model.__name__} '{value}' — matches existing brand")
+            return None
 
     # Reject article numbers / product codes masquerading as colors (column-shift guard)
     if model is Color and _is_garbage_color_value(value):
@@ -2553,6 +2586,12 @@ def _get_or_create(session: Session, model, unique_field: str, value: str):
 
     # ── Brand: check blocklist → aliases → normalized comparison ──
     if model is Brand:
+        # Симетричний запобіжник: «Ботинки» чи «Балетки» в колонці «Бренд» — це
+        # зсув колонок, а не бренд. Без цього один такий рядок створює
+        # бренд-двійник, який далі отруює присвоєння виду всім новим товарам.
+        if _is_known_taxonomy_name(session, Type, value) or _is_known_taxonomy_name(session, Subtype, value):
+            logger.warning(f"[parser-guard] Rejected Brand '{value}' — це назва виду/підвиду")
+            return None
         from sqlalchemy import text as sa_text
 
         # Відомі одруки/гомогліфи завжди зводимо до затвердженої назви ще до
