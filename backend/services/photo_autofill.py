@@ -257,8 +257,14 @@ def call_gemini(model: str, api_key: str, photos: List[pathlib.Path],
             break
         time.sleep(2 ** attempt)
     if r is None or r.status_code != 200:
-        return {"_error": f"HTTP {getattr(r, 'status_code', '?')}: "
-                          f"{(r.text[:200] if r is not None else '')}"}
+        out: Dict[str, Any] = {"_error": f"HTTP {getattr(r, 'status_code', '?')}: "
+                                         f"{(r.text[:200] if r is not None else '')}"}
+        # 429 тут — це вичерпана ДОБОВА квота безкоштовного рівня (8 викликів),
+        # а не перевантаження. Позначаємо окремо: викликач запропонує людині
+        # повторити платним ключем, замість того щоб показати сиру помилку.
+        if r is not None and r.status_code == 429:
+            out["_quota_exhausted"] = True
+        return out
     data = r.json()
     try:
         out = json.loads(data["candidates"][0]["content"]["parts"][0]["text"])
@@ -472,9 +478,14 @@ def _same_as_current(current: Optional[str], proposed: Optional[str]) -> bool:
     return bool(a) and a == b
 
 
+def paid_key_available() -> bool:
+    """Чи є другий ключ — із проєкту з увімкненим білінгом."""
+    return bool((os.getenv("GEMINI_API_KEY_PAID") or "").strip())
+
+
 def extract_and_propose(db: Session, product_id: int, photos: List[pathlib.Path],
                         *, model: str = None, purpose: str = "autofill",
-                        api_key: Optional[str] = None) -> Dict[str, Any]:
+                        api_key: Optional[str] = None, use_paid: bool = False) -> Dict[str, Any]:
     """Розпізнати товар і скласти пропозиції. У products НЕ пише.
 
     Повертає звіт: чи дозволив бюджет, скільки коштувало, які поля запропоновано
@@ -534,6 +545,16 @@ def extract_and_propose(db: Session, product_id: int, photos: List[pathlib.Path]
         payload["confirmed"] = confirmed
         return payload
 
+    # ⚠️ ДВА КЛЮЧІ, НЕ ПЕРЕМИКАЧ. У Google рівень визначається ключем: одним і
+    # тим самим ключем перемкнутись між безкоштовним і платним посеред роботи
+    # неможливо. Тому за замовчуванням іде безкоштовний GEMINI_API_KEY (8
+    # викликів на добу), а GEMINI_API_KEY_PAID — лише коли людина явно
+    # підтвердила це в діалозі (use_paid=True). Стеля AI_MONTHLY_CAP_USD діє
+    # на обидва.
+    if use_paid and not api_key:
+        api_key = os.getenv("GEMINI_API_KEY_PAID")
+        if not api_key:
+            return _finish({"ok": False, "reason": "немає GEMINI_API_KEY_PAID"})
     api_key = api_key or os.getenv("GEMINI_API_KEY")
     if not api_key:
         return _finish({"ok": False, "reason": "немає GEMINI_API_KEY"})
@@ -551,13 +572,22 @@ def extract_and_propose(db: Session, product_id: int, photos: List[pathlib.Path]
 
     # Записуємо ЗАВЖДИ: провайдер тарифікує вхід навіть на провалі.
     cost = ai_budget.record(
-        db, model=model, purpose=purpose, product_id=product_id,
+        db, model=model, purpose=(purpose + ":paid" if use_paid else purpose),
+        product_id=product_id,
         prompt_tokens=int(usage.get("promptTokenCount", 0)),
         output_tokens=int(usage.get("candidatesTokenCount", 0)),
         ok=not err, error=err,
     )
     if err:
-        return _finish({"ok": False, "reason": err, "cost_usd": cost})
+        payload: Dict[str, Any] = {"ok": False, "reason": err, "cost_usd": cost}
+        if pred.get("_quota_exhausted") and not use_paid:
+            # Безкоштовна квота вичерпана. Це не помилка для людини, а вибір:
+            # інтерфейс покаже діалог і, якщо вона погодиться, повторить запит
+            # платним ключем.
+            payload.update({"quota_exhausted": True,
+                            "paid_available": paid_key_available(),
+                            "estimate_usd": 0.003})
+        return _finish(payload)
 
     pred_box.update(pred)
     photo_names = ",".join(p.name for p in photos)

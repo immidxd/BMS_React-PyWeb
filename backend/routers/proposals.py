@@ -87,6 +87,7 @@ def reject_proposal(product_id: int = Path(..., ge=1),
 def run_autofill(product_id: int = Path(..., ge=1),
                  photos: int = Query(10, ge=1, le=12,
                                      description="скільки живих знімків надіслати (типово всі)"),
+                 use_paid: bool = Query(False, description="повторити платним ключем — лише після підтвердження людини"),
                  db: Session = Depends(get_db)):
     """Розпізнати товар за його живими знімками й скласти пропозиції.
 
@@ -114,7 +115,7 @@ def run_autofill(product_id: int = Path(..., ge=1),
         return {"ok": False,
                 "reason": "у товару немає живих знімків — спершу додайте фото"}
 
-    result = photo_autofill.extract_and_propose(db, product_id, paths)
+    result = photo_autofill.extract_and_propose(db, product_id, paths, use_paid=use_paid)
     # Комітимо в БУДЬ-ЯКОМУ разі: навіть на провалі в сесії лежить запис про
     # витрату, і втратити його означало б занизити витрачене.
     db.commit()

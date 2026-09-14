@@ -126,10 +126,15 @@ def main() -> int:
     # 313 товарів на такій квоті — це 80 днів щоденного блокування.
     # Прогін дозволений лише коли власник підтвердив платний рівень, де добової
     # стелі запитів фактично немає, а гроші стереже AI_MONTHLY_CAP_USD.
-    if args.apply and os.getenv("AI_PAID_TIER", "0") != "1":
+    # Два способи бути «платним»: окремий GEMINI_API_KEY_PAID (тоді живий
+    # шлях лишається безкоштовним, а платний іде лише з підтвердження в
+    # діалозі) або AI_PAID_TIER=1 — основний ключ уже з білінгом.
+    use_paid = bool((os.getenv("GEMINI_API_KEY_PAID") or "").strip())
+    if args.apply and not use_paid and os.getenv("AI_PAID_TIER", "0") != "1":
         print("⛔ Пакетний прогін вимкнено на безкоштовному рівні: він зʼїдає всю добову\n"
               "   квоту (8 викликів) і блокує живе автозаповнення нового завозу.\n"
-              "   Увімкни платний рівень у Google AI Studio і постав AI_PAID_TIER=1 у .env.")
+              "   Або додай GEMINI_API_KEY_PAID у .env (ключ із проєкту з білінгом),\n"
+              "   або, якщо білінг увімкнено на основному ключі, постав AI_PAID_TIER=1.")
         return 2
 
     db = SessionLocal()
@@ -154,7 +159,7 @@ def main() -> int:
         spent = 0.0
         for i, c in enumerate(todo, 1):
             res = photo_autofill.extract_and_propose(db, c["id"], c["photos"],
-                                                     purpose="backfill")
+                                                     purpose="backfill", use_paid=use_paid)
             db.commit()          # ← після КОЖНОГО товару: прогін переривний
             spent += float(res.get("cost_usd") or 0)
             reason = str(res.get("reason") or "")

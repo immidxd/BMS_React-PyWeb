@@ -531,3 +531,58 @@ def test_profile_layer_also_refuses_misplaced_values():
     from backend.services import model_profile as mp
     prof = {"fields": {"heel_type_name": {"value": "платформа", "share": 4, "total": 4}}}
     assert mp.unanimous(prof) == {}
+
+
+# ── Платний ключ — лише з підтвердження людини ──────────────────────────────
+
+def test_quota_exhaustion_is_reported_as_a_choice(monkeypatch, tmp_path):
+    """429 на безкоштовному ключі — це не помилка для людини, а вибір.
+
+    Виміряно 14.09.2026: безкоштовна квота — 8 викликів на добу. Замість сирої
+    помилки відповідь каже «квоту вичерпано» і чи є платний ключ — інтерфейс
+    показує діалог, і лише з підтвердження повторює платно.
+    """
+    monkeypatch.setattr(pa.barcode_reader, "read_photos", lambda ps: [])
+    monkeypatch.setattr(pa, "call_gemini", lambda *a, **k: {
+        "_error": "HTTP 429: quota", "_quota_exhausted": True, "_usage": {}})
+    monkeypatch.setenv("GEMINI_API_KEY_PAID", "paid-key")
+    out = pa.extract_and_propose(_DB(spent=0.0), 7, [_photo(tmp_path)], api_key="free")
+    assert out["ok"] is False and out["quota_exhausted"] is True
+    assert out["paid_available"] is True
+
+
+def test_paid_key_is_never_used_without_explicit_consent(monkeypatch, tmp_path):
+    """Без use_paid=True платний ключ не береться, навіть якщо він є."""
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.setenv("GEMINI_API_KEY_PAID", "paid-key")
+    monkeypatch.setattr(pa.barcode_reader, "read_photos", lambda ps: [])
+    seen = {}
+    monkeypatch.setattr(pa, "call_gemini", lambda m, key, *a, **k: seen.update(key=key) or {
+        "_usage": {"promptTokenCount": 1, "candidatesTokenCount": 1}})
+    out = pa.extract_and_propose(_DB(spent=0.0), 7, [_photo(tmp_path)])
+    assert out["ok"] is False and "GEMINI_API_KEY" in out["reason"]
+    assert seen == {}, "платний ключ пішов у хід без згоди"
+
+
+def test_paid_key_is_used_only_with_consent_and_is_accounted_separately(monkeypatch, tmp_path):
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.setenv("GEMINI_API_KEY_PAID", "paid-key")
+    monkeypatch.setattr(pa.barcode_reader, "read_photos", lambda ps: [])
+    seen = {}
+    monkeypatch.setattr(pa, "call_gemini", lambda m, key, *a, **k: seen.update(key=key) or {
+        "_usage": {"promptTokenCount": 1, "candidatesTokenCount": 1}})
+    recorded = {}
+    monkeypatch.setattr(pa.ai_budget, "record", lambda db, **kw: recorded.update(kw) or 0.0)
+    out = pa.extract_and_propose(_DB(spent=0.0), 7, [_photo(tmp_path)], use_paid=True)
+    assert out["ok"] is True and seen["key"] == "paid-key"
+    assert recorded["purpose"] == "autofill:paid", "платні виклики мають рахуватись окремо"
+
+
+def test_quota_message_is_not_shown_on_a_paid_retry(monkeypatch, tmp_path):
+    """Якщо 429 прийшов уже на платному ключі — це справжня помилка, не вибір."""
+    monkeypatch.setenv("GEMINI_API_KEY_PAID", "paid-key")
+    monkeypatch.setattr(pa.barcode_reader, "read_photos", lambda ps: [])
+    monkeypatch.setattr(pa, "call_gemini", lambda *a, **k: {
+        "_error": "HTTP 429: quota", "_quota_exhausted": True, "_usage": {}})
+    out = pa.extract_and_propose(_DB(spent=0.0), 7, [_photo(tmp_path)], use_paid=True)
+    assert out["ok"] is False and "quota_exhausted" not in out

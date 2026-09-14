@@ -505,14 +505,36 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
 
   // Запуск розпізнавання. Вичерпаний бюджет — НЕ помилка: показуємо як
   // спокійне повідомлення, бо автозаповнення в такому стані просто вимкнене.
-  const runAutofill = React.useCallback(async () => {
+  const runAutofill = React.useCallback(async (usePaid = false) => {
     if (!productId || autofillRunning) return;
     setAutofillRunning(true);
     try {
-      const r = await fetch(`/api/products/${productId}/autofill`, { method: 'POST' });
+      const r = await fetch(`/api/products/${productId}/autofill${usePaid ? '?use_paid=true' : ''}`,
+        { method: 'POST' });
       const d = await r.json().catch(() => ({}));
       if (curPidRef.current !== productId) return;
       if (!d?.ok) {
+        // Безкоштовну добову квоту вичерпано (8 викликів). Це не помилка, а
+        // вибір людини: повторити платним ключем чи ні. Платний ключ — окремий
+        // (GEMINI_API_KEY_PAID), бо у Google рівень визначається ключем, і
+        // перемкнутись одним ключем неможливо. Без другого ключа — лише
+        // пояснюємо, що робити.
+        if (d?.quota_exhausted && !usePaid) {
+          if (!d.paid_available) {
+            message.info('Безкоштовну добову квоту розпізнавання вичерпано. '
+              + 'Платний ключ (GEMINI_API_KEY_PAID) не налаштовано — спробуй завтра після 10:00.');
+            return;
+          }
+          setAutofillRunning(false);
+          const ok = await confirmDialog({
+            title: 'Безкоштовну квоту на сьогодні вичерпано',
+            body: `Розпізнати цей товар платним ключем? Орієнтовно $${Number(d.estimate_usd || 0.003).toFixed(3)}. `
+              + 'Місячна стеля $20 лишається запобіжником.',
+            okText: 'Так, платно', kind: 'warning',
+          });
+          if (ok) await runAutofill(true);
+          return;
+        }
         message.info(d?.budget_blocked
           ? 'Місячний ліміт розпізнавання вичерпано'
           : (d?.reason || 'Не вдалося розпізнати'));
@@ -520,12 +542,14 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
       }
       await reloadProposals(productId);
       const n = (d.proposed || []).length;
-      message.success(n ? `Розпізнано полів: ${n}` : 'Нічого впевнено не розпізналось');
+      message.success(n ? `Розпізнано полів: ${n}${usePaid ? ' (платний ключ)' : ''}`
+        : 'Нічого впевнено не розпізналось');
     } catch {
       message.error('Не вдалося розпізнати');
     } finally {
       setAutofillRunning(false);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [productId, autofillRunning, reloadProposals]);
 
   useEffect(() => {
@@ -3565,7 +3589,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                       {/* Тиха дія: розпізнавання допоміжне, тож кнопка не має
                           конкурувати вагою з самими характеристиками. */}
                       <button
-                        type="button" onClick={runAutofill}
+                        type="button" onClick={() => runAutofill(false)}
                         disabled={autofillRunning || realCount === 0}
                         title={realCount === 0
                           ? 'Немає живих фото — спершу додайте знімки товару'
