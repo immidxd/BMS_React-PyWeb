@@ -165,6 +165,14 @@ def delete(key: str) -> None:
     get_client().delete_object(Bucket=R2_BUCKET, Key=key)
 
 
+def list_keys_with_etag(prefix: str = "") -> Iterator[tuple]:
+    """(key, etag) для кожного обʼєкта — ETag іде як версія у ?v=."""
+    paginator = get_client().get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=R2_BUCKET, Prefix=prefix):
+        for obj in page.get("Contents", []) or []:
+            yield obj["Key"], (obj.get("ETag") or "").strip('"')
+
+
 def list_keys(prefix: str = "") -> Iterator[str]:
     """Ітерує всі ключі з префіксом (пагінація; кожна сторінка = 1 Class A)."""
     paginator = get_client().get_paginator("list_objects_v2")

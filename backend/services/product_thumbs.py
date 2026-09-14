@@ -131,6 +131,25 @@ def thumb_for_local(abs_path: str, width: int) -> Optional[bytes]:
     return data
 
 
+def thumb_for_bytes(raw: bytes, key_hint: str, width: int) -> Optional[bytes]:
+    """Мініатюра з байтів, що прийшли з R2 (локальної копії немає й не буде).
+
+    Кеш — окремий, у ~/.cache/bms_thumbs, як і для решти: на диск лягає лише
+    мініатюра, не оригінал. Ключ — шлях у R2 плюс хеш вмісту, щоб заміна
+    файла в хмарі дала нову мініатюру.
+    """
+    import hashlib
+    key = f"r2:{key_hint}:{hashlib.md5(raw).hexdigest()[:12]}"
+    path = _cache_path(key, width)
+    cached = _read_cached(path)
+    if cached is not None:
+        return cached
+    data = _render(raw, width)
+    if data:
+        _write_cached(path, data)
+    return data
+
+
 def thumb_for_drive(file_id: str, width: int) -> Optional[bytes]:
     """Мініатюра файлу з Drive. Оригінал бере з існуючого байтового диск-кешу
     Drive-провайдера (а той сам вирішує, качати чи віддати з кешу)."""

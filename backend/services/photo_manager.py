@@ -166,10 +166,20 @@ def _r2_key(category: str, filename: str) -> str:
     return f"{category}/{filename}"
 
 
+def _invalidate_r2_index():
+    try:
+        from services.product_images import invalidate_r2_index
+    except ImportError:  # pragma: no cover
+        from backend.services.product_images import invalidate_r2_index
+    invalidate_r2_index()
+
+
 def _sync_one(category: str, path: Path):
-    """Залити один файл у R2 (якщо R2 увімкнено)."""
+    """Залити один файл у R2 (якщо R2 увімкнено). R2 — джерело правди, тож
+    після кожної заливки індекс скидається."""
     if r2_storage.is_enabled():
         r2_storage.upload_file(str(path), _r2_key(category, path.name))
+        _invalidate_r2_index()
 
 
 def _commit_replacement(category: str, dest: Path, staged: Path) -> None:
@@ -205,6 +215,7 @@ def _delete_r2(category: str, filename: str):
         try:
             if r2_storage.object_exists(key):
                 r2_storage.delete(key)
+            _invalidate_r2_index()
         except Exception as e:  # noqa: BLE001
             logger.warning(f"R2 delete fail {key}: {e}")
 

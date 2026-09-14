@@ -305,6 +305,186 @@ def invalidate_hidden_cache() -> None:
         _HIDDEN_CACHE["at"] = 0.0
 
 
+# ── R2 — ДЖЕРЕЛО ПРАВДИ; локальна тека — кеш ────────────────────────────────
+#
+# Досі було навпаки: список фото будувався з локального диска, R2 був копією.
+# Втрата теки означала порожні картки в BMS, а після наступного синхрону — і в
+# каталозі, хоча файли в R2 живі. Рішення власника 15.09.2026: хмара основна.
+#
+# Індекс — перелік ключів у R2, кешований у памʼяті (TTL) і скидуваний на
+# кожній мутації (upload/delete у photo_manager). Це самозцілювальне джерело:
+# що в R2, те й є, без окремої таблиці, яка могла б розійтись.
+_R2_INDEX_TTL = float(os.getenv("PHOTO_R2_INDEX_TTL", "600"))
+# Лише підпапки дзеркала з фото ТОВАРІВ. У бакеті поруч лежать `derived/`
+# (варіанти для Prom), `social/` (рендери для соцмереж), `studio/` — вони
+# названі за тим самим номером і без цього фільтра потрапляли б у галерею
+# картки як «фото товару». Сухий прогін відновлення спіймав це на 728 файлах.
+_PRODUCT_CATEGORIES = ("Взуття", "Сумки", "Одяг", "Аксесуари", "Інше")
+_R2_INDEX: dict = {"at": 0.0, "by_pnum": {}}
+_R2_INDEX_LOCK = threading.Lock()
+
+
+def _r2():
+    try:
+        from services import r2_storage
+    except ImportError:  # pragma: no cover
+        from backend.services import r2_storage
+    return r2_storage
+
+
+def _r2_index(force: bool = False) -> dict:
+    """{нормалізований номер у нижньому регістрі: [relpath, …]} з R2.
+
+    relpath = «<категорія>/<файл>.webp» — той самий шлях, що й у локальному
+    міорі та в URL /product-images/<relpath>, тож R2-записи мають ТІ САМІ
+    адреси, і жоден споживач не відрізняє їх від локальних.
+    """
+    now = time.monotonic()
+    with _R2_INDEX_LOCK:
+        if not force and now - _R2_INDEX["at"] < _R2_INDEX_TTL:
+            return _R2_INDEX["by_pnum"]
+    r2 = _r2()
+    by: dict = {}
+    rows: list = []
+    if r2.is_enabled():
+        try:
+            for key, etag in r2.list_keys_with_etag(""):
+                if key.split("/", 1)[0] not in _PRODUCT_CATEGORIES or "/" not in key:
+                    continue
+                fname = os.path.basename(key)
+                if os.path.splitext(fname)[1].lower() not in IMAGE_EXTENSIONS:
+                    continue
+                tok = _pnum_token_from_filename(fname)
+                if tok:
+                    by.setdefault(tok.lower(), []).append(key)
+                    rows.append((key, etag))
+        except Exception as exc:  # noqa: BLE001
+            # ⚠️ Збій R2 не має «обнулити» фото: лишаємо попередній індекс.
+            logger.warning("R2 index: не вдалось прочитати список ключів: %s", exc)
+            with _R2_INDEX_LOCK:
+                return _R2_INDEX["by_pnum"]
+    with _R2_INDEX_LOCK:
+        _R2_INDEX["at"] = now
+        _R2_INDEX["by_pnum"] = by
+    _publish_index_to_db(rows)
+    return by
+
+
+def _publish_index_to_db(rows: list) -> None:
+    """Скинути індекс у `photo_r2_index` — для синхрону каталогу.
+
+    Синхрон наповнював хмарну `catalog_images` скануванням ЛОКАЛЬНОГО диска,
+    тож після втрати теки вітрина втратила б усі фото. Він уже читає bsstorage;
+    ключі R2 й boto3 йому давати не варто — тому список кладе сюди BMS.
+    Збій БД не має ламати показ фото — лише попередження.
+    """
+    if not rows:
+        return
+    try:
+        try:
+            from models.database import SessionLocal
+        except ImportError:  # pragma: no cover
+            from backend.models.database import SessionLocal
+        from sqlalchemy import text as _text
+        db = SessionLocal()
+        try:
+            db.execute(_text("TRUNCATE photo_r2_index"))
+            db.execute(_text("INSERT INTO photo_r2_index (relpath, version) VALUES (:r, :v)"),
+                       [{"r": k, "v": (v or "")} for k, v in rows])
+            db.commit()
+        finally:
+            db.close()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("photo_r2_index: не записано (%s)", exc)
+
+
+def invalidate_r2_index() -> None:
+    """Скинути індекс R2 — після upload/delete/rename у photo_manager."""
+    with _R2_INDEX_LOCK:
+        _R2_INDEX["at"] = 0.0
+
+
+def _list_r2_only(target: str) -> List[ImageEntry]:
+    """Фото товару, які є в R2 — з тими самими URL, що й локальні."""
+    keys = _r2_index().get(target.lower(), [])
+    entries = []
+    for relpath in keys:
+        fname = os.path.basename(relpath)
+        if not _matches_productnumber(fname, target):
+            continue
+        entries.append(ImageEntry(
+            filename=fname,
+            url=f"{URL_PREFIX}/{quote(relpath)}",
+            index=0,
+            is_defect=_is_defect_filename(fname, target),
+            kind=_classify(fname, target),
+        ))
+    return entries
+
+
+def _safe_local_path(relpath: str) -> Optional[str]:
+    """Абсолютний шлях у міорі або None, якщо relpath виходить за корінь."""
+    base = os.path.realpath(get_images_dir())
+    target = os.path.realpath(os.path.join(base, relpath))
+    return target if target.startswith(base + os.sep) else None
+
+
+def local_path_if_exists(relpath: str) -> Optional[str]:
+    p = _safe_local_path(relpath)
+    return p if p and os.path.isfile(p) else None
+
+
+def r2_public_url(relpath: str) -> Optional[str]:
+    """Публічний URL обʼєкта в R2 — щоб віддавати фото БЕЗ локальної копії."""
+    r2 = _r2()
+    if not r2.is_enabled():
+        return None
+    return r2.public_url(relpath)
+
+
+def image_bytes(relpath: str) -> Optional[bytes]:
+    """Байти фото: локально, якщо є; інакше з R2 — В ПАМʼЯТЬ, без запису на диск.
+
+    ⚠️ Рішення власника 15.09.2026: локальна тека НЕ є копією і не має нею
+    ставати сама по собі («хіба що я сам додам у папку»). Тому читання з R2
+    нічого локально не створює. Повний кеш повертає лише явний
+    `restore_mirror_from_r2.py`.
+    """
+    p = local_path_if_exists(relpath)
+    if p:
+        try:
+            with open(p, "rb") as f:
+                return f.read()
+        except OSError as exc:
+            logger.warning("Не читається %s: %s", p, exc)
+    r2 = _r2()
+    if not r2.is_enabled() or _safe_local_path(relpath) is None:
+        return None
+    try:
+        return r2.download_bytes(relpath)
+    except Exception as exc:  # noqa: BLE001
+        logger.info("R2: немає %s (%s)", relpath, exc)
+        return None
+
+
+def ensure_local(relpath: str) -> Optional[str]:
+    """Витягнути файл із R2 НА ДИСК. Лише для явного відновлення кешу
+    (`restore_mirror_from_r2.py`) — штатна віддача цього не робить."""
+    p = local_path_if_exists(relpath)
+    if p:
+        return p
+    target = _safe_local_path(relpath)
+    data = image_bytes(relpath) if target else None
+    if not data:
+        return None
+    os.makedirs(os.path.dirname(target), exist_ok=True)
+    tmp = target + ".part"
+    with open(tmp, "wb") as fh:
+        fh.write(data)
+    os.replace(tmp, target)
+    return target
+
+
 def invalidate_image_list_cache(*productnumbers: str) -> None:
     """Скинути кеш конкретних номерів; без аргументів — увесь кеш списків."""
     with _IMAGE_LIST_CACHE_LOCK:
@@ -349,11 +529,15 @@ def list_images(productnumber: str, include_hidden: bool = False) -> List[ImageE
             _IMAGE_LIST_CACHE.pop(cache_key, None)
 
     local = _list_local_only(target)
+    # R2 — джерело правди; локальне лише ВИГРАЄ при колізії (швидше, з ?v=).
+    # Те, чого локально немає, приходить із R2 під тим самим URL, а віддача
+    # (/product-images) сама витягне файл у кеш при першому зверненні.
+    remote = _list_r2_only(target)
     drive = _list_drive_only(target)
 
     seen_lower = {e.filename.lower() for e in local}
     merged: List[ImageEntry] = list(local)
-    for e in drive:
+    for e in remote + drive:
         if e.filename.lower() not in seen_lower:
             seen_lower.add(e.filename.lower())
             merged.append(e)
@@ -413,12 +597,11 @@ def read_image_bytes(entry: ImageEntry) -> Optional[bytes]:
         if not (abs_path == root or abs_path.startswith(root + os.sep)):
             logger.warning(f"Refusing to read outside images dir: {abs_path}")
             return None
-        try:
-            with open(abs_path, "rb") as f:
-                return f.read()
-        except OSError as e:
-            logger.warning(f"Failed to read {abs_path}: {e}")
-            return None
+        # Локально або з R2 в памʼять — на диск нічого не пишемо.
+        data = image_bytes(rel)
+        if data is None:
+            logger.warning(f"Фото немає ні локально, ні в R2: {rel}")
+        return data
 
     # Drive: /product-images-drive/<file_id>
     try:

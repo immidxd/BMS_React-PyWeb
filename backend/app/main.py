@@ -246,11 +246,33 @@ try:
 except ImportError:
     from backend.services.product_images import get_images_dir, URL_PREFIX as IMG_URL_PREFIX
 _images_dir = get_images_dir()
-if os.path.isdir(_images_dir):
-    logger.info(f"Mounting LOCAL product images from {_images_dir} → {IMG_URL_PREFIX}")
-    app.mount(IMG_URL_PREFIX, StaticFiles(directory=_images_dir), name="product-images")
-else:
-    logger.info(f"Local product images dir not found ({_images_dir}) — using Drive only")
+# ⚠️ ХМАРА — ОСНОВНА. Раніше тут був голий StaticFiles: файлу немає локально —
+# 404, а без самої теки роздача навіть не створювалась («using Drive only»).
+# Тепер: є локально — віддаємо файл; немає — 302 на публічний URL у R2, БЕЗ
+# копії на диск (рішення власника: локальна тека не є копією). Втрата теки
+# перестає бути втратою фото. Тека створюється лише як робоча для конвертації.
+os.makedirs(_images_dir, exist_ok=True)
+logger.info(f"Product images: local {_images_dir} → else redirect to R2 ({IMG_URL_PREFIX})")
+
+try:
+    from services.product_images import (
+        local_path_if_exists as _img_local, r2_public_url as _img_r2_url, image_bytes as _img_bytes)
+except ImportError:
+    from backend.services.product_images import (
+        local_path_if_exists as _img_local, r2_public_url as _img_r2_url, image_bytes as _img_bytes)
+from fastapi.responses import FileResponse as _ImgFileResponse, RedirectResponse as _ImgRedirect
+from fastapi import HTTPException as _ImgHTTPException
+
+
+@app.get(IMG_URL_PREFIX + "/{relpath:path}")
+def product_image_file(relpath: str):
+    path = _img_local(relpath)
+    if path:
+        return _ImgFileResponse(path, headers={"Cache-Control": "public, max-age=31536000, immutable"})
+    url = _img_r2_url(relpath)
+    if url:
+        return _ImgRedirect(url, status_code=302)
+    raise _ImgHTTPException(status_code=404, detail="Фото не знайдено")
 
 # Drive image proxy: streams bytes from Google Drive with disk-cache
 try:
@@ -315,12 +337,12 @@ if get_drive_file_bytes is not None:
 # Обидва роути — `def` (threadpool): decode+resize блокуючий.
 try:
     from services.product_thumbs import (
-        thumb_for_local, thumb_for_drive, normalize_width, cache_stats as _thumb_stats,
+        thumb_for_local, thumb_for_bytes, thumb_for_drive, normalize_width, cache_stats as _thumb_stats,
     )
 except ImportError:
     try:
         from backend.services.product_thumbs import (
-            thumb_for_local, thumb_for_drive, normalize_width, cache_stats as _thumb_stats,
+            thumb_for_local, thumb_for_bytes, thumb_for_drive, normalize_width, cache_stats as _thumb_stats,
         )
     except ImportError:
         thumb_for_local = None
@@ -337,12 +359,19 @@ if thumb_for_local is not None:
     def product_image_thumb(relpath: str, w: int = _Query(320, ge=16, le=2048)):
         """Мініатюра локального фото. `relpath` — той самий шлях, що й у
         /product-images/<relpath> (включно з категорійною підпапкою)."""
-        base = os.path.realpath(_images_dir)
-        target = os.path.realpath(os.path.join(base, relpath))
-        # Захист від виходу за корінь фото (`..` у шляху).
-        if not target.startswith(base + os.sep) or not os.path.isfile(target):
-            raise _HTTPException(status_code=404, detail="Фото не знайдено")
-        data = thumb_for_local(target, normalize_width(w))
+        # Локально — з файла; інакше байти з R2 в памʼять, мініатюра з них.
+        # На диск лягає лише сама мініатюра (окремий кеш), не оригінал.
+        target = _img_local(relpath)
+        if target:
+            data = thumb_for_local(target, normalize_width(w))
+        else:
+            raw = _img_bytes(relpath)
+            if raw is None:
+                raise _HTTPException(status_code=404, detail="Фото не знайдено")
+            data = thumb_for_bytes(raw, relpath, normalize_width(w))
+            if data is None:
+                return _Response(content=raw, media_type="image/webp", headers=_THUMB_HEADERS)
+            return _Response(content=data, media_type="image/webp", headers=_THUMB_HEADERS)
         if data is None:
             return _FileResponse(target, headers=_THUMB_HEADERS)
         return _Response(content=data, media_type="image/webp", headers=_THUMB_HEADERS)
