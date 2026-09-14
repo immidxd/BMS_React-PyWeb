@@ -586,3 +586,57 @@ def test_quota_message_is_not_shown_on_a_paid_retry(monkeypatch, tmp_path):
         "_error": "HTTP 429: quota", "_quota_exhausted": True, "_usage": {}})
     out = pa.extract_and_propose(_DB(spent=0.0), 7, [_photo(tmp_path)], use_paid=True)
     assert out["ok"] is False and "quota_exhausted" not in out
+
+
+# ── Два питання власника від 15.09.2026 ─────────────────────────────────────
+
+def test_defined_values_enter_the_enum_even_with_zero_products(monkeypatch):
+    """«Гладка» — 0 товарів, тож фільтр `k > 0` викидав її з переліку, і на
+    кожній гладкій підошві модель МУСИЛА обирати з трьох, що лишились —
+    звідси «рифлена» на класичних черевиках, відхилена чотири рази.
+    Значення з визначенням у VALUE_HINTS — канонічне за побудовою."""
+    class _R:
+        def __init__(self, rows): self.rows = rows
+        def fetchall(self): return self.rows
+    def execute(stmt, params=None):
+        sql = str(stmt)
+        if "tread_types" in sql:
+            return _R([("гладка", 0), ("рифлена", 38), ("тракторна", 32), ("рельєфна", 9)])
+        if "technologies" in sql:
+            return _R([])
+        return _R([("x", 1)])
+    db = type("DB", (), {"execute": staticmethod(execute)})()
+    enum = [v for v in pa.build_schema(db)["properties"]["tread_type"]["enum"] if v]
+    assert "гладка" in enum
+
+
+def test_manufacturer_country_is_asked_and_absence_is_not_offered(monkeypatch):
+    """Тег «Made in Bangladesh under quality control of Caprice Germany» — а
+    модель мовчала, бо схема про країну НЕ ПИТАЛА. Тепер питає, «Unknown»
+    (257 товарів) у перелік не потрапляє, а визначення пояснює різницю між
+    країною виробництва й країною бренда."""
+    from backend.schemas.product import ProductUpdate
+    from backend.services import field_proposals as fp
+    from backend.services.shoe_attribute_normalization import is_absence_value
+    assert "manufacturer_country" in pa.CLOSED_FIELDS
+    upd = pa.CLOSED_FIELDS["manufacturer_country"][4]
+    assert upd in ProductUpdate.model_fields and upd in fp.CONFIDENCE_THRESHOLD
+    assert is_absence_value(upd, "Unknown") and is_absence_value(upd, "unknown")
+    note = pa.VALUE_HINTS["manufacturer_country"]["__field__"]
+    assert "Made in" in note and "Бангладеш" in note and "Німеччина" in note
+
+
+def test_field_note_is_not_treated_as_a_value():
+    """Службовий ключ __field__ — пояснення поля, а не значення переліку."""
+    class _R:
+        def __init__(self, rows): self.rows = rows
+        def fetchall(self): return self.rows
+    def execute(stmt, params=None):
+        sql = str(stmt)
+        if "countries" in sql: return _R([("Бангладеш", 140), ("Unknown", 257)])
+        if "technologies" in sql: return _R([])
+        return _R([("x", 1)])
+    db = type("DB", (), {"execute": staticmethod(execute)})()
+    p = pa.build_schema(db)["properties"]["manufacturer_country"]
+    assert "__field__" not in p["enum"] and "Unknown" not in p["enum"]
+    assert "Made in" in p["description"]

@@ -69,6 +69,13 @@ CLOSED_FIELDS: Dict[str, Tuple[str, str, str, str, str]] = {
                        "підкладка", "lining_name"),
     "heel_type":      ("heel_types",      "heeltypename",      "heeltypeid",
                        "тип каблука", "heel_type_name"),
+    # Країна виробництва — читається з бирки «Made in …». Довідник закритий
+    # (100 країн), тож вигадати країну модель не може; ризик інший — сплутати
+    # країну ВИРОБНИЦТВА зі штаб-квартирою бренда («Made in Bangladesh under
+    # quality control of Caprice Germany» → Бангладеш, не Німеччина). Про це —
+    # у визначенні поля нижче.
+    "manufacturer_country": ("countries", "countryname", "manufacturercountryid",
+                       "країна виробництва", "manufacturer_country_name"),
 }
 
 # ⚠️ Правило «відсутність = порожнє поле» живе в
@@ -90,6 +97,12 @@ VALUE_HINTS: Dict[str, Dict[str, str]] = {
         "каблук":    "є ОКРЕМИЙ каблук ззаду і виріз під склепінням між ним і передньою частиною — будь-якої висоти, включно з низьким блоком",
         "плоска":    "тонка рівна підошва без потовщення і без каблука",
         "спортивна": "кросівкова підошва з амортизацією, типово з піни",
+    },
+    "manufacturer_country": {
+        "__field__": ("країна, де ВИГОТОВЛЕНО — з напису «Made in …» на бирці чи устілці. "
+                      "НЕ країна бренда чи контролю якості: «Made in Bangladesh under quality "
+                      "control of Caprice Germany» — це Бангладеш, а не Німеччина. "
+                      "Немає напису «Made in» — null."),
     },
     "tread_type": {
         "рифлена":   "дрібні паралельні рівчаки або смужки, як на рифлених чіпсах; малюнок неглибокий",
@@ -130,16 +143,26 @@ def build_schema(db: Session) -> Dict[str, Any]:
         # У перелік не потрапляють ані мертві значення, ані ті, що лежать не в
         # тому довіднику: «платформа» в типах каблука — це підошва, і модель
         # пропонувала її як каблук лише тому, що бачила в списку.
+        # ⚠️ Значення з ВИЗНАЧЕННЯМ у VALUE_HINTS канонічне за побудовою — воно
+        # входить у перелік навіть без товарів. Інакше «гладка» (0 товарів) не
+        # потрапляла в перелік протектора, і на кожній гладкій підошві модель
+        # МУСИЛА обирати з трьох, що лишились, — звідси «рифлена» на класичних
+        # черевиках, відхилена вже чотири рази. Фільтр `k > 0` — проти сміття
+        # в довідниках, а не проти справжніх категорій, які ще не заповнювали.
+        defined = set(VALUE_HINTS.get(field, {}))
         values = [(n or "").strip() for n, k in rows
-                  if (n or "").strip() and k > 0 and not is_dead_value(field, n)
-                  and not is_misplaced_value(_upd, n)]
+                  if (n or "").strip() and (k > 0 or (n or "").strip() in defined)
+                  and not is_dead_value(field, n) and not is_misplaced_value(_upd, n)
+                  and not is_absence_value(_upd, n)]
         hints = VALUE_HINTS.get(field, {})
-        detail = "; ".join(f"«{v}» — {hints[v]}" for v in values if v in hints)
+        field_note = hints.get("__field__", "")
+        detail = "; ".join(f"«{v}» — {hints[v]}" for v in values if v in hints and v != "__field__")
         props[field] = {
             "type": ["string", "null"],
             # null у переліку — це і є «чесна відмова». Без нього модель мусить вгадувати.
             "enum": values + [None],
             "description": (f"{label}; null, якщо на знімках не видно однозначно"
+                            + (f". {field_note}" if field_note else "")
                             + (f". Значення: {detail}" if detail else "")),
         }
         props[f"{field}_confidence"] = {
