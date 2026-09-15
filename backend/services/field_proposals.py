@@ -146,12 +146,13 @@ def _merge_update(into: Dict[str, Any], field: str, value: Optional[str]) -> Non
         into[field] = value
 
 
-def accept_all(db: Session, product_id: int) -> Optional[Dict[str, Any]]:
+def accept_all(db: Session, product_id: int, source: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """Прийняти ВСІ відкриті пропозиції товару — одним payload для update_product.
 
     Одне прийняття = один update_product = один пакет у чергу журналу. Поле за
     полем це були N викликів, N перечитувань картки і N окремих записів в
     аркуш — і людина чекала «синхронізації з журналом» між кліками.
+    `source` звужує до одного шару («profile» — лише з власної бази).
     Повертає None, якщо приймати нічого. Запис у products — як завжди, ЛИШЕ
     у викликача через update_product.
     """
@@ -159,8 +160,9 @@ def accept_all(db: Session, product_id: int) -> Optional[Dict[str, Any]]:
         UPDATE product_field_proposals
            SET status = 'accepted', decided_at = now(), updated_at = now()
         WHERE product_id = :pid AND status = 'pending'
+          AND (:src IS NULL OR COALESCE(source, 'photo') = :src)
         RETURNING id, field, value
-    """), {"pid": product_id}).fetchall()
+    """), {"pid": product_id, "src": source}).fetchall()
     if not rows:
         return None
     update: Dict[str, Any] = {}
@@ -195,3 +197,29 @@ def mark_stale(db: Session, product_id: int, fields: set[str]) -> int:
         WHERE product_id = :pid AND status = 'pending' AND field = ANY(:f)
     """), {"pid": product_id, "f": list(fields)})
     return res.rowcount or 0
+
+
+def pending_summary(db: Session, source: Optional[str] = None) -> Dict[str, Any]:
+    """Скільки відкритих пропозицій і на скількох товарах — для діалогу
+    пакетного прийняття: людина має бачити, ЩО приймає, до кліку."""
+    rows = db.execute(text("""
+        SELECT field, count(*) AS n, count(DISTINCT product_id) AS products
+        FROM product_field_proposals
+        WHERE status = 'pending' AND (:src IS NULL OR COALESCE(source, 'photo') = :src)
+        GROUP BY field ORDER BY n DESC
+    """), {"src": source}).fetchall()
+    products = db.execute(text("""
+        SELECT count(DISTINCT product_id) FROM product_field_proposals
+        WHERE status = 'pending' AND (:src IS NULL OR COALESCE(source, 'photo') = :src)
+    """), {"src": source}).scalar() or 0
+    return {"source": source, "total": sum(int(r[1]) for r in rows), "products": int(products),
+            "by_field": [{"field": r[0], "n": int(r[1]), "products": int(r[2])} for r in rows]}
+
+
+def pending_product_ids(db: Session, source: Optional[str] = None) -> List[int]:
+    rows = db.execute(text("""
+        SELECT DISTINCT product_id FROM product_field_proposals
+        WHERE status = 'pending' AND (:src IS NULL OR COALESCE(source, 'photo') = :src)
+        ORDER BY product_id
+    """), {"src": source}).fetchall()
+    return [int(r[0]) for r in rows]

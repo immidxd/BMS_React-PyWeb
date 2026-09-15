@@ -176,3 +176,12 @@ def test_accept_all_merges_every_pending_into_one_payload():
 
 def test_accept_all_with_nothing_pending_is_none():
     assert fp.accept_all(_FakeDB(_FakeResult([])), 7) is None
+
+
+def test_accept_all_can_be_limited_to_one_layer():
+    """Пакетне прийняття шару «база» не має захоплювати пропозиції з фото."""
+    db = _FakeDB(_FakeResult([(1, "sole_type_name", "каблук")]))
+    out = fp.accept_all(db, 7, source="profile")
+    assert out["update"] == {"sole_type_name": "каблук"}
+    assert db.params[0]["src"] == "profile" and "COALESCE(source, 'photo') = :src" in db.sql[0]
+    fp.accept_all(_FakeDB(_FakeResult([])), 7)                # без шару — :src = NULL

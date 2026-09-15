@@ -567,13 +567,13 @@ async def _journal_change_poller():
             try:
                 try:
                     from scripts.sheets_parser import (
-                        get_gc, JOURNAL_ID, ORDERS_ID, drive_change_meta,
+                        get_gc, JOURNAL_ID, ORDERS_ID, drive_change_meta, drive_revisions,
                         seconds_since_own_journal_write)
                     from routers.parsing import start_auto_full_quick
                     from services import journal_sync as _journal_sync
                 except ImportError:
                     from backend.scripts.sheets_parser import (
-                        get_gc, JOURNAL_ID, ORDERS_ID, drive_change_meta,
+                        get_gc, JOURNAL_ID, ORDERS_ID, drive_change_meta, drive_revisions,
                         seconds_since_own_journal_write)
                     from backend.routers.parsing import start_auto_full_quick
                     from backend.services import journal_sync as _journal_sync
@@ -582,11 +582,19 @@ async def _journal_change_poller():
                 gc = get_gc()
                 changed = False
                 for sid in (JOURNAL_ID, ORDERS_ID):
+                    # Ревізії — по одній на автора: правка людини між двома нашими
+                    # записами видна як окрема ревізія з own=False. modifiedTime +
+                    # lastModifyingUser лишається запасним шляхом, якщо ревізії
+                    # недоступні.
                     try:
-                        meta = await asyncio.to_thread(drive_change_meta, gc, sid)
+                        revs = await asyncio.to_thread(drive_revisions, gc, sid)
+                        verdict = tracker.observe_revisions(sid, revs)
                     except Exception:
-                        continue
-                    verdict = tracker.observe(sid, meta.get("modifiedTime"), bool(meta.get("own")))
+                        try:
+                            meta = await asyncio.to_thread(drive_change_meta, gc, sid)
+                        except Exception:
+                            continue
+                        verdict = tracker.observe(sid, meta.get("modifiedTime"), bool(meta.get("own")))
                     if verdict == "changed":
                         changed = True
                     elif verdict == "own":

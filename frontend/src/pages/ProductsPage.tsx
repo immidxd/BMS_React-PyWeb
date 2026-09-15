@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import MainLayout from '../layouts/MainLayout';
 import ProductsTable from '../components/products/ProductsTable';
 import { productService, type ProductListResponse } from '../services/productService';
@@ -76,6 +76,53 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
   // дозаповнення їх сотні, і без фільтра їх довелось би шукати наосліп,
   // відкриваючи картки одну за одною.
   const [onlyWithProposals, setOnlyWithProposals] = useState<boolean>(false);
+  // Пакетне прийняття шару «база»: історично 99.6% прийнять — переглядати по
+  // чіпу нема сенсу. Кнопка живе лише під фільтром «з пропозиціями».
+  const [profilePending, setProfilePending] = useState<{ total: number; products: number; by_field: { field: string; n: number }[] } | null>(null);
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const loadProfilePending = useCallback(async () => {
+    try {
+      const r = await fetch('/api/proposals/pending-summary?source=profile');
+      if (r.ok) setProfilePending(await r.json());
+    } catch { /* допоміжне */ }
+  }, []);
+  useEffect(() => { if (onlyWithProposals) loadProfilePending(); }, [onlyWithProposals, loadProfilePending]);
+  const acceptProfileBulk = useCallback(async () => {
+    if (!profilePending?.total || bulkBusy) return;
+    const FIELD: Record<string, string> = {
+      sole_type_name: 'підошва', tread_type_name: 'протектор', fastening_type_name: 'застібка',
+      toe_shape_name: 'носок', lining_name: 'підкладка', heel_type_name: 'каблук', style_name: 'стиль',
+      subtype_name: 'підвид', type_name: 'вид', collection: 'колекція', lace_type_name: 'шнурки',
+      packaging_name: 'пакування', width: 'повнота', geometric_shape: 'форма', season: 'сезон',
+    };
+    const lines = profilePending.by_field.map((f) => `${FIELD[f.field] || f.field}: ${f.n}`).join(' · ');
+    const ok = await confirmDialog({
+      title: `Прийняти ${profilePending.total} пропозицій із власної бази?`,
+      body: `На ${profilePending.products} товарах. Це значення, на яких зійшлися минулі записи тієї ж моделі (шар «база», без ШІ).\n${lines}\n\nЗапишуться в картки й підуть у журнал у фоні.`,
+      okText: 'Прийняти всі', kind: 'confirm',
+    });
+    if (!ok) return;
+    setBulkBusy(true);
+    try {
+      const d = await taskManager.run(`Прийняття пропозицій бази (${profilePending.total})`, async () => {
+        const r = await fetch('/api/proposals/accept-bulk?source=profile', { method: 'POST' });
+        const body = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(body?.detail || `HTTP ${r.status}`);
+        return body;
+      }, {
+        successMsg: 'Пропозиції бази прийнято',
+        resultStatus: (res: any) => (res?.errors?.length
+          ? { status: 'partial', detail: `Прийнято ${res.fields} полів на ${res.products} товарах; не вдалося: ${res.errors.length}` }
+          : { status: 'success', detail: `Прийнято ${res.fields} полів на ${res.products} товарах` }),
+      });
+      notify.success({ message: `Прийнято ${d.fields} полів на ${d.products} товарах`, description: 'Записуються в журнал у фоні.', duration: 5 });
+      await loadProfilePending();
+      void fetchProducts();
+    } catch { /* помилку показав taskManager */ } finally {
+      setBulkBusy(false);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [profilePending, bulkBusy, loadProfilePending]);
   const [selectedShipmentId, setSelectedShipmentId] = useState<number | undefined>(undefined);
   const [visibleOnly, setVisibleOnly] = useState<boolean>(false);
   const [sortBy, setSortBy] = useState<string>('delivery_date');
@@ -1349,6 +1396,14 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
                   <span className="ml-2">з пропозиціями</span>
                 </label>
               </Tooltip>
+              {onlyWithProposals && (profilePending?.total ?? 0) > 0 && (
+                <button type="button" onClick={acceptProfileBulk} disabled={bulkBusy}
+                  title="Прийняти всі відкриті пропозиції шару «база» (з минулих записів тієї ж моделі) на всіх товарах"
+                  className="inline-flex items-center gap-1 text-[12px] px-2 py-0.5 rounded-md border border-gray-300 dark:border-gray-600
+                    text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-50 whitespace-nowrap">
+                  {bulkBusy ? 'Приймаю…' : `Прийняти від бази · ${profilePending!.total}`}
+                </button>
+              )}
             </div>
             <div className="order-1 md:order-none justify-self-center flex justify-center">
               <Pagination

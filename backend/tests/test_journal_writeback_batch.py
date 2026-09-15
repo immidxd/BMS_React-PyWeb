@@ -206,3 +206,17 @@ def test_kick_during_a_pass_is_not_lost(monkeypatch):
         if not journal_sync._worker_running:
             break
     assert 1 <= len(passes) <= 2 and not journal_sync._worker_running
+
+
+def test_revisions_expose_a_human_edit_hidden_between_our_writes():
+    """modifiedTime бачить лише ОСТАННЬОГО автора; ревізії — кожного. Правка
+    людини між двома нашими записами більше не маскується."""
+    t = journal_sync.JournalChangeTracker()
+    r = lambda ts, own: {"id": ts, "modifiedTime": f"2026-09-15T{ts}:00.000Z", "own": own}
+    assert t.observe_revisions("J", [r("10:00", True)]) == "first"
+    assert t.observe_revisions("J", [r("10:00", True)]) == "unchanged"
+    assert t.observe_revisions("J", [r("10:00", True), r("10:05", True)]) == "own"
+    # людина о 10:07, наш запис о 10:09 — за modifiedTime це виглядало б як «наш»
+    assert t.observe_revisions("J", [r("10:00", True), r("10:05", True), r("10:07", False), r("10:09", True)]) == "changed"
+    assert t.observe_revisions("J", [r("10:09", True), r("10:11", None)]) == "changed"   # без автора — людина
+    assert t.skipped_own == 1

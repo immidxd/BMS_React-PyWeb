@@ -70,6 +70,13 @@ def retry(include_skipped: bool = Query(False, description="Повторити �
     return {"requeued": n}
 
 
+@router.post("/api/journal-sync/dismiss-hopeless")
+def dismiss_hopeless(product_id: Optional[int] = Query(None, description="Лише задачі цієї картки"),
+                     db: Session = Depends(get_db)):
+    """Прибрати безнадійно пропущені задачі (нема завозу/вкладки) з індикаторів."""
+    return {"dismissed": journal_sync.dismiss_hopeless(db, product_id=product_id)}
+
+
 @router.post("/api/journal-sync/reconcile")
 def reconcile(apply: bool = Query(False, description="false = лише звіт, нічого не пишемо"),
               sheets: Optional[List[str]] = Query(None, description="Обмежити переліком вкладок"),

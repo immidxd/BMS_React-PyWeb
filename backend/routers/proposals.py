@@ -12,7 +12,7 @@ write-back і пропагацією на ростовку. Тому новог�
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
 from sqlalchemy.orm import Session
@@ -91,6 +91,48 @@ def accept_all_proposals(product_id: int = Path(..., ge=1),
     queued = product_service.enqueue_writeback_for(db, updated)
     return {"ok": True, "accepted": len(payload["ids"]), "fields": payload["fields"],
             "applied": payload["update"], "locked_fields": sorted(queued)}
+
+
+@router.get("/api/proposals/pending-summary", response_model=Dict[str, Any])
+def proposals_pending_summary(source: Optional[str] = Query(None, regex="^(photo|profile|barcode|photo\\+profile)$"),
+                              db: Session = Depends(get_db)):
+    """Що саме чекає прийняття — для діалогу перед пакетним прийняттям."""
+    return field_proposals.pending_summary(db, source)
+
+
+@router.post("/api/proposals/accept-bulk", response_model=Dict[str, Any])
+def accept_bulk(source: str = Query(..., regex="^(photo|profile|barcode|photo\\+profile)$"),
+                limit: int = Query(500, ge=1, le=2000),
+                db: Session = Depends(get_db)):
+    """Прийняти відкриті пропозиції ОДНОГО шару на всіх товарах.
+
+    Шар «profile» (власна база) історично приймається у 99.6% — переглядати
+    його по одному чіпу нема сенсу. Кожен товар іде тим самим шляхом, що й
+    «Прийняти всі» в картці: один update_product + один пакет у чергу
+    журналу; воркер понесе їх в аркуш у фоні. Провал одного товару не
+    зупиняє решту — він у відповіді.
+    """
+    ids = field_proposals.pending_product_ids(db, source)[:limit]
+    done, fields, errors = 0, 0, []
+    for pid in ids:
+        try:
+            payload = field_proposals.accept_all(db, pid, source=source)
+            if payload is None:
+                continue
+            update = schemas.ProductUpdate(**payload["update"])
+            updated = product_service.update_product(db, pid, update)
+            if not updated:
+                raise RuntimeError("товар не знайдено")
+            product_service.enqueue_writeback_for(db, updated)
+            db.commit()
+            done += 1
+            fields += len(payload["ids"])
+        except Exception as e:  # noqa: BLE001 — один товар не має зупиняти решту
+            db.rollback()
+            logger.warning("accept-bulk: product %s failed: %s", pid, e)
+            errors.append({"product_id": pid, "error": str(e)[:200]})
+    return {"ok": True, "source": source, "products": done, "fields": fields,
+            "errors": errors, "remaining": len(field_proposals.pending_product_ids(db, source))}
 
 
 @router.post("/api/products/{product_id}/proposals/{proposal_id}/reject",

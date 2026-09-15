@@ -165,6 +165,24 @@ const TaskCenter: React.FC = () => {
             <span className="w-3.5 h-3.5 border-2 border-gray-300 border-t-gray-700 dark:border-t-gray-200 rounded-full animate-spin shrink-0" />
           )}
           <span>{journalTask.detail || journalTask.label}</span>
+          {/* Безнадійні задачі (нема завозу/вкладки) повтором не лікуються —
+              лишається тільки зняти їх з обліку свідомо. */}
+          {journalTask.status === 'error' && /не вдалося передати/.test(journalTask.detail || '') && (
+            <button type="button"
+              onClick={async () => {
+                try {
+                  const r = await fetch('/api/journal-sync/dismiss-hopeless', { method: 'POST' });
+                  const d = await r.json().catch(() => ({}));
+                  taskManager.remove('journal-sync-global');
+                  taskManager.setExternal('journal-dismissed', `Знято з обліку: ${d.dismissed ?? 0}`, 'success',
+                    'Задачі без завозу/вкладки більше не показуються. Нова правка картки поставить нову задачу.');
+                } catch { /* індикатор оновиться наступним опитуванням */ }
+              }}
+              className="ml-1 shrink-0 text-[11px] underline underline-offset-2 hover:opacity-80"
+              title="Ці задачі неможливо записати (нема завозу або вкладки). Прибрати їх з індикаторів.">
+              Прибрати
+            </button>
+          )}
         </div>
       )}
       {open && (

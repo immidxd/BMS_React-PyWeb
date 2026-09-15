@@ -1,8 +1,20 @@
+"""Інтеграційний тест бренд-апсерту — ЛИШЕ на тестовій базі.
+
+⚠️ Раніше він брав DB_HOST/DB_NAME із оточення: сам по собі мовчки
+проходив (змінних нема), а в повному прогоні інший тест підвантажував
+`.env` — і цей тест ішов у БОЙОВУ bsstorage: створював товар «#TEST1» і
+вносив Adidas у brand_blocklist. Рятувало лише те, що падав раніше
+(RealDictCursor проти `fetchone()[0]`). Тепер запускається виключно з
+BMS_TEST_DATABASE_URL, і лише якщо в назві бази є «test».
+"""
 import os
+
 import psycopg2
-from psycopg2.extras import RealDictCursor
+import pytest
 
 from backend.scripts.brand_utils import normalize_brand, upsert_brand_and_get_id
+
+TEST_DB = os.getenv("BMS_TEST_DATABASE_URL", "")
 
 
 def ensure_tables(conn):
@@ -15,20 +27,12 @@ def ensure_tables(conn):
     cur.close()
 
 
+@pytest.mark.skipif(not TEST_DB or "test" not in TEST_DB.lower(),
+                    reason="потрібна ТЕСТОВА база: BMS_TEST_DATABASE_URL із «test» у назві")
 def test_brand_upsert_and_linking():
-    required = ["DB_HOST", "DB_NAME", "DB_USER"]
-    if not all(os.getenv(k) for k in required):
-        return
-
-    conn = psycopg2.connect(
-        host=os.getenv("DB_HOST"),
-        port=os.getenv("DB_PORT", "5432"),
-        database=os.getenv("DB_NAME"),
-        user=os.getenv("DB_USER"),
-        password=os.getenv("DB_PASSWORD"),
-    )
+    conn = psycopg2.connect(TEST_DB)
     ensure_tables(conn)
-    cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur = conn.cursor()   # upsert читає fetchone()[0] — звичайний кортеж
 
     # Upsert brand in various forms
     b1 = upsert_brand_and_get_id(cur, conn, "  Ni ké ")
@@ -37,12 +41,12 @@ def test_brand_upsert_and_linking():
 
     # Link a product
     cur.execute("insert into products (productnumber, brandid) values (%s, %s) returning id", ("#TEST1", b1))
-    pid = cur.fetchone()["id"]
+    pid = cur.fetchone()[0]
     conn.commit()
 
     cur.execute("select p.id, p.brandid, b.normalized_name from products p join brands b on b.id=p.brandid where p.id=%s", (pid,))
     row = cur.fetchone()
-    assert row["normalized_name"] == normalize_brand("Ni ké")
+    assert row[2] == normalize_brand("Ni ké")
 
     # Block brand and ensure upsert returns None
     cur.execute("insert into brand_blocklist(normalized_name, reason) values (%s, %s) on conflict do nothing", (normalize_brand("Adidas"), "test"))

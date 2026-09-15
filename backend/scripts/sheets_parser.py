@@ -691,6 +691,33 @@ def seconds_since_own_journal_write() -> float:
         return time.monotonic() - _last_own_journal_write_at if _last_own_journal_write_at else float("inf")
 
 
+def drive_revisions(gc, spreadsheet_id: str, max_pages: int = 5) -> list:
+    """Ревізії файлу з авторством: [{'id','modifiedTime','own'}], від старих до нових.
+
+    Точніше за modifiedTime+lastModifyingUser: Drive зберігає ОКРЕМУ ревізію
+    на кожного автора, тож правка людини між двома нашими записами не
+    губиться — вона є в списку як ревізія з own=False.
+    """
+    from gspread.http_client import DRIVE_FILES_API_V3_URL
+    out, token = [], None
+    for _ in range(max_pages):
+        params = {"fields": "revisions(id,modifiedTime,lastModifyingUser(me)),nextPageToken",
+                  "pageSize": 1000}
+        if token:
+            params["pageToken"] = token
+        res = gc.http_client.request(
+            "get", f"{DRIVE_FILES_API_V3_URL}/{spreadsheet_id}/revisions", params=params)
+        data = res.json()
+        for r in data.get("revisions") or []:
+            out.append({"id": r.get("id"), "modifiedTime": r.get("modifiedTime"),
+                        "own": bool((r.get("lastModifyingUser") or {}).get("me"))})
+        token = data.get("nextPageToken")
+        if not token:
+            break
+    out.sort(key=lambda r: r.get("modifiedTime") or "")
+    return out
+
+
 def drive_change_meta(gc, spreadsheet_id: str) -> dict:
     """{'modifiedTime', 'own'} — коли файл змінено востаннє і чи це були ми.
 

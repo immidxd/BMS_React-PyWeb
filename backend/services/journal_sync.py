@@ -483,6 +483,30 @@ class JournalChangeTracker:
             return "own"
         return "changed"
 
+    def observe_revisions(self, sid: str, revisions: List[Dict[str, Any]]) -> str:
+        """'first' | 'unchanged' | 'own' | 'changed' — за списком ревізій Drive.
+
+        Нові — ті, що пізніші за останню бачену за modifiedTime (ISO/UTC,
+        порівнюється як рядок). Хоч одна нова ревізія не наша → 'changed';
+        усі наші → 'own'. Ревізія без автора (анонімна/за посиланням)
+        вважається людською — краще зайвий парс, ніж пропущена правка.
+        """
+        if not revisions:
+            return "unchanged"
+        latest = max((r.get("modifiedTime") or "") for r in revisions)
+        key = f"rev:{sid}"
+        prev = self.last.get(key)
+        self.last[key] = latest
+        if prev is None:
+            return "first"
+        new = [r for r in revisions if (r.get("modifiedTime") or "") > prev]
+        if not new:
+            return "unchanged"
+        if all(r.get("own") for r in new):
+            self.skipped_own += len(new)
+            return "own"
+        return "changed"
+
     def safety_parse_due(self, seconds_since_last_parse: float,
                          seconds_since_own_write: float, quiet_sec: float = 120.0) -> bool:
         """Контрольний парс: були пропущені свої зміни, давно не парсили,
@@ -660,6 +684,30 @@ def sync_items_by_product(db: Session, product_id: int) -> List[Dict[str, Any]]:
 def pending_by_product(db: Session, product_ids: Iterable[int]) -> Dict[int, int]:
     """Сумісний вигляд: {product_id: скільки полів реально застрягло}."""
     return {pid: st["unsynced"] for pid, st in sync_state_by_product(db, product_ids).items()}
+
+
+def dismiss_hopeless(db: Session, product_id: Optional[int] = None) -> int:
+    """Зняти з обліку задачі, які повтором не лікуються.
+
+    «Товар без завозу» і «вкладки нема в журналі» — писати нікуди, і жоден
+    повтор цього не змінить. Такі задачі переходять у 'ignored': вони
+    лишаються в історії (видно у /status), але більше не фарбують ані
+    глобальний індикатор, ані картку. Якщо товар згодом отримає завоз,
+    правка картки поставить НОВУ задачу — нічого не втрачається.
+    """
+    where = "status = 'skipped' AND COALESCE(last_error, '') NOT ILIKE 'per-item field%'"
+    params: Dict[str, Any] = {}
+    if product_id is not None:
+        where += " AND product_id = :pid"
+        params["pid"] = int(product_id)
+    res = db.execute(text(f"""
+        UPDATE journal_writeback_queue
+        SET status = 'ignored', updated_at = now(),
+            last_error = COALESCE(last_error, '') || '; dismissed by user'
+        WHERE {where}
+    """), params)
+    db.commit()
+    return res.rowcount or 0
 
 
 def retry_failed(db: Session, include_skipped: bool = False,
