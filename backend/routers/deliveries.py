@@ -329,6 +329,18 @@ def add_product_to_delivery(
         raise HTTPException(status_code=502, detail=detail)
 
     prod_id = prod.id
+    # Стікер із QR на новий товар — у чергу друку (аркуш 100×100 друкують
+    # пакетом, тому не «друк зараз»). Копій = quantity (ростовка → кілька пар).
+    # Збій черги не має зривати додавання: товар уже в БД і в журналі.
+    try:
+        try:
+            from services import label_service as _labels
+        except ImportError:
+            from backend.services import label_service as _labels
+        _labels.enqueue(db, [(prod_id, max(1, int(getattr(prod, "quantity", 1) or 1)))],
+                        "add_product")
+    except Exception as _le:  # noqa: BLE001
+        logger.warning(f"Стікер для {pn} не поставлено в чергу: {_le}")
     db.commit()
     return {"id": prod_id, "productnumber": pn, "deliveryid": delivery_id,
             "sheet_row": row_res.get("row")}

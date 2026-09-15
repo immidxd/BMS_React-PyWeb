@@ -35,6 +35,11 @@ try:
 except Exception:  # noqa: BLE001  # pragma: no cover
     proposals_router = None
     photo_staging_router = None
+# Стікери з QR для складу (черга друку, аркуші 100×100). Опційний з тієї ж причини.
+try:
+    from routers import labels as labels_router
+except Exception:  # noqa: BLE001  # pragma: no cover
+    labels_router = None
 try:
     from routers import deliveries  # optional
 except Exception:
@@ -239,6 +244,8 @@ if proposals_router:
     app.include_router(proposals_router.router, tags=["autofill"])  # routes already prefixed with /api
 if photo_staging_router:
     app.include_router(photo_staging_router.router, tags=["photo-staging"])
+if labels_router:
+    app.include_router(labels_router.router)  # /api/labels/...
 
 # Mount product images directory (local + Google Drive overlay; abstraction in services/product_images.py)
 try:

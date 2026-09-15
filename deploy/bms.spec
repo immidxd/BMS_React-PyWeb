@@ -62,6 +62,7 @@ _COLLECT = [
     "lxml",
     "httpx",           # facebook/instagram/viber publisher, studio_publish
     "fontTools",       # каталог шрифтів Майстерні (services/studio_fonts)
+    "qrcode",          # QR на стікерах складу (services/label_service); шрифти — у backend_tree
     "packaging",       # звірка версій в services/updater
 ]
 

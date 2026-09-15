@@ -1,0 +1,5 @@
+Roboto (Roboto-Regular.ttf, Roboto-Bold.ttf) — Copyright 2015 Google Inc.
+Licensed under the Apache License, Version 2.0: http://www.apache.org/licenses/LICENSE-2.0
+Джерело: https://github.com/googlefonts/roboto-2 (src/hinted). Використовується для
+друку стікерів товарів (backend/services/label_service.py) — потрібен шрифт із
+кирилицею й гривнею, однаковий на macOS і Windows.
