@@ -22,6 +22,11 @@ interface Props {
   products: Product[];
   /** категорія теки «до розбору»; типово за товарами завозу */
   defaultCategory?: string;
+  /** Режим картки товару: номер відомий і НЕ змінюється — вибрані знімки
+   *  лягають лише в цей товар, а поле номера стає підписом. */
+  fixedNumber?: string;
+  /** Куди класти за замовчуванням (у картці — активна вкладка галереї). */
+  defaultKind?: 'real' | 'official';
   onAttached?: () => void;
 }
 
@@ -31,18 +36,45 @@ const THUMB = 220;
 const imgUrl = (cat: string, name: string, w: number) =>
   `/api/photo-staging/image?category=${encodeURIComponent(cat)}&name=${encodeURIComponent(name)}&w=${w}`;
 
-const PhotoStagingModal: React.FC<Props> = ({ open, onClose, products, defaultCategory, onAttached }) => {
+const PhotoStagingModal: React.FC<Props> = ({ open, onClose, products, defaultCategory, fixedNumber, defaultKind, onAttached }) => {
   const [category, setCategory] = useState<string>(defaultCategory || 'Взуття');
   const [files, setFiles] = useState<StagedFile[]>([]);
   const [loading, setLoading] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [focused, setFocused] = useState<string | null>(null);
-  const [pnum, setPnum] = useState('');
-  const [kind, setKind] = useState<'real' | 'official'>('real');
+  const [pnum, setPnum] = useState(fixedNumber ? fixedNumber.replace(/^#/, '') : '');
+  const [kind, setKind] = useState<'real' | 'official'>(defaultKind || 'real');
+  const locked = !!fixedNumber;
+  // Відкрили з іншої картки / іншої вкладки галереї — підхопити.
+  useEffect(() => {
+    if (!open) return;
+    if (fixedNumber) setPnum(fixedNumber.replace(/^#/, ''));
+    if (defaultKind) setKind(defaultKind);
+    if (defaultCategory) setCategory(defaultCategory);
+  }, [open, fixedNumber, defaultKind, defaultCategory]);
   const [busy, setBusy] = useState(false);
   // скільки знімків прикріплено до кожного номера ЗА ЦЮ СЕСІЮ — щоб бачити,
   // кому вже роздано, а кому ще ні
   const [given, setGiven] = useState<Record<string, number>>({});
+  // …і скільки в картці ВЖЕ Є (реальних / офіційних) — інакше після
+  // перезапуску чи з іншого сеансу все виглядає «без фото», і власник
+  // підвʼязує повторно.
+  const [existing, setExisting] = useState<Record<string, { real: number; official: number }>>({});
+  const numbersKey = useMemo(() => {
+    const seen = new Set<string>();
+    for (const p of products) { const n = String(p.productnumber || ''); if (n) seen.add(n); }
+    return Array.from(seen).join(',');
+  }, [products]);
+  const loadExisting = useCallback(async () => {
+    if (!numbersKey) { setExisting({}); return; }
+    try {
+      const r = await fetch(`/api/photo-staging/counts?numbers=${encodeURIComponent(numbersKey)}`);
+      if (!r.ok) return;
+      const d = await r.json();
+      setExisting(d.counts || {});
+    } catch { /* лічильник допоміжний — тиша краща за помилку */ }
+  }, [numbersKey]);
+  useEffect(() => { if (open) loadExisting(); }, [open, loadExisting]);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const load = useCallback(async () => {
@@ -91,30 +123,30 @@ const PhotoStagingModal: React.FC<Props> = ({ open, onClose, products, defaultCa
       setFiles((cur) => cur.filter((f) => !done.has(f.name)));
       setSelected(new Set());
       setGiven((g) => ({ ...g, [d.productnumber]: (g[d.productnumber] || 0) + (d.added || 0) }));
+      loadExisting();
       notify.success(`${d.productnumber}: +${d.added} фото`
         + ((d.errors || []).length ? `, не вдалось ${(d.errors || []).length}` : ''));
       // Знімки перемішані — наступна група майже напевно ІНШИЙ товар, тож
-      // поле очищаємо і лишаємо фокус у ньому.
-      setPnum('');
-      inputRef.current?.focus();
+      // поле очищаємо і лишаємо фокус у ньому. У картці номер фіксований.
+      if (!locked) { setPnum(''); inputRef.current?.focus(); }
       onAttached?.();
     } catch {
       notify.error('Не вдалося прикріпити');
     } finally {
       setBusy(false);
     }
-  }, [pnum, selected, busy, category, kind, onAttached]);
+  }, [pnum, selected, busy, category, kind, locked, onAttached, loadExisting]);
 
   // Enter — прикріпити; Esc — зняти виділення
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') { setSelected(new Set()); }
-      if (e.key === 'Enter' && document.activeElement === inputRef.current) { e.preventDefault(); attach(); }
+      if (e.key === 'Enter' && (locked || document.activeElement === inputRef.current)) { e.preventDefault(); attach(); }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [open, attach]);
+  }, [open, attach, locked]);
 
   const chips = useMemo(() => {
     const seen = new Set<string>();
@@ -133,7 +165,9 @@ const PhotoStagingModal: React.FC<Props> = ({ open, onClose, products, defaultCa
         onClick={(e) => e.stopPropagation()}>
         {/* Шапка */}
         <div className="flex items-center gap-3 px-5 py-3 border-b border-gray-200 dark:border-gray-700">
-          <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Розкласти фото</h2>
+          <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
+            {locked ? `Фото для ${fixedNumber}` : 'Розкласти фото'}
+          </h2>
           <select value={category} onChange={(e) => setCategory(e.target.value)}
             className="rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1 text-sm">
             {CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
@@ -158,9 +192,14 @@ const PhotoStagingModal: React.FC<Props> = ({ open, onClose, products, defaultCa
               <div className="text-[11px] text-gray-400 truncate">{focused || ''}</div>
 
               <div className="flex items-center gap-2">
-                <input ref={inputRef} value={pnum} onChange={(e) => setPnum(e.target.value)}
-                  placeholder="Номер, напр. Ф4400"
-                  className="flex-1 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2 text-base font-medium focus:outline-none focus:ring-2 focus:ring-gray-400" />
+                {locked ? (
+                  <div className="flex-1 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/60 px-3 py-2 text-base font-medium text-gray-900 dark:text-gray-100"
+                    title="Знімки лягають лише в цю картку">{fixedNumber}</div>
+                ) : (
+                  <input ref={inputRef} value={pnum} onChange={(e) => setPnum(e.target.value)}
+                    placeholder="Номер, напр. Ф4400"
+                    className="flex-1 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2 text-base font-medium focus:outline-none focus:ring-2 focus:ring-gray-400" />
+                )}
                 <div className="inline-flex rounded-lg border border-gray-300 dark:border-gray-600 overflow-hidden text-xs">
                   {(['real', 'official'] as const).map((k) => (
                     <button key={k} type="button" onClick={() => setKind(k)}
@@ -175,21 +214,33 @@ const PhotoStagingModal: React.FC<Props> = ({ open, onClose, products, defaultCa
                 {busy ? 'Прикріплюю…' : `Прикріпити ${selected.size ? `(${selected.size})` : ''}`}
               </button>
 
-              {/* Чіпи товарів завозу: клік ставить номер; число — скільки роздано за сесію */}
-              {chips.length > 0 && (
+              {/* Чіпи товарів завозу: клік ставить номер. Число — скільки знімків
+                  у картці ВЖЕ Є (реальні + офіційні); залитий чіп = фото є,
+                  контурний = ще без фото. «+N» — прикріплено за цю сесію. */}
+              {!locked && chips.length > 0 && (
                 <div className="min-h-0 overflow-y-auto">
-                  <div className="text-[11px] uppercase tracking-wide text-gray-400 mb-1.5">Товари цього завозу</div>
+                  <div className="text-[11px] uppercase tracking-wide text-gray-400 mb-1.5 flex items-center gap-2">
+                    <span>Товари цього завозу</span>
+                    <span className="normal-case tracking-normal text-gray-400">
+                      без фото: {chips.filter((p) => { const e = existing[String(p.productnumber)]; return !e || (e.real + e.official) === 0; }).length}
+                    </span>
+                  </div>
                   <div className="flex flex-wrap gap-1.5">
                     {chips.map((p) => {
                       const n = String(p.productnumber);
                       const g = given[n] || 0;
+                      const e = existing[n];
+                      const have = e ? e.real + e.official : 0;
+                      const cls = have
+                        ? 'bg-gray-900 text-white border-gray-900 dark:bg-gray-100 dark:text-gray-900 dark:border-gray-100'
+                        : 'border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800';
                       return (
                         <button key={n} type="button" onClick={() => { setPnum(n.replace(/^#/, '')); inputRef.current?.focus(); }}
-                          className={`px-2 py-1 rounded-md text-xs border ${g
-                            ? 'border-gray-900 dark:border-gray-100 text-gray-900 dark:text-gray-100'
-                            : 'border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300'} hover:bg-gray-100 dark:hover:bg-gray-800`}
-                          title={`${p.brand_name || ''} ${p.model || ''}`.trim()}>
-                          {n}{g ? <span className="ml-1 opacity-70">·{g}</span> : null}
+                          className={`px-2 py-1 rounded-md text-xs border ${cls}`}
+                          title={`${p.brand_name || ''} ${p.model || ''}`.trim()
+                            + (e ? ` — реальних ${e.real}, офіційних ${e.official}` : '')}>
+                          {n}{have ? <span className="ml-1 opacity-70">·{have}</span> : null}
+                          {g ? <span className="ml-1 opacity-70">+{g}</span> : null}
                         </button>
                       );
                     })}

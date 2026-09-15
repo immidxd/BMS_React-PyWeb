@@ -123,3 +123,18 @@ def test_attach_refuses_unknown_kind_and_empty_selection(staging):
     db = SimpleNamespace(query=lambda m: _Q([]))
     with pytest.raises(HTTPException): ps.staging_attach({"category": "Взуття", "productnumber": "x", "files": ["a.jpg"], "kind": "xxx"}, db=db)
     with pytest.raises(HTTPException): ps.staging_attach({"category": "Взуття", "productnumber": "x", "files": []}, db=db)
+
+
+def test_counts_tell_which_cards_already_have_photos(monkeypatch):
+    """Власник плутався й підвʼязував повторно: чіпи завозу показували лише
+    роздане ЗА СЕСІЮ. Тепер — скільки в картці є насправді."""
+    from types import SimpleNamespace
+    from backend.routers import photo_staging as ps
+    def _fake(n):
+        return {"#Ф1": [SimpleNamespace(kind="real"), SimpleNamespace(kind="real"), SimpleNamespace(kind="official")],
+                "#Ф2": []}.get(n, [])
+    monkeypatch.setattr(ps, "list_images", _fake)
+    out = ps.staging_counts(numbers="#Ф1, #Ф2,,#Ф3")
+    assert out["counts"]["#Ф1"] == {"real": 2, "official": 1, "defect": 0}
+    assert out["counts"]["#Ф2"] == {"real": 0, "official": 0, "defect": 0}
+    assert out["counts"]["#Ф3"]["real"] == 0

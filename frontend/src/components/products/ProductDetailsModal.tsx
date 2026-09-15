@@ -7,6 +7,7 @@ import { copyImageToClipboard, saveProductPhoto, saveProductPhotosZip } from '..
 import { CopyOnClick, formatBrandName, getProductDisplayStatus, getProductStock, getConditionColor, effectiveProductNumber, visibleGalleryPhotos } from '../common/displayHelpers';
 import { hiddenFieldsForType } from './productCategory';
 import AiLimitsBadge, { emitAiLimitsChanged } from './AiLimitsBadge';
+import PhotoStagingModal from '../shipments/PhotoStagingModal';
 import { taskManager, emitProductPhotosChanged } from '../../services/taskManager';
 import {
   markPromImportAccepted, refreshPromLimitWatch, watchPromLimitStatus,
@@ -299,6 +300,9 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
   // не чекаючи журналу. Set замість одного id.
   const [proposalBusy, setProposalBusy] = useState<Set<number>>(() => new Set());
   const [acceptAllBusy, setAcceptAllBusy] = useState(false);
+  // «З теки до розбору» — той самий модал, що й у картці завозу, лише з
+  // фіксованим номером цього товару.
+  const [stagingOpen, setStagingOpen] = useState(false);
   const [autofillRunning, setAutofillRunning] = useState(false);
   const [promPublishing, setPromPublishing] = useState(false);  // публікація в процесі (фон, до ~3.6хв)
   const [promPreview, setPromPreview] = useState<any | null>(null);  // дані діалогу публікації
@@ -2094,6 +2098,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
       // Відкритий діалог системи feedback/Prom (клас .bms-dialog-host) обробляє
       // клавіші сам — картка позаду не реагує (Esc не закриє її «наскрізь»).
       if (document.querySelector('.bms-dialog-host')) return;
+      if (stagingOpen) return;        // модал «до розбору» зверху — клавіші його
       if (e.key === 'Escape') {
         if (previewVisible) return;   // antd-прев'ю саме обробляє свій Esc
         // Esc при відкритій картці = ЛИШЕ закрити картку. Гасимо подію, щоб вона не
@@ -2135,7 +2140,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     window.addEventListener('keydown', handleKey, true);
     return () => window.removeEventListener('keydown', handleKey, true);
   }, [open, onClose, images.length, previewVisible, navPrev, navNext, editMode,
-      selectedPhotos.size, clearPhotoSelection]);
+      selectedPhotos.size, clearPhotoSelection, stagingOpen]);
 
   const p = product;
   const effectiveJournalState = journalState
@@ -2589,6 +2594,12 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
+      {/* «З теки до розбору» — той самий модал, що в картці завозу; номер
+          зафіксовано, знімки лягають лише в цей товар тим самим add_photos. */}
+      <PhotoStagingModal open={stagingOpen} onClose={() => setStagingOpen(false)}
+        products={[]} fixedNumber={pnumClean ? `#${pnumClean.replace(/^#/, '')}` : undefined}
+        defaultKind={activeKind === 'official' ? 'official' : 'real'}
+        onAttached={() => { if (productId) { emitProductPhotosChanged(productId); loadImages(true); } }} />
       <style>{`
         @keyframes bmsFadeIn { from { opacity: 0; } to { opacity: 1; } }
         .bms-fade-in { animation: bmsFadeIn 180ms ease-out; }
@@ -3214,6 +3225,11 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                             className="mt-4 text-[12px] text-blue-600 dark:text-blue-400 hover:underline">
                             📷 Підтягнути студійні фото з іншого товару…
                           </button>
+                          <button type="button" onClick={() => setStagingOpen(true)}
+                            className="mt-2 text-[12px] text-blue-600 dark:text-blue-400 hover:underline"
+                            title="Вибрати знімки цього товару з теки «Товар_до_розбору»">
+                            📥 Розкласти з теки «до розбору»…
+                          </button>
                         </div>
                       )}
                     </div>
@@ -3326,11 +3342,21 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                               Дефекти
                             </button>
                           </div>
-                          <button type="button" disabled={photoBusy}
-                            onClick={() => addPhotoInputRef.current?.click()}
-                            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[12px] bg-gray-900 text-white hover:bg-black disabled:opacity-50 transition-colors whitespace-nowrap">
-                            <PlusOutlined style={{ fontSize: 11 }} /> Додати
-                          </button>
+                          <div className="flex items-center gap-1.5">
+                            <button type="button" disabled={photoBusy || activeKind === 'defect'}
+                              onClick={() => setStagingOpen(true)}
+                              title={activeKind === 'defect'
+                                ? 'З теки «до розбору» кладуться реальні або офіційні знімки — перемкни вкладку'
+                                : 'Вибрати знімки цього товару з теки «Товар_до_розбору»'}
+                              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[12px] border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-50 transition-colors whitespace-nowrap">
+                              <InboxOutlined style={{ fontSize: 11 }} /> З теки
+                            </button>
+                            <button type="button" disabled={photoBusy}
+                              onClick={() => addPhotoInputRef.current?.click()}
+                              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[12px] bg-gray-900 text-white hover:bg-black disabled:opacity-50 transition-colors whitespace-nowrap">
+                              <PlusOutlined style={{ fontSize: 11 }} /> Додати
+                            </button>
+                          </div>
                         </div>
 
                         {officialImages.length === 0 ? (

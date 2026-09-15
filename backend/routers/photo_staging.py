@@ -35,12 +35,12 @@ try:
     from models.database import get_db
     from models import models
     from services.photo_manager import add_photos, resolve_category, VALID_CATEGORIES, PHOTO_KINDS
-    from services.product_images import invalidate_image_list_cache
+    from services.product_images import invalidate_image_list_cache, list_images
 except ImportError:  # pragma: no cover
     from backend.models.database import get_db
     from backend.models import models
     from backend.services.photo_manager import add_photos, resolve_category, VALID_CATEGORIES, PHOTO_KINDS
-    from backend.services.product_images import invalidate_image_list_cache
+    from backend.services.product_images import invalidate_image_list_cache, list_images
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -95,6 +95,26 @@ def staging_list(category: str = Query(...)) -> Dict[str, Any]:
     # поруч, і сітка в такому порядку читається швидше, ніж за назвою файлу.
     files.sort(key=lambda x: (x["mtime"], x["name"]))
     return {"category": category, "files": files}
+
+
+@router.get("/api/photo-staging/counts")
+def staging_counts(numbers: str = Query(..., description="номери через кому")) -> Dict[str, Any]:
+    """Скільки знімків уже є в кожної картки — щоб у «Розкласти фото» бачити,
+    кому ще роздавати, а кому вже ні. Без цього власник плутався й підвʼязував
+    повторно. Читає індекс R2 (у памʼяті) — дешево навіть на 40 номерів."""
+    out: Dict[str, Dict[str, int]] = {}
+    for raw in numbers.split(","):
+        n = raw.strip()
+        if not n:
+            continue
+        counts = {"real": 0, "official": 0, "defect": 0}
+        try:
+            for img in list_images(n):
+                counts[img.kind] = counts.get(img.kind, 0) + 1
+        except Exception as e:  # noqa: BLE001 — один поганий номер не валить решту
+            logger.warning("[staging] counts for %s: %s", n, e)
+        out[n] = counts
+    return {"counts": out}
 
 
 # ── Превʼю ──────────────────────────────────────────────────────────────────
