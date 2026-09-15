@@ -32,10 +32,27 @@ function errDetail(e: any): string {
   return e?.message || 'Помилка';
 }
 
+// Скільки завершений запис живе в Сповіщеннях, поки не зникне сам (власник:
+// «і так само зникали звідти з часом»). Помилки — довше, щоб їх встигли побачити.
+const TTL_MS: Record<TaskStatus, number> = {
+  running: Infinity, waiting: Infinity,
+  success: 10 * 60_000, partial: 60 * 60_000, error: 60 * 60_000,
+};
+
 class TaskManager {
   private tasks: Task[] = [];
   private listeners = new Set<Listener>();
   private seq = 0;
+
+  constructor() {
+    if (typeof window !== 'undefined') window.setInterval(() => this.expire(), 30_000);
+  }
+
+  /** Прибрати завершені записи, що пережили свій термін. */
+  expire(now = Date.now()) {
+    const next = this.tasks.filter(t => !t.endedAt || now - t.endedAt < TTL_MS[t.status]);
+    if (next.length !== this.tasks.length) { this.tasks = next; this.emit(); }
+  }
 
   getTasks(): Task[] { return this.tasks; }
   runningCount(): number { return this.tasks.filter(t => t.status === 'running' || t.status === 'waiting').length; }
@@ -63,7 +80,8 @@ class TaskManager {
       existing.endedAt = status === 'running' || status === 'waiting' ? undefined : Date.now();
       this.tasks = [...this.tasks];
     } else {
-      this.tasks = [{ id, label, status, detail, startedAt: Date.now() }, ...this.tasks].slice(0, 40);
+      const endedAt = status === 'running' || status === 'waiting' ? undefined : Date.now();
+      this.tasks = [{ id, label, status, detail, startedAt: Date.now(), endedAt }, ...this.tasks].slice(0, 40);
     }
     this.emit();
   }

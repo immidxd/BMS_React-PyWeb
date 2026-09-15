@@ -27,6 +27,7 @@ from typing import Optional, Dict, Any, List, Iterable, Tuple
 from datetime import datetime, timedelta
 import logging
 import threading
+import time
 from types import SimpleNamespace
 
 from sqlalchemy import text
@@ -51,7 +52,14 @@ _PERMANENT_MARKERS = (
 
 _worker_lock = threading.Lock()
 _worker_running = False
+_kick_pending = False
 PROCESSING_TIMEOUT_MINUTES = 5
+# Пауза перед проходом після kick(): прийняття пропозицій іде по одному полю
+# з інтервалом у секунди, і без паузи перше поле летіло б окремим викликом, а
+# решта — наступним. За ці секунди задачі одного товару збираються в один пакет.
+COALESCE_SECONDS = 2.5
+# Скільки задач одного товару брати за раз (полів у картці менше).
+BATCH_LIMIT = 60
 _incoming_lock = threading.Lock()
 _incoming_state: Dict[str, Any] = {"state": "idle", "detail": None, "updated_at": None}
 
@@ -93,6 +101,17 @@ def enqueue(db: Session, product_id: Optional[int], productnumber: str,
     в аркуш поїхало б спершу проміжне значення, а потім кінцеве.
     """
     val = None if value is None else str(value)
+    # Те саме значення вже В ПОЛЬОТІ (processing) — звірка картки при відкритті
+    # інакше ставила б другу задачу, і аркуш отримував би той самий запис двічі.
+    if product_id is not None:
+        inflight = db.execute(text("""
+            SELECT 1 FROM journal_writeback_queue
+            WHERE product_id=:pid AND field=:field AND status='processing'
+              AND value IS NOT DISTINCT FROM :val
+            LIMIT 1
+        """), {"pid": product_id, "field": field, "val": val}).first()
+        if inflight:
+            return
     db.execute(text("""
         INSERT INTO journal_writeback_queue
               (product_id, productnumber, sheet_title, field, value,
@@ -132,7 +151,39 @@ def _process_one(db: Session, row) -> str:
                                             row.field, row.value)
     except Exception as e:  # мережа/токен/SSL — саме те, що раніше губилось
         res = {"ok": False, "reason": f"exception: {e}"}
+    return _apply_outcome(db, row, res)
 
+
+def _process_batch(db: Session, rows: List[Any]) -> Dict[str, int]:
+    """Усі задачі ОДНОГО номера — одним проходом по аркушу.
+
+    Кожна задача отримує власний наслідок: поле без колонки стає skipped,
+    решта — done; провал мережі відкладає всі разом. Старий двійник парсера
+    без пакетної функції обслуговується по одному — тести й скрипти живі.
+    """
+    counts: Dict[str, int] = {}
+    sp = _sheets_parser()
+    batch_fn = getattr(sp, "writeback_fields_to_journal", None)
+    if batch_fn is None or len(rows) == 1:
+        for row in rows:
+            out = _process_one(db, row)
+            counts[out] = counts.get(out, 0) + 1
+        return counts
+    head = rows[0]
+    field_values = {r.field: r.value for r in rows}
+    try:
+        res = batch_fn(head.sheet_title, head.productnumber, field_values)
+        per_field = res.get("results") or {}
+        shared = {"ok": False, "reason": str(res.get("reason") or "unknown")}
+    except Exception as e:  # мережа/токен/SSL — саме те, що раніше губилось
+        per_field, shared = {}, {"ok": False, "reason": f"exception: {e}"}
+    for row in rows:
+        out = _apply_outcome(db, row, per_field.get(row.field) or shared)
+        counts[out] = counts.get(out, 0) + 1
+    return counts
+
+
+def _apply_outcome(db: Session, row, res: Dict[str, Any]) -> str:
     if res.get("ok"):
         db.execute(text("""UPDATE journal_writeback_queue
                            SET status='done', done_at=now(), updated_at=now(), last_error=NULL
@@ -205,20 +256,37 @@ def _recover_stale_processing(db: Session) -> int:
 
 
 def _claim_one(db: Session):
-    """Атомарно забрати одну готову задачу, не блокуючи інший воркер.
+    """Одна готова задача — для скриптів і тестів; воркер бере пакетами."""
+    rows = _claim_batch(db, limit=1)
+    return rows[0] if rows else None
 
-    Після переходу в ``processing`` нова правка цього самого поля створить нову
-    ``pending``-задачу, а не підмінить значення, яке вже летить у Google. Так
-    завершення старого HTTP-запиту не може позначити новішу правку виконаною.
+
+def _claim_batch(db: Session, limit: int = BATCH_LIMIT) -> List[Any]:
+    """Атомарно забрати готові задачі ОДНОГО номера, не блокуючи інший воркер.
+
+    Голова черги визначає номер і вкладку; беруться всі готові задачі цього ж
+    номера — вони підуть в аркуш одним проходом. Після переходу в
+    ``processing`` нова правка того самого поля створить нову ``pending``-задачу,
+    а не підмінить значення, яке вже летить у Google. Так завершення старого
+    HTTP-запиту не може позначити новішу правку виконаною.
     """
-    row = db.execute(text("""
-        WITH candidate AS (
-            SELECT id
+    rows = db.execute(text("""
+        WITH head AS (
+            SELECT product_id, productnumber, sheet_title
             FROM journal_writeback_queue
             WHERE status='pending' AND next_attempt_at <= now()
             ORDER BY created_at, id
-            FOR UPDATE SKIP LOCKED
             LIMIT 1
+        ), candidate AS (
+            SELECT q.id
+            FROM journal_writeback_queue q, head h
+            WHERE q.status='pending' AND q.next_attempt_at <= now()
+              AND q.productnumber = h.productnumber
+              AND q.sheet_title IS NOT DISTINCT FROM h.sheet_title
+              AND q.product_id IS NOT DISTINCT FROM h.product_id
+            ORDER BY q.created_at, q.id
+            FOR UPDATE OF q SKIP LOCKED
+            LIMIT :lim
         )
         UPDATE journal_writeback_queue q
         SET status='processing', updated_at=now()
@@ -226,9 +294,10 @@ def _claim_one(db: Session):
         WHERE q.id=c.id
         RETURNING q.id, q.product_id, q.productnumber, q.sheet_title,
                   q.field, q.value, q.attempts, q.status
-    """)).fetchone()
+    """), {"lim": int(limit)}).fetchall()
     db.commit()
-    return row
+    # Порядок RETURNING не гарантовано — відновлюємо порядок черги.
+    return sorted(rows, key=lambda r: r.id)
 
 
 def _resolve_current_target(db: Session, row) -> Tuple[Optional[Any], Optional[str]]:
@@ -292,32 +361,49 @@ def drain(max_items: int = 200) -> Dict[str, int]:
         recovered = _recover_stale_processing(db)
         if recovered:
             logger.warning("[journal-sync] recovered %d stale processing task(s)", recovered)
-        for _ in range(max_items):
-            row = _claim_one(db)
-            if row is None:
+        taken = 0
+        while taken < max_items:
+            rows = _claim_batch(db)
+            if not rows:
                 break
+            taken += len(rows)
+            # Ціль (номер + вкладка) спільна для всього пакета — зважуємо по голові,
+            # а наслідок (перенацілення / skipped) переносимо на кожну задачу.
             try:
-                row, pre_outcome = _resolve_current_target(db, row)
+                head, pre_outcome = _resolve_current_target(db, rows[0])
             except Exception as e:  # ціль не прочиталась — не лишаємо processing на 5 хв
-                claimed_id = row.id
                 db.rollback()
-                db.execute(text("""
-                    UPDATE journal_writeback_queue
-                    SET status='pending', next_attempt_at=now() + interval '30 seconds',
-                        updated_at=now(), last_error=:err
-                    WHERE id=:id AND status='processing'
-                """), {"id": claimed_id, "err": f"target resolution failed: {e}"})
+                for r in rows:
+                    db.execute(text("""
+                        UPDATE journal_writeback_queue
+                        SET status='pending', next_attempt_at=now() + interval '30 seconds',
+                            updated_at=now(), last_error=:err
+                        WHERE id=:id AND status='processing'
+                    """), {"id": r.id, "err": f"target resolution failed: {e}"})
                 db.commit()
-                counts["retry"] += 1
+                counts["retry"] += len(rows)
                 continue
             if pre_outcome:
-                counts[pre_outcome] = counts.get(pre_outcome, 0) + 1
+                for r in rows[1:]:
+                    db.execute(text("""
+                        UPDATE journal_writeback_queue
+                        SET status='skipped', last_error=:err, updated_at=now()
+                        WHERE id=:id AND status='processing'
+                    """), {"id": r.id, "err": "same target as head task: " + pre_outcome})
+                db.commit()
+                counts[pre_outcome] = counts.get(pre_outcome, 0) + len(rows)
                 continue
-            if row is None:
+            if head is None:
                 continue
-            outcome = _process_one(db, row)
+            retargeted = []
+            for r in rows:
+                data = dict(r._mapping) if hasattr(r, "_mapping") else dict(vars(r))
+                data.update(productnumber=head.productnumber, sheet_title=head.sheet_title,
+                            status="processing")
+                retargeted.append(SimpleNamespace(**data))
+            for outcome, n in _process_batch(db, retargeted).items():
+                counts[outcome] = counts.get(outcome, 0) + n
             db.commit()
-            counts[outcome] = counts.get(outcome, 0) + 1
     except Exception as e:  # noqa: BLE001
         db.rollback()
         logger.error("[journal-sync] drain перервано: %s", e)
@@ -329,22 +415,84 @@ def drain(max_items: int = 200) -> Dict[str, int]:
 
 
 def kick() -> None:
-    """Розбудити воркера (не блокує викликача; другий потік не плодиться)."""
-    global _worker_running
+    """Розбудити воркера (не блокує викликача; другий потік не плодиться).
+
+    Kick під час проходу не губиться: воркер після проходу перевіряє прапорець
+    і йде ще раз — інакше поле, прийняте поки попереднє летіло в Google, чекало
+    б хвилинного сторожа з main.py.
+    """
+    global _worker_running, _kick_pending
     with _worker_lock:
         if _worker_running:
+            _kick_pending = True
             return
         _worker_running = True
 
     def _run():
-        global _worker_running
+        global _worker_running, _kick_pending
         try:
-            drain()
+            while True:
+                time.sleep(COALESCE_SECONDS)
+                try:
+                    drain()
+                except Exception as e:  # noqa: BLE001
+                    logger.error("[journal-sync] worker pass failed: %s", e)
+                with _worker_lock:
+                    if not _kick_pending:
+                        _worker_running = False
+                        return
+                    _kick_pending = False
         finally:
             with _worker_lock:
                 _worker_running = False
 
     threading.Thread(target=_run, daemon=True, name="journal-sync").start()
+
+
+# ── Чиї зміни бачить поллер журналу ────────────────────────────────────────
+class JournalChangeTracker:
+    """Відрізняє наш write-back від правки людини за modifiedTime + own.
+
+    Поллер main.py на будь-яку зміну modifiedTime запускав повний quick-parse.
+    Але наш власний запис теж змінює modifiedTime — кожне прийняте поле
+    перечитувало ВЕСЬ журнал, а картки тим часом чекали «журнал оновлюється у
+    фоні». Drive каже, хто змінював файл останнім; якщо це ми — перечитувати
+    нічого. Правка людини, що встигла між двома нашими записами, була б
+    замаскована — тому пропущені «свої» зміни рахуються, і не рідше ніж раз на
+    `safety_sec` після них іде контрольний парс (плюс точкова звірка кожної
+    відкритої картки читає свій рядок завжди).
+    """
+
+    def __init__(self, safety_sec: float = 1800.0):
+        self.last: Dict[str, str] = {}
+        self.skipped_own = 0
+        self.safety_sec = safety_sec
+
+    def observe(self, sid: str, lut: Optional[str], own: bool) -> str:
+        """'first' | 'unchanged' | 'own' | 'changed'."""
+        if not lut:
+            return "unchanged"
+        prev = self.last.get(sid)
+        self.last[sid] = lut
+        if prev is None:
+            return "first"
+        if prev == lut:
+            return "unchanged"
+        if own:
+            self.skipped_own += 1
+            return "own"
+        return "changed"
+
+    def safety_parse_due(self, seconds_since_last_parse: float,
+                         seconds_since_own_write: float, quiet_sec: float = 120.0) -> bool:
+        """Контрольний парс: були пропущені свої зміни, давно не парсили,
+        і наш воркер уже помовчав — щоб не ганяти парс посеред серії записів."""
+        if self.skipped_own <= 0:
+            return False
+        if seconds_since_last_parse < self.safety_sec or seconds_since_own_write < quiet_sec:
+            return False
+        self.skipped_own = 0
+        return True
 
 
 # ── Стан для UI/діагностики ─────────────────────────────────────────────────

@@ -1,4 +1,4 @@
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Tuple
 from fastapi import APIRouter, Depends, HTTPException, Query, Body, Path, status, UploadFile, File
 from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.orm import Session
@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import threading
+import time
 from datetime import datetime
 
 try:
@@ -876,9 +877,37 @@ def get_product_journal_url(
                             detail=f"Не вдалося знайти вкладку «{sheet}» у журналі")
 
 
+# Точкова звірка коштує 2–3 виклики Google і кілька секунд. Під час перегляду
+# пропозицій людина гортає картки туди-сюди; повторна звірка тієї самої картки
+# за пів хвилини нічого нового не принесе, а чергу до Sheets — подовжить.
+_POINT_SYNC_TTL_SEC = float(os.getenv("POINT_SYNC_TTL_SEC", "45"))
+_point_sync_recent: Dict[int, Tuple[float, Dict[str, Any]]] = {}
+_point_sync_recent_lock = threading.Lock()
+
+
+def _point_sync_cached(product_id: int) -> Optional[Dict[str, Any]]:
+    with _point_sync_recent_lock:
+        hit = _point_sync_recent.get(product_id)
+    if not hit or time.monotonic() - hit[0] > _POINT_SYNC_TTL_SEC:
+        return None
+    return {**hit[1], "cached": True}
+
+
+def _point_sync_remember(product_id: int, result: Dict[str, Any]) -> None:
+    if not result.get("ok") or result.get("waiting"):
+        return
+    with _point_sync_recent_lock:
+        _point_sync_recent[product_id] = (time.monotonic(), result)
+        if len(_point_sync_recent) > 500:
+            oldest = sorted(_point_sync_recent, key=lambda k: _point_sync_recent[k][0])[:100]
+            for k in oldest:
+                _point_sync_recent.pop(k, None)
+
+
 @router.post("/api/products/{product_id}/sync-from-journal")
 def sync_product_from_journal(
     product_id: int = Path(..., ge=1, description="ID товару"),
+    force: bool = Query(False, description="Звірити навіть якщо щойно звіряли"),
     db: Session = Depends(get_db),
 ):
     """Точково й без видалень оновити одну картку з актуальної вкладки журналу.
@@ -887,12 +916,18 @@ def sync_product_from_journal(
     виправляє прив'язку. Ручні BMS-поля захищені локами; їх доведені
     розбіжності повертаються у надійну write-back чергу.
     """
+    if not force:
+        cached = _point_sync_cached(product_id)
+        if cached:
+            return cached
     try:
         try:
             from scripts.sheets_parser import sync_one_product_from_journal
         except ImportError:
             from backend.scripts.sheets_parser import sync_one_product_from_journal
-        return sync_one_product_from_journal(db, product_id)
+        result = sync_one_product_from_journal(db, product_id)
+        _point_sync_remember(product_id, result)
+        return result
     except Exception as e:  # noqa: BLE001
         db.rollback()
         logger.error("sync_product_from_journal failed for %s: %s", product_id, e)

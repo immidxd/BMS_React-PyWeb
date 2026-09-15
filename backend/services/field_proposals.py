@@ -128,13 +128,43 @@ def accept(db: Session, proposal_id: int) -> Optional[Dict[str, Any]]:
     """), {"id": proposal_id}).fetchone()
     if not row:
         return None
-    field, value = row[1], row[2]
+    # Матеріал позиції ProductUpdate приймає як materials_by_position
+    # ({позиція: csv}), а не як пласке поле — той самий шлях, що й ручна
+    # правка матеріалів у картці.
+    update: Dict[str, Any] = {}
+    _merge_update(update, row[1], row[2])
+    return {"product_id": row[0], "update": update}
+
+
+def _merge_update(into: Dict[str, Any], field: str, value: Optional[str]) -> None:
     if field.startswith("material:"):
-        # Матеріал позиції: ProductUpdate приймає його як materials_by_position
-        # ({позиція: csv}), а не як пласке поле. Той самий шлях, що й ручна
-        # правка матеріалів у картці.
-        return {"product_id": row[0], "update": {"materials_by_position": {field.split(":", 1)[1]: value}}}
-    return {"product_id": row[0], "update": {field: value}}
+        into.setdefault("materials_by_position", {})[field.split(":", 1)[1]] = value
+    else:
+        into[field] = value
+
+
+def accept_all(db: Session, product_id: int) -> Optional[Dict[str, Any]]:
+    """Прийняти ВСІ відкриті пропозиції товару — одним payload для update_product.
+
+    Одне прийняття = один update_product = один пакет у чергу журналу. Поле за
+    полем це були N викликів, N перечитувань картки і N окремих записів в
+    аркуш — і людина чекала «синхронізації з журналом» між кліками.
+    Повертає None, якщо приймати нічого. Запис у products — як завжди, ЛИШЕ
+    у викликача через update_product.
+    """
+    rows = db.execute(text("""
+        UPDATE product_field_proposals
+           SET status = 'accepted', decided_at = now(), updated_at = now()
+        WHERE product_id = :pid AND status = 'pending'
+        RETURNING id, field, value
+    """), {"pid": product_id}).fetchall()
+    if not rows:
+        return None
+    update: Dict[str, Any] = {}
+    for _id, field, value in rows:
+        _merge_update(update, field, value)
+    return {"product_id": product_id, "ids": [r[0] for r in rows],
+            "fields": [r[1] for r in rows], "update": update}
 
 
 def reject(db: Session, proposal_id: int) -> bool:

@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useMemo, useRef } from 'react';
 import { productService, type JournalSyncState } from '../../services/productService';
 import type { Product, ProductFilters } from '../../types/product';
-import { Tag, Image, Tooltip, message } from 'antd';
+import { Tag, Image, Tooltip } from 'antd';
 import { CloseOutlined, PictureOutlined, LeftOutlined, RightOutlined, WarningOutlined, EditOutlined, CheckOutlined, PlusOutlined, SyncOutlined, EyeOutlined, EyeInvisibleOutlined, StarFilled, ShoppingOutlined, TableOutlined, InboxOutlined, TagOutlined, DownloadOutlined, CopyOutlined, LoadingOutlined, RotateLeftOutlined, RotateRightOutlined, SwapOutlined } from '@ant-design/icons';
 import { copyImageToClipboard, saveProductPhoto, saveProductPhotosZip } from '../../services/imageTransfer';
 import { CopyOnClick, formatBrandName, getProductDisplayStatus, getProductStock, getConditionColor, effectiveProductNumber, visibleGalleryPhotos } from '../common/displayHelpers';
@@ -295,7 +295,10 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
   const materialProposalPositions = useMemo(
     () => MATERIAL_POSITIONS.filter(({ pos }) => !!proposals[`material:${pos}`]),
     [proposals]);
-  const [proposalBusy, setProposalBusy] = useState<number | null>(null);
+  // Кілька чіпів можуть бути «в польоті» одночасно — людина клацає по черзі,
+  // не чекаючи журналу. Set замість одного id.
+  const [proposalBusy, setProposalBusy] = useState<Set<number>>(() => new Set());
+  const [acceptAllBusy, setAcceptAllBusy] = useState(false);
   const [autofillRunning, setAutofillRunning] = useState(false);
   const [promPublishing, setPromPublishing] = useState(false);  // публікація в процесі (фон, до ~3.6хв)
   const [promPreview, setPromPreview] = useState<any | null>(null);  // дані діалогу публікації
@@ -497,41 +500,121 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     reloadProposals(productId);
   }, [productId, open, reloadProposals]);
 
+  // Список «Товари» перечитується один раз на серію прийнять, а не на кожне:
+  // інакше десять кліків — десять запитів списку й десять перемальовок.
+  const savedDebounceRef = useRef<number | undefined>(undefined);
+  const notifyParentSaved = React.useCallback((pid: number) => {
+    if (savedDebounceRef.current) window.clearTimeout(savedDebounceRef.current);
+    savedDebounceRef.current = window.setTimeout(() => {
+      savedDebounceRef.current = undefined;
+      onSavedRef.current?.(pid);
+    }, 700);
+  }, []);
+  useEffect(() => () => {
+    // Картку закрили посеред серії — батьківський список усе одно освіжити.
+    if (savedDebounceRef.current) {
+      window.clearTimeout(savedDebounceRef.current);
+      savedDebounceRef.current = undefined;
+      onSavedRef.current?.(curPidRef.current ?? 0);
+    }
+  }, []);
+
+  const proposalFailure = React.useCallback((what: string, detail: string) => {
+    // Помилка має бути в Сповіщеннях, а не лише тостом, що зник: людина
+    // клацає швидко й може не побачити.
+    notify.error({ message: what, description: detail });
+    taskManager.setExternal(`proposal-fail-${Date.now()}`, what, 'error', detail);
+  }, []);
+
   const decideProposal = React.useCallback(async (id: number, accept: boolean) => {
     if (!productId) return;
-    setProposalBusy(id);
+    const pid = productId;
+    const chipField = Object.keys(proposals).find((k) => proposals[k]?.id === id) || '';
+    const chip = proposals[chipField];
+    setProposalBusy((prev) => new Set(prev).add(id));
     try {
       const r = await fetch(
-        `/api/products/${productId}/proposals/${id}/${accept ? 'accept' : 'reject'}`,
+        `/api/products/${pid}/proposals/${id}/${accept ? 'accept' : 'reject'}`,
         { method: 'POST' });
-      if (!r.ok) { message.error('Не вдалося застосувати'); return; }
-      await reloadProposals(productId);
-      // Прийняте значення потрапило в базу звичайним update_product. Раніше
-      // тут повідомлялась лише батьківська таблиця — а сама картка товар не
-      // перечитувала, і поле лишалось зі старим значенням до повторного
-      // відкриття (чіп зникав, а «Ціна не вказана» стояла далі).
-      if (accept) {
-        await loadProduct(false);
-        onSavedRef.current?.(productId);
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        proposalFailure(accept ? 'Не вдалося прийняти пропозицію' : 'Не вдалося відхилити пропозицію',
+          `${chipField} → ${chip?.value || ''}: ${d?.detail || `HTTP ${r.status}`}`);
+        return;
       }
-    } catch {
-      message.error('Не вдалося застосувати');
+      if (curPidRef.current !== pid) return;
+      // Чіп зникає ОДРАЗУ — сервер уже вирішив. Перечитування пропозицій і
+      // картки йдуть слідом і паралельно; людина не чекає ані їх, ані журналу
+      // (запис у журнал — окрема фонова черга з власним індикатором).
+      setProposals((prev) => {
+        const next: Record<string, any> = {};
+        for (const k of Object.keys(prev)) if (prev[k]?.id !== id) next[k] = prev[k];
+        return next;
+      });
+      // Прийняте значення потрапило в базу звичайним update_product — картку
+      // перечитуємо, щоб поле показало нове значення без повторного відкриття.
+      await Promise.all([reloadProposals(pid), accept ? loadProduct(false) : Promise.resolve()]);
+      if (accept) notifyParentSaved(pid);
+    } catch (e: any) {
+      proposalFailure('Не вдалося застосувати пропозицію', e?.message || 'Немає звʼязку з програмою');
     } finally {
-      setProposalBusy(null);
+      setProposalBusy((prev) => { const n = new Set(prev); n.delete(id); return n; });
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [productId, reloadProposals]);
+  }, [productId, proposals, reloadProposals, notifyParentSaved, proposalFailure]);
+
+  // Усі пропозиції товару — одним записом: один update_product, один пакет у
+  // журнал. Поле за полем це N перечитувань і N окремих записів в аркуш.
+  const acceptAllProposals = React.useCallback(async () => {
+    if (!productId || acceptAllBusy) return;
+    const pid = productId;
+    const n = Object.keys(proposals).length;
+    if (!n) return;
+    setAcceptAllBusy(true);
+    try {
+      const r = await fetch(`/api/products/${pid}/proposals/accept-all`, { method: 'POST' });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok || !d?.ok) {
+        proposalFailure('Не вдалося прийняти пропозиції', d?.detail || `HTTP ${r.status}`);
+        return;
+      }
+      if (curPidRef.current !== pid) return;
+      setProposals({});
+      await Promise.all([reloadProposals(pid), loadProduct(false)]);
+      notifyParentSaved(pid);
+      notify.success({ message: `Прийнято полів: ${d.accepted ?? n}`,
+        description: 'Записуються в журнал у фоні.', duration: 2.5 });
+    } catch (e: any) {
+      proposalFailure('Не вдалося прийняти пропозиції', e?.message || 'Немає звʼязку з програмою');
+    } finally {
+      setAcceptAllBusy(false);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [productId, proposals, acceptAllBusy, reloadProposals, notifyParentSaved, proposalFailure]);
 
   // Запуск розпізнавання. Вичерпаний бюджет — НЕ помилка: показуємо як
   // спокійне повідомлення, бо автозаповнення в такому стані просто вимкнене.
   const runAutofill = React.useCallback(async (usePaid = false) => {
     if (!productId || autofillRunning) return;
+    const pid = productId;
+    const label = `ШІ: розпізнавання ${(product as any)?.productnumber || `#${pid}`}${usePaid ? ' (платний ключ)' : ''}`;
     setAutofillRunning(true);
     try {
-      const r = await fetch(`/api/products/${productId}/autofill${usePaid ? '?use_paid=true' : ''}`,
-        { method: 'POST' });
-      const d = await r.json().catch(() => ({}));
-      if (curPidRef.current !== productId) return;
+      // Через taskManager: у Сповіщеннях видно, що розпізнавання йде, і чим
+      // воно скінчилось — навіть якщо картку тим часом закрили.
+      const d = await taskManager.run(label, async () => {
+        const r = await fetch(`/api/products/${pid}/autofill${usePaid ? '?use_paid=true' : ''}`,
+          { method: 'POST' });
+        const body = await r.json().catch(() => ({}));
+        if (!r.ok && !body?.reason) throw new Error(body?.detail || `HTTP ${r.status}`);
+        return body;
+      }, {
+        silentSuccess: true,
+        resultStatus: (res: any) => res?.ok
+          ? { status: 'success', detail: `Розпізнано полів: ${(res.proposed || []).length}` }
+          : { status: 'partial', detail: res?.quota_exhausted ? 'Безкоштовну квоту вичерпано' : (res?.reason || 'Не розпізнано') },
+      }).catch(() => ({ ok: false, reason: 'Немає звʼязку з програмою' }));
+      if (curPidRef.current !== pid) return;
       if (!d?.ok) {
         // Безкоштовну добову квоту вичерпано (межу Google каже лише у відмові). Це не помилка, а
         // вибір людини: повторити платним ключем чи ні. Платний ключ — окремий
@@ -540,8 +623,8 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
         // пояснюємо, що робити.
         if (d?.quota_exhausted && !usePaid) {
           if (!d.paid_available) {
-            message.info('Безкоштовну добову квоту розпізнавання вичерпано. '
-              + 'Платний ключ (GEMINI_API_KEY_PAID) не налаштовано — спробуй завтра після 10:00.');
+            notify.warning({ message: 'Безкоштовну добову квоту розпізнавання вичерпано',
+              description: 'Платний ключ (GEMINI_API_KEY_PAID) не налаштовано — спробуй завтра після 10:00.' });
             return;
           }
           setAutofillRunning(false);
@@ -554,17 +637,16 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
           if (ok) await runAutofill(true);
           return;
         }
-        message.info(d?.budget_blocked
-          ? 'Місячний ліміт розпізнавання вичерпано'
-          : (d?.reason || 'Не вдалося розпізнати'));
+        notify.warning({ message: d?.budget_blocked ? 'Місячний ліміт розпізнавання вичерпано' : 'Не вдалося розпізнати',
+          description: d?.budget_blocked ? undefined : (d?.reason || undefined) });
         return;
       }
-      await reloadProposals(productId);
+      await reloadProposals(pid);
       const n = (d.proposed || []).length;
-      message.success(n ? `Розпізнано полів: ${n}${usePaid ? ' (платний ключ)' : ''}`
-        : 'Нічого впевнено не розпізналось');
-    } catch {
-      message.error('Не вдалося розпізнати');
+      if (n) notify.success({ message: `Розпізнано полів: ${n}${usePaid ? ' (платний ключ)' : ''}`, duration: 2.5 });
+      else notify.info({ message: 'Нічого впевнено не розпізналось', duration: 3 });
+    } catch (e: any) {
+      notify.error({ message: 'Не вдалося розпізнати', description: e?.message || undefined });
     } finally {
       setAutofillRunning(false);
       emitAiLimitsChanged();   // лічильник квоти змінився — і на успіху, і на відмові
@@ -2212,7 +2294,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
   const ProposalChip: React.FC<{ field: string }> = ({ field }) => {
     const pr = proposals[field];
     if (!pr) return null;
-    const busy = proposalBusy === pr.id;
+    const busy = proposalBusy.has(pr.id) || acceptAllBusy;
     const pct = pr.confidence != null ? Math.round(pr.confidence * 100) : null;
     // Шар, який дав це значення. Міра довіри в них РІЗНА, і назвати її треба
     // прямо: штрихкод декодовано з контрольною сумою й він не помиляється;
@@ -3623,6 +3705,18 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                           стан квоти, щоб не тиснути наосліп. */}
                       <div className="flex items-center gap-2 min-w-0">
                       <AiLimitsBadge className="min-w-0 truncate" />
+                      {Object.keys(proposals).length >= 2 && (
+                        <button
+                          type="button" onClick={acceptAllProposals} disabled={acceptAllBusy}
+                          title="Прийняти всі пропозиції цієї картки одним записом. Значення потраплять у картку й у журнал."
+                          className="inline-flex items-center gap-1 text-[11px] px-1.5 py-0.5 rounded shrink-0 whitespace-nowrap
+                            text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-100
+                            hover:bg-gray-100 dark:hover:bg-gray-700/60 transition-colors
+                            disabled:opacity-50 disabled:cursor-default">
+                          {acceptAllBusy ? <LoadingOutlined style={{ fontSize: 11 }} /> : <CheckOutlined style={{ fontSize: 11 }} />}
+                          <span>Прийняти всі · {Object.keys(proposals).length}</span>
+                        </button>
+                      )}
                       <button
                         type="button" onClick={() => runAutofill(false)}
                         disabled={autofillRunning || realCount === 0}

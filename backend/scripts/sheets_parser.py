@@ -492,27 +492,72 @@ def _save_writeback_backup(sheet_title: str, productnumber: str, field: str, bac
 
 
 def writeback_field_to_journal(sheet_title: str, productnumber: str, field: str, value) -> dict:
-    """Write `value` for `field` into ALL rows of `productnumber` in the journal
-    worksheet `sheet_title`. Під JOURNAL_WRITE_LOCK — щоб read-modify-write
-    реордера/append не перетинався з цим записом (див. journal_writer)."""
-    with JOURNAL_WRITE_LOCK:
-        return _writeback_field_to_journal_locked(sheet_title, productnumber, field, value)
+    """Одне поле — через пакетну версію. Лишено для скриптів і тестів."""
+    out = writeback_fields_to_journal(sheet_title, productnumber, {field: value})
+    return out["results"].get(field) or {"ok": False, "reason": out.get("reason") or "unknown"}
 
 
-def _writeback_field_to_journal_locked(sheet_title: str, productnumber: str, field: str, value) -> dict:
-    """Write `value` for `field` into ALL rows of `productnumber` in the journal
-    worksheet `sheet_title`. Resolves the target column by header name, backs up
-    old values first, then writes only changed cells in one batch call.
+def writeback_fields_to_journal(sheet_title: str, productnumber: str,
+                                field_values: dict) -> dict:
+    """Записати КІЛЬКА полів одного номера в усі його рядки — ОДНИМ проходом.
 
-    Returns {ok, rows_updated, ...} or {ok: False, reason}.
+    Прийняття пропозицій автозаповнення дає 5–10 полів на товар за хвилину.
+    Поле за полем це було 2 читання + 1 запис на КОЖНЕ поле (open_by_key,
+    get_all_values, batch_update) — 30 викликів на товар, хвилинна квота
+    Sheets (60 читань) і «Синхронізація з журналом» на пів хвилини. Тепер
+    вкладка читається раз, пишеться раз; наслідки для кожного поля — окремо
+    (у якогось нема колонки, якесь per-item на ростовці — інші від цього не
+    страждають).
+
+    Під JOURNAL_WRITE_LOCK — щоб read-modify-write реордера/append не
+    перетинався з цим записом (див. journal_writer).
+
+    Повертає {"ok": bool, "results": {field: {ok, reason?, rows_updated?}},
+    "reason"?: str} — верхній reason лише для провалів, спільних для всіх полів.
     """
+    with JOURNAL_WRITE_LOCK:
+        return _writeback_fields_to_journal_locked(sheet_title, productnumber, field_values)
+
+
+def _cell_string_for(field: str, value) -> str:
+    if value is None:
+        return ""
+    if field in ("price", "oldprice"):
+        # Whole numbers → "1900" (not "1900.0"); keep decimals otherwise.
+        try:
+            fv = float(value)
+            return str(int(fv)) if fv == int(fv) else str(fv)
+        except (TypeError, ValueError):
+            return str(value)
+    return str(value)
+
+
+def _writeback_fields_to_journal_locked(sheet_title: str, productnumber: str,
+                                        field_values: dict) -> dict:
+    fields = list(field_values)
+    results: dict = {}
+
+    def _all(reason: str) -> dict:
+        return {"ok": False, "reason": reason,
+                "results": {f: {"ok": False, "reason": reason} for f in fields}}
+
+    if not fields:
+        return {"ok": True, "results": {}}
     if not WRITEBACK_ENABLED:
-        return {"ok": False, "reason": "writeback disabled"}
-    header_name = WRITEBACK_FIELD_HEADERS.get(field)
-    if not header_name:
-        return {"ok": False, "reason": f"no journal column for '{field}'"}
+        return _all("writeback disabled")
     if not sheet_title:
-        return {"ok": False, "reason": "no sheet_title (product has no delivery)"}
+        return _all("no sheet_title (product has no delivery)")
+
+    # Поля без колонки в журналі відсіюємо ДО будь-якого виклику Google.
+    pending: dict = {}
+    for f in fields:
+        header_name = WRITEBACK_FIELD_HEADERS.get(f)
+        if not header_name:
+            results[f] = {"ok": False, "reason": f"no journal column for '{f}'"}
+        else:
+            pending[f] = header_name
+    if not pending:
+        return {"ok": False, "reason": "no journal column", "results": results}
 
     import gspread as _gspread
     gc = get_gc()
@@ -520,32 +565,17 @@ def _writeback_field_to_journal_locked(sheet_title: str, productnumber: str, fie
     try:
         ws = sh.worksheet(sheet_title)
     except Exception:
-        return {"ok": False, "reason": f"worksheet '{sheet_title}' not found"}
+        return _all(f"worksheet '{sheet_title}' not found")
 
     all_values = ws.get_all_values()
     if not all_values:
-        return {"ok": False, "reason": "empty sheet"}
+        return _all("empty sheet")
     header = [h.strip() for h in all_values[0]]
-    if "Номер" not in header or header_name not in header:
-        return {"ok": False, "reason": f"column 'Номер' or '{header_name}' missing in sheet"}
+    if "Номер" not in header:
+        return _all("column 'Номер' missing in sheet")
     num_idx = header.index("Номер")
-    col_idx = header.index(header_name)
-
-    # Normalize the new value to a cell string
-    if value is None:
-        new_str = ""
-    elif field in ("price", "oldprice"):
-        # Whole numbers → "1900" (not "1900.0"); keep decimals otherwise.
-        try:
-            fv = float(value)
-            new_str = str(int(fv)) if fv == int(fv) else str(fv)
-        except (TypeError, ValueError):
-            new_str = str(value)
-    else:
-        new_str = str(value)
 
     target = _canon_pnum_for_match(productnumber)
-
     matching_rows = sum(
         1 for row in all_values[1:]
         if _canon_pnum_for_match(row[num_idx] if num_idx < len(row) else "") == target
@@ -555,56 +585,126 @@ def _writeback_field_to_journal_locked(sheet_title: str, productnumber: str, fie
     # правки картки фантома #В51-2 «успішно» летіли в порожнечу. Тепер це явний
     # permanent-reason ('not found') → задача стає 'skipped' з видимою причиною.
     if matching_rows == 0:
-        return {"ok": False,
-                "reason": f"row '{productnumber}' not found in sheet '{sheet_title}'"}
-
-    # Guard ростовки: per-item поле (розмір/СМ/габарити) безпечно писати лише
-    # коли номер займає ОДИН рядок. Інакше write-to-all-rows затер би сусідні
-    # розміри. У такому разі правка лишається в БД (lock), аркуш не чіпаємо.
-    if field in PER_ITEM_WRITEBACK_FIELDS:
-        if matching_rows > 1:
-            return {"ok": False, "reason": f"per-item field '{field}' skipped: "
-                    f"{matching_rows} rostovka rows share number {target} "
-                    f"(saved to DB only, sheet untouched to avoid overwriting siblings)"}
+        return _all(f"row '{productnumber}' not found in sheet '{sheet_title}'")
 
     updates, backups = [], []
-    for r_i, row in enumerate(all_values[1:], start=2):  # row 1 = header
-        cell_num = row[num_idx] if num_idx < len(row) else ""
-        if _canon_pnum_for_match(cell_num) != target:
+    per_field_updates: dict = {}
+    for f, header_name in pending.items():
+        if header_name not in header:
+            results[f] = {"ok": False,
+                          "reason": f"column 'Номер' or '{header_name}' missing in sheet"}
             continue
-        old = row[col_idx] if col_idx < len(row) else ""
-        cell_new = _writeback_cell_value(field, old, new_str)
-        if old == cell_new:
-            continue  # already up to date
-        a1 = _gspread.utils.rowcol_to_a1(r_i, col_idx + 1)
-        updates.append({"range": a1, "values": [[cell_new]]})
-        backups.append({"a1": a1, "row": r_i, "old": old, "new": cell_new})
+        # Guard ростовки: per-item поле (розмір/СМ/габарити) безпечно писати лише
+        # коли номер займає ОДИН рядок. Інакше write-to-all-rows затер би сусідні
+        # розміри. У такому разі правка лишається в БД (lock), аркуш не чіпаємо.
+        if f in PER_ITEM_WRITEBACK_FIELDS and matching_rows > 1:
+            results[f] = {"ok": False, "reason": f"per-item field '{f}' skipped: "
+                          f"{matching_rows} rostovka rows share number {target} "
+                          f"(saved to DB only, sheet untouched to avoid overwriting siblings)"}
+            continue
+        col_idx = header.index(header_name)
+        new_str = _cell_string_for(f, field_values[f])
+        n = 0
+        for r_i, row in enumerate(all_values[1:], start=2):  # row 1 = header
+            cell_num = row[num_idx] if num_idx < len(row) else ""
+            if _canon_pnum_for_match(cell_num) != target:
+                continue
+            old = row[col_idx] if col_idx < len(row) else ""
+            cell_new = _writeback_cell_value(f, old, new_str)
+            if old == cell_new:
+                continue  # already up to date
+            a1 = _gspread.utils.rowcol_to_a1(r_i, col_idx + 1)
+            updates.append({"range": a1, "values": [[cell_new]], "_field": f})
+            backups.append({"a1": a1, "row": r_i, "old": old, "new": cell_new, "field": f})
+            n += 1
+        per_field_updates[f] = (header_name, n)
+        if n == 0:
+            results[f] = {"ok": True, "rows_updated": 0, "note": "already current",
+                          "header": header_name}
 
-    if not updates:
-        return {"ok": True, "rows_updated": 0, "note": "already current"}
+    to_write = [f for f, (_h, n) in per_field_updates.items() if n]
+    if not to_write:
+        return {"ok": True, "results": results}
 
-    backup_path = _save_writeback_backup(sheet_title, productnumber, field, backups)
-    value_input = "USER_ENTERED" if field not in WRITEBACK_TEXT_FIELDS else "RAW"
+    # Текстові поля — RAW (щоб «9-26201» не став датою), решта — USER_ENTERED.
+    # Один batch_update приймає один value_input_option, тож два пакети максимум.
+    backup_path = _save_writeback_backup(
+        sheet_title, productnumber, "+".join(sorted(to_write)), backups)
+    groups: dict = {"RAW": [], "USER_ENTERED": []}
+    for u in updates:
+        mode = "RAW" if u["_field"] in WRITEBACK_TEXT_FIELDS else "USER_ENTERED"
+        groups[mode].append({"range": u["range"], "values": u["values"]})
     # Retry transient failures (network reset / 429 rate-limit). The write-back runs
     # in a background thread, so a swallowed transient error would silently desync the
     # sheet from the (locked) DB value forever — retry with backoff instead.
     last_err = None
-    for attempt in range(4):
-        try:
-            ws.batch_update(updates, value_input_option=value_input)
-            last_err = None
+    for mode, batch in groups.items():
+        if not batch:
+            continue
+        for attempt in range(4):
+            try:
+                ws.batch_update(batch, value_input_option=mode)
+                last_err = None
+                break
+            except Exception as e:  # gspread APIError / ConnectionError / etc.
+                last_err = e
+                if attempt < 3:
+                    time.sleep(2 * (attempt + 1))   # 2s, 4s, 6s
+        if last_err is not None:
             break
-        except Exception as e:  # gspread APIError / ConnectionError / etc.
-            last_err = e
-            if attempt < 3:
-                time.sleep(2 * (attempt + 1))   # 2s, 4s, 6s
     if last_err is not None:
-        logger.error(f"[writeback] {field} → '{sheet_title}' {productnumber}: "
+        logger.error(f"[writeback] {to_write} → '{sheet_title}' {productnumber}: "
                      f"all retries failed: {last_err}")
-        return {"ok": False, "reason": f"sheet write failed after retries: {last_err}",
-                "header": header_name, "backup": backup_path}
-    logger.info(f"[writeback] {field} → '{sheet_title}' {productnumber}: {len(updates)} row(s), backup={backup_path}")
-    return {"ok": True, "rows_updated": len(updates), "header": header_name, "backup": backup_path}
+        reason = f"sheet write failed after retries: {last_err}"
+        for f in to_write:
+            results[f] = {"ok": False, "reason": reason,
+                          "header": per_field_updates[f][0], "backup": backup_path}
+        return {"ok": False, "reason": reason, "results": results}
+    for f in to_write:
+        header_name, n = per_field_updates[f]
+        results[f] = {"ok": True, "rows_updated": n, "header": header_name, "backup": backup_path}
+    _note_own_journal_write()
+    logger.info(f"[writeback] {to_write} → '{sheet_title}' {productnumber}: "
+                f"{len(updates)} cell(s), backup={backup_path}")
+    return {"ok": True, "results": results}
+
+
+# ── Свої записи в журнал ────────────────────────────────────────────────────
+# Поллер журналу порівнює modifiedTime і на будь-яку зміну запускає повний
+# quick-parse. Наш власний write-back теж змінює modifiedTime — тобто кожне
+# прийняте поле запускало перечитування ВСЬОГО журналу, під час якого точкова
+# звірка картки відповідала «журнал оновлюється у фоні», і людина чекала.
+# Drive каже, ХТО змінював файл останнім (lastModifyingUser.me) — цим поллер
+# і відрізняє наш запис від правки людини.
+_OWN_WRITE_LOCK = threading.Lock()
+_last_own_journal_write_at: float = 0.0
+
+
+def _note_own_journal_write() -> None:
+    global _last_own_journal_write_at
+    with _OWN_WRITE_LOCK:
+        _last_own_journal_write_at = time.monotonic()
+
+
+def seconds_since_own_journal_write() -> float:
+    with _OWN_WRITE_LOCK:
+        return time.monotonic() - _last_own_journal_write_at if _last_own_journal_write_at else float("inf")
+
+
+def drive_change_meta(gc, spreadsheet_id: str) -> dict:
+    """{'modifiedTime', 'own'} — коли файл змінено востаннє і чи це були ми.
+
+    `own` — прапорець Drive `lastModifyingUser.me`: справжній для сервісного
+    акаунта, яким BMS і пише. Правка людини в Google Sheets дає own=False.
+    """
+    from gspread.http_client import DRIVE_FILES_API_V3_URL
+    res = gc.http_client.request(
+        "get", f"{DRIVE_FILES_API_V3_URL}/{spreadsheet_id}",
+        params={"supportsAllDrives": True,
+                "fields": "modifiedTime,lastModifyingUser(me,emailAddress)"})
+    data = res.json()
+    return {"modifiedTime": data.get("modifiedTime"),
+            "own": bool((data.get("lastModifyingUser") or {}).get("me"))}
 
 
 def mark_workspace_row_merged(lost_pnum: str, orig_pnum: str) -> dict:

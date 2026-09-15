@@ -70,6 +70,29 @@ def accept_proposal(product_id: int = Path(..., ge=1),
     return {"ok": True, "applied": payload["update"], "locked_fields": sorted(queued)}
 
 
+@router.post("/api/products/{product_id}/proposals/accept-all",
+             response_model=Dict[str, Any])
+def accept_all_proposals(product_id: int = Path(..., ge=1),
+                         db: Session = Depends(get_db)):
+    """Прийняти всі відкриті пропозиції товару одним записом.
+
+    Той самий шлях, що й поодинокі прийняття (update_product + спільна черга
+    write-back), лише payload зібрано разом: один запис у базу, один пакет у
+    журнал. Порожня черга — не помилка: {ok, accepted: 0}.
+    """
+    payload = field_proposals.accept_all(db, product_id)
+    if payload is None:
+        db.commit()
+        return {"ok": True, "accepted": 0, "applied": {}, "locked_fields": []}
+    update = schemas.ProductUpdate(**payload["update"])
+    updated = product_service.update_product(db, product_id, update)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Товар не знайдено")
+    queued = product_service.enqueue_writeback_for(db, updated)
+    return {"ok": True, "accepted": len(payload["ids"]), "fields": payload["fields"],
+            "applied": payload["update"], "locked_fields": sorted(queued)}
+
+
 @router.post("/api/products/{product_id}/proposals/{proposal_id}/reject",
              response_model=Dict[str, Any])
 def reject_proposal(product_id: int = Path(..., ge=1),

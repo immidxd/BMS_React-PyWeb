@@ -160,3 +160,19 @@ def test_accepting_a_material_returns_the_by_position_payload():
     out = fp.accept(db, 42)
     assert out == {"product_id": 7, "update": {"materials_by_position": {"upper": "шкіра"}}}
     assert len(db.sql) == 1
+
+
+# ── Прийняти все одним записом ──────────────────────────────────────────────
+
+def test_accept_all_merges_every_pending_into_one_payload():
+    db = _FakeDB(_FakeResult([(1, "sole_type_name", "каблук"), (2, "material:upper", "шкіра"),
+                              (3, "material:sole", "синтетика"), (4, "season", "Зима, Демі")]))
+    out = fp.accept_all(db, 7)
+    assert out["ids"] == [1, 2, 3, 4] and out["product_id"] == 7
+    assert out["update"] == {"sole_type_name": "каблук", "season": "Зима, Демі",
+                             "materials_by_position": {"upper": "шкіра", "sole": "синтетика"}}
+    assert len(db.sql) == 1 and "status = 'pending'" in db.sql[0]
+
+
+def test_accept_all_with_nothing_pending_is_none():
+    assert fp.accept_all(_FakeDB(_FakeResult([])), 7) is None

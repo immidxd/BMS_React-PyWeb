@@ -550,32 +550,51 @@ async def _journal_change_poller():
     # даними чверть години. Очікування відображає глобальний sync-індикатор.
     cooldown_sec = int(_os.getenv("AUTO_PARSE_COOLDOWN_SEC", "120"))
 
+    # Наш власний write-back теж змінює modifiedTime. Раніше кожне прийняте
+    # поле запускало повний quick-parse, і картки чекали «журнал оновлюється у
+    # фоні». Тепер поллер питає Drive, хто змінював файл, і свої записи
+    # пропускає; контрольний парс після них — не рідше ніж раз на
+    # OWN_WRITE_SAFETY_PARSE_SEC (див. JournalChangeTracker).
+    safety_sec = float(_os.getenv("OWN_WRITE_SAFETY_PARSE_SEC", "1800"))
+
     async def _loop():
         import time as _time
         await asyncio.sleep(35)  # дати startup auto-parse відпрацювати першим
-        last: dict = {}
         pending = False
-        last_auto_at = 0.0
+        last_auto_at = _time.monotonic()   # стартовий auto-parse щойно відпрацював
+        tracker = None
         while True:
             try:
                 try:
-                    from scripts.sheets_parser import get_gc, JOURNAL_ID, ORDERS_ID
+                    from scripts.sheets_parser import (
+                        get_gc, JOURNAL_ID, ORDERS_ID, drive_change_meta,
+                        seconds_since_own_journal_write)
                     from routers.parsing import start_auto_full_quick
                     from services import journal_sync as _journal_sync
                 except ImportError:
-                    from backend.scripts.sheets_parser import get_gc, JOURNAL_ID, ORDERS_ID
+                    from backend.scripts.sheets_parser import (
+                        get_gc, JOURNAL_ID, ORDERS_ID, drive_change_meta,
+                        seconds_since_own_journal_write)
                     from backend.routers.parsing import start_auto_full_quick
                     from backend.services import journal_sync as _journal_sync
+                if tracker is None:
+                    tracker = _journal_sync.JournalChangeTracker(safety_sec=safety_sec)
                 gc = get_gc()
                 changed = False
                 for sid in (JOURNAL_ID, ORDERS_ID):
                     try:
-                        lut = gc.open_by_key(sid).lastUpdateTime
+                        meta = await asyncio.to_thread(drive_change_meta, gc, sid)
                     except Exception:
                         continue
-                    if sid in last and last[sid] != lut:
+                    verdict = tracker.observe(sid, meta.get("modifiedTime"), bool(meta.get("own")))
+                    if verdict == "changed":
                         changed = True
-                    last[sid] = lut
+                    elif verdict == "own":
+                        logger.info("Journal-poller: зміна %s — наш write-back, парс не потрібен", sid)
+                if tracker.safety_parse_due(_time.monotonic() - last_auto_at,
+                                            seconds_since_own_journal_write()):
+                    logger.info("Journal-poller: контрольний парс після власних записів")
+                    changed = True
                 if changed:
                     pending = True
                     _journal_sync.set_incoming_activity(
