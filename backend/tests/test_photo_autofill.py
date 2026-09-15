@@ -723,3 +723,49 @@ def test_subtype_enum_is_narrowed_by_product_type():
     db = type("DB", (), {"execute": staticmethod(execute)})()
     pa.build_schema(db, type_id=35)
     assert "p.typeid = :tid" in seen["sql"] and seen["params"] == {"tid": 35}
+
+
+# ── Сезон: доповнює, не замінює ─────────────────────────────────────────────
+
+@pytest.mark.parametrize("current, seen, expected", [
+    ("Єврозима", ["Демі"], "Єврозима, Демі"),            # випадок власника
+    ("Єврозима", ["Зима", "Демі"], "Зима, Єврозима, Демі"),  # канонічний порядок
+    ("Єврозима", ["Єврозима"], None),                     # нічого нового
+    ("Демі, Літо", ["Літо"], None),                       # підмножина
+    ("", ["Літо"], "Літо"),
+    (None, ["Всесезон", "Літо"], "Літо, Всесезон"),
+    ("Зима", ["Осінь"], None),                            # не з переліку — ігнор
+])
+def test_seasons_are_merged_in_canonical_order(current, seen, expected):
+    assert pa.merge_seasons(current, seen) == expected
+
+
+def test_season_vocabulary_matches_the_parser():
+    """Один порядок і один перелік на парсер і на модель — інакше пропозиція
+    записала б рядок, який парсер потім «виправив» би у свій."""
+    from backend.scripts.sheets_parser import SEASON_CANONICAL_ORDER
+    assert tuple(pa.SEASONS) == tuple(SEASON_CANONICAL_ORDER)
+    assert set(pa.SEASON_HINTS) == set(pa.SEASONS)
+
+
+def test_season_proposal_adds_to_existing(monkeypatch, tmp_path):
+    monkeypatch.setattr(pa.barcode_reader, "read_photos", lambda ps: [])
+    monkeypatch.setattr(pa.model_profile, "profile_for", lambda *a, **k: {"records": 0, "fields": {}})
+    monkeypatch.setattr(pa, "_current_values", lambda db, pid: {"season": "Єврозима"})
+    monkeypatch.setattr(pa, "call_gemini", lambda *a, **k: {
+        "season": ["Демі", "Єврозима"], "season_confidence": 0.85,
+        "_usage": {"promptTokenCount": 1, "candidatesTokenCount": 1}})
+    out = pa.extract_and_propose(_DB(spent=0.0), 7, [_photo(tmp_path)], api_key="k")
+    assert ("season", "Єврозима, Демі", 0.85) in out["proposed"]
+
+
+def test_season_already_covered_is_not_proposed(monkeypatch, tmp_path):
+    monkeypatch.setattr(pa.barcode_reader, "read_photos", lambda ps: [])
+    monkeypatch.setattr(pa.model_profile, "profile_for", lambda *a, **k: {"records": 0, "fields": {}})
+    monkeypatch.setattr(pa, "_current_values", lambda db, pid: {"season": "Зима, Єврозима"})
+    monkeypatch.setattr(pa, "call_gemini", lambda *a, **k: {
+        "season": ["Єврозима"], "season_confidence": 0.9,
+        "_usage": {"promptTokenCount": 1, "candidatesTokenCount": 1}})
+    out = pa.extract_and_propose(_DB(spent=0.0), 7, [_photo(tmp_path)], api_key="k")
+    assert not any(f == "season" for f, *_ in out["proposed"])
+    assert ("season", "Зима, Єврозима") in out["already_correct"]

@@ -85,6 +85,34 @@ CLOSED_FIELDS: Dict[str, Tuple[str, str, str, str, str]] = {
                        "підвид", "subtype_name"),
 }
 
+# ── Сезон: багатозначний, ДОПОВНЮЄТЬСЯ, не замінюється ──────────────────────
+# У базі сезон — рядок через «, » з пʼяти канонічних значень у сталому порядку
+# (той самий, що в парсері: SEASON_CANONICAL_ORDER). Рішення власника
+# 15.09.2026: стоїть «Єврозима» і це правильно, але хай модель ДОДАЄ «Демі»
+# чи «Зима», якщо бачить. Тому пропозиція — обʼєднання наявного з побаченим;
+# нічого не прибирається ніколи, лише додається.
+SEASONS: Tuple[str, ...] = ("Зима", "Єврозима", "Демі", "Літо", "Всесезон")
+SEASON_HINTS: Dict[str, str] = {
+    "Зима":     "утеплене взуття на сильний мороз: густе хутро, високий чобіт, товста підошва",
+    "Єврозима": "утеплене на мʼяку зиму: тонке хутро чи фліс, невисока халява",
+    "Демі":     "без утеплення, закрите — на весну й осінь",
+    "Літо":     "відкрите чи легке дихаюче: босоніжки, сандалі, сітчасті кросівки",
+    "Всесезон": "нейтральне, без явних ознак сезону",
+}
+
+
+def merge_seasons(current: Optional[str], seen: List[str]) -> Optional[str]:
+    """Обʼєднати наявні сезони з побаченими у канонічному порядку.
+
+    Повертає None, якщо додавати нічого (усе побачене вже стоїть).
+    """
+    cur = {t.strip() for t in (current or "").split(",") if t.strip()}
+    new = {t.strip() for t in seen if t and t.strip() in SEASONS}
+    if not new or new <= cur:
+        return None
+    return ", ".join(t for t in SEASONS if t in cur | new)
+
+
 # ── Стікер із ціною/розміром/заміром ────────────────────────────────────────
 # Власник пише на стікері від руки: ціну, розмір, замір устілки в см і НОМЕР
 # товару. Це per-item поля, і помилка в них найдорожча: ціна їде в Журнал і на
@@ -234,6 +262,14 @@ def build_schema(db: Session, type_id: Optional[int] = None) -> Dict[str, Any]:
                            "description": "назва моделі як написано на бирці"}
     props["model_text_confidence"] = {"type": "number", "minimum": 0, "maximum": 1,
                                       "description": "певність щодо назви моделі"}
+    # Сезон — масив: одне чи кілька значень. Пропозиція ДОПОВНЮЄ наявне.
+    props["season"] = {
+        "type": "array", "items": {"type": "string", "enum": list(SEASONS)},
+        "description": ("сезон(и) за ознаками взуття; можна кілька. Значення: "
+                        + "; ".join(f"«{k}» — {v}" for k, v in SEASON_HINTS.items())),
+    }
+    props["season_confidence"] = {"type": "number", "minimum": 0, "maximum": 1,
+                                  "description": "певність щодо сезону"}
     # Стікер від руки (зазвичай зелений папірець): ціна, розмір, замір, номер.
     props["sticker_text"] = {"type": ["string", "null"],
                              "description": ("ДОСЛІВНО весь рукописний текст зі стікера/цінника, "
@@ -401,7 +437,7 @@ def _current_values(db: Session, product_id: int) -> Dict[str, Optional[str]]:
                      for _f, (t, _c, fk, _l, _u) in CLOSED_FIELDS.items())
     row = db.execute(text(
         f"SELECT {sel}, b.brandname AS brand_name, p.marking, p.gtin, p.model, "
-        f"p.price, p.sizeeu, p.measurementscm, p.typeid, p.productnumber "
+        f"p.price, p.sizeeu, p.measurementscm, p.typeid, p.productnumber, p.season "
         f"FROM products p {joins} LEFT JOIN brands b ON b.id = p.brandid "
         f"WHERE p.id = :pid"
     ), {"pid": product_id}).mappings().fetchone()
@@ -738,6 +774,21 @@ def extract_and_propose(db: Session, product_id: int, photos: List[pathlib.Path]
                                            None, model=model, source_photos=photo_names):
             proposed.append(("technology_name", csv, None))
             made["technology_name"] = (csv, None, None)
+
+    # Сезон — обʼєднання наявного з побаченим; порожня різниця = уже правильно.
+    seen_seasons = [t for t in (pred.get("season") or []) if isinstance(t, str)]
+    if seen_seasons:
+        merged = merge_seasons(current.get("season"), seen_seasons)
+        conf = pred.get("season_confidence")
+        if merged is None:
+            already.append(("season", current.get("season") or ""))
+        elif field_proposals.propose(db, product_id, "season", merged, conf, model=model,
+                                     source_photos=photo_names,
+                                     note=f"додано: {', '.join(t for t in SEASONS if t in set(seen_seasons) - set((current.get('season') or '').split(', ')))}"):
+            proposed.append(("season", merged, conf))
+            made["season"] = (merged, conf, None)
+        else:
+            below_threshold.append(("season", merged, conf))
 
     # Другий шар зустрічається з першим. Тут і тільки тут ми чекаємо на фонове
     # читання — далі йде єдине місце, де його результат щось вирішує.
