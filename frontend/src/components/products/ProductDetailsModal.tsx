@@ -501,14 +501,20 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
         { method: 'POST' });
       if (!r.ok) { message.error('Не вдалося застосувати'); return; }
       await reloadProposals(productId);
-      // Прийняте значення потрапило в картку звичайним update_product, тож
-      // товар треба перечитати — інакше поле лишиться зі старим значенням.
-      if (accept) onSavedRef.current?.(productId);
+      // Прийняте значення потрапило в базу звичайним update_product. Раніше
+      // тут повідомлялась лише батьківська таблиця — а сама картка товар не
+      // перечитувала, і поле лишалось зі старим значенням до повторного
+      // відкриття (чіп зникав, а «Ціна не вказана» стояла далі).
+      if (accept) {
+        await loadProduct(false);
+        onSavedRef.current?.(productId);
+      }
     } catch {
       message.error('Не вдалося застосувати');
     } finally {
       setProposalBusy(null);
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [productId, reloadProposals]);
 
   // Запуск розпізнавання. Вичерпаний бюджет — НЕ помилка: показуємо як
@@ -3512,8 +3518,10 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                     })()}
                   </div>
 
-                  {/* Sizes — ховаємо коли розміру нема (напр. сумки), показуємо в edit-режимі */}
-                  {(editMode || hasAnySize) && (
+                  {/* Sizes — ховаємо коли розміру нема (напр. сумки), показуємо в edit-режимі
+                      АБО коли на розмір/замір є пропозиція зі стікера: інакше чіпи
+                      всередині блоку ніколи не побачити. */}
+                  {(editMode || hasAnySize || !!proposals['sizeeu'] || !!proposals['measurementscm']) && (
                   <div className="mb-3">
                     {(editMode || hasRealSize || proposals['sizeeu'] || proposals['measurementscm']) && (
                       <div className="text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500 mb-2 font-medium">Розмір</div>
