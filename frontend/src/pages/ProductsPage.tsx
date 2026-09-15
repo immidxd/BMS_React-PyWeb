@@ -6,7 +6,7 @@ import ProductFiltersPanel from '../components/filters/ProductFilters';
 import type { ProductFilter as ProductFilterType, ProductFilters as ProductFiltersType } from '../types/product';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useEffect as ReactUseEffect } from 'react';
-import { Button, Dropdown } from 'antd';
+import { Button, Dropdown, Tooltip } from 'antd';
 import { toast } from 'react-toastify';
 import Pagination from '../components/common/Pagination';
 import AddProductModal from '../components/shipments/AddProductModal';
@@ -44,7 +44,7 @@ import FacebookBatchDraftDialog, { type FacebookBatchRequest } from '../componen
 import CollectionCollageDialog, {
   type CollectionPlatform, type CollectionPublishRequest,
 } from '../components/products/CollectionCollageDialog';
-import AiLimitsBadge from '../components/products/AiLimitsBadge';
+import { AiLimitsTip } from '../components/products/AiLimitsBadge';
 
 // Placeholder for actual filter components for Products
 
@@ -1334,18 +1334,21 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
               {/* Нейтральний відтінок навмисно: три сусідні тумблери вже
                   зайняли помаранчевий, синій і смарагдовий, а палітра BMS
                   монохромна — четвертий колір був би шумом. */}
-              <label className="inline-flex items-center text-[13px] whitespace-nowrap text-gray-700 dark:text-gray-300"
-                title="Тільки товари з невирішеними пропозиціями автозаповнення">
-                <input
-                  type="checkbox"
-                  checked={onlyWithProposals}
-                  onChange={(e) => { setOnlyWithProposals(e.target.checked); setPage(1); }}
-                  className="h-4 w-4 text-gray-600 border-gray-300 rounded focus:ring-gray-400 dark:focus:ring-gray-400 dark:bg-gray-700 dark:border-gray-600"
-                />
-                <span className="ml-2">з пропозиціями</span>
-              </label>
-              {/* Стан квоти ШІ — тут, бо саме звідси йдуть у картки заповнювати. */}
-              <AiLimitsBadge className="ml-1" />
+              {/* Стан квоти ШІ — спливашкою на цьому тумблері, не окремим рядком:
+                  власник просив не займати місце (15.09). Звідси йдуть у картки
+                  заповнювати, тож «коли знову можна» доречно саме тут. */}
+              <Tooltip mouseEnterDelay={0.3} placement="top"
+                title={<AiLimitsTip prefix="Тільки товари з невирішеними пропозиціями автозаповнення." />}>
+                <label className="inline-flex items-center text-[13px] whitespace-nowrap text-gray-700 dark:text-gray-300">
+                  <input
+                    type="checkbox"
+                    checked={onlyWithProposals}
+                    onChange={(e) => { setOnlyWithProposals(e.target.checked); setPage(1); }}
+                    className="h-4 w-4 text-gray-600 border-gray-300 rounded focus:ring-gray-400 dark:focus:ring-gray-400 dark:bg-gray-700 dark:border-gray-600"
+                  />
+                  <span className="ml-2">з пропозиціями</span>
+                </label>
+              </Tooltip>
             </div>
             <div className="order-1 md:order-none justify-self-center flex justify-center">
               <Pagination

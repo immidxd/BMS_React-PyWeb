@@ -83,6 +83,21 @@ const TONE: Record<LimitsText['tone'], string> = {
   off: 'text-gray-400 dark:text-gray-500',
 };
 
+/** Вміст спливашки: перший рядок — стан, далі пояснення. Для місць, де
+ *  окремий рядок бейджа займав би зайве місце (список товарів). */
+export function AiLimitsTip({ prefix }: { prefix?: string }) {
+  const { limits } = useAiLimits();
+  if (!limits) return prefix ? <span>{prefix}</span> : null;
+  const t = describeLimits(limits);
+  return (
+    <div className="whitespace-pre-line text-[12px] leading-snug max-w-[340px]">
+      {prefix && <div className="mb-1">{prefix}</div>}
+      <div className={`font-medium ${t.tone === 'off' ? 'opacity-80' : ''}`}>{t.short}</div>
+      <div className="mt-1 opacity-80">{t.long}</div>
+    </div>
+  );
+}
+
 /** Тихий рядок стану. Клік — оновити. */
 export default function AiLimitsBadge({ className = '' }: { className?: string }) {
   const { limits, reload } = useAiLimits();
