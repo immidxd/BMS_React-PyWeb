@@ -645,6 +645,21 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
       const n = (d.proposed || []).length;
       if (n) notify.success({ message: `Розпізнано полів: ${n}${usePaid ? ' (платний ключ)' : ''}`, duration: 2.5 });
       else notify.info({ message: 'Нічого впевнено не розпізналось', duration: 3 });
+      // Стікер — окрема історія: людина бачить його на знімку й чекає ціни та
+      // розміру. Мовчазне «не розпізнало» тут найгірше — кажемо, ЩО сталось.
+      const st = d.sticker || {};
+      const LABEL: Record<string, string> = { price: 'ціна', sizeeu: 'розмір', measurementscm: 'замір' };
+      const weak = (d.below_threshold || []).filter((x: any[]) => LABEL[x[0]]);
+      if (st.present && st.matched === false) {
+        notify.warning({ message: 'Стікер не збігся з карткою',
+          description: `${st.reason || 'Номер на стікері інший'}. Прочитано: «${st.text || '—'}».`, duration: 8 });
+      } else if (weak.length) {
+        notify.info({ message: 'Зі стікера прочитано непевно',
+          description: weak.map((x: any[]) => `${LABEL[x[0]]} ${x[1]}${x[2] != null ? ` (${Math.round(x[2] * 100)}%)` : ''}`).join(' · ')
+            + ' — звір зі знімком і впиши вручну.', duration: 8 });
+      } else if (!st.present && !(p as any)?.price) {
+        notify.info({ message: 'Стікера з ціною на знімках не знайдено', duration: 4 });
+      }
     } catch (e: any) {
       notify.error({ message: 'Не вдалося розпізнати', description: e?.message || undefined });
     } finally {

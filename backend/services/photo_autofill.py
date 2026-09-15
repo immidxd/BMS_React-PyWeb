@@ -36,13 +36,17 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import os
 import pathlib
+import re
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
+
+logger = logging.getLogger(__name__)
 
 try:
     from services import ai_budget, barcode_reader, field_proposals, model_profile
@@ -174,11 +178,14 @@ def _material_proposals(db, product_id, pred, photo_names, model,
 # маркетплейси. Тому стікер має ВЛАСНИЙ запобіжник — номер на ньому мусить
 # збігатися з номером картки; інакше він або чужий, або прочитаний невірно, і
 # все з нього відкидається. Межі — від реальних значень бази.
-STICKER_FIELDS: Dict[str, Tuple[str, float, float, float]] = {
-    # ключ у відповіді: (поле ProductUpdate, поріг, мін, макс)
-    "sticker_price": ("price",          0.90,   50.0, 50000.0),
-    "sticker_size":  ("sizeeu",         0.90,   15.0,    52.0),
-    "sticker_cm":    ("measurementscm", 0.85,   10.0,    36.0),
+STICKER_FIELDS: Dict[str, Tuple[str, float, float]] = {
+    # ключ у відповіді: (поле ProductUpdate, мін, макс). Поріг певності — ОДИН,
+    # у field_proposals.CONFIDENCE_THRESHOLD: друга копія тут уже коштувала
+    # #Ф4403 (тут 0.75 пропускало, там 0.90 відкидало — ціна й розмір
+    # «не розпізнались», хоча модель їх прочитала).
+    "sticker_price": ("price",           50.0, 50000.0),
+    "sticker_size":  ("sizeeu",          15.0,    52.0),
+    "sticker_cm":    ("measurementscm",  10.0,    36.0),
 }
 
 # ⚠️ Правило «відсутність = порожнє поле» живе в
@@ -258,7 +265,10 @@ PROMPT = (
     "постав null. Порожнє значення коштує кілька секунд ручної роботи, а "
     "неправильне псує дані у двох системах, тож null завжди краще за здогад.\n"
     "Текстові поля (бренд, артикул, модель) читай ДОСЛІВНО з бирки або лого, "
-    "нічого не додумуючи."
+    "нічого не додумуючи.\n"
+    "Рукописний стікер (зазвичай зелений папірець на підошві) часто повернутий "
+    "боком або догори ногами — прочитай його в будь-якій орієнтації: ціна, розмір, "
+    "замір у см і номер товару (літера + цифри, напр. Ф4403)."
 )
 
 DEFAULT_MODEL = os.getenv("AUTOFILL_MODEL", "gemini-3.5-flash")
@@ -747,12 +757,24 @@ def _sticker_proposals(db, product_id, pred, current, photo_names, model,
     card = current.get("productnumber") or ""
     if not text_ and not number:
         return {"present": False}
-    if not _number_matches(card, number):
-        # Чужий або неправильно прочитаний стікер — усе з нього відкидаємо.
-        return {"present": True, "matched": False, "sticker_number": number, "text": text_}
+    matched = _number_matches(card, number)
+    if not matched and text_:
+        # Окреме поле номера модель заповнює гірше, ніж дослівний рядок:
+        # «2500 39 25,5 Ф4403» містить наш номер, навіть коли sticker_number
+        # прочитано як «ФЧЧ03». Шукаємо цифри картки як окремий токен тексту.
+        card_digits = "".join(ch for ch in card if ch.isdigit())
+        tokens = ["".join(ch for ch in t if ch.isdigit()) for t in re.split(r"[\s/,;|]+", text_)]
+        matched = bool(card_digits) and card_digits in tokens
+    if not matched:
+        # Чужий або неправильно прочитаний стікер — усе з нього відкидаємо,
+        # але кажемо, ЩО прочитали: інакше людина бачить «не розпізнало» і
+        # не знає, чому.
+        return {"present": True, "matched": False, "sticker_number": number, "text": text_,
+                "reason": f"номер на стікері «{number or '—'}» не збігся з карткою {card}"}
 
     out = {"present": True, "matched": True, "text": text_}
-    for key, (upd_field, threshold, lo, hi) in STICKER_FIELDS.items():
+    for key, (upd_field, lo, hi) in STICKER_FIELDS.items():
+        threshold = field_proposals.threshold_for(upd_field)
         raw = pred.get(key)
         conf = pred.get(f"{key}_confidence")
         if raw is None:
@@ -776,6 +798,27 @@ def _sticker_proposals(db, product_id, pred, current, photo_names, model,
         else:
             below_threshold.append((upd_field, text_val, conf))
     return out
+
+
+def _record_run(db: Session, product_id: int, purpose: str, model: Optional[str],
+                photos: List[pathlib.Path], pred: Dict[str, Any], outcome: Dict[str, Any]) -> None:
+    """Сира відповідь моделі — у `ai_autofill_runs`.
+
+    «Чому не розпізнало ціну?» без цього запису відповіді не мало: пропозиції
+    тримають лише те, що пройшло поріг, а повторний виклик коштує квоту, якої
+    в момент питання вже нема. Провал запису не має ламати автозаповнення.
+    """
+    try:
+        clean = {k: v for k, v in (pred or {}).items() if not k.startswith("_")}
+        out = {k: v for k, v in (outcome or {}).items() if k != "pred"}
+        db.execute(text("""
+            INSERT INTO ai_autofill_runs (product_id, purpose, model, photos, ok, prediction, outcome)
+            VALUES (:pid, :pu, :m, :ph, :ok, CAST(:pred AS jsonb), CAST(:out AS jsonb))
+        """), {"pid": product_id, "pu": purpose[:24], "m": model, "ph": ",".join(p.name for p in photos),
+               "ok": bool(outcome.get("ok")), "pred": json.dumps(clean, ensure_ascii=False, default=str),
+               "out": json.dumps(out, ensure_ascii=False, default=str)})
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[autofill] run not recorded: %s", e)
 
 
 def _same_as_current(current: Optional[str], proposed: Optional[str]) -> bool:
@@ -828,6 +871,8 @@ def extract_and_propose(db: Session, product_id: int, photos: List[pathlib.Path]
 
     def _finish(payload: Dict[str, Any]) -> Dict[str, Any]:
         """Спільний вихід: чим би не скінчилась модель, штрихкоди зберігаються."""
+        _record_run(db, product_id, purpose + (":paid" if use_paid else ""),
+                    payload.get("model"), photos, pred_box, payload)
         hits = _hits()
         _propose_gtin(db, product_id, hits, current, proposed, already)
         # ⚠️ Підтвердження рахуємо САМЕ ТУТ, а не поруч із перехресною

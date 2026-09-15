@@ -686,8 +686,49 @@ def test_foreign_sticker_is_discarded_entirely(monkeypatch, tmp_path):
         "sticker_price": 1500, "sticker_price_confidence": 0.99,
         "sticker_size": 38, "sticker_size_confidence": 0.99})
     assert not any(f in ("price", "sizeeu") for f, *_ in out["proposed"])
-    assert out["sticker"] == {"present": True, "matched": False,
-                              "sticker_number": "ф4400", "text": "1500 38 ф4400"}
+    assert out["sticker"]["matched"] is False and out["sticker"]["sticker_number"] == "ф4400"
+    assert "не збігся" in out["sticker"]["reason"]        # людина бачить, ЧОМУ
+
+
+def test_sticker_number_is_rescued_from_the_verbatim_text(monkeypatch, tmp_path):
+    """#Ф4403: sticker_number прочитано як «ФЧЧ03», але дослівний рядок
+    «2500 39 25,5 Ф4403» містить наш номер — стікер наш."""
+    out = _run_sticker(monkeypatch, tmp_path, {
+        "sticker_text": "2500 39 25,5 Ф4419", "sticker_number": "ФЧЧ19",
+        "sticker_price": 2500, "sticker_price_confidence": 0.8,
+        "sticker_size": 39, "sticker_size_confidence": 0.8,
+        "sticker_cm": 25.5, "sticker_cm_confidence": 0.75})
+    got = {f: v for f, v, c in out["proposed"]}
+    assert got == {"price": "2500", "sizeeu": "39", "measurementscm": "25.5"}
+
+
+def test_foreign_digits_in_text_do_not_rescue(monkeypatch, tmp_path):
+    out = _run_sticker(monkeypatch, tmp_path, {
+        "sticker_text": "2500 39 Ф4400", "sticker_number": None,
+        "sticker_price": 2500, "sticker_price_confidence": 0.99})
+    assert out["proposed"] == [] and out["sticker"]["matched"] is False
+
+
+def test_handwritten_sticker_thresholds_admit_a_plain_read():
+    """Рукописне «2500» модель оцінює на 0.8 — це має проходити. Поріг ОДИН —
+    у field_proposals; друга копія в STICKER_FIELDS уже коштувала #Ф4403."""
+    from backend.services import field_proposals as fp
+    for _key, (upd_field, _lo, _hi) in pa.STICKER_FIELDS.items():
+        assert fp.threshold_for(upd_field) <= 0.8
+
+
+def test_every_run_is_recorded_with_its_raw_prediction(monkeypatch, tmp_path):
+    """Без запису відповідь на «чому не розпізнало» коштує ще один виклик."""
+    db = _DB(spent=0.0)
+    monkeypatch.setattr(pa.barcode_reader, "read_photos", lambda ps: [])
+    monkeypatch.setattr(pa.model_profile, "profile_for", lambda *a, **k: {"records": 0, "fields": {}})
+    monkeypatch.setattr(pa, "_current_values", lambda db, pid: {"productnumber": "#Ф4403"})
+    monkeypatch.setattr(pa, "call_gemini", lambda *a, **k: {
+        "_usage": {"promptTokenCount": 1, "candidatesTokenCount": 1},
+        "sticker_text": "2500 39 Ф4400", "sticker_number": "Ф4400"})
+    pa.extract_and_propose(db, 7, [_photo(tmp_path)], api_key="k")
+    ins = [s for s in db.sql if "INSERT INTO ai_autofill_runs" in s]
+    assert len(ins) == 1
 
 
 def test_out_of_range_sticker_values_never_reach_the_card(monkeypatch, tmp_path):

@@ -522,11 +522,16 @@ def global_activity(db: Session) -> Dict[str, Any]:
                             AND updated_at < now() - interval '{STALE_PENDING_MINUTES} minutes') AS stale,
           count(*) FILTER (WHERE status='failed') AS failed,
           count(*) FILTER (WHERE status='skipped'
-                            AND COALESCE(last_error,'') NOT ILIKE 'per-item field%') AS blocked
+                            AND COALESCE(last_error,'') NOT ILIKE 'per-item field%'
+                            AND updated_at > now() - interval '{BLOCKED_VISIBLE_HOURS} hours') AS blocked,
+          count(*) FILTER (WHERE status='skipped'
+                            AND COALESCE(last_error,'') ILIKE '%no sheet_title%') AS no_delivery,
+          count(*) FILTER (WHERE status='skipped'
+                            AND COALESCE(last_error,'') ILIKE '%not found%') AS no_row
         FROM journal_writeback_queue
     """)).mappings().first()
     counts = {k: int((q or {}).get(k) or 0)
-              for k in ("active", "retrying", "stale", "failed", "blocked")}
+              for k in ("active", "retrying", "stale", "failed", "blocked", "no_delivery", "no_row")}
     incoming = incoming_activity()
 
     if parse_job:
@@ -537,7 +542,11 @@ def global_activity(db: Session) -> Dict[str, Any]:
         detail = incoming.get("detail")
     elif counts["failed"] + counts["blocked"]:
         state = "error"
-        detail = "Є зміни BMS, які не вдалося передати в журнал"
+        n = counts["failed"] + counts["blocked"]
+        why = ("товар без завозу" if counts["no_delivery"] else
+               "рядка/вкладки нема в журналі" if counts["no_row"] else None)
+        detail = (f"{n} змін BMS не вдалося передати в журнал"
+                  + (f" ({why})" if why else "") + " — див. картки з позначкою «Не синхронізовано»")
     elif counts["retrying"] + counts["stale"]:
         state = "delayed"
         detail = "Передавання змін у журнал затрималось — BMS повторює автоматично"
@@ -550,6 +559,12 @@ def global_activity(db: Session) -> Dict[str, Any]:
             "parse_job": dict(parse_job) if parse_job else None,
             "outgoing": counts}
 
+
+# Безнадійно пропущені задачі (нема завозу, нема вкладки) фарбують ГЛОБАЛЬНИЙ
+# індикатор у червоне лише першу добу: повтор їх не лікує, і через тиждень
+# «Є зміни, які не вдалося передати» вже не сигнал, а шум, що затуляє
+# справжні збої. У картці самого товару позначка лишається назавжди.
+BLOCKED_VISIBLE_HOURS = 24
 
 # Скільки чекати, поки «щойно поставлено в чергу» стане «застрягло».
 # Воркер драйнить чергу раз на хвилину, тож нормальний запис живе в черзі
