@@ -769,3 +769,13 @@ def test_season_already_covered_is_not_proposed(monkeypatch, tmp_path):
     out = pa.extract_and_propose(_DB(spent=0.0), 7, [_photo(tmp_path)], api_key="k")
     assert not any(f == "season" for f, *_ in out["proposed"])
     assert ("season", "Зима, Єврозима") in out["already_correct"]
+
+
+def test_boot_subtypes_have_definitions_along_the_height_axis():
+    """У ботинок 28 підвидів, а модель без визначень тяжіла до двох-трьох
+    знайомих назв. Головна вісь розрізнення — висота халяви й застібка."""
+    h = pa.VALUE_HINTS["subtype"]
+    for v in ("Челсі", "Ботильйони", "Напівботинки", "Напівсапоги", "Чоботи", "Хайтопи", "Уггі"):
+        assert v in h and len(h[v]) > 20, f"немає визначення для «{v}»"
+    assert "КАБЛУЦІ" in h["Ботильйони"] and "ПЛОСКІЙ" in h["Напівботинки"]
+    assert "БЕЗ шнурівки" in h["Челсі"]
