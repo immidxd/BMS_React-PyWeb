@@ -2,12 +2,13 @@ import React, { useEffect, useState, useMemo, useRef } from 'react';
 import { productService, type JournalSyncState } from '../../services/productService';
 import type { Product, ProductFilters } from '../../types/product';
 import { Tag, Image, Tooltip } from 'antd';
-import { CloseOutlined, PictureOutlined, LeftOutlined, RightOutlined, WarningOutlined, EditOutlined, CheckOutlined, PlusOutlined, SyncOutlined, EyeOutlined, EyeInvisibleOutlined, StarFilled, ShoppingOutlined, TableOutlined, InboxOutlined, TagOutlined, DownloadOutlined, CopyOutlined, LoadingOutlined, RotateLeftOutlined, RotateRightOutlined, SwapOutlined } from '@ant-design/icons';
+import { CloseOutlined, PictureOutlined, LeftOutlined, RightOutlined, WarningOutlined, EditOutlined, CheckOutlined, PlusOutlined, SyncOutlined, EyeOutlined, EyeInvisibleOutlined, StarFilled, ShoppingOutlined, TableOutlined, InboxOutlined, TagOutlined, QrcodeOutlined, DownloadOutlined, CopyOutlined, LoadingOutlined, RotateLeftOutlined, RotateRightOutlined, SwapOutlined } from '@ant-design/icons';
 import { copyImageToClipboard, saveProductPhoto, saveProductPhotosZip } from '../../services/imageTransfer';
 import { CopyOnClick, formatBrandName, getProductDisplayStatus, getProductStock, getConditionColor, effectiveProductNumber, visibleGalleryPhotos } from '../common/displayHelpers';
 import { hiddenFieldsForType } from './productCategory';
 import AiLimitsBadge, { emitAiLimitsChanged } from './AiLimitsBadge';
 import PhotoStagingModal from '../shipments/PhotoStagingModal';
+import LabelPrintDialog from '../labels/LabelPrintDialog';
 import { taskManager, emitProductPhotosChanged } from '../../services/taskManager';
 import {
   markPromImportAccepted, refreshPromLimitWatch, watchPromLimitStatus,
@@ -319,6 +320,8 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
 
   // ── «Прийняти у завіз» для орфанів (deliveryid=NULL: воркспейс/загублені) ────
   const [adoptOpen, setAdoptOpen] = useState(false);
+  const [labelOpen, setLabelOpen] = useState(false);   // стікер з QR для цього товару
+  const labelSource = useMemo(() => (labelOpen && productId ? { product_ids: [productId] } : null), [labelOpen, productId]);
   const [adoptDeliveries, setAdoptDeliveries] = useState<{ id: number; deliveryname: string }[]>([]);
   const [adoptId, setAdoptId] = useState<number | null>(null);
   const [adopting, setAdopting] = useState(false);
@@ -2621,6 +2624,8 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
         products={[]} fixedNumber={pnumClean ? `#${pnumClean.replace(/^#/, '')}` : undefined}
         defaultKind="real"
         onAttached={() => { if (productId) { emitProductPhotosChanged(productId); loadImages(true); } }} />
+      {/* Стікер з QR на цей товар (друк / у чергу) */}
+      <LabelPrintDialog open={labelOpen} source={labelSource} onClose={() => setLabelOpen(false)} />
       <style>{`
         @keyframes bmsFadeIn { from { opacity: 0; } to { opacity: 1; } }
         .bms-fade-in { animation: bmsFadeIn 180ms ease-out; }
@@ -2986,6 +2991,18 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                       </div>
                     )}
                   </div>
+                )}
+
+                {/* Стікер з QR (склад): друк / у чергу */}
+                {!editMode && (
+                  <button
+                    onClick={() => setLabelOpen(true)}
+                    className={HDR_BTN}
+                    title="QR-стікер на цей товар: надрукувати або поставити в чергу друку"
+                  >
+                    <QrcodeOutlined style={{ fontSize: 14 }} />
+                    <span>Стікер</span>
+                  </button>
                 )}
 
                 {/* «Знайти в Google» */}

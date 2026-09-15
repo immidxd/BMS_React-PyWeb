@@ -8,6 +8,7 @@ import {
 } from '../../services/referenceService';
 import QuickAddProductForm from './QuickAddProductForm';
 import PhotoStagingModal from './PhotoStagingModal';
+import LabelPrintDialog from '../labels/LabelPrintDialog';
 import ProductDetailsModal from '../products/ProductDetailsModal';
 import { alertDialog, confirmDialog, notify } from '../../ui/feedback';
 import LoadingSpinner from '../common/LoadingSpinner';
@@ -97,6 +98,10 @@ const fmtPrice = (n?: number | null) =>
 const DeliveryCardModal: React.FC<Props> = ({ shipment, open, onClose }) => {
   const [products, setProducts] = useState<Product[]>([]);
   const [stagingOpen, setStagingOpen] = useState(false);
+  const [labelsOpen, setLabelsOpen] = useState(false);  // стікери з QR на всі товари завозу
+  // Стабільний об'єкт: діалог перечитує список, коли змінюється source.
+  const shipmentId = shipment?.id ?? null;
+  const labelSource = useMemo(() => (shipmentId ? { delivery_id: shipmentId } : null), [shipmentId]);
   // Речей у завозі = сума quantity (ростовка з 5 розмірів може бути 10 пар).
   const itemsCount = useMemo(() => products.reduce((s, p) => s + qtyOf(p), 0), [products]);
   const [loading, setLoading] = useState(false);
@@ -332,6 +337,11 @@ const DeliveryCardModal: React.FC<Props> = ({ shipment, open, onClose }) => {
               className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 disabled:opacity-50">
               {sorting ? '…' : '⇅'} Впорядкувати
             </button>
+            <button onClick={() => setLabelsOpen(true)} disabled={loading || products.length === 0}
+              title="Надрукувати QR-стікери на всі товари цього завозу (аркуш 100×100)"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 disabled:opacity-50">
+              🏷 Стікери
+            </button>
             <button onClick={() => setStagingOpen(true)} disabled={loading}
               title="Розкласти знімки з теки «до розбору» по товарах цього завозу"
               className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 disabled:opacity-50">
@@ -388,6 +398,13 @@ const DeliveryCardModal: React.FC<Props> = ({ shipment, open, onClose }) => {
           </div>
         )}
 
+        {/* Стікери з QR на весь завіз — окремий модал, як і розкладання фото. */}
+        <LabelPrintDialog
+          open={labelsOpen}
+          source={labelsOpen ? labelSource : null}
+          title={`Стікери завозу ${shipment?.sheet_name || `#${shipmentId ?? ''}`}`}
+          onClose={() => setLabelsOpen(false)}
+        />
         {/* Розкладання фото — окремий модал, НЕ всередині форми додавання:
             інакше він рендерився б лише поки та форма розгорнута. */}
         <PhotoStagingModal open={stagingOpen} onClose={() => setStagingOpen(false)}

@@ -10,7 +10,9 @@ import { Button, Dropdown, Tooltip } from 'antd';
 import { toast } from 'react-toastify';
 import Pagination from '../components/common/Pagination';
 import AddProductModal from '../components/shipments/AddProductModal';
-import { PlusOutlined, SendOutlined, CheckSquareOutlined, DownOutlined } from '@ant-design/icons';
+import { PlusOutlined, SendOutlined, CheckSquareOutlined, DownOutlined, TagOutlined } from '@ant-design/icons';
+import LabelPrintDialog from '../components/labels/LabelPrintDialog';
+import { labelQueue, useLabelQueueCount, type LabelSource } from '../services/labelService';
 import LoadingSpinner from '../components/common/LoadingSpinner';
 import { useSelection } from '../services/selectionManager';
 import { taskManager } from '../services/taskManager';
@@ -58,6 +60,10 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
   const isActivePage = useIsActivePage();
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [showAddProduct, setShowAddProduct] = useState(false);
+  // Стікери з QR (склад): діалог друку над виділенням або над чергою друку.
+  const [labelSource, setLabelSource] = useState<LabelSource | null>(null);
+  const labelQueueCount = useLabelQueueCount();
+  useEffect(() => { void labelQueue.refresh(); }, []);
   const [loading, setLoading] = useState<boolean>(true);
   const [products, setProducts] = useState<ProductListResponse>({ items: [], total: 0, page: 1, per_page: 20, pages: 1 });
   const [page, setPage] = useState<number>(1);
@@ -1287,10 +1293,13 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
                       },
                     ] : []),
                     { type: 'divider' as const },
+                    { key: 'labels', icon: <TagOutlined />, label: `Стікери з QR (${selection.size})…` },
+                    { type: 'divider' as const },
                     { key: 'clear', label: 'Зняти виділення' },
                   ],
                   onClick: ({ key }) => {
-                    if (key === 'prom') sendSelectedToProm();
+                    if (key === 'labels') setLabelSource({ product_ids: Array.from(selection.ids) });
+                    else if (key === 'prom') sendSelectedToProm();
                     else if (key === 'shafa') void sendSelectedToShafa();
                     else if (key === 'olx') void sendSelectedToOlx();
                     else if (key === 'telegram') void openSelectedTelegram();
@@ -1306,6 +1315,19 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
                 <Button>Дії ({selection.size}) <DownOutlined /></Button>
               </Dropdown>
             )}
+            <Button
+              icon={<TagOutlined />}
+              onClick={() => setLabelSource({ from_queue: true })}
+              title="Черга друку стікерів з QR: сюди потрапляє кожен доданий товар; друкуються пакетом на аркуш 100×100"
+            >
+              Стікери{labelQueueCount > 0 ? ` (${labelQueueCount})` : ''}
+            </Button>
+            <LabelPrintDialog
+              open={!!labelSource}
+              source={labelSource}
+              onClose={() => setLabelSource(null)}
+              onDone={() => { void fetchProducts(); }}
+            />
             <Button type="primary" icon={<PlusOutlined />} onClick={() => setShowAddProduct(true)}>
               Додати товар
             </Button>
