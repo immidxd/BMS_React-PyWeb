@@ -290,6 +290,10 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     () => OTHER_FIELDS.some((f) => !!proposals[f]),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [proposals]);
+  // Пропозиції матеріалів із піктограм ЄС на бирці — по позиціях: material:upper …
+  const materialProposalPositions = useMemo(
+    () => MATERIAL_POSITIONS.filter(({ pos }) => !!proposals[`material:${pos}`]),
+    [proposals]);
   const [proposalBusy, setProposalBusy] = useState<number | null>(null);
   const [autofillRunning, setAutofillRunning] = useState(false);
   const [promPublishing, setPromPublishing] = useState(false);  // публікація в процесі (фон, до ~3.6хв)
@@ -3662,7 +3666,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
 
                   {/* Матеріали — ЗАВЖДИ першим підрозділом (згорнуто за замовчуванням).
                       У edit-режимі — інпут на кожну позицію (CSV назв через кому). */}
-                  {(editMode || (p.materials && p.materials.length > 0)) && (
+                  {(editMode || (p.materials && p.materials.length > 0) || materialProposalPositions.length > 0) && (
                     CollapsibleSection({ id: 'materials', title: 'Матеріали', children: (
                       <div className={`grid ${charCols} gap-x-6 gap-y-3`}>
                         {editMode ? (
@@ -3691,9 +3695,17 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                               if (!grouped.has(label)) grouped.set(label, []);
                               grouped.get(label)!.push(mat.materialname || String(mat.material_id));
                             }
-                            return Array.from(grouped.entries()).map(([pos, names]) => (
+                            const cells = Array.from(grouped.entries()).map(([pos, names]) => (
                               <RoCell key={pos} label={pos} value={names.join(', ')} />
                             ));
+                            // Пропозиції з піктограм ЄС — чіп під підписом позиції.
+                            const chips = materialProposalPositions.map(({ pos, label }) => (
+                              <div key={`prop-${pos}`} className="flex flex-col gap-1 min-w-0">
+                                <span className="text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500 font-medium">{label}</span>
+                                <ProposalChip field={`material:${pos}`} />
+                              </div>
+                            ));
+                            return [...cells, ...chips];
                           })()
                         )}
                       </div>

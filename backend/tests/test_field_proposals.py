@@ -144,3 +144,19 @@ def test_field_name_matches_product_update_contract():
     allowed = set(ProductUpdate.model_fields)
     unknown = [f for f in fp.CONFIDENCE_THRESHOLD if f not in allowed]
     assert not unknown, f"ProductUpdate не приймає: {unknown}"
+
+
+# ── Матеріали з піктограм: material:<позиція> ───────────────────────────────
+
+def test_material_positions_have_their_own_threshold():
+    assert fp.threshold_for("material:upper") == 0.85
+    assert fp.threshold_for("material:sole") == fp.threshold_for("material:middle")
+
+
+def test_accepting_a_material_returns_the_by_position_payload():
+    """ProductUpdate не має поля material:upper — воно їде як materials_by_position,
+    і лише для СВОЄЇ позиції: інші позиції картки прийняття не чіпає."""
+    db = _FakeDB(_FakeResult([(7, "material:upper", "шкіра")]))
+    out = fp.accept(db, 42)
+    assert out == {"product_id": 7, "update": {"materials_by_position": {"upper": "шкіра"}}}
+    assert len(db.sql) == 1

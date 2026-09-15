@@ -113,6 +113,59 @@ def merge_seasons(current: Optional[str], seen: List[str]) -> Optional[str]:
     return ", ".join(t for t in SEASONS if t in cur | new)
 
 
+# ── Матеріали з піктограм ЄС на бирці ──────────────────────────────────────
+# Директива 94/11/EC: три рядки (верх / підкладка й устілка / підошва), чотири
+# символи (шкіра — силует шкури; шкіра з покриттям — шкура з ромбом; текстиль —
+# плетіння; інше — ромб). Це стандарт, і він є майже на всьому європейському
+# взутті — але його ніхто не читав, бо схема не питала. Наші позиції
+# `upper / middle / sole` лягають на рядки один в один.
+PICTOGRAM_ROWS: Dict[str, str] = {"upper": "upper", "lining": "middle", "outsole": "sole"}
+PICTOGRAM_SYMBOLS: Tuple[str, ...] = ("шкіра", "шкіра з покриттям", "текстиль", "інше")
+# Символ → назва у НАШОМУ словнику матеріалів (лише ті, що там є).
+PICTOGRAM_TO_MATERIAL: Dict[str, str] = {
+    "шкіра": "шкіра",
+    "шкіра з покриттям": "шкіра",       # це справжня шкіра з покриттям, не екошкіра
+    "текстиль": "текстиль",
+    "інше": "синтетика",
+}
+
+
+def _current_materials(db: Session, product_id: int) -> Dict[str, str]:
+    """{позиція: 'назва, назва'} — щоб не пропонувати вже вписане."""
+    rows = db.execute(text("""
+        SELECT pm.position, string_agg(m.materialname, ', ' ORDER BY pm.ord)
+        FROM product_materials pm JOIN materials m ON m.id = pm.material_id
+        WHERE pm.product_id = :pid GROUP BY pm.position
+    """), {"pid": product_id}).fetchall()
+    return {r[0]: (r[1] or "") for r in rows}
+
+
+def _material_proposals(db, product_id, pred, photo_names, model,
+                        proposed, below_threshold, already) -> Dict[str, Any]:
+    pic = pred.get("materials_pictogram") or {}
+    if not isinstance(pic, dict) or not any(pic.get(k) for k in PICTOGRAM_ROWS):
+        return {"present": False}
+    conf = pred.get("materials_pictogram_confidence")
+    current = _current_materials(db, product_id)
+    out: Dict[str, str] = {}
+    for row, pos in PICTOGRAM_ROWS.items():
+        sym = (pic.get(row) or "").strip().lower()
+        if sym not in PICTOGRAM_TO_MATERIAL:
+            continue
+        name = PICTOGRAM_TO_MATERIAL[sym]
+        field = f"material:{pos}"
+        cur = current.get(pos, "")
+        if name in {t.strip().lower() for t in cur.split(",") if t.strip()}:
+            already.append((field, cur)); continue
+        note = f"піктограма ЄС: {sym}" + (" (у нас — шкіра)" if sym == "шкіра з покриттям" else "")
+        if field_proposals.propose(db, product_id, field, name, conf, model=model,
+                                   source_photos=photo_names, note=note):
+            proposed.append((field, name, conf)); out[pos] = name
+        else:
+            below_threshold.append((field, name, conf))
+    return {"present": True, "proposed": out}
+
+
 # ── Стікер із ціною/розміром/заміром ────────────────────────────────────────
 # Власник пише на стікері від руки: ціну, розмір, замір устілки в см і НОМЕР
 # товару. Це per-item поля, і помилка в них найдорожча: ціна їде в Журнал і на
@@ -291,6 +344,22 @@ def build_schema(db: Session, type_id: Optional[int] = None) -> Dict[str, Any]:
     }
     props["season_confidence"] = {"type": "number", "minimum": 0, "maximum": 1,
                                   "description": "певність щодо сезону"}
+    # Піктограми ЄС на бирці: три рядки × чотири символи.
+    props["materials_pictogram"] = {
+        "type": "object",
+        "description": ("стандартні піктограми матеріалів на бирці (ЄС): рядок ВЕРХ, рядок "
+                        "ПІДКЛАДКА/УСТІЛКА, рядок ПІДОШВА. Символи: силует шкури — «шкіра»; "
+                        "шкура з ромбом — «шкіра з покриттям»; плетіння — «текстиль»; ромб — «інше». "
+                        "Немає піктограм на знімках — усі null"),
+        "properties": {
+            "upper":   {"type": ["string", "null"], "enum": list(PICTOGRAM_SYMBOLS) + [None]},
+            "lining":  {"type": ["string", "null"], "enum": list(PICTOGRAM_SYMBOLS) + [None]},
+            "outsole": {"type": ["string", "null"], "enum": list(PICTOGRAM_SYMBOLS) + [None]},
+        },
+        "required": ["upper", "lining", "outsole"],
+    }
+    props["materials_pictogram_confidence"] = {"type": "number", "minimum": 0, "maximum": 1,
+                                               "description": "певність щодо піктограм"}
     # Стікер від руки (зазвичай зелений папірець): ціна, розмір, замір, номер.
     props["sticker_text"] = {"type": ["string", "null"],
                              "description": ("ДОСЛІВНО весь рукописний текст зі стікера/цінника, "
@@ -419,7 +488,8 @@ ARTICLE_SCHEMA: Dict[str, Any] = {
 
 def verify_article(db: Session, model: str, api_key: str,
                    photos: List[pathlib.Path], value: str,
-                   *, purpose: str, product_id: int) -> bool:
+                   *, purpose: str, product_id: int,
+                   anchor: Optional[str] = None) -> bool:
     """Друге, незалежне прочитання артикула. True — обидва читання збіглись.
 
     ⚠️ ЗАКРИТА ВІДМОВА. Помилка виклику (429, 5xx, розбір відповіді) означає
@@ -441,7 +511,40 @@ def verify_article(db: Session, model: str, api_key: str,
     if err:
         return False
     second = pred.get("article_text")
-    return bool(second) and _norm_code(second) == _norm_code(value)
+    return _article_reads_agree(value, second, anchor)
+
+
+def _code_tokens(text_: Optional[str]) -> set:
+    """Нормалізовані коди з рядка: «9-26201-25-170/9-26201-43-170» → два коди.
+
+    Увесь рядок цілком — теж код: «CW2288 111» на бирці Nike пишуть із
+    пробілом, і розрізати його на «CW2288» + «111» означало б загубити збіг
+    із «CW2288-111», який раніше давав _norm_code.
+    """
+    import re as _re
+    parts = {_norm_code(t) for t in _re.split(r"[\s/,;|]+", text_ or "")}
+    parts.add(_norm_code(text_))
+    return {t for t in parts if len(t) >= 4}
+
+
+def _article_reads_agree(first: str, second: Optional[str], anchor: Optional[str]) -> bool:
+    """Чи два незалежні читання підтверджують артикул.
+
+    Точний збіг — очевидно. Але на бирках Caprice поруч стоять ДВА коди
+    («9-26201-25-170 / 9-26201-43-170»), і один прохід бере один, другий —
+    інший: точне порівняння відкидало читабельну бирку. Тому згодою вважаємо
+    й те, що перший код є серед кодів другого читання, і те, що ОБИДВА коди
+    є в дослівному рядку бирки з першого читання: тоді розбіжність не про
+    існування коду, а про те, який із двох обрати.
+    """
+    if not second:
+        return False
+    f = _norm_code(first)
+    sec = _code_tokens(second)
+    if f in sec:
+        return True
+    anc = _code_tokens(anchor)
+    return bool(anc) and f in anc and bool(sec & anc)
 
 
 # ── Оркестрація ─────────────────────────────────────────────────────────────
@@ -839,7 +942,7 @@ def extract_and_propose(db: Session, product_id: int, photos: List[pathlib.Path]
                 conf = 1.0
                 anchor = f"{anchor or ''} · підтверджено штрихкодом".strip(" ·")
             elif verify_article(db, model, api_key, photos, val,
-                                purpose=purpose, product_id=product_id):
+                                purpose=purpose, product_id=product_id, anchor=anchor):
                 # СВІДОК ДРУГИЙ: незалежне перечитування вузькою схемою. Певність
                 # беремо власну, не 1.0 — це та сама модель, лише зосереджена.
                 conf = max(float(conf or 0), 0.90)
@@ -870,7 +973,9 @@ def extract_and_propose(db: Session, product_id: int, photos: List[pathlib.Path]
     # ── Стікер: ціна / розмір / замір, лише якщо номер на ньому — цей товар ──
     sticker = _sticker_proposals(db, product_id, pred, current, photo_names, model,
                                  proposed, below_threshold, already)
+    materials = _material_proposals(db, product_id, pred, photo_names, model,
+                                    proposed, below_threshold, already)
 
     return _finish({"ok": True, "cost_usd": cost, "model": model,
                     "below_threshold": below_threshold, "photos": len(photos),
-                    "sticker": sticker})
+                    "sticker": sticker, "materials": materials})

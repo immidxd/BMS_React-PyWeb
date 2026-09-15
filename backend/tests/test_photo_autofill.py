@@ -779,3 +779,83 @@ def test_boot_subtypes_have_definitions_along_the_height_axis():
         assert v in h and len(h[v]) > 20, f"немає визначення для «{v}»"
     assert "КАБЛУЦІ" in h["Ботильйони"] and "ПЛОСКІЙ" in h["Напівботинки"]
     assert "БЕЗ шнурівки" in h["Челсі"]
+
+
+# ── Артикул: бирка з двома кодами ───────────────────────────────────────────
+# Caprice/Tamaris друкують поруч два коди («9-26201-25-170 / 9-26201-43-170»).
+# Два незалежні читання беруть різні — точна рівність відкидала читабельну бирку.
+
+@pytest.mark.parametrize("first, second, anchor, ok", [
+    ("9-26201-25-170", "9-26201-25-170", None, True),                     # точний збіг
+    ("9-26201-25-170", "9-26201-25-170/9-26201-43-170", None, True),     # перший є серед другого
+    ("9-26201-25-170", "9-26201-43-170", "9-26201-25-170 / 9-26201-43-170", True),  # обидва є на бирці
+    ("9-26201-25-170", "9-26201-43-170", None, False),                    # різні коди, якоря нема
+    ("9-26201-25-170", "9-26201-43-170", "9-26201-25-170", False),        # другого на бирці нема
+    ("9-26201-25-170", None, "9-26201-25-170 / 9-26201-43-170", False),   # другого читання нема
+    ("CW2288-111", "cw2288 111", None, True),                             # пробіл ≠ інший код (Nike)
+    ("CW2288-111", "CW2288 111", "CW2288 111 / 9-26201-43-170", True),   # те саме через якір
+])
+def test_two_codes_on_one_tag_still_count_as_agreement(first, second, anchor, ok):
+    assert pa._article_reads_agree(first, second, anchor) is ok
+
+
+def test_code_tokens_split_on_tag_separators_and_drop_short_noise():
+    toks = pa._code_tokens("9-26201-25-170 / 9-26201-43-170; EU 38")
+    assert {"92620125170", "92620143170"} <= toks and "EU" not in toks and "38" not in toks
+    assert pa._code_tokens("CW2288 111") >= {"CW2288111", "CW2288"}   # рядок цілком — теж код
+    assert pa._code_tokens(None) == set()
+
+
+# ── Матеріали з піктограм ЄС ────────────────────────────────────────────────
+
+def test_pictogram_symbols_map_only_into_our_vocabulary():
+    """Кожен символ директиви 94/11/EC → назва, що вже є в довіднику матеріалів."""
+    assert set(pa.PICTOGRAM_TO_MATERIAL) == set(pa.PICTOGRAM_SYMBOLS)
+    assert set(pa.PICTOGRAM_TO_MATERIAL.values()) <= {"шкіра", "текстиль", "синтетика"}
+    assert pa.PICTOGRAM_TO_MATERIAL["шкіра з покриттям"] == "шкіра"   # не «екошкіра»
+    assert set(pa.PICTOGRAM_ROWS.values()) == {"upper", "middle", "sole"}
+
+
+def test_schema_asks_for_the_three_pictogram_rows():
+    p = pa.build_schema(_DB())["properties"]["materials_pictogram"]
+    assert set(p["properties"]) == set(pa.PICTOGRAM_ROWS)
+    for row in pa.PICTOGRAM_ROWS:
+        assert set(p["properties"][row]["enum"]) - {None} == set(pa.PICTOGRAM_SYMBOLS)
+
+
+def _run_pictogram(monkeypatch, tmp_path, pic, conf=0.9, current=None):
+    monkeypatch.setattr(pa.barcode_reader, "read_photos", lambda ps: [])
+    monkeypatch.setattr(pa.model_profile, "profile_for", lambda *a, **k: {"records": 0, "fields": {}})
+    monkeypatch.setattr(pa, "_current_values", lambda db, pid: {"productnumber": "#Ф4411"})
+    monkeypatch.setattr(pa, "_current_materials", lambda db, pid: current or {})
+    monkeypatch.setattr(pa, "call_gemini", lambda *a, **k: {
+        "_usage": {"promptTokenCount": 1, "candidatesTokenCount": 1},
+        "materials_pictogram": pic, "materials_pictogram_confidence": conf})
+    return pa.extract_and_propose(_DB(spent=0.0), 7, [_photo(tmp_path)], api_key="k")
+
+
+def test_pictogram_rows_become_material_proposals_per_position(monkeypatch, tmp_path):
+    out = _run_pictogram(monkeypatch, tmp_path,
+                         {"upper": "шкіра з покриттям", "lining": "текстиль", "outsole": "інше"})
+    got = {f: v for f, v, c in out["proposed"]}
+    assert got == {"material:upper": "шкіра", "material:middle": "текстиль", "material:sole": "синтетика"}
+    assert out["materials"] == {"present": True,
+                                "proposed": {"upper": "шкіра", "middle": "текстиль", "sole": "синтетика"}}
+
+
+def test_pictogram_does_not_repeat_a_material_already_in_the_card(monkeypatch, tmp_path):
+    out = _run_pictogram(monkeypatch, tmp_path, {"upper": "шкіра", "outsole": "інше"},
+                         current={"upper": "Шкіра, текстиль"})
+    assert {f for f, *_ in out["proposed"]} == {"material:sole"}
+    assert ("material:upper", "Шкіра, текстиль") in out["already_correct"]
+
+
+def test_uncertain_pictogram_read_stays_below_threshold(monkeypatch, tmp_path):
+    out = _run_pictogram(monkeypatch, tmp_path, {"upper": "текстиль"}, conf=0.6)
+    assert out["proposed"] == []
+    assert ("material:upper", "текстиль", 0.6) in out["below_threshold"]
+
+
+def test_missing_pictogram_is_reported_as_absent(monkeypatch, tmp_path):
+    out = _run_pictogram(monkeypatch, tmp_path, None)
+    assert out["materials"] == {"present": False}

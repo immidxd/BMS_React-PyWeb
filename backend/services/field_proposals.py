@@ -54,6 +54,9 @@ OPEN = "pending"
 
 
 def threshold_for(field: str) -> float:
+    if field.startswith("material:"):
+        # Піктограми ЄС стандартні, але дрібні — читання має бути впевненим.
+        return 0.85
     return CONFIDENCE_THRESHOLD.get(field, DEFAULT_THRESHOLD)
 
 
@@ -125,7 +128,13 @@ def accept(db: Session, proposal_id: int) -> Optional[Dict[str, Any]]:
     """), {"id": proposal_id}).fetchone()
     if not row:
         return None
-    return {"product_id": row[0], "update": {row[1]: row[2]}}
+    field, value = row[1], row[2]
+    if field.startswith("material:"):
+        # Матеріал позиції: ProductUpdate приймає його як materials_by_position
+        # ({позиція: csv}), а не як пласке поле. Той самий шлях, що й ручна
+        # правка матеріалів у картці.
+        return {"product_id": row[0], "update": {"materials_by_position": {field.split(":", 1)[1]: value}}}
+    return {"product_id": row[0], "update": {field: value}}
 
 
 def reject(db: Session, proposal_id: int) -> bool:
