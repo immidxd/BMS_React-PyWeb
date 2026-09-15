@@ -876,8 +876,6 @@ def extract_and_propose(db: Session, product_id: int, photos: List[pathlib.Path]
 
     def _finish(payload: Dict[str, Any]) -> Dict[str, Any]:
         """Спільний вихід: чим би не скінчилась модель, штрихкоди зберігаються."""
-        _record_run(db, product_id, purpose + (":paid" if use_paid else ""),
-                    payload.get("model"), photos, pred_box, payload)
         hits = _hits()
         _propose_gtin(db, product_id, hits, current, proposed, already)
         # ⚠️ Підтвердження рахуємо САМЕ ТУТ, а не поруч із перехресною
@@ -900,6 +898,10 @@ def extract_and_propose(db: Session, product_id: int, photos: List[pathlib.Path]
         # шар профілю. Третій елемент кортежу називає шар — інакше звіт
         # приписував би штрихкоду те, що сказала власна база.
         payload["confirmed"] = confirmed
+        # Запис — ОСТАННІМ: перші вісім записів у ai_autofill_runs мали
+        # proposed=[] лише тому, що список додавався після запису.
+        _record_run(db, product_id, purpose + (":paid" if use_paid else ""),
+                    payload.get("model"), photos, pred_box, payload)
         return payload
 
     # ⚠️ ДВА КЛЮЧІ, НЕ ПЕРЕМИКАЧ. У Google рівень визначається ключем: одним і

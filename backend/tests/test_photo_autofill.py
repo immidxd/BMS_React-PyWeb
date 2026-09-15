@@ -731,6 +731,30 @@ def test_every_run_is_recorded_with_its_raw_prediction(monkeypatch, tmp_path):
     assert len(ins) == 1
 
 
+def test_run_record_carries_the_final_outcome(monkeypatch, tmp_path):
+    """Перші записи мали proposed=[] — запис робився ДО того, як список
+    пропозицій потрапляв у payload. Тепер запис — останній крок."""
+    import json as _json
+    class _CapDB(_DB):
+        def __init__(self):
+            super().__init__(spent=0.0); self.params = []
+        def execute(self, stmt, params=None):
+            self.params.append(params or {})
+            return super().execute(stmt, params)
+    db = _CapDB()
+    monkeypatch.setattr(pa.barcode_reader, "read_photos", lambda ps: [])
+    monkeypatch.setattr(pa.model_profile, "profile_for", lambda *a, **k: {"records": 0, "fields": {}})
+    monkeypatch.setattr(pa, "_current_values", lambda db, pid: {"productnumber": "#Ф4419", "price": None})
+    monkeypatch.setattr(pa, "call_gemini", lambda *a, **k: {
+        "_usage": {"promptTokenCount": 1, "candidatesTokenCount": 1},
+        "sticker_text": "2500 ф4419", "sticker_number": "ф4419",
+        "sticker_price": 2500, "sticker_price_confidence": 0.95})
+    pa.extract_and_propose(db, 7, [_photo(tmp_path)], api_key="k")
+    rec = [p for p in db.params if "out" in p and "pred" in p][-1]
+    outcome = _json.loads(rec["out"])
+    assert ("price", "2500", 0.95) in [tuple(x) for x in outcome["proposed"]]
+
+
 def test_out_of_range_sticker_values_never_reach_the_card(monkeypatch, tmp_path):
     """Розмір 360 або ціна 5 — хибне читання; межі від реальних значень бази."""
     out = _run_sticker(monkeypatch, tmp_path, {
