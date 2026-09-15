@@ -38,6 +38,11 @@ export function describeLimits(l: AiLimits, now: Date = new Date()): LimitsText 
   else if (l.free.observed_max > 0) lines.push(`Безкоштовна добова межа невідома — Google каже її лише у відмові; найбільше за день проходило ${l.free.observed_max}.`);
   else lines.push('Безкоштовна добова межа невідома — Google каже її лише у відмові.');
   lines.push(`Сьогодні пройшло: ${l.free.used}. Квота скидається ${when} (північ за тихоокеанським часом).`);
+  if (l.free.limit != null && l.free.used >= l.free.limit && !l.free.exhausted) {
+    // Спостережено 15.09: після 20 відмов поодинокі запити знову проходять —
+    // Google рахує день ковзним вікном, а не лічильником до півночі.
+    lines.push('Межу вже досягнуто, але Google відпускає по одному запиту з паузами — наступний може пройти або отримати відмову.');
+  }
   if (l.free.exhausted && l.free.last_denial_at) lines.push(`Остання відмова: ${hhmm(l.free.last_denial_at)}.`);
   lines.push(`Гроші: ${money}.`);
   if (l.paid.available) {
