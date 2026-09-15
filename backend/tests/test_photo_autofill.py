@@ -640,3 +640,86 @@ def test_field_note_is_not_treated_as_a_value():
     p = pa.build_schema(db)["properties"]["manufacturer_country"]
     assert "__field__" not in p["enum"] and "Unknown" not in p["enum"]
     assert "Made in" in p["description"]
+
+
+# ── Стікер від руки: ціна, розмір, замір — лише зі своїм номером ────────────
+
+@pytest.mark.parametrize("card, sticker, ok", [
+    ("#Ф4419", "ф4419", True),      # кирилична ф, без #
+    ("#Ф4419", "F4419", True),      # латинська F → Ф
+    ("#Ф4419", "4419", True),       # без літери — цифри збігаються
+    ("#Ф4419", "ф4400", False),     # чужий номер
+    ("#Ф4419", "Т4419", False),     # інша літера
+    ("#Ф4419", None, False),
+])
+def test_sticker_belongs_to_the_card_only_when_number_matches(card, sticker, ok):
+    assert pa._number_matches(card, sticker) is ok
+
+
+def _run_sticker(monkeypatch, tmp_path, pred_extra, current_extra=None):
+    monkeypatch.setattr(pa.barcode_reader, "read_photos", lambda ps: [])
+    monkeypatch.setattr(pa.model_profile, "profile_for", lambda *a, **k: {"records": 0, "fields": {}})
+    cur = {"productnumber": "#Ф4419", "price": None, "sizeeu": None, "measurementscm": None}
+    cur.update(current_extra or {})
+    monkeypatch.setattr(pa, "_current_values", lambda db, pid: cur)
+    payload = {"_usage": {"promptTokenCount": 1, "candidatesTokenCount": 1}}
+    payload.update(pred_extra)
+    monkeypatch.setattr(pa, "call_gemini", lambda *a, **k: payload)
+    return pa.extract_and_propose(_DB(spent=0.0), 7, [_photo(tmp_path)], api_key="k")
+
+
+def test_sticker_values_are_proposed_when_number_matches(monkeypatch, tmp_path):
+    out = _run_sticker(monkeypatch, tmp_path, {
+        "sticker_text": "2200 36 23,5 ф4419", "sticker_number": "ф4419",
+        "sticker_price": 2200, "sticker_price_confidence": 0.95,
+        "sticker_size": 36, "sticker_size_confidence": 0.95,
+        "sticker_cm": 23.5, "sticker_cm_confidence": 0.9})
+    got = {f: v for f, v, c in out["proposed"]}
+    assert got == {"price": "2200", "sizeeu": "36", "measurementscm": "23.5"}
+    assert out["sticker"]["matched"] is True
+
+
+def test_foreign_sticker_is_discarded_entirely(monkeypatch, tmp_path):
+    """Стікер із чужим номером — чужий: ані ціна, ані розмір з нього не йдуть."""
+    out = _run_sticker(monkeypatch, tmp_path, {
+        "sticker_text": "1500 38 ф4400", "sticker_number": "ф4400",
+        "sticker_price": 1500, "sticker_price_confidence": 0.99,
+        "sticker_size": 38, "sticker_size_confidence": 0.99})
+    assert not any(f in ("price", "sizeeu") for f, *_ in out["proposed"])
+    assert out["sticker"] == {"present": True, "matched": False,
+                              "sticker_number": "ф4400", "text": "1500 38 ф4400"}
+
+
+def test_out_of_range_sticker_values_never_reach_the_card(monkeypatch, tmp_path):
+    """Розмір 360 або ціна 5 — хибне читання; межі від реальних значень бази."""
+    out = _run_sticker(monkeypatch, tmp_path, {
+        "sticker_number": "ф4419",
+        "sticker_price": 5, "sticker_price_confidence": 0.99,
+        "sticker_size": 360, "sticker_size_confidence": 0.99})
+    assert out["proposed"] == []
+    assert {f for f, *_ in out["below_threshold"]} == {"price", "sizeeu"}
+
+
+def test_sticker_does_not_repeat_what_the_card_has(monkeypatch, tmp_path):
+    out = _run_sticker(monkeypatch, tmp_path,
+        {"sticker_number": "ф4419", "sticker_price": 2200, "sticker_price_confidence": 0.95},
+        current_extra={"price": 2200.0})
+    assert out["proposed"] == [] and ("price", "2200") in out["already_correct"]
+
+
+def test_subtype_enum_is_narrowed_by_product_type():
+    """Підвид залежить від виду: сукні не пропонують «Челсі»."""
+    seen = {}
+    class _R:
+        def __init__(self, rows): self.rows = rows
+        def fetchall(self): return self.rows
+    def execute(stmt, params=None):
+        sql = str(stmt)
+        if "subtypes" in sql:
+            seen["sql"] = sql; seen["params"] = params
+            return _R([("Челсі", 215)])
+        if "technologies" in sql: return _R([])
+        return _R([("x", 1)])
+    db = type("DB", (), {"execute": staticmethod(execute)})()
+    pa.build_schema(db, type_id=35)
+    assert "p.typeid = :tid" in seen["sql"] and seen["params"] == {"tid": 35}

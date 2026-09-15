@@ -3464,6 +3464,9 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                           </span>
                         )}
                         <EditBtn onClick={() => startEdit('price', p.price ?? '')} title="Редагувати ціну" always />
+                        {/* Ціна зі стікера від руки — пропозиція, як і решта; номер на
+                            стікері вже звірено з номером картки на бекенді. */}
+                        <ProposalChip field="price" />
                         <LockBadge field="price" />
                       </>
                     )}
@@ -3512,7 +3515,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                   {/* Sizes — ховаємо коли розміру нема (напр. сумки), показуємо в edit-режимі */}
                   {(editMode || hasAnySize) && (
                   <div className="mb-3">
-                    {(editMode || hasRealSize) && (
+                    {(editMode || hasRealSize || proposals['sizeeu'] || proposals['measurementscm']) && (
                       <div className="text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500 mb-2 font-medium">Розмір</div>
                     )}
                     {editMode ? (
@@ -3539,6 +3542,13 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                             <span className="text-[10px] text-gray-400 dark:text-gray-500 font-medium">EU</span>
                             <span className="text-sm font-semibold text-gray-800 dark:text-gray-100">{p.sizeeu}</span>
                           </div>
+                        )}
+                        {/* Розмір і замір зі стікера — чіпи поруч із плитками */}
+                        {proposals['sizeeu'] && (
+                          <div className="flex flex-col justify-center"><span className="text-[10px] text-gray-400 font-medium">EU</span><ProposalChip field="sizeeu" /></div>
+                        )}
+                        {proposals['measurementscm'] && (
+                          <div className="flex flex-col justify-center"><span className="text-[10px] text-gray-400 font-medium">СМ</span><ProposalChip field="measurementscm" /></div>
                         )}
                         {(p as any).size_letter && (
                           <div className="flex flex-col items-center justify-center px-3 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50 min-w-[58px]">

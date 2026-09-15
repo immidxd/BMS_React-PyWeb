@@ -76,6 +76,26 @@ CLOSED_FIELDS: Dict[str, Tuple[str, str, str, str, str]] = {
     # у визначенні поля нижче.
     "manufacturer_country": ("countries", "countryname", "manufacturercountryid",
                        "країна виробництва", "manufacturer_country_name"),
+    "style":          ("styles",          "stylename",         "styleid",
+                       "стиль", "style_name"),
+    # Підвид залежить від виду: «Челсі» — для ботинок, «Без рукавів» — для блуз.
+    # Перелік звужується до підвидів, що трапляються з видом ЦЬОГО товару
+    # (див. build_schema(type_id=…)), інакше модель обирала б із 133 чужих.
+    "subtype":        ("subtypes",        "subtypename",       "subtypeid",
+                       "підвид", "subtype_name"),
+}
+
+# ── Стікер із ціною/розміром/заміром ────────────────────────────────────────
+# Власник пише на стікері від руки: ціну, розмір, замір устілки в см і НОМЕР
+# товару. Це per-item поля, і помилка в них найдорожча: ціна їде в Журнал і на
+# маркетплейси. Тому стікер має ВЛАСНИЙ запобіжник — номер на ньому мусить
+# збігатися з номером картки; інакше він або чужий, або прочитаний невірно, і
+# все з нього відкидається. Межі — від реальних значень бази.
+STICKER_FIELDS: Dict[str, Tuple[str, float, float, float]] = {
+    # ключ у відповіді: (поле ProductUpdate, поріг, мін, макс)
+    "sticker_price": ("price",          0.90,   50.0, 50000.0),
+    "sticker_size":  ("sizeeu",         0.90,   15.0,    52.0),
+    "sticker_cm":    ("measurementscm", 0.85,   10.0,    36.0),
 }
 
 # ⚠️ Правило «відсутність = порожнє поле» живе в
@@ -127,7 +147,7 @@ _ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/{m}:generat
 
 # ── Схема відповіді ─────────────────────────────────────────────────────────
 
-def build_schema(db: Session) -> Dict[str, Any]:
+def build_schema(db: Session, type_id: Optional[int] = None) -> Dict[str, Any]:
     """JSON Schema із ЗАКРИТИМИ переліками з живих довідників.
 
     У перелік потрапляють лише значення, за якими Є товари. Мертві
@@ -136,10 +156,17 @@ def build_schema(db: Session) -> Dict[str, Any]:
     """
     props: Dict[str, Any] = {}
     for field, (table, col, fk, label, _upd) in CLOSED_FIELDS.items():
-        rows = db.execute(text(
-            f"SELECT l.{col}, count(p.id) FROM {table} l "
-            f"LEFT JOIN products p ON p.{fk} = l.id GROUP BY l.{col} ORDER BY l.{col}"
-        )).fetchall()
+        if field == "subtype" and type_id:
+            # Лише підвиди, що трапляються з видом цього товару.
+            rows = db.execute(text(
+                f"SELECT l.{col}, count(p.id) FROM {table} l "
+                f"JOIN products p ON p.{fk} = l.id AND p.typeid = :tid GROUP BY l.{col} ORDER BY l.{col}"
+            ), {"tid": type_id}).fetchall()
+        else:
+            rows = db.execute(text(
+                f"SELECT l.{col}, count(p.id) FROM {table} l "
+                f"LEFT JOIN products p ON p.{fk} = l.id GROUP BY l.{col} ORDER BY l.{col}"
+            )).fetchall()
         # У перелік не потрапляють ані мертві значення, ані ті, що лежать не в
         # тому довіднику: «платформа» в типах каблука — це підошва, і модель
         # пропонувала її як каблук лише тому, що бачила в списку.
@@ -207,6 +234,18 @@ def build_schema(db: Session) -> Dict[str, Any]:
                            "description": "назва моделі як написано на бирці"}
     props["model_text_confidence"] = {"type": "number", "minimum": 0, "maximum": 1,
                                       "description": "певність щодо назви моделі"}
+    # Стікер від руки (зазвичай зелений папірець): ціна, розмір, замір, номер.
+    props["sticker_text"] = {"type": ["string", "null"],
+                             "description": ("ДОСЛІВНО весь рукописний текст зі стікера/цінника, "
+                                             "якщо він є на знімках; інакше null")}
+    props["sticker_number"] = {"type": ["string", "null"],
+                               "description": "номер товару зі стікера, як написано (напр. ф4419)"}
+    props["sticker_price"] = {"type": ["number", "null"], "description": "ціна зі стікера, число в гривнях"}
+    props["sticker_size"] = {"type": ["number", "null"], "description": "розмір EU зі стікера, напр. 36 або 45.3"}
+    props["sticker_cm"] = {"type": ["number", "null"], "description": "замір устілки в см зі стікера, напр. 23.5"}
+    for k in ("sticker_price", "sticker_size", "sticker_cm"):
+        props[f"{k}_confidence"] = {"type": "number", "minimum": 0, "maximum": 1,
+                                    "description": f"певність щодо {k}"}
     return {"type": "object", "additionalProperties": False,
             "required": list(props), "properties": props}
 
@@ -361,7 +400,8 @@ def _current_values(db: Session, product_id: int) -> Dict[str, Optional[str]]:
     joins = " ".join(f"LEFT JOIN {t} ON {t}.id = p.{fk}"
                      for _f, (t, _c, fk, _l, _u) in CLOSED_FIELDS.items())
     row = db.execute(text(
-        f"SELECT {sel}, b.brandname AS brand_name, p.marking, p.gtin, p.model "
+        f"SELECT {sel}, b.brandname AS brand_name, p.marking, p.gtin, p.model, "
+        f"p.price, p.sizeeu, p.measurementscm, p.typeid, p.productnumber "
         f"FROM products p {joins} LEFT JOIN brands b ON b.id = p.brandid "
         f"WHERE p.id = :pid"
     ), {"pid": product_id}).mappings().fetchone()
@@ -494,6 +534,64 @@ def _profile_layer(db: Session, product_id: int, pred: Dict[str, Any],
             made[field] = (value, conf, note)
 
 
+def _number_matches(card_number: Optional[str], sticker_number: Optional[str]) -> bool:
+    """Чи стікер належить ЦЬОМУ товару.
+
+    Порівнюємо цифри й, якщо є, літеру-префікс (ф/f/Ф → Ф). Цифри мусять
+    збігатися завжди: у цій базі '#4419' і '#Ф4419' — різні товари, але серед
+    знімків ОДНІЄЇ картки стікер із тими самими цифрами й є її стікером.
+    """
+    def parts(v):
+        v = (v or "").strip().lstrip("#")
+        digits = "".join(ch for ch in v if ch.isdigit())
+        letters = "".join(ch for ch in v if ch.isalpha()).upper().replace("F", "Ф")
+        return digits, letters
+    cd, cl = parts(card_number)
+    sd, sl = parts(sticker_number)
+    if not cd or not sd or cd != sd:
+        return False
+    return (not cl or not sl) or cl == sl
+
+
+def _sticker_proposals(db, product_id, pred, current, photo_names, model,
+                       proposed, below_threshold, already) -> Dict[str, Any]:
+    """Ціна, розмір і замір зі стікера — лише коли номер на ньому наш."""
+    text_ = (pred.get("sticker_text") or "").strip()
+    number = (pred.get("sticker_number") or "").strip()
+    card = current.get("productnumber") or ""
+    if not text_ and not number:
+        return {"present": False}
+    if not _number_matches(card, number):
+        # Чужий або неправильно прочитаний стікер — усе з нього відкидаємо.
+        return {"present": True, "matched": False, "sticker_number": number, "text": text_}
+
+    out = {"present": True, "matched": True, "text": text_}
+    for key, (upd_field, threshold, lo, hi) in STICKER_FIELDS.items():
+        raw = pred.get(key)
+        conf = pred.get(f"{key}_confidence")
+        if raw is None:
+            continue
+        try:
+            val = float(raw)
+        except (TypeError, ValueError):
+            continue
+        if not (lo <= val <= hi):
+            below_threshold.append((upd_field, raw, conf)); continue
+        # Формат бази: розмір і замір — рядки без зайвих нулів, ціна — ціле.
+        text_val = str(int(val)) if upd_field == "price" or val == int(val) else f"{val:g}"
+        cur = current.get(upd_field)
+        cur_s = f"{float(cur):g}" if cur not in (None, "") and str(cur).replace(".", "", 1).isdigit() else (cur or "")
+        if _same_as_current(str(cur_s), text_val):
+            already.append((upd_field, text_val)); continue
+        if conf is not None and float(conf) >= threshold and field_proposals.propose(
+                db, product_id, upd_field, text_val, conf, model=model,
+                source_photos=photo_names, note=f"зі стікера: «{text_}»"[:200]):
+            proposed.append((upd_field, text_val, conf))
+        else:
+            below_threshold.append((upd_field, text_val, conf))
+    return out
+
+
 def _same_as_current(current: Optional[str], proposed: Optional[str]) -> bool:
     """Порівняння без урахування регістру й країв — «HEY DUDE» = «Hey Dude»."""
     a = (current or "").strip().casefold()
@@ -588,7 +686,7 @@ def extract_and_propose(db: Session, product_id: int, photos: List[pathlib.Path]
         return _finish({"ok": False, "reason": verdict.reason, "budget_blocked": True,
                         "spent_usd": verdict.spent_usd})
 
-    schema = build_schema(db)
+    schema = build_schema(db, type_id=current.get("typeid"))
     pred = call_gemini(model, api_key, photos, schema)
     usage = pred.pop("_usage", {}) or {}
     err = pred.get("_error")
@@ -697,5 +795,10 @@ def extract_and_propose(db: Session, product_id: int, photos: List[pathlib.Path]
         else:
             below_threshold.append((upd_field, val, conf))
 
+    # ── Стікер: ціна / розмір / замір, лише якщо номер на ньому — цей товар ──
+    sticker = _sticker_proposals(db, product_id, pred, current, photo_names, model,
+                                 proposed, below_threshold, already)
+
     return _finish({"ok": True, "cost_usd": cost, "model": model,
-                    "below_threshold": below_threshold, "photos": len(photos)})
+                    "below_threshold": below_threshold, "photos": len(photos),
+                    "sticker": sticker})
