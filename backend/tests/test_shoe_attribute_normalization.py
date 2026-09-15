@@ -22,6 +22,12 @@ from backend.services.shoe_attribute_normalization import (
     ("toe_shape",      "кругла",      "круглий"),
     ("sole_type",      "спортивний",  "спортивна"),
     ("toe_shape",      "квадрат",     "квадратний"),
+    # Рішення власника 15.09.2026: «заокруглена» — окрема форма, «мигдалевидний»
+    # — вона ж іншим словом (модель писала його на #Ф4407, виправлено руками).
+    ("toe_shape",      "заокруглений", "заокруглена"),
+    ("toe_shape",      "закруглений",  "заокруглена"),
+    ("toe_shape",      "мигдалевидний", "заокруглена"),
+    ("toe_shape",      "Мигдалевидна",  "заокруглена"),
     ("fastening_type", "кнопки",      "кнопка"),
     # Рішення власника: не задум, а запис нашвидкуруч.
     ("sole_type",      "підбора",     "каблук"),
@@ -117,3 +123,11 @@ def test_dead_values_never_overlap_live_canonicals():
         dead = {d.strip().lower() for d in DEAD_VALUES.get(attribute, ())}
         canonicals = {c.strip().lower() for c in groups}
         assert not (dead & canonicals), f"{attribute}: {sorted(dead & canonicals)}"
+
+
+def test_rounded_is_no_longer_swallowed_by_round():
+    """До 15.09 «заокруглений» зливався в «круглий», і правка власника в картці
+    мовчки поверталась до «круглий». Тепер це дві різні форми."""
+    assert canonicalize_shoe_attribute("toe_shape", "круглий") == "круглий"
+    assert canonicalize_shoe_attribute("toe_shape", "заокруглена") == "заокруглена"
+    assert canonicalize_shoe_attribute("toe_shape", "заокруглений") != "круглий"

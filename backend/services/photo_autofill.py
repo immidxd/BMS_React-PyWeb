@@ -46,11 +46,13 @@ from sqlalchemy.orm import Session
 
 try:
     from services import ai_budget, barcode_reader, field_proposals, model_profile
-    from services.shoe_attribute_normalization import is_dead_value, is_absence_value, is_misplaced_value
+    from services.shoe_attribute_normalization import (
+        is_dead_value, is_absence_value, is_misplaced_value, canonicalize_shoe_attribute)
     from services.brand_normalization import canonicalize_brand_name as _canonicalize_brand_name
 except ImportError:  # pragma: no cover
     from backend.services import ai_budget, barcode_reader, field_proposals, model_profile
-    from backend.services.shoe_attribute_normalization import is_dead_value, is_absence_value, is_misplaced_value
+    from backend.services.shoe_attribute_normalization import (
+        is_dead_value, is_absence_value, is_misplaced_value, canonicalize_shoe_attribute)
     from backend.services.brand_normalization import canonicalize_brand_name as _canonicalize_brand_name
 
 # поле схеми → (таблиця, колонка назви, FK у products, підпис, поле ProductUpdate)
@@ -192,6 +194,16 @@ VALUE_HINTS: Dict[str, Dict[str, str]] = {
     # блоком ззаду люди позначають «каблук» (17 із 21), а вже тип каблука —
     # блок / низький / шпилька. Реальний випадок: лофери DeeZee з тракторною
     # підошвою і вирізом отримали «платформа» замість «каблук».
+    # Носок. Власник: «якщо не прям кругла — то заокруглена». Модель писала
+    # «мигдалевидний» на класичних ботильйонах Caprice (#Ф4407) — слово
+    # виправлено руками; тепер це варіант «заокругленої», і в переліку його нема.
+    "toe_shape": {
+        "__field__": "«круглий» — ЛИШЕ для повністю округлого широкого носка; усе, що звужується, але не гостре й не квадратне, — «заокруглена» (мигдалевидний носок теж тут)",
+        "круглий":     "повністю округлий, широкий носок, що майже не звужується — кросівки, кеди, грубі черевики на кожен день",
+        "заокруглена": "носок ЗВУЖУЄТЬСЯ до кінчика, а сам кінчик округлий, не гострий — класичні туфлі, ботильйони, лофери, човники; сюди ж мигдалевидна форма",
+        "гострий":     "кінчик сходиться у вістря",
+        "квадратний":  "кінчик зрізаний прямою лінією",
+    },
     "sole_type": {
         "платформа": "суцільна потовщена підошва однакової товщини спереду і ззаду, БЕЗ вирізу під склепінням і БЕЗ окремого каблука",
         "танкетка":  "суцільна підошва, що плавно товщає до пʼяти, без вирізу під склепінням",
@@ -278,11 +290,15 @@ def build_schema(db: Session, type_id: Optional[int] = None) -> Dict[str, Any]:
         # МУСИЛА обирати з трьох, що лишились, — звідси «рифлена» на класичних
         # черевиках, відхилена вже чотири рази. Фільтр `k > 0` — проти сміття
         # в довідниках, а не проти справжніх категорій, які ще не заповнювали.
+        # Варіант написання з товарами («мигдалевидний», 1 товар) — теж не в
+        # перелік: моделі дають лише КАНОН, інакше вона обере синонім, і картка
+        # отримає слово, яке власник щойно виправляв руками.
         defined = set(VALUE_HINTS.get(field, {}))
         values = [(n or "").strip() for n, k in rows
                   if (n or "").strip() and (k > 0 or (n or "").strip() in defined)
                   and not is_dead_value(field, n) and not is_misplaced_value(_upd, n)
-                  and not is_absence_value(_upd, n)]
+                  and not is_absence_value(_upd, n)
+                  and canonicalize_shoe_attribute(field, n) == " ".join((n or "").split())]
         hints = VALUE_HINTS.get(field, {})
         field_note = hints.get("__field__", "")
         detail = "; ".join(f"«{v}» — {hints[v]}" for v in values if v in hints and v != "__field__")
@@ -445,10 +461,14 @@ def call_gemini(model: str, api_key: str, photos: List[pathlib.Path],
             break
         time.sleep(2 ** attempt)
     if r is None or r.status_code != 200:
+        # Тіло 429 зберігаємо ЦІЛКОМ (до 2000 знаків): лише там Google каже,
+        # ЯКУ межу вичерпано (quotaId), ЯКА вона (quotaValue) і коли повторити
+        # (retryDelay). Обрізання до 200 знаків відкидало саме це, і про ліміт
+        # доводилось здогадуватись за кількістю успіхів. Читає — ai_quota.
         out: Dict[str, Any] = {"_error": f"HTTP {getattr(r, 'status_code', '?')}: "
-                                         f"{(r.text[:200] if r is not None else '')}"}
-        # 429 тут — це вичерпана ДОБОВА квота безкоштовного рівня (8 викликів),
-        # а не перевантаження. Позначаємо окремо: викликач запропонує людині
+                                         f"{(r.text[:2000] if r is not None else '')}"}
+        # 429 тут — це вичерпана квота (добова чи хвилинна), а не
+        # перевантаження. Позначаємо окремо: викликач запропонує людині
         # повторити платним ключем, замість того щоб показати сиру помилку.
         if r is not None and r.status_code == 429:
             out["_quota_exhausted"] = True

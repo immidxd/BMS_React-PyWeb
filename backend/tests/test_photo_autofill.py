@@ -859,3 +859,35 @@ def test_uncertain_pictogram_read_stays_below_threshold(monkeypatch, tmp_path):
 def test_missing_pictogram_is_reported_as_absent(monkeypatch, tmp_path):
     out = _run_pictogram(monkeypatch, tmp_path, None)
     assert out["materials"] == {"present": False}
+
+
+# ── Форма носка: «якщо не прям кругла — то заокруглена» ─────────────────────
+
+def test_toe_shape_enum_offers_only_canonical_names():
+    """«Мигдалевидний» має товар (k=1), але це варіант «заокругленої» — у
+    переліку його нема, інакше модель обере синонім, який власник щойно
+    виправляв руками. Варіант без товарів («заокруглений») теж не входить."""
+    class _R:
+        def __init__(self, rows): self.rows = rows
+        def fetchall(self): return self.rows
+    def execute(stmt, params=None):
+        sql = str(stmt)
+        if "toe_shapes" in sql:
+            return _R([("круглий", 477), ("мигдалевидний", 1), ("заокруглена", 1),
+                       ("заокруглений", 0), ("гострий", 7), ("квадратний", 8)])
+        if "technologies" in sql:
+            return _R([])
+        return _R([("x", 1)])
+    db = type("DB", (), {"execute": staticmethod(execute)})()
+    p = pa.build_schema(db)["properties"]["toe_shape"]
+    enum = [v for v in p["enum"] if v]
+    assert "заокруглена" in enum and "круглий" in enum
+    assert "мигдалевидний" not in enum and "заокруглений" not in enum
+    assert "не прям" not in p["description"] and "заокруглена" in p["description"]
+
+
+def test_toe_shape_rule_is_spelled_out_for_the_model():
+    hints = pa.VALUE_HINTS["toe_shape"]
+    assert "ЛИШЕ" in hints["__field__"] and "заокруглена" in hints["__field__"]
+    assert "ЗВУЖУЄТЬСЯ" in hints["заокруглена"] and "мигдалевидн" in hints["заокруглена"]
+    assert "мигдалевидний" not in hints          # синонім — не значення
