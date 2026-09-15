@@ -209,6 +209,12 @@ const PhotoStagingModal: React.FC<Props> = ({ open, onClose, products, defaultCa
                   ))}
                 </div>
               </div>
+              {kind === 'official' && (
+                <div className="text-[11px] text-amber-600 dark:text-amber-400 -mt-1">
+                  «Офіційні» — студійні знімки. Живі фото з телефона кладуться в «Реальні»:
+                  саме з них працює ШІ-розпізнавання.
+                </div>
+              )}
               <button type="button" onClick={attach} disabled={busy || !pnum.trim() || selected.size === 0}
                 className="w-full rounded-lg py-2.5 text-sm font-semibold bg-black text-white hover:bg-gray-800 disabled:opacity-40 disabled:cursor-not-allowed">
                 {busy ? 'Прикріплюю…' : `Прикріпити ${selected.size ? `(${selected.size})` : ''}`}

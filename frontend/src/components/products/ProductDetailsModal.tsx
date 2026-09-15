@@ -596,82 +596,6 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [productId, proposals, acceptAllBusy, reloadProposals, notifyParentSaved, proposalFailure]);
 
-  // Запуск розпізнавання. Вичерпаний бюджет — НЕ помилка: показуємо як
-  // спокійне повідомлення, бо автозаповнення в такому стані просто вимкнене.
-  const runAutofill = React.useCallback(async (usePaid = false) => {
-    if (!productId || autofillRunning) return;
-    const pid = productId;
-    const label = `ШІ: розпізнавання ${(product as any)?.productnumber || `#${pid}`}${usePaid ? ' (платний ключ)' : ''}`;
-    setAutofillRunning(true);
-    try {
-      // Через taskManager: у Сповіщеннях видно, що розпізнавання йде, і чим
-      // воно скінчилось — навіть якщо картку тим часом закрили.
-      const d = await taskManager.run(label, async () => {
-        const r = await fetch(`/api/products/${pid}/autofill${usePaid ? '?use_paid=true' : ''}`,
-          { method: 'POST' });
-        const body = await r.json().catch(() => ({}));
-        if (!r.ok && !body?.reason) throw new Error(body?.detail || `HTTP ${r.status}`);
-        return body;
-      }, {
-        silentSuccess: true,
-        resultStatus: (res: any) => res?.ok
-          ? { status: 'success', detail: `Розпізнано полів: ${(res.proposed || []).length}` }
-          : { status: 'partial', detail: res?.quota_exhausted ? 'Безкоштовну квоту вичерпано' : (res?.reason || 'Не розпізнано') },
-      }).catch(() => ({ ok: false, reason: 'Немає звʼязку з програмою' }));
-      if (curPidRef.current !== pid) return;
-      if (!d?.ok) {
-        // Безкоштовну добову квоту вичерпано (межу Google каже лише у відмові). Це не помилка, а
-        // вибір людини: повторити платним ключем чи ні. Платний ключ — окремий
-        // (GEMINI_API_KEY_PAID), бо у Google рівень визначається ключем, і
-        // перемкнутись одним ключем неможливо. Без другого ключа — лише
-        // пояснюємо, що робити.
-        if (d?.quota_exhausted && !usePaid) {
-          if (!d.paid_available) {
-            notify.warning({ message: 'Безкоштовну добову квоту розпізнавання вичерпано',
-              description: 'Платний ключ (GEMINI_API_KEY_PAID) не налаштовано — спробуй завтра після 10:00.' });
-            return;
-          }
-          setAutofillRunning(false);
-          const ok = await confirmDialog({
-            title: 'Безкоштовну квоту на сьогодні вичерпано',
-            body: `Розпізнати цей товар платним ключем? Орієнтовно $${Number(d.estimate_usd || 0.003).toFixed(3)}. `
-              + 'Місячна стеля $20 лишається запобіжником.',
-            okText: 'Так, платно', kind: 'warning',
-          });
-          if (ok) await runAutofill(true);
-          return;
-        }
-        notify.warning({ message: d?.budget_blocked ? 'Місячний ліміт розпізнавання вичерпано' : 'Не вдалося розпізнати',
-          description: d?.budget_blocked ? undefined : (d?.reason || undefined) });
-        return;
-      }
-      await reloadProposals(pid);
-      const n = (d.proposed || []).length;
-      if (n) notify.success({ message: `Розпізнано полів: ${n}${usePaid ? ' (платний ключ)' : ''}`, duration: 2.5 });
-      else notify.info({ message: 'Нічого впевнено не розпізналось', duration: 3 });
-      // Стікер — окрема історія: людина бачить його на знімку й чекає ціни та
-      // розміру. Мовчазне «не розпізнало» тут найгірше — кажемо, ЩО сталось.
-      const st = d.sticker || {};
-      const LABEL: Record<string, string> = { price: 'ціна', sizeeu: 'розмір', measurementscm: 'замір' };
-      const weak = (d.below_threshold || []).filter((x: any[]) => LABEL[x[0]]);
-      if (st.present && st.matched === false) {
-        notify.warning({ message: 'Стікер не збігся з карткою',
-          description: `${st.reason || 'Номер на стікері інший'}. Прочитано: «${st.text || '—'}».`, duration: 8 });
-      } else if (weak.length) {
-        notify.info({ message: 'Зі стікера прочитано непевно',
-          description: weak.map((x: any[]) => `${LABEL[x[0]]} ${x[1]}${x[2] != null ? ` (${Math.round(x[2] * 100)}%)` : ''}`).join(' · ')
-            + ' — звір зі знімком і впиши вручну.', duration: 8 });
-      } else if (!st.present && !(p as any)?.price) {
-        notify.info({ message: 'Стікера з ціною на знімках не знайдено', duration: 4 });
-      }
-    } catch (e: any) {
-      notify.error({ message: 'Не вдалося розпізнати', description: e?.message || undefined });
-    } finally {
-      setAutofillRunning(false);
-      emitAiLimitsChanged();   // лічильник квоти змінився — і на успіху, і на відмові
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [productId, autofillRunning, reloadProposals]);
 
   useEffect(() => {
     if (!productId || !open) return;
@@ -1347,6 +1271,103 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
       if (!silent) setImagesLoading(false);
     }
   }, [productId]);
+
+  // Запуск розпізнавання. Вичерпаний бюджет — НЕ помилка: показуємо як
+  // спокійне повідомлення, бо автозаповнення в такому стані просто вимкнене.
+  const runAutofill = React.useCallback(async (usePaid = false) => {
+    if (!productId || autofillRunning) return;
+    const pid = productId;
+    const label = `ШІ: розпізнавання ${(product as any)?.productnumber || `#${pid}`}${usePaid ? ' (платний ключ)' : ''}`;
+    // Живі знімки, покладені як «Офіційні» (#Ф4408: 10 фото, кнопка глуха) —
+    // не глухий кут, а одне запитання: розпізнавання бере лише реальні.
+    if (realCount === 0 && officialCount > 0) {
+      const ok = await confirmDialog({
+        title: 'Фото лежать у наборі «Офіційні»',
+        body: `Усі ${officialCount} знімки цього товару — у наборі «Офіційні» (студійні). `
+          + 'Розпізнавання працює з реальними знімками. Перенести їх у «Реальні» й запустити?',
+        okText: 'Перенести й запустити', kind: 'confirm',
+      });
+      if (!ok) return;
+      try {
+        await productService.movePhotosKind(pid, 'official', 'real');
+        emitProductPhotosChanged(pid);
+        await loadImages(true);
+      } catch (e: any) {
+        notify.error({ message: 'Не вдалося перенести фото', description: e?.message || undefined });
+        return;
+      }
+      if (curPidRef.current !== pid) return;
+    }
+    setAutofillRunning(true);
+    try {
+      // Через taskManager: у Сповіщеннях видно, що розпізнавання йде, і чим
+      // воно скінчилось — навіть якщо картку тим часом закрили.
+      const d = await taskManager.run(label, async () => {
+        const r = await fetch(`/api/products/${pid}/autofill${usePaid ? '?use_paid=true' : ''}`,
+          { method: 'POST' });
+        const body = await r.json().catch(() => ({}));
+        if (!r.ok && !body?.reason) throw new Error(body?.detail || `HTTP ${r.status}`);
+        return body;
+      }, {
+        silentSuccess: true,
+        resultStatus: (res: any) => res?.ok
+          ? { status: 'success', detail: `Розпізнано полів: ${(res.proposed || []).length}` }
+          : { status: 'partial', detail: res?.quota_exhausted ? 'Безкоштовну квоту вичерпано' : (res?.reason || 'Не розпізнано') },
+      }).catch(() => ({ ok: false, reason: 'Немає звʼязку з програмою' }));
+      if (curPidRef.current !== pid) return;
+      if (!d?.ok) {
+        // Безкоштовну добову квоту вичерпано (межу Google каже лише у відмові). Це не помилка, а
+        // вибір людини: повторити платним ключем чи ні. Платний ключ — окремий
+        // (GEMINI_API_KEY_PAID), бо у Google рівень визначається ключем, і
+        // перемкнутись одним ключем неможливо. Без другого ключа — лише
+        // пояснюємо, що робити.
+        if (d?.quota_exhausted && !usePaid) {
+          if (!d.paid_available) {
+            notify.warning({ message: 'Безкоштовну добову квоту розпізнавання вичерпано',
+              description: 'Платний ключ (GEMINI_API_KEY_PAID) не налаштовано — спробуй завтра після 10:00.' });
+            return;
+          }
+          setAutofillRunning(false);
+          const ok = await confirmDialog({
+            title: 'Безкоштовну квоту на сьогодні вичерпано',
+            body: `Розпізнати цей товар платним ключем? Орієнтовно $${Number(d.estimate_usd || 0.003).toFixed(3)}. `
+              + 'Місячна стеля $20 лишається запобіжником.',
+            okText: 'Так, платно', kind: 'warning',
+          });
+          if (ok) await runAutofill(true);
+          return;
+        }
+        notify.warning({ message: d?.budget_blocked ? 'Місячний ліміт розпізнавання вичерпано' : 'Не вдалося розпізнати',
+          description: d?.budget_blocked ? undefined : (d?.reason || undefined) });
+        return;
+      }
+      await reloadProposals(pid);
+      const n = (d.proposed || []).length;
+      if (n) notify.success({ message: `Розпізнано полів: ${n}${usePaid ? ' (платний ключ)' : ''}`, duration: 2.5 });
+      else notify.info({ message: 'Нічого впевнено не розпізналось', duration: 3 });
+      // Стікер — окрема історія: людина бачить його на знімку й чекає ціни та
+      // розміру. Мовчазне «не розпізнало» тут найгірше — кажемо, ЩО сталось.
+      const st = d.sticker || {};
+      const LABEL: Record<string, string> = { price: 'ціна', sizeeu: 'розмір', measurementscm: 'замір' };
+      const weak = (d.below_threshold || []).filter((x: any[]) => LABEL[x[0]]);
+      if (st.present && st.matched === false) {
+        notify.warning({ message: 'Стікер не збігся з карткою',
+          description: `${st.reason || 'Номер на стікері інший'}. Прочитано: «${st.text || '—'}».`, duration: 8 });
+      } else if (weak.length) {
+        notify.info({ message: 'Зі стікера прочитано непевно',
+          description: weak.map((x: any[]) => `${LABEL[x[0]]} ${x[1]}${x[2] != null ? ` (${Math.round(x[2] * 100)}%)` : ''}`).join(' · ')
+            + ' — звір зі знімком і впиши вручну.', duration: 8 });
+      } else if (!st.present && !(p as any)?.price) {
+        notify.info({ message: 'Стікера з ціною на знімках не знайдено', duration: 4 });
+      }
+    } catch (e: any) {
+      notify.error({ message: 'Не вдалося розпізнати', description: e?.message || undefined });
+    } finally {
+      setAutofillRunning(false);
+      emitAiLimitsChanged();   // лічильник квоти змінився — і на успіху, і на відмові
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [productId, autofillRunning, reloadProposals, realCount, officialCount, loadImages]);
 
   // ── Менеджер фото (editMode) ────────────────────────────────────────────
   // Керуємо official/real/defect із локального мірора + R2. Фото, що лишились
@@ -2598,7 +2619,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
           зафіксовано, знімки лягають лише в цей товар тим самим add_photos. */}
       <PhotoStagingModal open={stagingOpen} onClose={() => setStagingOpen(false)}
         products={[]} fixedNumber={pnumClean ? `#${pnumClean.replace(/^#/, '')}` : undefined}
-        defaultKind={activeKind === 'official' ? 'official' : 'real'}
+        defaultKind="real"
         onAttached={() => { if (productId) { emitProductPhotosChanged(productId); loadImages(true); } }} />
       <style>{`
         @keyframes bmsFadeIn { from { opacity: 0; } to { opacity: 1; } }
@@ -3760,9 +3781,11 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                       )}
                       <button
                         type="button" onClick={() => runAutofill(false)}
-                        disabled={autofillRunning || realCount === 0}
+                        disabled={autofillRunning || (realCount === 0 && officialCount === 0)}
                         title={realCount === 0
-                          ? 'Немає живих фото — спершу додайте знімки товару'
+                          ? (officialCount > 0
+                            ? `Усі ${officialCount} фото — у наборі «Офіційні». Розпізнавання працює з реальними знімками; натисни — запропоную перенести.`
+                            : 'Немає живих фото — спершу додайте знімки товару')
                           : `Розпізнати характеристики за ${realCount} живими знімками. Значення потраплять у картку лише після вашого підтвердження.`}
                         className="inline-flex items-center gap-1 text-[11px] px-1.5 py-0.5 rounded shrink-0 whitespace-nowrap
                           text-gray-400 hover:text-gray-700 dark:text-gray-500 dark:hover:text-gray-200
