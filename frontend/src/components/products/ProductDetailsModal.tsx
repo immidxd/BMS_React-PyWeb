@@ -6,6 +6,7 @@ import { CloseOutlined, PictureOutlined, LeftOutlined, RightOutlined, WarningOut
 import { copyImageToClipboard, saveProductPhoto, saveProductPhotosZip } from '../../services/imageTransfer';
 import { CopyOnClick, formatBrandName, getProductDisplayStatus, getProductStock, getConditionColor, effectiveProductNumber, visibleGalleryPhotos } from '../common/displayHelpers';
 import { hiddenFieldsForType } from './productCategory';
+import AiLimitsBadge, { emitAiLimitsChanged } from './AiLimitsBadge';
 import { taskManager, emitProductPhotosChanged } from '../../services/taskManager';
 import {
   markPromImportAccepted, refreshPromLimitWatch, watchPromLimitStatus,
@@ -532,7 +533,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
       const d = await r.json().catch(() => ({}));
       if (curPidRef.current !== productId) return;
       if (!d?.ok) {
-        // Безкоштовну добову квоту вичерпано (8 викликів). Це не помилка, а
+        // Безкоштовну добову квоту вичерпано (межу Google каже лише у відмові). Це не помилка, а
         // вибір людини: повторити платним ключем чи ні. Платний ключ — окремий
         // (GEMINI_API_KEY_PAID), бо у Google рівень визначається ключем, і
         // перемкнутись одним ключем неможливо. Без другого ключа — лише
@@ -566,6 +567,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
       message.error('Не вдалося розпізнати');
     } finally {
       setAutofillRunning(false);
+      emitAiLimitsChanged();   // лічильник квоти змінився — і на успіху, і на відмові
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [productId, autofillRunning, reloadProposals]);
@@ -3614,23 +3616,27 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
 
                   {/* Характеристики — у правій колонці ПОРУЧ із фото (заповнюють висоту) */}
                   <div className="mt-3 border-t border-gray-100 dark:border-gray-800 pt-4">
-                    <div className="flex items-center justify-between mb-3">
-                      <div className="text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500 font-medium">Характеристики</div>
+                    <div className="flex items-center justify-between gap-3 mb-3">
+                      <div className="text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500 font-medium shrink-0">Характеристики</div>
                       {/* Тиха дія: розпізнавання допоміжне, тож кнопка не має
-                          конкурувати вагою з самими характеристиками. */}
+                          конкурувати вагою з самими характеристиками. Поруч —
+                          стан квоти, щоб не тиснути наосліп. */}
+                      <div className="flex items-center gap-2 min-w-0">
+                      <AiLimitsBadge className="min-w-0 truncate" />
                       <button
                         type="button" onClick={() => runAutofill(false)}
                         disabled={autofillRunning || realCount === 0}
                         title={realCount === 0
                           ? 'Немає живих фото — спершу додайте знімки товару'
                           : `Розпізнати характеристики за ${realCount} живими знімками. Значення потраплять у картку лише після вашого підтвердження.`}
-                        className="inline-flex items-center gap-1 text-[11px] px-1.5 py-0.5 rounded
+                        className="inline-flex items-center gap-1 text-[11px] px-1.5 py-0.5 rounded shrink-0 whitespace-nowrap
                           text-gray-400 hover:text-gray-700 dark:text-gray-500 dark:hover:text-gray-200
                           hover:bg-gray-100 dark:hover:bg-gray-700/60 transition-colors
                           disabled:opacity-50 disabled:cursor-default">
                         {autofillRunning ? <LoadingOutlined style={{ fontSize: 11 }} /> : <SyncOutlined style={{ fontSize: 11 }} />}
                         <span>З фото</span>
                       </button>
+                      </div>
                     </div>
                     <div className={`grid ${charCols} gap-x-6 gap-y-3`}>
                     {classCombo({ nameField: 'brand_name', lockField: 'brandid', label: 'Бренд', options: (filterOpts?.brands ?? []) as any, readValue: formatBrandName((p as any).brand_name) })}

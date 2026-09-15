@@ -132,7 +132,7 @@ def main() -> int:
     use_paid = bool((os.getenv("GEMINI_API_KEY_PAID") or "").strip())
     if args.apply and not use_paid and os.getenv("AI_PAID_TIER", "0") != "1":
         print("⛔ Пакетний прогін вимкнено на безкоштовному рівні: він зʼїдає всю добову\n"
-              "   квоту (8 викликів) і блокує живе автозаповнення нового завозу.\n"
+              "   добову квоту (межу Google каже лише у відмові; див. /api/autofill/limits) і блокує живе автозаповнення нового завозу.\n"
               "   Або додай GEMINI_API_KEY_PAID у .env (ключ із проєкту з білінгом),\n"
               "   або, якщо білінг увімкнено на основному ключі, постав AI_PAID_TIER=1.")
         return 2

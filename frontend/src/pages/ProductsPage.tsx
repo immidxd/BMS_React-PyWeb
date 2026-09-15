@@ -44,6 +44,7 @@ import FacebookBatchDraftDialog, { type FacebookBatchRequest } from '../componen
 import CollectionCollageDialog, {
   type CollectionPlatform, type CollectionPublishRequest,
 } from '../components/products/CollectionCollageDialog';
+import AiLimitsBadge from '../components/products/AiLimitsBadge';
 
 // Placeholder for actual filter components for Products
 
@@ -1343,6 +1344,8 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
                 />
                 <span className="ml-2">з пропозиціями</span>
               </label>
+              {/* Стан квоти ШІ — тут, бо саме звідси йдуть у картки заповнювати. */}
+              <AiLimitsBadge className="ml-1" />
             </div>
             <div className="order-1 md:order-none justify-self-center flex justify-center">
               <Pagination

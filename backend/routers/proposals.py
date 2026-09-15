@@ -20,12 +20,12 @@ from sqlalchemy.orm import Session
 try:
     from models.database import get_db
     from schemas import product as schemas
-    from services import field_proposals, photo_autofill, product_service, ai_budget
+    from services import field_proposals, photo_autofill, product_service, ai_budget, ai_quota
     from services.photo_manager import resolve_category, _kind_files
 except ImportError:  # pragma: no cover
     from backend.models.database import get_db
     from backend.schemas import product as schemas
-    from backend.services import field_proposals, photo_autofill, product_service, ai_budget
+    from backend.services import field_proposals, photo_autofill, product_service, ai_budget, ai_quota
     from backend.services.photo_manager import resolve_category, _kind_files
 
 logger = logging.getLogger(__name__)
@@ -129,3 +129,10 @@ def budget_status(db: Session = Depends(get_db)):
     return {"allowed": v.allowed, "spent_usd": round(v.spent_usd, 4),
             "cap_usd": v.cap_usd, "remaining_usd": round(v.remaining_usd, 4),
             "reason": v.reason}
+
+
+@router.get("/api/autofill/limits", response_model=Dict[str, Any])
+def limits_status(db: Session = Depends(get_db)):
+    """Ліміти ШІ одним поглядом: добова квота безкоштовного рівня (з нашого
+    обліку — Google залишок не віддає), місячна стеля, стан платного ключа."""
+    return ai_quota.status(db, paid_available=photo_autofill.paid_key_available())
