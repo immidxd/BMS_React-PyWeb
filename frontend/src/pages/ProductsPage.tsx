@@ -1315,13 +1315,17 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
                 <Button>Дії ({selection.size}) <DownOutlined /></Button>
               </Dropdown>
             )}
-            <Button
-              icon={<TagOutlined />}
-              onClick={() => setLabelSource({ from_queue: true })}
-              title="Черга друку стікерів з QR: сюди потрапляє кожен доданий товар; друкуються пакетом на аркуш 100×100"
-            >
-              Стікери{labelQueueCount > 0 ? ` (${labelQueueCount})` : ''}
-            </Button>
+            {/* Черга стікерів: кожен доданий товар потрапляє сюди сам (бекенд), друкується
+                пакетом на аркуш 100×100. Кнопка зʼявляється лише коли є що друкувати. */}
+            {labelQueueCount > 0 && (
+              <Button
+                icon={<TagOutlined />}
+                onClick={() => setLabelSource({ from_queue: true })}
+                title="Стікери з QR, що чекають на друк: сюди потрапляє кожен доданий товар (і те, що ви поклали «У чергу» з «Дій»)"
+              >
+                До друку: {labelQueueCount}
+              </Button>
+            )}
             <LabelPrintDialog
               open={!!labelSource}
               source={labelSource}
