@@ -521,9 +521,16 @@ const BoxLabelDialog: React.FC<{ box: WhBox; onClose: () => void }> = ({ box, on
   const [copies, setCopies] = useState(1);
   const [cfg, setCfg] = useState<{ desktop: boolean; can_print: boolean; printers: { name: string; label?: string; kind?: string; reachable?: boolean }[]; preferred_printer: string | null } | null>(null);
   const [printer, setPrinter] = useState('');
-  useEffect(() => {
-    fetch('/api/labels/config').then(r => r.json()).then(c => { setCfg(c); setPrinter(c.preferred_printer || c.printers?.[0]?.name || ''); }).catch(() => setCfg({ desktop: false, can_print: false, printers: [], preferred_printer: null }));
+  const [checking, setChecking] = useState(false);
+  const loadCfg = useCallback(async () => {
+    setChecking(true);
+    try {
+      const c = await fetch('/api/labels/config').then(r => r.json());
+      setCfg(c); setPrinter(prev => (prev && c.printers?.some((p: { name: string }) => p.name === prev)) ? prev : (c.preferred_printer || c.printers?.[0]?.name || ''));
+    } catch { setCfg({ desktop: false, can_print: false, printers: [], preferred_printer: null }); }
+    finally { setChecking(false); }
   }, []);
+  useEffect(() => { void loadCfg(); }, [loadCfg]);
   const run = async (mode: 'print' | 'save') => {
     setBusy(mode);
     try {
@@ -562,6 +569,16 @@ const BoxLabelDialog: React.FC<{ box: WhBox; onClose: () => void }> = ({ box, on
                 {cfg.printers.map(p => <option key={p.name} value={p.name}>{p.label || p.name}{p.kind === 'network' && !p.reachable ? ' — не відповідає' : ''}</option>)}
               </select>
             ) : <div className="text-xs text-gray-500">Принтер не знайдено на цій машині — PDF збережеться у «Завантаження».</div>)}
+            {cfg?.desktop && sel?.kind === 'network' && !sel.reachable && (
+              <div className="rounded-lg border border-red-200 dark:border-red-900 bg-red-50 dark:bg-red-950/40 px-3 py-2 text-xs text-red-700 dark:text-red-300 space-y-1">
+                <div className="font-semibold">Принтер не відповідає ({sel.name.replace(/^net:/, '')})</div>
+                <div>Xprinter підключений до Windows-ПК — той має бути увімкнений, а на ньому запущений міст (порт 9100). Поки що можна лише зберегти PDF.</div>
+                <button type="button" className="underline font-medium" disabled={checking} onClick={() => void loadCfg()}>{checking ? 'Перевіряю…' : 'Перевірити ще раз'}</button>
+              </div>
+            )}
+            {cfg?.desktop && sel?.kind === 'network' && sel.reachable && (
+              <div className="text-xs text-emerald-600 dark:text-emerald-400">Принтер у мережі, готовий до друку.</div>
+            )}
           </div>
         </div>
         <div className="px-5 py-3 border-t border-gray-100 dark:border-gray-800 flex justify-end gap-2">

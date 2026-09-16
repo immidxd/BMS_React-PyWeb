@@ -67,7 +67,7 @@ const LabelPrintDialog: React.FC<Props> = ({ open, source, title, subtitle, onCl
   const [printer, setPrinter] = useState<string>('');
   const [preview, setPreview] = useState<{ png: string; stickers: number; pages: number } | null>(null);
   const [previewBusy, setPreviewBusy] = useState(false);
-  const [busy, setBusy] = useState<'print' | 'save' | 'queue' | 'discover' | 'test' | null>(null);
+  const [busy, setBusy] = useState<'print' | 'save' | 'queue' | 'discover' | 'test' | 'refresh' | null>(null);
   const [found, setFound] = useState<string[] | null>(null);   // результат «Знайти в мережі»
   const previewSeq = useRef(0);
 
@@ -208,6 +208,12 @@ const LabelPrintDialog: React.FC<Props> = ({ open, source, title, subtitle, onCl
     setConfig(cfg);
     setPrinter(cfg.preferred_printer || cfg.printers[0]?.name || '');
   }, []);
+  // «Перевірити ще раз» — коли міст на Windows-ПК щойно увімкнули.
+  const refreshConfig = useCallback(async () => {
+    setBusy('refresh');
+    try { await reloadConfig(); } catch { /* показуємо старий стан */ }
+    finally { setBusy(null); }
+  }, [reloadConfig]);
 
   const discover = async () => {
     setBusy('discover'); setFound(null);
@@ -364,6 +370,13 @@ const LabelPrintDialog: React.FC<Props> = ({ open, source, title, subtitle, onCl
                   </select>
                 ) : (
                   <div className="text-xs text-gray-500">Принтер не знайдено — PDF збережеться у «Завантаження».</div>
+                )}
+                {selected?.kind === 'network' && !selected.reachable && (
+                  <div className="mt-2 rounded-lg border border-red-200 dark:border-red-900 bg-red-50 dark:bg-red-950/40 px-3 py-2 text-xs text-red-700 dark:text-red-300 space-y-1">
+                    <div className="font-semibold">Принтер не відповідає ({selected.name.replace(/^net:/, '')})</div>
+                    <div>Xprinter підключений до Windows-ПК — той має бути увімкнений, а на ньому запущений міст (порт 9100). Поки що можна лише зберегти PDF.</div>
+                    <button type="button" className="underline font-medium disabled:opacity-50" disabled={!!busy} onClick={() => void refreshConfig()}>{busy === 'refresh' ? 'Перевіряю…' : 'Перевірити ще раз'}</button>
+                  </div>
                 )}
                 <div className="mt-2 flex flex-wrap gap-1.5">
                   <button onClick={() => void discover()} disabled={!!busy} className="text-xs px-2 py-1 rounded-md border border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 disabled:opacity-50">
