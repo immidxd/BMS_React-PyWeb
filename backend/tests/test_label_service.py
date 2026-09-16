@@ -11,7 +11,16 @@ import io
 import pytest
 from PIL import Image
 
-from backend.services import label_service as ls
+from pathlib import Path
+import sys
+
+# product_service імпортує «models»/«services» без префікса backend. — як і
+# решта тестів, додаємо backend/ у sys.path (див. test_proposal_accept_writeback).
+BACKEND = Path(__file__).resolve().parents[1]
+if str(BACKEND) not in sys.path:
+    sys.path.insert(0, str(BACKEND))
+
+from backend.services import label_service as ls  # noqa: E402
 
 
 def _row(**over):
@@ -218,3 +227,112 @@ def test_print_tspl_sends_pages_to_socket():
 def test_print_tspl_unreachable_raises():
     with pytest.raises(RuntimeError):
         ls.print_tspl([], ls.get_layout("2x2"), "127.0.0.1:1")  # порт 1 — ніхто не слухає
+
+
+# ───────────────────────────── агент: правка товару ──────────────────────────
+
+def test_agent_product_edit_uses_canonical_update_and_mirrors_rostovka(monkeypatch):
+    """Правка з телефона йде через product_service.update_product (правило
+    «стара ціна», лок, пропагація) + enqueue_writeback_for, а дзеркало в хмару
+    летить для всієї ростовки."""
+    from backend.services import print_agent
+    product_service, schemas = print_agent.product_service, print_agent.schemas
+
+    class Row:
+        def __init__(self, id, price, oldprice, cond, pnum="#Ф1"):
+            self.id, self.price, self.oldprice, self.current_conditionid, self.productnumber = id, price, oldprice, cond, pnum
+
+    rows = [Row(1, 1800.0, 2000.0, 2), Row(2, 1800.0, 2000.0, 2)]
+    calls = {}
+
+    class Q:
+        def __init__(self, r): self.r = r
+        def filter(self, *a, **k): return self
+        def all(self): return self.r
+
+    class DB:
+        def query(self, *_): return Q(rows)
+        def close(self): calls["closed"] = True
+
+    monkeypatch.setattr(print_agent, "SessionLocal", lambda: DB())
+    monkeypatch.setattr(product_service, "get_product", lambda db, pid: rows[0])
+
+    def fake_update(db, pid, upd):
+        assert isinstance(upd, schemas.ProductUpdate)
+        calls["update"] = upd.dict(exclude_unset=True)
+        for r in rows:  # імітація правила «стара ціна» + пропагації
+            r.oldprice, r.price = r.price, upd.price
+        rows[0].current_conditionid = 3
+        return rows[0]
+    monkeypatch.setattr(product_service, "update_product", fake_update)
+    monkeypatch.setattr(product_service, "enqueue_writeback_for", lambda db, u: calls.setdefault("writeback", u.id))
+    monkeypatch.setattr(print_agent.cloud, "request", lambda m, p, **kw: calls.setdefault("cloud", (m, p, kw.get("json"))))
+
+    print_agent._apply_product_edit(1, {"price": "1500", "current_condition_name": " Хороший "})
+
+    assert calls["update"] == {"price": 1500.0, "current_condition_name": "Хороший"}
+    assert calls["writeback"] == 1 and calls["closed"]
+    m, path, body = calls["cloud"]
+    assert (m, path) == ("POST", "/products/mirror")
+    assert body == {"rows": [
+        {"id": 1, "price": 1500.0, "oldprice": 1800.0, "current_conditionid": 3},
+        {"id": 2, "price": 1500.0, "oldprice": 1800.0, "current_conditionid": 2},
+    ]}
+
+
+def test_agent_product_edit_rejects_empty(monkeypatch):
+    from backend.services import print_agent
+    import pytest
+    with pytest.raises(RuntimeError):
+        print_agent._apply_product_edit(1, {"model": "x"})
+
+
+def test_agent_tick_applies_edits_without_printer(monkeypatch):
+    """Без принтера друк лишається в черзі, а правки товару виконуються."""
+    from backend.services import print_agent
+
+    monkeypatch.setattr(print_agent.cloud, "is_configured", lambda: True)
+    monkeypatch.setattr(print_agent.ls, "network_printer_host", lambda: None)
+    monkeypatch.setattr(print_agent, "_parse_in_progress", lambda: False)
+    jobs = [{"id": 7, "kind": "stickers", "payload": {}}, {"id": 8, "kind": "product_edit", "payload": {"product_id": 5, "fields": {"price": 1}}}]
+    log = []
+
+    def req(method, path, **kw):
+        log.append((method, path, kw.get("params"), kw.get("json")))
+        if path == "/print-jobs":
+            return {"jobs": jobs}
+        if path.endswith("/claim"):
+            return next(j for j in jobs if path == f"/print-jobs/{j['id']}/claim")
+        return {"ok": True}
+    monkeypatch.setattr(print_agent.cloud, "request", req)
+    monkeypatch.setattr(print_agent, "_apply_product_edit", lambda pid, f: log.append(("edit", pid, f)))
+
+    print_agent._tick([0.0])
+
+    paths = [x[1] for x in log]
+    assert "/print-jobs/7/claim" not in paths          # друк чекає принтера
+    assert "/print-jobs/8/claim" in paths and ("edit", 5, {"price": 1}) in log
+    assert ("POST", "/print-jobs/8/done", None, {"ok": True}) in log
+    hb = next(x for x in log if x[1] == "/print-agent/heartbeat")
+    assert hb[2]["printer"] is None
+
+
+def test_agent_tick_defers_edits_while_journal_parse_runs(monkeypatch):
+    """Під час парсингу журналу правки лишаються в черзі (парсер міг би їх відкотити)."""
+    from backend.services import print_agent
+
+    monkeypatch.setattr(print_agent.cloud, "is_configured", lambda: True)
+    monkeypatch.setattr(print_agent.ls, "network_printer_host", lambda: "10.0.0.1:9100")
+    monkeypatch.setattr(print_agent.ls, "network_printer_reachable", lambda h, timeout=1.0: True)
+    monkeypatch.setattr(print_agent, "_parse_in_progress", lambda: True)
+    jobs = [{"id": 9, "kind": "product_edit", "payload": {"product_id": 5, "fields": {"price": 1}}}]
+    log = []
+
+    def req(method, path, **kw):
+        log.append(path)
+        return {"jobs": jobs} if path == "/print-jobs" else {"ok": True}
+    monkeypatch.setattr(print_agent.cloud, "request", req)
+
+    print_agent._tick([0.0])
+    assert "/print-jobs/9/claim" not in log
+    assert "парсинг" in (print_agent._state["error"] or "")

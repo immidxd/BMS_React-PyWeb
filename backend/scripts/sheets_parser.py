@@ -184,7 +184,15 @@ ORDER_LOCK_FIELDS = {"notes", "tracking_number", "sales_channel",
 
 def _snapshot_product_locks(session: Session, product_ids: Optional[list[int]] = None) -> dict:
     """Return {product_id: {field: value}} for products with active in-app
-    locks, capturing the user's current (edited) values before a reparse."""
+    locks, capturing the user's current (edited) values before a reparse.
+
+    Разом зі значеннями запамʼятовуємо `manually_edited_at` кожного рядка
+    (ключ ``__edited_at__``): якщо під час парсингу користувач (картка BMS
+    або агент складу з телефона) встиг відредагувати товар, у базі вже лежать
+    НОВІШІ значення, і відкочувати їх до знімка не можна — див.
+    _restore_product_locks. Інакше правка, зроблена в ці 10–20 с, губилась:
+    #Ф4419 — ціна 2100 «повернулась» у 2200 зі знімка.
+    """
     if not PRODUCT_LOCKS_ENABLED:
         return {}
     try:
@@ -213,12 +221,17 @@ def _snapshot_product_locks(session: Session, product_ids: Optional[list[int]] =
         if prod is None:
             continue
         snapshot[pid] = {f: getattr(prod, f) for f in flds}
+        snapshot[pid]["__edited_at__"] = prod.manually_edited_at
     return snapshot
 
 
 def _restore_product_locks(session: Session, snapshot: dict, commit: bool = True) -> int:
     """Re-apply locked field values the parser may have overwritten. Returns the
-    number of fields restored."""
+    number of fields restored.
+
+    Рядки, які користувач редагував ПІСЛЯ знімка (manually_edited_at у базі
+    новіший), НЕ чіпаємо — там уже його свіжі значення, а знімок застарілий.
+    """
     if not snapshot:
         return 0
     try:
@@ -226,14 +239,27 @@ def _restore_product_locks(session: Session, snapshot: dict, commit: bool = True
     except ImportError:
         from models.models import Product
     restored = 0
+    skipped_fresh = 0
     for pid, fieldvals in snapshot.items():
         prod = session.get(Product, pid)
         if prod is None:  # product merged/removed during parse — skip
             continue
+        snap_at = fieldvals.get("__edited_at__")
+        # Свіжий manually_edited_at з бази (сесія парсера могла закешувати старий).
+        cur_at = session.execute(
+            text("SELECT manually_edited_at FROM products WHERE id = :pid"), {"pid": pid}
+        ).scalar()
+        if snap_at is not None and cur_at is not None and cur_at > snap_at:
+            skipped_fresh += 1
+            continue
         for f, v in fieldvals.items():
+            if f == "__edited_at__":
+                continue
             if getattr(prod, f) != v:
                 setattr(prod, f, v)
                 restored += 1
+    if skipped_fresh:
+        logger.info(f"[products] {skipped_fresh} товар(ів) відредаговано під час парсингу — знімок локів для них не застосовую")
     if restored and commit:
         session.commit()
     elif restored:
