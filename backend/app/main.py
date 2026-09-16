@@ -521,6 +521,21 @@ async def _journal_sync_worker():
 
 
 @app.on_event("startup")
+async def _start_print_agent():
+    """Агент друку зі складу: телефон кладе завдання в хмару, BMS друкує на
+    Xprinter у крамниці. Легкий потік (опитування раз на 5 с), спить, поки не
+    налаштовано принтер чи хмару. Вимкнути: BMS_PRINT_AGENT=0."""
+    try:
+        try:
+            from services import print_agent
+        except ImportError:
+            from backend.services import print_agent
+        print_agent.start()
+    except Exception as _e:  # noqa: BLE001
+        logger.warning(f"Агент друку не запущено: {_e}")
+
+
+@app.on_event("startup")
 async def _auto_startup_parse():
     import asyncio
 

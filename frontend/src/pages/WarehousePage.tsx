@@ -79,6 +79,28 @@ const WarehousePage: React.FC = () => {
 
   useEffect(() => { if (selectedCode) void loadBox(selectedCode); else setBox(null); }, [selectedCode, loadBox]);
 
+  // Живе оновлення: у хмару пишуть телефони працівників, тож поки вкладка
+  // активна — тихо перечитуємо список кожні 10 с і при поверненні у вікно.
+  // Без спінера (loading не чіпаємо), щоб список не «блимав».
+  const silentRefresh = useCallback(async () => {
+    try {
+      const list = await ws.boxes();
+      setBoxes(list);
+      if (selectedCode) {
+        const fresh = await ws.box(selectedCode);
+        setBox(prev => (prev && prev.updated_at === fresh.updated_at && prev.units === fresh.units && prev.items === fresh.items ? prev : fresh));
+      }
+    } catch { /* хмара тимчасово недоступна — лишаємо як є */ }
+  }, [selectedCode]);
+  useEffect(() => {
+    if (!isActive || tab !== 'boxes') return;
+    const t = setInterval(() => { void silentRefresh(); }, 10_000);
+    const onFocus = () => { void silentRefresh(); };
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onFocus);
+    return () => { clearInterval(t); window.removeEventListener('focus', onFocus); document.removeEventListener('visibilitychange', onFocus); };
+  }, [isActive, tab, silentRefresh]);
+
   const refreshAll = useCallback(async () => {
     await loadBoxes();
     if (selectedCode) await loadBox(selectedCode);

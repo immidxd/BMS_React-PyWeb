@@ -137,6 +137,17 @@ def _build_items(db: Session, items: List[ItemIn]) -> List[ls.LabelItem]:
 NET_PREFIX = "net:"  # ім'я «принтера» для мережевого друку: net:192.168.1.150
 
 
+def _agent_status() -> Dict[str, Any]:
+    try:
+        try:
+            from services import print_agent
+        except ImportError:  # pragma: no cover
+            from backend.services import print_agent
+        return print_agent.status()
+    except Exception:  # noqa: BLE001
+        return {"running": False}
+
+
 def _printer_options() -> Tuple[List[Dict[str, Any]], Optional[str], bool]:
     """Принтери для діалогу: мережевий (TSPL, без драйвера) + системні CUPS.
     Повертає (список, обраний за замовчуванням, чи можна друкувати звідси)."""
@@ -164,6 +175,7 @@ def labels_config(db: Session = Depends(get_db)):
         "preferred_printer": preferred,
         "can_print": can_print,
         "network_printer": ls.network_printer_host(),
+        "print_agent": _agent_status(),
         "desktop": is_desktop_shell(),
         "platform": ls.platform_name(),
         "queue_count": ls.queue_count(db),
