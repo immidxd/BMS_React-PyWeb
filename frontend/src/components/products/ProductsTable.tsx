@@ -216,6 +216,9 @@ interface ProductsTableProps {
    *  картці: таблиця тримає власну копію списку, тож інакше рядок показував би
    *  старе значення до наступного гортання/фільтра. */
   onProductSaved?: () => void;
+  /** Де лежить товар (склад, з хмари): product_id → коди коробок. Необовʼязкова
+   *  колонка «Коробка»; порожньо — коли хмара недоступна. */
+  boxLocations?: Record<number, { box_code: string; qty: number; needs_check?: boolean }[]>;
 }
 
 const ProductsTable: React.FC<ProductsTableProps> = ({ 
@@ -229,6 +232,7 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
     onSelectedRowKeysChange,
     selectionEnabled = false,
     onProductSaved,
+    boxLocations,
 }) => {
     const navigate = useNavigate();
     const [visibilityLoading, setVisibilityLoading] = useState<Record<number, boolean>>({});
@@ -354,6 +358,7 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
         { id: 'oldprice', title: 'Стара ціна', optional: true },
         { id: 'quantity', title: 'К-сть (заг.)', optional: true },
         { id: 'available_qty', title: 'В наявності', optional: true },
+        { id: 'box', title: 'Коробка', optional: true },   // склад: у якій коробці лежить
         // 9
         { id: 'status_name', title: 'Статус', optional: false },
         // 10 — основна колонка "Стан" відображає current_conditionid (актуальний стан).
@@ -740,6 +745,20 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
                     unCheckedChildren={<EyeInvisibleOutlined />}
                 />
             ) },
+        box: { title: 'Коробка', key: 'box', width: 90, align: 'center' as const,
+            render: (_: any, record: Product) => {
+                const locs = boxLocations?.[record.id] || [];
+                if (locs.length === 0) return <span className="text-gray-300">—</span>;
+                return (
+                    <span className="inline-flex flex-wrap gap-1 justify-center">
+                        {locs.map(l => (
+                            <Tooltip key={l.box_code} title={`Лежить у коробці ${l.box_code}${l.qty > 1 ? ` (${l.qty} шт)` : ''}${l.needs_check ? ' · коробку треба перевірити' : ''}`}>
+                                <Tag className="!m-0 font-semibold">{l.box_code}{l.qty > 1 ? ` ×${l.qty}` : ''}</Tag>
+                            </Tooltip>
+                        ))}
+                    </span>
+                );
+            } },
         actions: { title: 'Дії', key: 'actions', width: 130, fixed: 'right' as const,
             render: (_: any, record: Product) => {
                 const pendingCount = (record as any).pending_candidates_count || 0;

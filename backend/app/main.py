@@ -40,6 +40,11 @@ try:
     from routers import labels as labels_router
 except Exception:  # noqa: BLE001  # pragma: no cover
     labels_router = None
+# Склад: проксі до хмарного API коробок (BMS_catalog/Railway) + етикетки коробок.
+try:
+    from routers import warehouse as warehouse_router
+except Exception:  # noqa: BLE001  # pragma: no cover
+    warehouse_router = None
 try:
     from routers import deliveries  # optional
 except Exception:
@@ -246,6 +251,8 @@ if photo_staging_router:
     app.include_router(photo_staging_router.router, tags=["photo-staging"])
 if labels_router:
     app.include_router(labels_router.router)  # /api/labels/...
+if warehouse_router:
+    app.include_router(warehouse_router.router)  # /api/warehouse/...
 
 # Mount product images directory (local + Google Drive overlay; abstraction in services/product_images.py)
 try:

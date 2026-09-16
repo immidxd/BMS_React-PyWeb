@@ -13,6 +13,7 @@ import AddProductModal from '../components/shipments/AddProductModal';
 import { PlusOutlined, SendOutlined, CheckSquareOutlined, DownOutlined, TagOutlined } from '@ant-design/icons';
 import LabelPrintDialog from '../components/labels/LabelPrintDialog';
 import { labelQueue, useLabelQueueCount, type LabelSource } from '../services/labelService';
+import { warehouseService, type WhLocation } from '../services/warehouseService';
 import LoadingSpinner from '../components/common/LoadingSpinner';
 import { useSelection } from '../services/selectionManager';
 import { taskManager } from '../services/taskManager';
@@ -62,6 +63,9 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
   const [showAddProduct, setShowAddProduct] = useState(false);
   // Стікери з QR (склад): діалог друку над виділенням або над чергою друку.
   const [labelSource, setLabelSource] = useState<LabelSource | null>(null);
+  // Склад: де лежать товари поточної сторінки (колонка «Коробка»). Довантажується
+  // після списку, не блокує його; хмара недоступна → просто порожньо.
+  const [boxLocations, setBoxLocations] = useState<Record<number, WhLocation[]>>({});
   const labelQueueCount = useLabelQueueCount();
   useEffect(() => { void labelQueue.refresh(); }, []);
   const [loading, setLoading] = useState<boolean>(true);
@@ -225,6 +229,7 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
       // Only apply result if this is still the latest request
       if (myFetchId === fetchIdRef.current) {
         setProducts(res);
+        void warehouseService.locations((res.items || []).map((p: any) => p.id)).then(setBoxLocations);
       }
     } catch (err: any) {
       if (err?.name === 'CanceledError' || err?.code === 'ERR_CANCELED') return; // aborted — ignore
@@ -1356,6 +1361,7 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
             selectionEnabled={selectionMode}
             selectedRowKeys={selection.ids as React.Key[]}
             onSelectedRowKeysChange={(keys) => selection.set(keys as number[])}
+            boxLocations={boxLocations}
         />
         </div>
 

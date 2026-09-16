@@ -171,3 +171,10 @@ def test_preferred_printer_prefers_env_then_xprinter_then_default(monkeypatch):
     assert ls.preferred_printer(printers) == "Xprinter_XP_460B"
     assert ls.preferred_printer([{"name": "Only", "default": True}]) == "Only"
     assert ls.preferred_printer([]) is None
+
+
+def test_box_label_renders_and_qr_round_trips():
+    zxingcpp = pytest.importorskip("zxingcpp")
+    page = ls.render_box_label("Z9", "UGG зима, коробка велика", "стелаж 2 · полиця 3")
+    assert page.mode == "1" and page.size == (799, 799)
+    assert "bms:b:Z9" in {r.text for r in zxingcpp.read_barcodes(page.convert("L"))}

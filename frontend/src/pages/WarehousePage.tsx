@@ -1,724 +1,550 @@
-import React, { useState, useMemo, useRef, useCallback, useEffect } from 'react';
+/**
+ * Склад — коробки, їхній вміст і події. Дані живуть у хмарі (те саме, що бачить
+ * Mini App працівників); ця сторінка — десктопний клієнт через /api/warehouse.
+ *
+ * Ліворуч — список коробок (код, назва, місце, скільки всередині, статус,
+ * «перевірити»); праворуч — картка обраної коробки: вміст із фото, вийняти
+ * по одному / вибрані / все, запечатати, звірено, етикетка на принтер,
+ * видалити, журнал. Пошук згори — «де лежить #номер».
+ *
+ * Прототип карти складу (SVG-план із секторами) збережено окремою вкладкою —
+ * ідея локацій коробок на плані повернеться, коли коробки матимуть зони.
+ */
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Button, Dropdown, Tooltip } from 'antd';
+import {
+  PlusOutlined, PrinterOutlined, ReloadOutlined, SearchOutlined, DownOutlined,
+  LockOutlined, UnlockOutlined, CheckOutlined, DeleteOutlined, ExportOutlined, InboxOutlined,
+} from '@ant-design/icons';
+import MainLayout from '../layouts/MainLayout';
+import ProductDetailsModal from '../components/products/ProductDetailsModal';
+import WarehouseMapPrototype from './WarehouseMapPrototype';
+import {
+  warehouseService as ws, whErr, KIND_UA, CATEGORIES, actorName,
+  type WhBox, type WhProduct, type WhEvent, type WhStatus,
+} from '../services/warehouseService';
+import { isDesktopShell, saveBlob } from '../services/imageTransfer';
+import { confirmDialog, notify } from '../ui/feedback';
+import { useIsActivePage } from '../contexts/ActivePageContext';
 
-// ── Типи ──────────────────────────────────────────────────────────────────────
-type SectorKey =
-  | 'lito'
-  | 'zyma'
-  | 'vesna'
-  | 'osin'
-  | 'potochne_valizy'
-  | 'potochne'
-  | 'shafa'
-  | 'stil'
-  | 'korydor'
-  | 'robocha_zona';
-
-interface Sector {
-  key: SectorKey;
-  label: string;
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-  fill: string;
-  fillDark: string;
-  stroke: string;
-  canHoldBoxes?: boolean;
-  z?: number;
-}
-
-interface Box {
-  id: string;
-  // Позиція "на підлозі" (використовується якщо parentId===null)
-  absX: number;
-  absY: number;
-  sectorKey: SectorKey;
-  parentId: string | null; // якщо стоїть на іншій коробці
-  w: number;
-  h: number;
-  productNumbers?: string[];
-}
-
-// ── Сектори (макет 9м × 8м, 1 одиниця SVG = 1 см) ────────────────────────────
-// Кольори — приглушена, матеріальна палітра (не "веселка")
-const SECTORS: Sector[] = [
-  { key: 'lito',  label: 'ЛІТО',  x: 0,   y: 0,   w: 150, h: 300, fill: '#f5efe0', fillDark: '#4a3a20', stroke: '#c4a97a', canHoldBoxes: true, z: 1 },
-  { key: 'zyma',  label: 'ЗИМА',  x: 150, y: 0,   w: 150, h: 300, fill: '#e8eef5', fillDark: '#1e2d3d', stroke: '#7a9ab8', canHoldBoxes: true, z: 1 },
-  { key: 'vesna', label: 'ВЕСНА', x: 0,   y: 300, w: 150, h: 300, fill: '#e8f0e8', fillDark: '#1e3020', stroke: '#7aab80', canHoldBoxes: true, z: 1 },
-  { key: 'osin',  label: 'ОСІНЬ', x: 150, y: 300, w: 150, h: 300, fill: '#f2e8e0', fillDark: '#3d2010', stroke: '#b8886a', canHoldBoxes: true, z: 1 },
-  { key: 'potochne_valizy', label: 'ПОТОЧНЕ (валізи)', x: 0, y: 600, w: 300, h: 200, fill: '#eceaf5', fillDark: '#252040', stroke: '#8a84b8', canHoldBoxes: true, z: 1 },
-  { key: 'potochne', label: 'ПОТОЧНЕ', x: 300, y: 0, w: 300, h: 600, fill: '#f5eaec', fillDark: '#3d1e24', stroke: '#b87a88', canHoldBoxes: true, z: 1 },
-  { key: 'shafa', label: 'ШАФА', x: 520, y: 300, w: 80,  h: 300, fill: '#ece8f0', fillDark: '#302040', stroke: '#9080b0', canHoldBoxes: false, z: 2 },
-  { key: 'stil',  label: 'СТІЛ', x: 380, y: 540, w: 140, h: 60,  fill: '#dddbd8', fillDark: '#38352f', stroke: '#7a7570', canHoldBoxes: false, z: 2 },
-  { key: 'korydor', label: 'КОРИДОР', x: 300, y: 600, w: 300, h: 200, fill: '#ededeb', fillDark: '#252523', stroke: '#8a8a86', canHoldBoxes: true, z: 1 },
-  { key: 'robocha_zona', label: 'РОБОЧА ЗОНА', x: 600, y: 0, w: 300, h: 800, fill: '#e8edf5', fillDark: '#1a2230', stroke: '#6a84a8', canHoldBoxes: true, z: 1 },
-];
-
-// ── Стіни і двері ────────────────────────────────────────────────────────────
-const DOOR_W = 70;
-const WALL_THICKNESS = 8;
-const MAX_STACK = 3;          // максимум коробок одна на одній
-const STACK_OFFSET = 6;       // зсув кожної верхньої коробки (вгору-вправо)
-
-interface Wall {
-  axis: 'h' | 'v';
-  fixed: number;
-  start: number;
-  end: number;
-  doors: Array<{ start: number; end: number }>;
-}
-
-const DOOR1_Y = 670;
-const DOOR2_Y = 670;
-const DOOR3_X = 100;
-
-const WALLS: Wall[] = [
-  { axis: 'h', fixed: 0,   start: 0, end: 900, doors: [] },
-  { axis: 'h', fixed: 800, start: 0, end: 900, doors: [{ start: DOOR3_X, end: DOOR3_X + DOOR_W }] },
-  { axis: 'v', fixed: 0,   start: 0, end: 800, doors: [] },
-  { axis: 'v', fixed: 900, start: 0, end: 800, doors: [] },
-  { axis: 'v', fixed: 300, start: 0,   end: 600, doors: [] },
-  { axis: 'v', fixed: 300, start: 600, end: 800, doors: [{ start: DOOR1_Y, end: DOOR1_Y + DOOR_W }] },
-  { axis: 'v', fixed: 600, start: 0,   end: 600, doors: [] },
-  { axis: 'v', fixed: 600, start: 600, end: 800, doors: [{ start: DOOR2_Y, end: DOOR2_Y + DOOR_W }] },
-  { axis: 'h', fixed: 600, start: 300, end: 600, doors: [] },
-];
-
-// ── Утиліти ──────────────────────────────────────────────────────────────────
-const sectorByKey = (k: SectorKey) => SECTORS.find(s => s.key === k)!;
-const sectorCenter = (s: Sector) => ({ cx: s.x + s.w / 2, cy: s.y + s.h / 2 });
-
-const findSectorAt = (x: number, y: number): Sector | null => {
-  const matches = SECTORS.filter(s =>
-    s.canHoldBoxes && x >= s.x && x <= s.x + s.w && y >= s.y && y <= s.y + s.h
-  );
-  if (!matches.length) return null;
-  matches.sort((a, b) => (b.z ?? 1) - (a.z ?? 1));
-  return matches[0];
+const money = (v: number | null | undefined) => (v == null ? '' : `${Math.round(v).toLocaleString('uk-UA')} ₴`);
+const when = (iso: string) => {
+  const d = new Date(iso);
+  return `${d.toLocaleDateString('uk-UA')} ${d.toLocaleTimeString('uk-UA', { hour: '2-digit', minute: '2-digit' })}`;
 };
 
-// Глибина коробки від підлоги (0 = на підлозі)
-const depthFromFloor = (boxId: string, byId: Record<string, Box>): number => {
-  const b = byId[boxId];
-  if (!b || !b.parentId) return 0;
-  return 1 + depthFromFloor(b.parentId, byId);
-};
-
-// Висота піддерева — найдовший ланцюг від цієї коробки до листка (1 = тільки сама коробка)
-const subtreeHeight = (boxId: string, boxes: Box[]): number => {
-  const children = boxes.filter(b => b.parentId === boxId);
-  if (!children.length) return 1;
-  return 1 + Math.max(...children.map(c => subtreeHeight(c.id, boxes)));
-};
-
-// Ефективна позиція коробки (з урахуванням стака)
-const effectivePos = (box: Box, byId: Record<string, Box>): { x: number; y: number } => {
-  if (!box.parentId) return { x: box.absX, y: box.absY };
-  const parent = byId[box.parentId];
-  if (!parent) return { x: box.absX, y: box.absY };
-  const p = effectivePos(parent, byId);
-  return { x: p.x + STACK_OFFSET, y: p.y - STACK_OFFSET };
-};
-
-// Чи містить коробка точку (по ефективній позиції)
-const boxContains = (box: Box, byId: Record<string, Box>, x: number, y: number): boolean => {
-  const p = effectivePos(box, byId);
-  return x >= p.x && x <= p.x + box.w && y >= p.y && y <= p.y + box.h;
-};
-
-// Знайти топову коробку у точці (виключаючи список ID)
-const findBoxAt = (x: number, y: number, boxes: Box[], byId: Record<string, Box>, exclude: Set<string>): Box | null => {
-  // Сортуємо за depth (вищі зверху → беруться першими)
-  const sorted = [...boxes]
-    .filter(b => !exclude.has(b.id))
-    .sort((a, b) => depthFromFloor(b.id, byId) - depthFromFloor(a.id, byId));
-  for (const b of sorted) {
-    if (boxContains(b, byId, x, y)) return b;
-  }
-  return null;
-};
-
-// Усі нащадки коробки (включно з нею) — для виключення під час пошуку drop-target
-const collectSubtree = (boxId: string, boxes: Box[], acc: Set<string>) => {
-  acc.add(boxId);
-  for (const c of boxes.filter(b => b.parentId === boxId)) collectSubtree(c.id, boxes, acc);
-};
-
-// ── Початкові коробки (демо: одна на одній) ─────────────────────────────────
-const INITIAL_BOXES: Box[] = [
-  { id: 'b1', absX: 20, absY: 30, sectorKey: 'lito', parentId: null, w: 50, h: 40, productNumbers: [] },
-  { id: 'b2', absX: 0,  absY: 0,  sectorKey: 'lito', parentId: 'b1', w: 50, h: 40, productNumbers: [] },
-];
-
-// ── Компонент коробки ───────────────────────────────────────────────────────
-interface BoxSVGProps {
-  box: Box;
-  posX: number;
-  posY: number;
-  isDark: boolean;
-  isSelected: boolean;
-  isDragging: boolean;
-  isDropTarget: boolean;
-  layerLevel: number; // 0..MAX_STACK-1 для відтінку
-  onMouseDown: (e: React.MouseEvent) => void;
-  onClick: (e: React.MouseEvent) => void;
-}
-
-const BoxSVG: React.FC<BoxSVGProps> = ({ box, posX, posY, isDark, isSelected, isDragging, isDropTarget, layerLevel, onMouseDown, onClick }) => {
-  // Приглушені земляні тони для коробок
-  const topFill    = isDark ? '#6b5a3e' : '#d4b896';  // верхня грань (світла)
-  const frontFill  = isDark ? '#5a4a30' : '#c4a47e';  // передня грань (середня)
-  const sideFill   = isDark ? '#4a3820' : '#a88860';  // бічна грань (темна)
-  const strokeColor = isDropTarget ? '#3d8c5a' : isSelected ? '#8c3d3d' : (isDark ? '#7a6040' : '#8a6840');
-  const strokeW    = isDropTarget ? 2.5 : isSelected ? 2 : 1;
-  const alpha      = isDragging ? 0.65 : 1;
-
-  // Ізометрична 3D-коробка: вид зверху-спереду
-  const W = box.w;
-  const H = box.h;
-  const D = 10; // "глибина" в пікселях SVG — товщина верхньої грані
-
-  // Передня грань (основна)
-  const fx = posX;
-  const fy = posY + D;
-  // Верхня грань (паралелограм)
-  // top-left → top-right → top-right-shifted → top-left-shifted
-  const topPts = `${fx},${fy} ${fx + W},${fy} ${fx + W + D},${fy - D} ${fx + D},${fy - D}`;
-  // Права бічна грань
-  const rightPts = `${fx + W},${fy} ${fx + W},${fy + H} ${fx + W + D},${fy + H - D} ${fx + W + D},${fy - D}`;
-
-  // Тінь (тільки якщо не drag)
-  const shadowX = posX + D + 3;
-  const shadowY = posY + H + 2;
-
-  return (
-    <g
-      onMouseDown={onMouseDown}
-      onClick={onClick}
-      style={{ cursor: isDragging ? 'grabbing' : 'grab', opacity: alpha }}
-      filter={!isDragging ? 'url(#box-drop-shadow)' : undefined}
-    >
-      {/* Тінь на підлозі */}
-      {!isDragging && (
-        <ellipse
-          cx={posX + W / 2 + D / 2}
-          cy={posY + H + D + 1}
-          rx={W / 2 + 2}
-          ry={4}
-          fill="rgba(0,0,0,0.15)"
-        />
-      )}
-
-      {/* Передня грань */}
-      <rect
-        x={fx} y={fy}
-        width={W} height={H}
-        fill={frontFill}
-        stroke={strokeColor}
-        strokeWidth={strokeW}
-        rx={1}
-      />
-
-      {/* Верхня грань (паралелограм) */}
-      <polygon points={topPts} fill={topFill} stroke={strokeColor} strokeWidth={strokeW} />
-
-      {/* Права бічна грань */}
-      <polygon points={rightPts} fill={sideFill} stroke={strokeColor} strokeWidth={strokeW} />
-
-      {/* Стрічка/лінія на передній грані для деталі */}
-      <line
-        x1={fx + W * 0.5} y1={fy}
-        x2={fx + W * 0.5} y2={fy + H}
-        stroke={strokeColor} strokeWidth={0.7} strokeOpacity={0.4}
-      />
-      <line
-        x1={fx} y1={fy + H * 0.45}
-        x2={fx + W} y2={fy + H * 0.45}
-        stroke={strokeColor} strokeWidth={0.7} strokeOpacity={0.4}
-      />
-
-      {/* Підсвічування верхнього лівого кута (gloss) */}
-      <rect
-        x={fx + 2} y={fy + 2}
-        width={W * 0.35} height={H * 0.2}
-        rx={1}
-        fill="rgba(255,255,255,0.18)"
-        style={{ pointerEvents: 'none' }}
-      />
-
-      {/* Рамка виділення */}
-      {(isSelected || isDropTarget) && (
-        <rect
-          x={fx - 2} y={fy - D - 2}
-          width={W + D + 4} height={H + D + 4}
-          rx={3}
-          fill="none"
-          stroke={isDropTarget ? '#3d8c5a' : '#8c3d3d'}
-          strokeWidth={2}
-          strokeDasharray={isDropTarget ? '5 3' : undefined}
-          style={{ pointerEvents: 'none' }}
-        />
-      )}
-    </g>
-  );
-};
-
-// Рендер однієї стіни — мінімалістичний (одна тонка лінія + м'яка тінь під нею)
-const renderWall = (w: Wall, idx: number, doorColor: string, isDark: boolean) => {
-  const segs: Array<{ from: number; to: number }> = [];
-  let cursor = w.start;
-  const sortedDoors = [...w.doors].sort((a, b) => a.start - b.start);
-  for (const d of sortedDoors) {
-    if (cursor < d.start) segs.push({ from: cursor, to: d.start });
-    cursor = d.end;
-  }
-  if (cursor < w.end) segs.push({ from: cursor, to: w.end });
-
-  const wallColor = isDark ? '#0d0d0d' : '#1a1714';
-  const T = 5;
-
-  return (
-    <g key={`w-${idx}`} style={{ pointerEvents: 'none' }}>
-      {segs.map((s, i) => {
-        const props = w.axis === 'h'
-          ? { x1: s.from, y1: w.fixed, x2: s.to, y2: w.fixed }
-          : { x1: w.fixed, y1: s.from, x2: w.fixed, y2: s.to };
-        return (
-          <line key={`seg-${i}`} {...props}
-            stroke={wallColor} strokeWidth={T} strokeLinecap="square" />
-        );
-      })}
-      {sortedDoors.map((d, i) => {
-        const props = w.axis === 'h'
-          ? { x1: d.start, y1: w.fixed, x2: d.end, y2: w.fixed }
-          : { x1: w.fixed, y1: d.start, x2: w.fixed, y2: d.end };
-        return <line key={`door-${i}`} {...props}
-          stroke={doorColor} strokeWidth={1.5} strokeLinecap="round" strokeDasharray="5 4" opacity={0.7} />;
-      })}
-    </g>
-  );
-};
-
-// ── Основний компонент ──────────────────────────────────────────────────────
-const VIEWBOX = { minX: -20, minY: -20, w: 940, h: 840 };
+const CHIP = 'inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-semibold border';
+const CHIP_MUTED = `${CHIP} border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-300`;
+const CHIP_WARN = `${CHIP} bg-amber-50 text-amber-800 border-amber-200 dark:bg-amber-900/30 dark:text-amber-300 dark:border-amber-800`;
+const CHIP_DARK = `${CHIP} bg-black text-white border-black dark:bg-white dark:text-black dark:border-white`;
+const CHIP_ERR = `${CHIP} bg-rose-50 text-rose-700 border-rose-200 dark:bg-rose-900/30 dark:text-rose-300 dark:border-rose-800`;
 
 const WarehousePage: React.FC = () => {
-  const svgRef = useRef<SVGSVGElement | null>(null);
-  const [hoveredSector, setHoveredSector] = useState<SectorKey | null>(null);
-  const [selectedSector, setSelectedSector] = useState<SectorKey | null>(null);
-  const [boxes, setBoxes] = useState<Box[]>(INITIAL_BOXES);
-  const [selectedBoxId, setSelectedBoxId] = useState<string | null>(null);
+  const isActive = useIsActivePage();
+  const [tab, setTab] = useState<'boxes' | 'map'>('boxes');
+  const [status, setStatus] = useState<WhStatus | null>(null);
+  const [boxes, setBoxes] = useState<WhBox[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [selectedCode, setSelectedCode] = useState<string | null>(null);
+  const [box, setBox] = useState<WhBox | null>(null);
+  const [boxLoading, setBoxLoading] = useState(false);
+  const [filter, setFilter] = useState('');
+  const [search, setSearch] = useState('');
+  const [searchHits, setSearchHits] = useState<WhProduct[] | null>(null);
+  const [newOpen, setNewOpen] = useState(false);
+  const [detailId, setDetailId] = useState<number | null>(null);
+  const loadedOnce = useRef(false);
 
-  // drag state
-  const dragRef = useRef<{
-    boxId: string;
-    grabOffsetX: number;  // зсув курсора відносно лівого-верхнього кута коробки
-    grabOffsetY: number;
-    startAbsX: number;
-    startAbsY: number;
-    startParentId: string | null;
-    moved: boolean;
-  } | null>(null);
-  const [draggingBoxId, setDraggingBoxId] = useState<string | null>(null);
-  const [dropTargetId, setDropTargetId] = useState<string | null>(null);
-
-  const [isDark, setIsDark] = useState<boolean>(() =>
-    typeof document !== 'undefined' && document.documentElement.classList.contains('dark')
-  );
-  useEffect(() => {
-    if (typeof document === 'undefined') return;
-    const obs = new MutationObserver(() => setIsDark(document.documentElement.classList.contains('dark')));
-    obs.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
-    return () => obs.disconnect();
+  const loadBoxes = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [st, list] = await Promise.all([ws.status(), ws.boxes().catch(() => [] as WhBox[])]);
+      setStatus(st); setBoxes(list);
+    } catch (e: any) { notify.error({ message: 'Склад недоступний', description: whErr(e) }); }
+    finally { setLoading(false); }
   }, []);
 
-  const clientToSvg = useCallback((clientX: number, clientY: number) => {
-    const svg = svgRef.current;
-    if (!svg) return { x: 0, y: 0 };
-    const rect = svg.getBoundingClientRect();
-    const x = VIEWBOX.minX + ((clientX - rect.left) / rect.width) * VIEWBOX.w;
-    const y = VIEWBOX.minY + ((clientY - rect.top) / rect.height) * VIEWBOX.h;
-    return { x, y };
+  const loadBox = useCallback(async (code: string) => {
+    setBoxLoading(true);
+    try { setBox(await ws.box(code)); }
+    catch (e: any) { notify.error({ message: `Коробка ${code}`, description: whErr(e) }); setBox(null); }
+    finally { setBoxLoading(false); }
   }, []);
 
-  // Швидкий доступ до коробок за id
-  const boxesById = useMemo(() => {
-    const o: Record<string, Box> = {};
-    for (const b of boxes) o[b.id] = b;
-    return o;
-  }, [boxes]);
-
-  // Початок drag — піднімає коробку (відʼєднує від батька, а її дітей лишає на місці зі збереженням позиції)
-  const handleBoxMouseDown = (e: React.MouseEvent, box: Box) => {
-    e.stopPropagation();
-    e.preventDefault();
-    const { x, y } = clientToSvg(e.clientX, e.clientY);
-    const eff = effectivePos(box, boxesById);
-
-    // Діти dragged box залишаються на тих самих абсолютних позиціях, просто стають "плаваючими" (parentId=null)
-    // А сама dragged тимчасово отримує abs = ефективна (поки користувач не відпустить)
-    setBoxes(prev => prev.map(b => {
-      if (b.id === box.id) {
-        return { ...b, absX: eff.x, absY: eff.y, parentId: null };
-      }
-      if (b.parentId === box.id) {
-        const ce = effectivePos(b, boxesById);
-        return { ...b, absX: ce.x, absY: ce.y, parentId: null };
-      }
-      return b;
-    }));
-
-    dragRef.current = {
-      boxId: box.id,
-      grabOffsetX: x - eff.x,
-      grabOffsetY: y - eff.y,
-      startAbsX: eff.x,
-      startAbsY: eff.y,
-      startParentId: box.parentId,
-      moved: false,
-    };
-    setDraggingBoxId(box.id);
-  };
-
-  // Глобальні move/up
   useEffect(() => {
-    const onMove = (e: MouseEvent) => {
-      const d = dragRef.current;
-      if (!d) return;
-      const { x, y } = clientToSvg(e.clientX, e.clientY);
-      const newX = x - d.grabOffsetX;
-      const newY = y - d.grabOffsetY;
-      if (Math.abs(newX - d.startAbsX) > 1 || Math.abs(newY - d.startAbsY) > 1) d.moved = true;
+    if (!isActive || loadedOnce.current) return;
+    loadedOnce.current = true;
+    void loadBoxes();
+  }, [isActive, loadBoxes]);
 
-      // Оновлюємо позицію
-      setBoxes(prev => prev.map(b => b.id === d.boxId ? { ...b, absX: newX, absY: newY } : b));
+  useEffect(() => { if (selectedCode) void loadBox(selectedCode); else setBox(null); }, [selectedCode, loadBox]);
 
-      // Шукаємо потенційну ціль для стакування — коробку під центром dragged
-      const cx = newX + (boxesById[d.boxId]?.w || 50) / 2;
-      const cy = newY + (boxesById[d.boxId]?.h || 40) / 2;
-      const draggedSubtree = new Set<string>();
-      collectSubtree(d.boxId, boxes, draggedSubtree);
-      const target = findBoxAt(cx, cy, boxes, boxesById, draggedSubtree);
-      if (target) {
-        // Перевіряємо що стак ≤ MAX_STACK
-        const draggedHeight = subtreeHeight(d.boxId, boxes); // тільки dragged (без дітей)=1, але можуть бути плаваючі діти
-        const newChainLen = depthFromFloor(target.id, boxesById) + 1 + (draggedHeight - 1);
-        if (newChainLen <= MAX_STACK) {
-          setDropTargetId(target.id);
-        } else {
-          setDropTargetId(null);
-        }
-      } else {
-        setDropTargetId(null);
-      }
-    };
+  const refreshAll = useCallback(async () => {
+    await loadBoxes();
+    if (selectedCode) await loadBox(selectedCode);
+  }, [loadBoxes, loadBox, selectedCode]);
 
-    const onUp = () => {
-      const d = dragRef.current;
-      if (!d) return;
-      const dragged = boxesById[d.boxId];
-      if (!dragged) {
-        dragRef.current = null;
-        setDraggingBoxId(null);
-        setDropTargetId(null);
-        return;
-      }
-
-      const cx = dragged.absX + dragged.w / 2;
-      const cy = dragged.absY + dragged.h / 2;
-
-      // Чи є валідна ціль для стакування?
-      const draggedSubtree = new Set<string>();
-      collectSubtree(d.boxId, boxes, draggedSubtree);
-      const target = findBoxAt(cx, cy, boxes, boxesById, draggedSubtree);
-
-      setBoxes(prev => {
-        const byId: Record<string, Box> = {};
-        for (const b of prev) byId[b.id] = b;
-
-        if (target) {
-          const draggedH = subtreeHeight(d.boxId, prev);
-          const newChain = depthFromFloor(target.id, byId) + 1 + (draggedH - 1);
-          if (newChain <= MAX_STACK) {
-            // Стакуємо: dragged.parentId = target; його сектор = сектор target
-            return prev.map(b => b.id === d.boxId ? { ...b, parentId: target.id, sectorKey: target.sectorKey } : b);
-          }
-        }
-
-        // Інакше — кидаємо на підлогу. Знаходимо сектор під центром.
-        const sec = findSectorAt(cx, cy);
-        if (sec) {
-          const clampedX = Math.max(sec.x + 2, Math.min(sec.x + sec.w - dragged.w - 2, dragged.absX));
-          const clampedY = Math.max(sec.y + 2, Math.min(sec.y + sec.h - dragged.h - 2, dragged.absY));
-          return prev.map(b => b.id === d.boxId ? { ...b, absX: clampedX, absY: clampedY, sectorKey: sec.key, parentId: null } : b);
-        }
-        // Поза будь-яким сектором — повертаємо на старт
-        return prev.map(b => b.id === d.boxId ? { ...b, absX: d.startAbsX, absY: d.startAbsY, parentId: null } : b);
-      });
-
-      dragRef.current = null;
-      setDraggingBoxId(null);
-      setDropTargetId(null);
-    };
-
-    window.addEventListener('mousemove', onMove);
-    window.addEventListener('mouseup', onUp);
-    return () => {
-      window.removeEventListener('mousemove', onMove);
-      window.removeEventListener('mouseup', onUp);
-    };
-  }, [clientToSvg, boxes, boxesById]);
-
-  const handleBoxClick = (e: React.MouseEvent, box: Box) => {
-    e.stopPropagation();
-    if (dragRef.current?.moved) return;
-    setSelectedBoxId(box.id);
-    setSelectedSector(box.sectorKey);
+  const doSearch = async () => {
+    const q = search.trim();
+    if (!q) { setSearchHits(null); return; }
+    try { setSearchHits(await ws.search(q)); }
+    catch (e: any) { notify.error({ message: 'Пошук', description: whErr(e) }); }
   };
 
-  const selectedBox = boxes.find(b => b.id === selectedBoxId) || null;
-  const selectedSectorData = selectedSector ? sectorByKey(selectedSector) : null;
+  const visibleBoxes = useMemo(() => {
+    const f = filter.trim().toLowerCase();
+    const list = boxes.filter(b => b.status !== 'archived');
+    if (!f) return list;
+    return list.filter(b => `${b.code} ${b.title || ''} ${b.location || ''}`.toLowerCase().includes(f));
+  }, [boxes, filter]);
 
-  const addTestBox = (sectorKey: SectorKey) => {
-    const sec = sectorByKey(sectorKey);
-    const id = `box-${Date.now()}`;
-    const offset = boxes.filter(b => b.sectorKey === sectorKey && !b.parentId).length;
-    setBoxes(prev => [...prev, {
-      id,
-      sectorKey,
-      absX: sec.x + 20 + (offset % 4) * 60,
-      absY: sec.y + 20 + Math.floor(offset / 4) * 50,
-      w: 50, h: 40,
-      parentId: null,
-      productNumbers: [],
-    }]);
-    setSelectedBoxId(id);
-  };
-
-  const removeBox = () => {
-    if (!selectedBox) return;
-    // При видаленні коробки — її діти стають "плаваючими" на тих самих позиціях
-    setBoxes(prev => {
-      const byId: Record<string, Box> = {};
-      for (const b of prev) byId[b.id] = b;
-      return prev
-        .filter(b => b.id !== selectedBox.id)
-        .map(b => {
-          if (b.parentId === selectedBox.id) {
-            const ep = effectivePos(b, byId);
-            return { ...b, absX: ep.x, absY: ep.y, parentId: null };
-          }
-          return b;
-        });
-    });
-    setSelectedBoxId(null);
-  };
-
-  const sortedSectors = useMemo(() => [...SECTORS].sort((a, b) => (a.z ?? 1) - (b.z ?? 1)), []);
-
-  // Сортуємо коробки для рендеру: нижні (depth=0) спершу, верхні (вищий depth) — пізніше
-  const renderOrder = useMemo(() => {
-    return [...boxes].sort((a, b) => depthFromFloor(a.id, boxesById) - depthFromFloor(b.id, boxesById));
-  }, [boxes, boxesById]);
+  const totals = useMemo(() => ({
+    boxes: visibleBoxes.length,
+    units: visibleBoxes.reduce((s, b) => s + b.units, 0),
+    value: visibleBoxes.reduce((s, b) => s + b.value, 0),
+    check: visibleBoxes.filter(b => b.needs_check).length,
+  }), [visibleBoxes]);
 
   return (
-    <div className="flex flex-col gap-4">
-      <div className="flex items-center justify-between flex-wrap gap-2">
-        <div>
-          <h1 className="text-xl font-semibold text-gray-900 dark:text-gray-100">Склад</h1>
-          <p className="text-sm text-gray-500 dark:text-gray-400">
-            Перетягуйте коробки мишкою. Щоб поставити одну на іншу — перетягніть і відпустіть зверху (зелена рамка = можна стакувати, макс ×{MAX_STACK}). Щоб зняти — просто потягніть верхню вбік.
-          </p>
-        </div>
-        <div className="text-xs text-gray-500 dark:text-gray-400">Масштаб: 1 клітинка ≈ 1 м</div>
-      </div>
-
-      <div className="grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-4">
-        <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-3 shadow-sm">
-          <div className="w-full overflow-auto">
-            <svg
-              ref={svgRef}
-              viewBox={`${VIEWBOX.minX} ${VIEWBOX.minY} ${VIEWBOX.w} ${VIEWBOX.h}`}
-              className="w-full h-auto select-none"
-              style={{ maxHeight: '75vh' }}
-              onClick={() => { setSelectedSector(null); setSelectedBoxId(null); }}
-            >
-              <defs>
-                {/* Дрібна сітка підлоги */}
-                <pattern id="grid-fine" width="25" height="25" patternUnits="userSpaceOnUse">
-                  <path d="M 25 0 L 0 0 0 25" fill="none" stroke={isDark ? '#1f1f1f' : '#ebe9e3'} strokeWidth="0.4" />
-                </pattern>
-                {/* Тінь коробок */}
-                <filter id="box-drop-shadow" x="-20%" y="-20%" width="150%" height="170%">
-                  <feDropShadow dx="1" dy="2" stdDeviation="2" floodColor="rgba(0,0,0,0.3)" />
-                </filter>
-                {/* М'який світловий градієнт зверху для зон */}
-                <linearGradient id="zone-light" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="rgba(255,255,255,0.30)" />
-                  <stop offset="100%" stopColor="rgba(255,255,255,0)" />
-                </linearGradient>
-              </defs>
-
-              {/* Фон підлоги */}
-              <rect x="-20" y="-20" width="940" height="840" fill={isDark ? '#0e0e0e' : '#f6f4ef'} />
-              <rect x="0" y="0" width="900" height="800" fill={isDark ? '#141414' : '#fbfaf6'} />
-              <rect x="0" y="0" width="900" height="800" fill="url(#grid-fine)" />
-
-              {/* Сектори — мінімалістично */}
-              {sortedSectors.map(s => {
-                const isHover = hoveredSector === s.key;
-                const isSel = selectedSector === s.key;
-                const baseFill = isDark ? s.fillDark : s.fill;
-                const { cx, cy } = sectorCenter(s);
-                const labelFs = Math.min(15, Math.max(9, Math.min(s.w, s.h) / 9));
-
-                return (
-                  <g key={s.key}
-                    onMouseEnter={() => setHoveredSector(s.key)}
-                    onMouseLeave={() => setHoveredSector(null)}
-                    onClick={(e) => { e.stopPropagation(); setSelectedSector(s.key); setSelectedBoxId(null); }}
-                    style={{ cursor: 'pointer', transition: 'all 0.15s ease' }}>
-
-                    {/* Заливка */}
-                    <rect x={s.x} y={s.y} width={s.w} height={s.h}
-                      fill={baseFill}
-                      fillOpacity={isHover || isSel ? 1 : 0.95}
-                    />
-                    {/* М'який світловий градієнт зверху */}
-                    <rect x={s.x} y={s.y} width={s.w} height={Math.min(50, s.h * 0.35)}
-                      fill="url(#zone-light)"
-                      style={{ pointerEvents: 'none' }}
-                    />
-                    {/* Тонка hairline-рамка (показується тільки на hover/select) */}
-                    {(isHover || isSel) && (
-                      <rect x={s.x + 0.5} y={s.y + 0.5} width={s.w - 1} height={s.h - 1}
-                        fill="none"
-                        stroke={s.stroke}
-                        strokeWidth={isSel ? 1.4 : 1}
-                        style={{ pointerEvents: 'none' }}
-                      />
-                    )}
-                    {/* Підпис */}
-                    <text x={cx} y={cy}
-                      textAnchor="middle" dominantBaseline="central"
-                      fontSize={labelFs}
-                      fontWeight="600"
-                      letterSpacing="1.2"
-                      fontFamily="ui-sans-serif, system-ui, sans-serif"
-                      fill={isDark ? 'rgba(235,230,220,0.75)' : 'rgba(40,35,28,0.65)'}
-                      style={{ pointerEvents: 'none', userSelect: 'none' }}>
-                      {s.label}
-                    </text>
-                  </g>
-                );
-              })}
-
-              {/* Стіни і двері */}
-              {WALLS.map((w, i) => renderWall(w, i, isDark ? '#c8a060' : '#a16207', isDark))}
-
-              {/* Коробки */}
-              {renderOrder.map(b => {
-                const pos = effectivePos(b, boxesById);
-                const layer = depthFromFloor(b.id, boxesById);
-                return (
-                  <BoxSVG
-                    key={b.id}
-                    box={b}
-                    posX={pos.x}
-                    posY={pos.y}
-                    isDark={isDark}
-                    isSelected={selectedBoxId === b.id}
-                    isDragging={draggingBoxId === b.id}
-                    isDropTarget={dropTargetId === b.id}
-                    layerLevel={layer}
-                    onMouseDown={(e) => handleBoxMouseDown(e, b)}
-                    onClick={(e) => handleBoxClick(e, b)}
-                  />
-                );
-              })}
-
-              {/* Підписи метрів */}
-              <g style={{ pointerEvents: 'none' }}>
-                {[0, 300, 600, 900].map((x, i) => (
-                  <text key={i} x={x} y={-6} textAnchor="middle" fontSize="9"
-                    fill={isDark ? '#888' : '#999'} letterSpacing="0.3">
-                    {i === 0 ? '0' : `${i * 3}м`}
-                  </text>
-                ))}
-                {[{ y: 0, label: '0' }, { y: 300, label: '3м' }, { y: 600, label: '6м' }, { y: 800, label: '8м' }].map((m, i) => (
-                  <text key={`y${i}`} x={-8} y={m.y + 3} textAnchor="end" fontSize="9"
-                    fill={isDark ? '#888' : '#999'} letterSpacing="0.3">
-                    {m.label}
-                  </text>
-                ))}
-              </g>
-            </svg>
+    <MainLayout filterPanelContent={null} onRefresh={refreshAll} isRefreshing={loading} onResetFilters={() => { setFilter(''); setSearch(''); setSearchHits(null); }}>
+      <div className="p-4 pb-10 bg-white dark:bg-gray-800 shadow-md rounded-lg w-full min-h-[70vh]">
+        {/* Шапка */}
+        <div className="flex flex-wrap items-center gap-3 mb-4">
+          <h1 className="text-2xl font-semibold text-gray-900 dark:text-gray-100">Склад</h1>
+          <div className="flex items-center rounded-lg border border-gray-200 dark:border-gray-700 overflow-hidden text-sm">
+            <button className={`px-3 py-1.5 ${tab === 'boxes' ? 'bg-black text-white dark:bg-white dark:text-black' : 'text-gray-600 dark:text-gray-300'}`} onClick={() => setTab('boxes')}>Коробки</button>
+            <button className={`px-3 py-1.5 ${tab === 'map' ? 'bg-black text-white dark:bg-white dark:text-black' : 'text-gray-600 dark:text-gray-300'}`} onClick={() => setTab('map')} title="Прототип плану складу (ще без прив'язки коробок)">Карта · прототип</button>
           </div>
-        </div>
-
-        <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-4 shadow-sm flex flex-col gap-3">
-          {selectedBox ? (() => {
-            const depth = depthFromFloor(selectedBox.id, boxesById);
-            const subH = subtreeHeight(selectedBox.id, boxes);
-            return (
-              <>
-                <h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">Коробка</h2>
-                <div className="text-sm text-gray-600 dark:text-gray-300 space-y-1">
-                  <div>Сектор: <span className="font-medium">{sectorByKey(selectedBox.sectorKey).label}</span></div>
-                  <div>Розмір: {selectedBox.w} × {selectedBox.h} см</div>
-                  <div>Рівень у стаку: <span className="font-medium">{depth + 1}</span> з {MAX_STACK}</div>
-                  {subH > 1 && <div>Зверху: {subH - 1} коробок</div>}
-                  {selectedBox.parentId && <div className="text-xs text-gray-500">Стоїть на: <code>{selectedBox.parentId}</code></div>}
-                  <div>Товарів: {selectedBox.productNumbers?.length || 0}</div>
-                </div>
-                <div className="flex items-center gap-2 mt-2 flex-wrap">
-                  <button onClick={removeBox}
-                    className="ml-auto px-3 py-1 text-sm rounded border border-red-300 text-red-600 hover:bg-red-50 dark:border-red-700 dark:text-red-400 dark:hover:bg-red-900/20">Видалити</button>
-                </div>
-                <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-                  Перетягніть на іншу коробку щоб стакувати, або в порожнє місце сектора щоб поставити окремо.
-                </p>
-              </>
-            );
-          })() : selectedSectorData ? (
+          {status && (
+            <span className={status.reachable ? CHIP_MUTED : CHIP_ERR} title={status.message}>
+              {status.reachable ? 'хмара · онлайн' : status.configured ? 'хмара недоступна' : 'не налаштовано'}
+            </span>
+          )}
+          <div className="flex-1" />
+          {tab === 'boxes' && (
             <>
-              <h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">Сектор: {selectedSectorData.label}</h2>
-              <div className="text-sm text-gray-600 dark:text-gray-300 space-y-1">
-                <div>Габарити: {selectedSectorData.w} × {selectedSectorData.h} см</div>
-                <div>Коробок у секторі: {boxes.filter(b => b.sectorKey === selectedSectorData.key).length}</div>
-              </div>
-              {selectedSectorData.canHoldBoxes ? (
-                <button onClick={() => addTestBox(selectedSectorData.key)}
-                  className="mt-2 px-3 py-1.5 text-sm rounded bg-blue-600 hover:bg-blue-700 text-white font-medium">+ Додати тестову коробку</button>
-              ) : (
-                <p className="text-xs text-gray-500 dark:text-gray-400">Цей сектор не призначений для коробок (меблі).</p>
-              )}
-            </>
-          ) : (
-            <>
-              <h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">Легенда</h2>
-              <ul className="text-sm space-y-1.5">
-                {SECTORS.map(s => (
-                  <li key={s.key}
-                    className="flex items-center gap-2 cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700/40 px-1 py-0.5 rounded"
-                    onMouseEnter={() => setHoveredSector(s.key)}
-                    onMouseLeave={() => setHoveredSector(null)}
-                    onClick={() => setSelectedSector(s.key)}>
-                    <span className="inline-block w-3.5 h-3.5 rounded-sm shadow-sm border"
-                      style={{
-                        background: isDark ? s.fillDark : s.fill,
-                        borderColor: s.stroke,
-                        boxShadow: `inset 0 1px 0 rgba(255,255,255,0.3), 1px 1px 2px rgba(0,0,0,0.15)`
-                      }} />
-                    <span className="text-gray-700 dark:text-gray-200">{s.label}</span>
-                  </li>
-                ))}
-              </ul>
-              <p className="text-xs text-gray-500 dark:text-gray-400 mt-2">
-                Натисніть на сектор для додавання коробок. Стакувати — перетягуванням однієї коробки на іншу (макс {MAX_STACK} в висоту). Знімати — потягнути вбік.
-              </p>
+              <form className="flex items-center gap-1" onSubmit={e => { e.preventDefault(); void doSearch(); }}>
+                <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Де лежить #номер…"
+                  className="w-48 px-3 py-1.5 text-sm rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900" />
+                <Button htmlType="submit" icon={<SearchOutlined />} />
+              </form>
+              <Button icon={<ReloadOutlined />} onClick={() => void refreshAll()} loading={loading}>Оновити</Button>
+              <Button type="primary" icon={<PlusOutlined />} onClick={() => setNewOpen(true)}>Нова коробка</Button>
             </>
           )}
+        </div>
+
+        {tab === 'map' ? (
+          <WarehouseMapPrototype />
+        ) : (
+          <>
+            {searchHits && (
+              <div className="mb-4 rounded-xl border border-gray-200 dark:border-gray-700 p-3">
+                <div className="flex items-center justify-between mb-2">
+                  <div className="text-sm font-semibold">Де лежить «{search}» · {searchHits.length}</div>
+                  <button className="text-xs text-gray-400 hover:text-gray-700" onClick={() => setSearchHits(null)}>сховати</button>
+                </div>
+                {searchHits.length === 0 && <div className="text-sm text-gray-400">Не знайдено</div>}
+                <div className="grid gap-1">
+                  {searchHits.map(p => (
+                    <div key={p.id} className="flex items-center gap-3 text-sm">
+                      <button className="font-semibold hover:underline" onClick={() => setDetailId(p.id)}>{p.number}</button>
+                      <span className="text-gray-500">{p.size}{p.insole ? ` · ${p.insole} см` : ''} · {[p.brand, p.model].filter(Boolean).join(' ')}</span>
+                      <span className="flex-1" />
+                      {(p.locations || []).length === 0
+                        ? <span className="text-gray-400">не в коробці</span>
+                        : (p.locations || []).map(l => (
+                          <button key={l.box_code} className={CHIP_DARK} onClick={() => setSelectedCode(l.box_code)}>{l.box_code}{l.qty > 1 ? ` ×${l.qty}` : ''}</button>
+                        ))}
+                      {p.available_qty <= 0 && <span className={CHIP_ERR}>продано</span>}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div className="grid grid-cols-1 lg:grid-cols-[360px_minmax(0,1fr)] gap-4">
+              {/* Список коробок */}
+              <div className="min-w-0">
+                <div className="flex items-center gap-2 mb-2">
+                  <input value={filter} onChange={e => setFilter(e.target.value)} placeholder="Фільтр: код, назва, місце"
+                    className="flex-1 px-3 py-1.5 text-sm rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900" />
+                </div>
+                <div className="text-xs text-gray-400 mb-2">
+                  {totals.boxes} коробок · {totals.units} шт · {money(totals.value)}{totals.check ? ` · перевірити: ${totals.check}` : ''}
+                </div>
+                <div className="grid gap-1.5 max-h-[70vh] overflow-y-auto pr-1">
+                  {!loading && visibleBoxes.length === 0 && (
+                    <div className="text-sm text-gray-400 py-6 text-center">
+                      {status && !status.reachable ? status.message : 'Коробок ще нема. Створіть першу — або працівник створить зі сканера.'}
+                    </div>
+                  )}
+                  {visibleBoxes.map(b => (
+                    <button key={b.id} onClick={() => setSelectedCode(b.code)}
+                      className={`text-left rounded-xl border px-3 py-2 transition-colors ${selectedCode === b.code ? 'border-black dark:border-white bg-gray-50 dark:bg-gray-900' : 'border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-900'}`}>
+                      <div className="flex items-center gap-2">
+                        <span className="text-lg font-extrabold w-12">{b.code}</span>
+                        <span className="flex-1 min-w-0 truncate text-sm text-gray-800 dark:text-gray-100">{b.title || <span className="text-gray-400">без назви</span>}</span>
+                        <span className="text-xs text-gray-500 whitespace-nowrap">{b.units} шт</span>
+                      </div>
+                      <div className="flex items-center gap-1.5 mt-1 flex-wrap">
+                        {b.location && <span className="text-xs text-gray-400 truncate">{b.location}</span>}
+                        {b.status === 'sealed' && <span className={CHIP_MUTED}>запечатана</span>}
+                        {b.needs_check && <span className={CHIP_WARN}>перевірити</span>}
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Картка коробки */}
+              <div className="min-w-0">
+                {!selectedCode ? (
+                  <div className="h-full min-h-[300px] flex items-center justify-center text-sm text-gray-400 rounded-xl border border-dashed border-gray-200 dark:border-gray-700">
+                    Оберіть коробку ліворуч
+                  </div>
+                ) : box ? (
+                  <BoxCard box={box} loading={boxLoading}
+                    onChanged={async () => { await loadBox(box.code); await loadBoxes(); }}
+                    onDeleted={async () => { setSelectedCode(null); await loadBoxes(); }}
+                    onOpenProduct={id => setDetailId(id)} />
+                ) : (
+                  <div className="text-sm text-gray-400 p-6">{boxLoading ? 'Завантаження…' : 'Коробку не знайдено'}</div>
+                )}
+              </div>
+            </div>
+          </>
+        )}
+      </div>
+
+      {newOpen && (
+        <NewBoxDialog onClose={() => setNewOpen(false)} onCreated={async b => { setNewOpen(false); await loadBoxes(); setSelectedCode(b.code); }} />
+      )}
+      <ProductDetailsModal productId={detailId} open={!!detailId} onClose={() => setDetailId(null)} />
+    </MainLayout>
+  );
+};
+
+/* ───────────────────────────── Картка коробки ────────────────────────────── */
+
+const BoxCard: React.FC<{
+  box: WhBox; loading: boolean;
+  onChanged: () => Promise<void>; onDeleted: () => Promise<void>; onOpenProduct: (id: number) => void;
+}> = ({ box, loading, onChanged, onDeleted, onOpenProduct }) => {
+  const [busy, setBusy] = useState(false);
+  const [edit, setEdit] = useState(false);
+  const [title, setTitle] = useState(box.title || '');
+  const [loc, setLoc] = useState(box.location || '');
+  const [sel, setSel] = useState<Set<number>>(new Set());
+  const [events, setEvents] = useState<WhEvent[] | null>(null);
+  const [addQ, setAddQ] = useState('');
+  const [addHits, setAddHits] = useState<WhProduct[] | null>(null);
+  const [labelOpen, setLabelOpen] = useState(false);
+  const contents = box.contents || [];
+
+  useEffect(() => { setTitle(box.title || ''); setLoc(box.location || ''); setEdit(false); setSel(new Set()); setEvents(null); setAddHits(null); setAddQ(''); }, [box.code, box.updated_at, box.title, box.location]);
+
+  const run = async (fn: () => Promise<unknown>, okMsg?: string) => {
+    setBusy(true);
+    try { await fn(); if (okMsg) notify.success({ message: okMsg }); await onChanged(); }
+    catch (e: any) { notify.error({ message: 'Не вдалося', description: whErr(e) }); }
+    finally { setBusy(false); }
+  };
+
+  const addSearch = async () => {
+    const q = addQ.trim();
+    if (!q) return;
+    try { setAddHits(await ws.search(q)); }
+    catch (e: any) { notify.error({ message: 'Пошук', description: whErr(e) }); }
+  };
+
+  const packOne = async (p: WhProduct) => {
+    setBusy(true);
+    try {
+      try { await ws.pack(box.code, p.id, 1); }
+      catch (e: any) {
+        const d = e?.response?.data?.detail;
+        if (e?.response?.status === 409 && d?.code === 'elsewhere') {
+          if (!(await confirmDialog({ title: 'Товар уже в іншій коробці', body: `${d.message}. Перенести в ${box.code}?`, okText: 'Перенести' }))) return;
+          await ws.pack(box.code, p.id, 1, true);
+        } else throw e;
+      }
+      notify.success({ message: `${p.number} → ${box.code}` });
+      setAddHits(null); setAddQ('');
+      await onChanged();
+    } catch (e: any) { notify.error({ message: 'Не вдалося запакувати', description: whErr(e) }); }
+    finally { setBusy(false); }
+  };
+
+  const unpackSelected = async () => {
+    const ids = contents.filter(c => sel.has(c.item_id));
+    if (ids.length === 0) return;
+    if (!(await confirmDialog({ title: `Вийняти ${ids.length} поз. з ${box.code}?`, okText: 'Вийняти' }))) return;
+    await run(async () => { for (const c of ids) await ws.unpackFrom(box.code, c.product_id); }, `Вийнято ${ids.length} поз.`);
+  };
+
+  const statusChip = box.status === 'sealed' ? <span className={CHIP_DARK}><LockOutlined className="mr-1" />запечатана</span>
+    : box.status === 'archived' ? <span className={CHIP_ERR}>видалена</span> : <span className={CHIP_MUTED}>відкрита</span>;
+
+  return (
+    <div className={`rounded-xl border border-gray-200 dark:border-gray-700 ${loading ? 'opacity-60' : ''}`}>
+      {/* Шапка коробки */}
+      <div className="px-4 py-3 border-b border-gray-100 dark:border-gray-700 flex flex-wrap items-start gap-3">
+        <div className="text-3xl font-extrabold leading-none">{box.code}</div>
+        <div className="flex-1 min-w-[200px]">
+          {!edit ? (
+            <div className="cursor-text" onClick={() => setEdit(true)} title="Натисніть, щоб змінити назву чи місце">
+              <div className="text-base font-medium text-gray-900 dark:text-gray-100">{box.title || <span className="text-gray-400">без назви</span>}</div>
+              <div className="text-sm text-gray-500">{box.location || <span className="text-gray-400">місце не вказано</span>}</div>
+            </div>
+          ) : (
+            <div className="flex flex-col gap-1.5 max-w-md">
+              <input value={title} onChange={e => setTitle(e.target.value)} placeholder="Назва (що всередині)" className="px-2 py-1 text-sm rounded-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900" />
+              <input value={loc} onChange={e => setLoc(e.target.value)} placeholder="Де стоїть (стелаж, полиця)" className="px-2 py-1 text-sm rounded-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900" />
+              <div className="flex gap-2">
+                <Button size="small" type="primary" loading={busy} onClick={() => run(() => ws.patchBox(box.code, { title, location: loc }), 'Збережено')}>Зберегти</Button>
+                <Button size="small" onClick={() => setEdit(false)}>Скасувати</Button>
+              </div>
+            </div>
+          )}
+          <div className="flex flex-wrap gap-1.5 mt-2">
+            {statusChip}
+            <span className={CHIP_MUTED}>{box.items} поз. · {box.units} шт</span>
+            {box.value > 0 && <span className={CHIP_MUTED}>{money(box.value)}</span>}
+            {box.needs_check && <span className={CHIP_WARN}>перевірити</span>}
+            {box.created_by && <span className="text-[11px] text-gray-400 self-center">створив: {actorName(box.created_by)} · {when(box.created_at)}</span>}
+          </div>
+        </div>
+        <div className="flex flex-wrap gap-1.5">
+          <Button icon={<PrinterOutlined />} onClick={() => setLabelOpen(true)}>Етикетка</Button>
+          {box.needs_check && <Button icon={<CheckOutlined />} loading={busy} onClick={() => run(() => ws.check(box.code), 'Коробку звірено')}>Звірено</Button>}
+          {box.status === 'sealed'
+            ? <Button icon={<UnlockOutlined />} loading={busy} onClick={() => run(() => ws.open(box.code), 'Відкрито')}>Відкрити</Button>
+            : <Button icon={<LockOutlined />} loading={busy} disabled={box.status === 'archived'} onClick={() => run(() => ws.seal(box.code), 'Запечатано')}>Запечатати</Button>}
+          <Dropdown trigger={['click']} menu={{
+            items: [
+              { key: 'unpack-all', icon: <ExportOutlined />, label: 'Розпакувати все', disabled: contents.length === 0 },
+              { type: 'divider' },
+              { key: 'delete', icon: <DeleteOutlined />, label: 'Видалити коробку', danger: true },
+            ],
+            onClick: async ({ key }) => {
+              if (key === 'unpack-all') {
+                if (await confirmDialog({ title: `Розпакувати всю коробку ${box.code}?`, body: `${box.units} шт стануть «без коробки».`, okText: 'Розпакувати' }))
+                  await run(() => ws.unpackAll(box.code), 'Коробку розпаковано');
+              } else if (key === 'delete') {
+                const withItems = contents.length > 0;
+                if (!(await confirmDialog({ title: `Видалити коробку ${box.code}?`, body: withItems ? `У ній ще ${box.units} шт — усе стане «без коробки». Історія збережеться.` : 'Історія збережеться.', okText: 'Видалити', kind: 'delete', danger: true }))) return;
+                setBusy(true);
+                try { await ws.deleteBox(box.code, withItems); notify.success({ message: `Коробку ${box.code} видалено` }); await onDeleted(); }
+                catch (e: any) { notify.error({ message: 'Не вдалося видалити', description: whErr(e) }); }
+                finally { setBusy(false); }
+              }
+            },
+          }}>
+            <Button>Ще <DownOutlined /></Button>
+          </Dropdown>
+        </div>
+      </div>
+
+      {/* Додати товар у коробку */}
+      <div className="px-4 py-2 border-b border-gray-100 dark:border-gray-700 flex flex-wrap items-center gap-2">
+        <InboxOutlined className="text-gray-400" />
+        <form className="flex items-center gap-1" onSubmit={e => { e.preventDefault(); void addSearch(); }}>
+          <input value={addQ} onChange={e => setAddQ(e.target.value)} placeholder="Покласти товар: #номер"
+            className="w-44 px-2 py-1 text-sm rounded-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900" />
+          <Button size="small" htmlType="submit" disabled={!addQ.trim() || busy}>Знайти</Button>
+        </form>
+        {addHits && (
+          <div className="flex flex-wrap gap-1.5 items-center">
+            {addHits.length === 0 && <span className="text-xs text-gray-400">не знайдено</span>}
+            {addHits.map(p => (
+              <Tooltip key={p.id} title={`${[p.brand, p.model, p.color].filter(Boolean).join(' · ')} · наявно ${p.available_qty}${(p.locations || []).length ? ` · у ${(p.locations || []).map(l => l.box_code).join(', ')}` : ''}`}>
+                <button disabled={busy} onClick={() => void packOne(p)}
+                  className={`${CHIP} ${p.available_qty <= 0 ? 'border-rose-200 text-rose-600' : 'border-gray-300 hover:bg-black hover:text-white dark:hover:bg-white dark:hover:text-black'} py-1`}>
+                  {p.number} {p.size}{p.available_qty <= 0 ? ' · продано' : ''}
+                </button>
+              </Tooltip>
+            ))}
+            <button className="text-xs text-gray-400" onClick={() => setAddHits(null)}>×</button>
+          </div>
+        )}
+        <div className="flex-1" />
+        {sel.size > 0 && <Button size="small" icon={<ExportOutlined />} loading={busy} onClick={() => void unpackSelected()}>Вийняти вибрані ({sel.size})</Button>}
+      </div>
+
+      {/* Вміст */}
+      <div className="overflow-x-auto">
+        {contents.length === 0 ? (
+          <div className="p-6 text-sm text-gray-400 text-center">Порожня</div>
+        ) : (
+          <table className="w-full text-sm">
+            <thead className="text-[11px] uppercase tracking-wide text-gray-400">
+              <tr>
+                <th className="px-3 py-2 w-8"><input type="checkbox" className="accent-black" checked={sel.size === contents.length} onChange={e => setSel(e.target.checked ? new Set(contents.map(c => c.item_id)) : new Set())} /></th>
+                <th className="px-2 py-2 text-left font-medium">Товар</th>
+                <th className="px-2 py-2 text-left font-medium">Розмір</th>
+                <th className="px-2 py-2 text-left font-medium">Бренд · модель</th>
+                <th className="px-2 py-2 text-left font-medium">Стан</th>
+                <th className="px-2 py-2 text-right font-medium">Ціна</th>
+                <th className="px-2 py-2 text-right font-medium">К-сть</th>
+                <th className="px-2 py-2 text-left font-medium">Поклав</th>
+                <th className="px-2 py-2" />
+              </tr>
+            </thead>
+            <tbody>
+              {contents.map(c => {
+                const p = c.product;
+                return (
+                  <tr key={c.item_id} className="border-t border-gray-100 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-900">
+                    <td className="px-3 py-1.5"><input type="checkbox" className="accent-black" checked={sel.has(c.item_id)} onChange={e => setSel(s => { const n = new Set(s); if (e.target.checked) n.add(c.item_id); else n.delete(c.item_id); return n; })} /></td>
+                    <td className="px-2 py-1.5">
+                      <div className="flex items-center gap-2">
+                        {p.image ? <img src={p.image} alt="" className="w-9 h-9 rounded-md object-cover bg-gray-100" loading="lazy" /> : <div className="w-9 h-9 rounded-md bg-gray-100 dark:bg-gray-700" />}
+                        <button className="font-semibold hover:underline" onClick={() => onOpenProduct(p.id)} disabled={!!p.missing}>{p.number}</button>
+                        {p.missing && <span className={CHIP_WARN}>запис зник</span>}
+                        {!p.missing && p.available_qty <= 0 && <span className={CHIP_ERR}>продано</span>}
+                      </div>
+                    </td>
+                    <td className="px-2 py-1.5 whitespace-nowrap">{p.size}{p.insole ? <span className="text-gray-400"> · {p.insole}</span> : null}</td>
+                    <td className="px-2 py-1.5 text-gray-600 dark:text-gray-300">{[p.brand, p.model].filter(Boolean).join(' · ')}{p.color ? <span className="text-gray-400"> · {p.color}</span> : null}</td>
+                    <td className="px-2 py-1.5 text-gray-600 dark:text-gray-300">{p.condition || ''}</td>
+                    <td className="px-2 py-1.5 text-right whitespace-nowrap">{money(p.price)}</td>
+                    <td className="px-2 py-1.5 text-right font-semibold">{c.qty}</td>
+                    <td className="px-2 py-1.5 text-xs text-gray-400 whitespace-nowrap">{actorName(c.packed_by)} · {when(c.packed_at)}</td>
+                    <td className="px-2 py-1.5 text-right whitespace-nowrap">
+                      <Button size="small" loading={busy} onClick={() => run(() => ws.unpackFrom(box.code, c.product_id, c.qty > 1 ? 1 : undefined), `${p.number} вийнято`)}>Вийняти{c.qty > 1 ? ' 1' : ''}</Button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      {/* Журнал */}
+      <div className="px-4 py-2 border-t border-gray-100 dark:border-gray-700">
+        {events === null ? (
+          <button className="text-xs text-gray-400 hover:text-gray-700" onClick={async () => { try { setEvents(await ws.events({ box: box.code, limit: 40 })); } catch { setEvents([]); } }}>Показати журнал коробки</button>
+        ) : (
+          <div className="text-xs">
+            <div className="text-gray-400 mb-1">Журнал · {events.length}</div>
+            {events.length === 0 && <div className="text-gray-400">порожньо</div>}
+            {events.map(e => (
+              <div key={e.id} className="flex gap-2 py-0.5 border-t border-gray-50 dark:border-gray-800">
+                <span className="text-gray-400 w-28 shrink-0">{when(e.at)}</span>
+                <span className="w-24 shrink-0 text-gray-500">{KIND_UA[e.kind] || e.kind}</span>
+                <span className="flex-1 font-medium">{e.productnumber ? e.productnumber.replace(/^#/, '') : ''}{e.qty && e.qty > 1 ? ` ×${e.qty}` : ''}{e.details && (e.details as any).from?.length ? ` з ${(e.details as any).from.join(', ')}` : ''}</span>
+                <span className="text-gray-400">{actorName(e.actor)}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {labelOpen && <BoxLabelDialog box={box} onClose={() => setLabelOpen(false)} />}
+    </div>
+  );
+};
+
+/* ───────────────────────────── Нова коробка ──────────────────────────────── */
+
+const NewBoxDialog: React.FC<{ onClose: () => void; onCreated: (b: WhBox) => Promise<void> }> = ({ onClose, onCreated }) => {
+  const [cat, setCat] = useState('Z');
+  const [code, setCode] = useState('');
+  const [title, setTitle] = useState('');
+  const [loc, setLoc] = useState('');
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { ws.nextCode(cat).then(setCode).catch(() => {}); }, [cat]);
+  return (
+    <div className="bms-dialog-host fixed inset-0 z-[100] flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/45 backdrop-blur-[2px]" onClick={busy ? undefined : onClose} />
+      <div className="relative w-full max-w-md rounded-2xl bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 shadow-2xl overflow-hidden bms-fade-in">
+        <div className="px-5 py-4 border-b border-gray-100 dark:border-gray-800 text-base font-semibold">Нова коробка</div>
+        <div className="px-5 py-4 space-y-3">
+          <div>
+            <div className="text-[11px] uppercase tracking-wide text-gray-400 mb-1">Категорія</div>
+            <div className="flex flex-wrap gap-1.5">
+              {CATEGORIES.map(c => (
+                <button key={c.letter} onClick={() => setCat(c.letter)}
+                  className={`${CHIP} py-1 ${cat === c.letter ? 'bg-black text-white border-black dark:bg-white dark:text-black dark:border-white' : 'border-gray-200 dark:border-gray-700'}`}>{c.letter} · {c.label}</button>
+              ))}
+            </div>
+          </div>
+          <label className="block">
+            <div className="text-[11px] uppercase tracking-wide text-gray-400 mb-1">Код (генерується за категорією, можна змінити)</div>
+            <input value={code} onChange={e => setCode(e.target.value.toUpperCase())} className="w-full px-3 py-2 text-lg font-bold rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800" />
+          </label>
+          <input value={title} onChange={e => setTitle(e.target.value)} placeholder="Назва (що всередині)" className="w-full px-3 py-2 text-sm rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800" />
+          <input value={loc} onChange={e => setLoc(e.target.value)} placeholder="Де стоїть (стелаж, полиця)" className="w-full px-3 py-2 text-sm rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800" />
+        </div>
+        <div className="px-5 py-3 border-t border-gray-100 dark:border-gray-800 flex justify-end gap-2">
+          <Button onClick={onClose} disabled={busy}>Скасувати</Button>
+          <Button type="primary" loading={busy} disabled={!code.trim()} onClick={async () => {
+            setBusy(true);
+            try { const b = await ws.createBox({ code: code.trim(), category: cat, title: title.trim() || undefined, location: loc.trim() || undefined }); notify.success({ message: `Коробку ${b.code} створено` }); await onCreated(b); }
+            catch (e: any) { notify.error({ message: 'Не вдалося створити', description: whErr(e) }); }
+            finally { setBusy(false); }
+          }}>Створити {code}</Button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+/* ───────────────────────────── Етикетка коробки ──────────────────────────── */
+
+const BoxLabelDialog: React.FC<{ box: WhBox; onClose: () => void }> = ({ box, onClose }) => {
+  const [busy, setBusy] = useState<'print' | 'save' | null>(null);
+  const [copies, setCopies] = useState(1);
+  const [cfg, setCfg] = useState<{ desktop: boolean; can_print: boolean; printers: { name: string }[]; preferred_printer: string | null } | null>(null);
+  const [printer, setPrinter] = useState('');
+  useEffect(() => {
+    fetch('/api/labels/config').then(r => r.json()).then(c => { setCfg(c); setPrinter(c.preferred_printer || c.printers?.[0]?.name || ''); }).catch(() => setCfg({ desktop: false, can_print: false, printers: [], preferred_printer: null }));
+  }, []);
+  const run = async (mode: 'print' | 'save') => {
+    setBusy(mode);
+    try {
+      if (!(await isDesktopShell())) {
+        const blob = await ws.printLabel(box.code, 'download', null, copies) as Blob;
+        saveBlob(blob, `BMS коробка ${box.code}.pdf`);
+        notify.success({ message: 'PDF етикетки завантажено' });
+      } else {
+        const r = await ws.printLabel(box.code, mode, printer || null, copies) as { path: string; printed: boolean; printer: string | null; message: string };
+        if (mode === 'print' && r.printed) notify.success({ message: `Етикетку ${box.code} надіслано на ${r.printer}` });
+        else if (mode === 'print') notify.warning({ message: 'PDF збережено, але не надруковано', description: `${r.message} — ${r.path}`, duration: 8 });
+        else notify.success({ message: 'PDF етикетки збережено', description: r.path });
+      }
+      onClose();
+    } catch (e: any) { notify.error({ message: 'Етикетка', description: whErr(e) }); }
+    finally { setBusy(null); }
+  };
+  const canPrint = !!cfg?.desktop && !!cfg?.can_print && !!printer;
+  return (
+    <div className="bms-dialog-host fixed inset-0 z-[100] flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/45 backdrop-blur-[2px]" onClick={busy ? undefined : onClose} />
+      <div className="relative w-full max-w-lg rounded-2xl bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 shadow-2xl overflow-hidden bms-fade-in">
+        <div className="px-5 py-4 border-b border-gray-100 dark:border-gray-800">
+          <div className="text-base font-semibold">Етикетка коробки {box.code}</div>
+          <div className="text-xs text-gray-400">Аркуш 100×100 мм · QR bms:b:{box.code} · код великим, щоб читався й після вицвітання термопаперу</div>
+        </div>
+        <div className="px-5 py-4 grid grid-cols-[220px_1fr] gap-4 items-start">
+          <img src={ws.labelPngUrl(box.code)} alt="Етикетка" className="w-[220px] h-[220px] rounded-lg border border-gray-200 dark:border-gray-700 bg-white" />
+          <div className="space-y-3 text-sm">
+            <label className="flex items-center gap-2">Копій
+              <input type="number" min={1} max={10} value={copies} onChange={e => setCopies(Math.max(1, Math.min(10, Number(e.target.value) || 1)))} className="w-16 px-2 py-1 rounded-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800" />
+            </label>
+            {cfg?.desktop && (cfg.printers.length > 0 ? (
+              <select value={printer} onChange={e => setPrinter(e.target.value)} className="w-full px-2 py-1.5 rounded-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800">
+                {cfg.printers.map(p => <option key={p.name} value={p.name}>{p.name}</option>)}
+              </select>
+            ) : <div className="text-xs text-gray-500">Принтер не знайдено на цій машині — PDF збережеться у «Завантаження».</div>)}
+          </div>
+        </div>
+        <div className="px-5 py-3 border-t border-gray-100 dark:border-gray-800 flex justify-end gap-2">
+          <Button onClick={onClose} disabled={!!busy}>Закрити</Button>
+          <Button onClick={() => void run('save')} loading={busy === 'save'} type={canPrint ? 'default' : 'primary'}>{cfg?.desktop ? 'Зберегти PDF' : 'Завантажити PDF'}</Button>
+          {canPrint && <Button type="primary" icon={<PrinterOutlined />} loading={busy === 'print'} onClick={() => void run('print')}>Друк</Button>}
         </div>
       </div>
     </div>

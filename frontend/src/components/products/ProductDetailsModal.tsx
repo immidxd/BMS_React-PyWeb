@@ -9,6 +9,7 @@ import { hiddenFieldsForType } from './productCategory';
 import AiLimitsBadge, { emitAiLimitsChanged } from './AiLimitsBadge';
 import PhotoStagingModal from '../shipments/PhotoStagingModal';
 import LabelPrintDialog from '../labels/LabelPrintDialog';
+import { warehouseService, type WhLocation } from '../../services/warehouseService';
 import { taskManager, emitProductPhotosChanged } from '../../services/taskManager';
 import {
   markPromImportAccepted, refreshPromLimitWatch, watchPromLimitStatus,
@@ -321,6 +322,15 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
   // ── «Прийняти у завіз» для орфанів (deliveryid=NULL: воркспейс/загублені) ────
   const [adoptOpen, setAdoptOpen] = useState(false);
   const [labelOpen, setLabelOpen] = useState(false);   // стікер з QR для цього товару
+  // Склад: у якій коробці лежить (з хмари; порожньо, коли недоступна). Гард за id —
+  // відповідь для попередньої картки не має лягти в наступну.
+  const [whLocs, setWhLocs] = useState<WhLocation[]>([]);
+  useEffect(() => {
+    setWhLocs([]);
+    if (!productId) return;
+    const id = productId;
+    void warehouseService.locations([id]).then(m => { if (id === productId) setWhLocs(m[id] || []); });
+  }, [productId]);
   const labelSource = useMemo(() => (labelOpen && productId ? { product_ids: [productId] } : null), [labelOpen, productId]);
   const [adoptDeliveries, setAdoptDeliveries] = useState<{ id: number; deliveryname: string }[]>([]);
   const [adoptId, setAdoptId] = useState<number | null>(null);
@@ -3658,6 +3668,16 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                         {((p as any).reserved_count ?? 0) > 1 ? `·${(p as any).reserved_count}` : ''}
                       </span>
                     )}
+                    {/* Склад: коробка, в якій лежить пара (дані з хмари, як у сканері працівників) */}
+                    {whLocs.map(l => (
+                      <span
+                        key={l.box_code}
+                        title={`Лежить у коробці ${l.box_code}${l.box_title ? ` · ${l.box_title}` : ''}${l.box_location ? ` · ${l.box_location}` : ''}${l.needs_check ? ' · коробку треба перевірити' : ''}`}
+                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold bg-black text-white border border-black dark:bg-white dark:text-black dark:border-white"
+                      >
+                        📦 {l.box_code}{l.qty > 1 ? ` ×${l.qty}` : ''}
+                      </span>
+                    ))}
                     {/* Відображуваний стан-чіп = ПОТОЧНИЙ стан (current_condition_name),
                         узгоджено з колонкою «Стан» у таблиці. Редагування «Поточного стану»
                         нижче одразу відображається тут. Журнальний «Початковий стан»

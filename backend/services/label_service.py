@@ -523,6 +523,56 @@ def render_pages(items: Sequence[LabelItem], layout: str = DEFAULT_LAYOUT, *,
     return pages
 
 
+def render_box_label(code: str, title: str = "", location: str = "", *,
+                     media_w_mm: float = 100.0, media_h_mm: float = 100.0) -> Image.Image:
+    """Етикетка коробки — один аркуш 100×100: величезний код, QR `bms:b:<код>`,
+    назва й місце. Коробки стоять роками, а термопапір вицвітає — тому код
+    настільки великий, щоб його було видно й після того, як QR зблідне."""
+    page_w, page_h = mm_px(media_w_mm), mm_px(media_h_mm)
+    page = Image.new("L", (page_w, page_h), 255)
+    draw = ImageDraw.Draw(page)
+    fr, pad = 3, mm_px(4)
+    draw.rounded_rectangle((fr, fr, page_w - fr - 1, page_h - fr - 1), radius=mm_px(3), outline=0, width=3)
+    ix0, iy0, ix1, iy1 = pad, pad, page_w - pad, page_h - pad
+    iw = ix1 - ix0
+
+    code = (code or "").strip().upper()
+    f_code = _fit_font(True, code, int(page_h * 0.30), iw, min_size=20)
+    y = iy0
+    y += _draw_tight(draw, ix0, y, code, f_code) + mm_px(2)
+    draw.line([(ix0, y), (ix1, y)], fill=0, width=2)
+    y += mm_px(3)
+
+    # QR — ліворуч, великий; праворуч — назва (кілька рядків) і місце.
+    qr = _make_qr(qr_payload_box(code), min(iy1 - y, int(iw * 0.56)))
+    page.paste(qr, (ix0, y))
+    cx, cw = ix0 + qr.width + mm_px(3), ix1 - (ix0 + qr.width + mm_px(3))
+    cy = y
+    if title:
+        f_t = _font(True, int(page_h * 0.075))
+        # Назва — по словах у кілька рядків, без обрізань.
+        words, line, lines = title.split(), "", []
+        for w_ in words:
+            cand = (line + " " + w_).strip()
+            if _text_w(f_t, cand) <= cw or not line:
+                line = cand
+            else:
+                lines.append(line); line = w_
+        if line:
+            lines.append(line)
+        for ln in lines[:4]:
+            if cy + _ink_h(f_t, ln) > y + qr.height:
+                break
+            cy += _draw_tight(draw, cx, cy, ln, f_t) + mm_px(1.2)
+    if location:
+        f_l = _font(False, int(page_h * 0.06))
+        loc = _fit_segments(f_l, location, cw) or location[:24]
+        if cy + _ink_h(f_l, loc) <= y + qr.height:
+            cy += mm_px(1)
+            _draw_tight(draw, cx, cy, loc, f_l)
+    return page.point(lambda v: 255 if v > 150 else 0).convert("1")
+
+
 def page_count(items: Sequence[LabelItem], layout: str) -> Tuple[int, int]:
     """(к-сть стікерів з копіями, к-сть аркушів)."""
     spec = get_layout(layout)
