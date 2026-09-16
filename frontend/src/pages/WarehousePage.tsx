@@ -497,7 +497,7 @@ const NewBoxDialog: React.FC<{ onClose: () => void; onCreated: (b: WhBox) => Pro
 const BoxLabelDialog: React.FC<{ box: WhBox; onClose: () => void }> = ({ box, onClose }) => {
   const [busy, setBusy] = useState<'print' | 'save' | null>(null);
   const [copies, setCopies] = useState(1);
-  const [cfg, setCfg] = useState<{ desktop: boolean; can_print: boolean; printers: { name: string }[]; preferred_printer: string | null } | null>(null);
+  const [cfg, setCfg] = useState<{ desktop: boolean; can_print: boolean; printers: { name: string; label?: string; kind?: string; reachable?: boolean }[]; preferred_printer: string | null } | null>(null);
   const [printer, setPrinter] = useState('');
   useEffect(() => {
     fetch('/api/labels/config').then(r => r.json()).then(c => { setCfg(c); setPrinter(c.preferred_printer || c.printers?.[0]?.name || ''); }).catch(() => setCfg({ desktop: false, can_print: false, printers: [], preferred_printer: null }));
@@ -519,7 +519,8 @@ const BoxLabelDialog: React.FC<{ box: WhBox; onClose: () => void }> = ({ box, on
     } catch (e: any) { notify.error({ message: 'Етикетка', description: whErr(e) }); }
     finally { setBusy(null); }
   };
-  const canPrint = !!cfg?.desktop && !!cfg?.can_print && !!printer;
+  const sel = cfg?.printers.find(p => p.name === printer);
+  const canPrint = !!cfg?.desktop && !!printer && (sel?.kind === 'network' ? !!sel.reachable : !!cfg?.can_print);
   return (
     <div className="bms-dialog-host fixed inset-0 z-[100] flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/45 backdrop-blur-[2px]" onClick={busy ? undefined : onClose} />
@@ -536,7 +537,7 @@ const BoxLabelDialog: React.FC<{ box: WhBox; onClose: () => void }> = ({ box, on
             </label>
             {cfg?.desktop && (cfg.printers.length > 0 ? (
               <select value={printer} onChange={e => setPrinter(e.target.value)} className="w-full px-2 py-1.5 rounded-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800">
-                {cfg.printers.map(p => <option key={p.name} value={p.name}>{p.name}</option>)}
+                {cfg.printers.map(p => <option key={p.name} value={p.name}>{p.label || p.name}{p.kind === 'network' && !p.reachable ? ' — не відповідає' : ''}</option>)}
               </select>
             ) : <div className="text-xs text-gray-500">Принтер не знайдено на цій машині — PDF збережеться у «Завантаження».</div>)}
           </div>

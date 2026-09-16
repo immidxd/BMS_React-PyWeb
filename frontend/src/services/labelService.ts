@@ -21,14 +21,15 @@ export interface LabelLayout {
   media_mm: [number, number];
 }
 
-export interface LabelPrinter { name: string; default: boolean }
+export interface LabelPrinter { name: string; label?: string; kind?: 'network' | 'cups'; reachable?: boolean; default: boolean }
 
 export interface LabelsConfig {
   layouts: LabelLayout[];
   default_layout: string;
   printers: LabelPrinter[];
   preferred_printer: string | null;
-  can_print: boolean;     // є CUPS lp на цій машині
+  can_print: boolean;     // є мережевий принтер (TSPL) або CUPS lp на цій машині
+  network_printer: string | null;  // збережений IP Xprinter по мережі
   desktop: boolean;       // PyWebView — файли зберігає бекенд
   platform: string;
   queue_count: number;
@@ -121,6 +122,18 @@ export const labelService = {
     await axios.delete('/api/labels/queue');
     labelQueue.set(0);
   },
+  async discover(): Promise<string[]> {
+    const r = await axios.post('/api/labels/discover');
+    return r.data.hosts as string[];
+  },
+  async setNetworkPrinter(host: string | null): Promise<void> {
+    try { await axios.put('/api/labels/network-printer', { host }); }
+    catch (e: any) { throw new Error(errMsg(e, 'Не вдалося зберегти принтер')); }
+  },
+  async testPrint(printer?: string): Promise<{ printed: boolean; pages: number }> {
+    try { return (await axios.post('/api/labels/test-print', null, { params: printer ? { printer } : {} })).data; }
+    catch (e: any) { throw new Error(errMsg(e, 'Тестовий друк не вдався')); }
+  },
   async preview(opts: RenderOpts): Promise<PreviewResult> {
     const r = await axios.post('/api/labels/preview', opts);
     return r.data;
@@ -168,8 +181,8 @@ class LabelQueueStore {
   /** Перечитати з бекенда (дешевий COUNT). Паралельні виклики склеюються. */
   refresh(): Promise<void> {
     if (this.inflight) return this.inflight;
-    this.inflight = axios.get('/api/labels/config')
-      .then(r => this.set(Number(r.data?.queue_count ?? 0)))
+    this.inflight = axios.get('/api/labels/queue/count')
+      .then(r => this.set(Number(r.data?.count ?? 0)))
       .catch(() => { /* бекенд без модуля стікерів — лишаємо як є */ })
       .finally(() => { this.inflight = null; });
     return this.inflight;

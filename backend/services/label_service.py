@@ -34,6 +34,7 @@ import os
 import platform
 import re
 import shutil
+import socket
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -796,6 +797,119 @@ def print_pdf(path: str, printer: Optional[str], spec: LayoutSpec) -> str:
             return (res.stdout or "").strip()
         last_err = (res.stderr or res.stdout or "").strip()
     raise RuntimeError(f"lp: {last_err or 'невідома помилка'}")
+
+
+# ───────────────────────────── мережевий друк (TSPL, порт 9100) ─────────────
+
+_SETTINGS_PATH = Path(__file__).resolve().parent.parent / "label_printer.json"
+
+
+def _read_settings() -> Dict[str, Any]:
+    try:
+        return json.loads(_SETTINGS_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def save_network_printer_host(host: Optional[str]) -> None:
+    """Запамʼятати обраний у діалозі мережевий принтер (backend/label_printer.json —
+    поза git, як .env). Порожньо — забути."""
+    data = _read_settings()
+    if host:
+        data["host"] = host.strip()
+    else:
+        data.pop("host", None)
+    _SETTINGS_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def network_printer_host() -> Optional[str]:
+    """IP/хост принтера етикеток у мережі (Xprinter XP-480B по Wi-Fi):
+    BMS_LABEL_PRINTER_HOST=192.168.1.150[:9100] або збережений у діалозі.
+    Порожньо — друк через CUPS/файл."""
+    return (os.getenv("BMS_LABEL_PRINTER_HOST") or "").strip() or _read_settings().get("host") or None
+
+
+def _split_host(host: str) -> Tuple[str, int]:
+    if ":" in host:
+        h, _, p = host.rpartition(":")
+        if p.isdigit():
+            return h, int(p)
+    return host, 9100
+
+
+def network_printer_reachable(host: Optional[str] = None, timeout: float = 1.5) -> bool:
+    host = host or network_printer_host()
+    if not host:
+        return False
+    h, port = _split_host(host)
+    try:
+        with socket.create_connection((h, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def page_to_tspl(page: Image.Image, spec: LayoutSpec, *, density: int = 8, gap_mm: float = 3.0) -> bytes:
+    """Одна сторінка → пакет TSPL (рідна мова Xprinter/TSC): розмір носія, проміжок
+    між етикетками, растр 1-біт і команда друку. У TSPL-бітмапі 1 = білий,
+    0 = чорний — рівно як у Pillow «1», тож байти йдуть без інверсії."""
+    img = page.convert("1")
+    w, h = img.size
+    row_bytes = (w + 7) // 8
+    if w % 8:  # добиваємо ширину до байта білим
+        padded = Image.new("1", (row_bytes * 8, h), 1)
+        padded.paste(img, (0, 0))
+        img = padded
+    data = img.tobytes()
+    head = (f"SIZE {spec.media_w_mm:g} mm,{spec.media_h_mm:g} mm\r\n"
+            f"GAP {gap_mm:g} mm,0 mm\r\n"
+            f"DENSITY {int(density)}\r\n"
+            "DIRECTION 1\r\n"
+            "CLS\r\n"
+            f"BITMAP 0,0,{row_bytes},{h},0,").encode("ascii")
+    return head + data + b"\r\nPRINT 1,1\r\n"
+
+
+def print_tspl(pages: Sequence[Image.Image], spec: LayoutSpec, host: Optional[str] = None,
+               *, copies: int = 1, timeout: float = 15.0) -> int:
+    """Надіслати сторінки прямо на принтер по TCP 9100. Повертає к-сть надісланих
+    аркушів. Без драйверів і системних діалогів — так само працюватиме з Windows."""
+    host = host or network_printer_host()
+    if not host:
+        raise RuntimeError("Мережевий принтер не задано (BMS_LABEL_PRINTER_HOST)")
+    h, port = _split_host(host)
+    density = int(os.getenv("BMS_LABEL_DENSITY", "8") or 8)
+    gap = float(os.getenv("BMS_LABEL_GAP_MM", "3") or 3)
+    payload = b"".join(page_to_tspl(p, spec, density=density, gap_mm=gap) for p in pages) * max(1, int(copies))
+    try:
+        with socket.create_connection((h, port), timeout=timeout) as sock:
+            sock.sendall(payload)
+    except OSError as exc:
+        raise RuntimeError(f"Принтер {h}:{port} недоступний: {exc}") from exc
+    return len(pages) * max(1, int(copies))
+
+
+def discover_network_printers(timeout: float = 0.5) -> List[str]:
+    """Хости локальної /24 з відкритим портом 9100 (принтери етикеток). Швидкий
+    скан у потоках — для кнопки «Знайти принтер у мережі»."""
+    import concurrent.futures as cf
+    try:
+        probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        probe.connect(("8.8.8.8", 80))
+        my_ip = probe.getsockname()[0]
+        probe.close()
+    except OSError:
+        return []
+    sub = my_ip.rsplit(".", 1)[0]
+
+    def check(ip: str) -> Optional[str]:
+        try:
+            with socket.create_connection((ip, 9100), timeout=timeout):
+                return ip
+        except OSError:
+            return None
+    with cf.ThreadPoolExecutor(64) as ex:
+        return [ip for ip in ex.map(check, [f"{sub}.{i}" for i in range(1, 255)]) if ip]
 
 
 def open_file(path: str) -> None:

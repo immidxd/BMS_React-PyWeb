@@ -206,11 +206,19 @@ def box_label(code: str, payload: LabelIn = Body(...)):
     printed, printer, message = False, None, ""
     spec = ls.get_layout(ls.DEFAULT_LAYOUT)  # носій той самий: 100×100
     if mode == "print":
-        printer = payload.printer or ls.preferred_printer()
+        try:
+            from routers.labels import _printer_options, NET_PREFIX
+        except ImportError:  # pragma: no cover
+            from backend.routers.labels import _printer_options, NET_PREFIX
+        printer = payload.printer or _printer_options()[1]
         try:
             if not printer:
                 raise RuntimeError("Принтер не знайдено — файл збережено, надрукуйте його вручну")
-            message = ls.print_pdf(path, printer, spec) or "Надіслано на принтер"
+            if printer.startswith(NET_PREFIX):
+                n = ls.print_tspl([page], spec, printer[len(NET_PREFIX):], copies=int(payload.copies))
+                message = f"Надіслано {n} етикет. на {printer[len(NET_PREFIX):]}"
+            else:
+                message = ls.print_pdf(path, printer, spec) or "Надіслано на принтер"
             printed = True
         except RuntimeError as exc:
             message = str(exc)

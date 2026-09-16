@@ -67,7 +67,8 @@ const LabelPrintDialog: React.FC<Props> = ({ open, source, title, subtitle, onCl
   const [printer, setPrinter] = useState<string>('');
   const [preview, setPreview] = useState<{ png: string; stickers: number; pages: number } | null>(null);
   const [previewBusy, setPreviewBusy] = useState(false);
-  const [busy, setBusy] = useState<'print' | 'save' | 'queue' | null>(null);
+  const [busy, setBusy] = useState<'print' | 'save' | 'queue' | 'discover' | 'test' | null>(null);
+  const [found, setFound] = useState<string[] | null>(null);   // результат «Знайти в мережі»
   const previewSeq = useRef(0);
 
   const fromQueue = !!source && 'from_queue' in source;
@@ -202,9 +203,40 @@ const LabelPrintDialog: React.FC<Props> = ({ open, source, title, subtitle, onCl
     } finally { setBusy(null); }
   }, [printable, config, layout, showPrice, cutMarks, printer, totalStickers, pages, onClose, onDone]);
 
+  const reloadConfig = useCallback(async () => {
+    const cfg = await labelService.getConfig();
+    setConfig(cfg);
+    setPrinter(cfg.preferred_printer || cfg.printers[0]?.name || '');
+  }, []);
+
+  const discover = async () => {
+    setBusy('discover'); setFound(null);
+    try {
+      const hosts = await labelService.discover();
+      setFound(hosts);
+      if (hosts.length === 0) notify.warning({ message: 'Принтерів у мережі не знайдено', description: 'Перевірте, що Xprinter увімкнений і підключений до цього ж Wi-Fi (порт 9100).' });
+    } catch (e: any) { notify.error({ message: 'Пошук не вдався', description: e?.message }); }
+    finally { setBusy(null); }
+  };
+
+  const useHost = async (host: string) => {
+    setBusy('discover');
+    try { await labelService.setNetworkPrinter(host); setFound(null); await reloadConfig(); notify.success({ message: `Принтер ${host} збережено` }); }
+    catch (e: any) { notify.error({ message: 'Принтер', description: e?.message }); }
+    finally { setBusy(null); }
+  };
+
+  const testPrint = async () => {
+    setBusy('test');
+    try { const r = await labelService.testPrint(printer || undefined); notify.success({ message: 'Тестовий аркуш надіслано', description: `${r.pages} арк. — перевірте, що стікери в межах наклейки і достатньо чорні.` }); }
+    catch (e: any) { notify.error({ message: 'Тестовий друк', description: e?.message }); }
+    finally { setBusy(null); }
+  };
+
   if (!open) return null;
 
-  const canPrintHere = !!config?.desktop && !!config?.can_print && !!printer;
+  const selected = config?.printers.find(p => p.name === printer);
+  const canPrintHere = !!config?.desktop && !!printer && (selected?.kind === 'network' ? !!selected.reachable : !!config?.can_print);
   const heading = title || (fromQueue ? 'Черга друку стікерів' : 'Друк стікерів');
 
   return (
@@ -328,10 +360,30 @@ const LabelPrintDialog: React.FC<Props> = ({ open, source, title, subtitle, onCl
                 {config.printers.length > 0 ? (
                   <select value={printer} onChange={e => setPrinter(e.target.value)}
                     className="w-full px-2 py-1.5 text-sm rounded-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800">
-                    {config.printers.map(p => <option key={p.name} value={p.name}>{p.name}{p.default ? ' (типовий)' : ''}</option>)}
+                    {config.printers.map(p => <option key={p.name} value={p.name}>{p.label || p.name}{p.kind === 'network' && !p.reachable ? ' — не відповідає' : ''}</option>)}
                   </select>
                 ) : (
-                  <div className="text-xs text-gray-500">Принтер не знайдено на цій машині — PDF збережеться у «Завантаження», надрукуйте його з іншого комп'ютера.</div>
+                  <div className="text-xs text-gray-500">Принтер не знайдено — PDF збережеться у «Завантаження».</div>
+                )}
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  <button onClick={() => void discover()} disabled={!!busy} className="text-xs px-2 py-1 rounded-md border border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 disabled:opacity-50">
+                    {busy === 'discover' ? 'Шукаю…' : 'Знайти Xprinter у Wi-Fi'}
+                  </button>
+                  {selected?.kind === 'network' && selected.reachable && (
+                    <button onClick={() => void testPrint()} disabled={!!busy} className="text-xs px-2 py-1 rounded-md border border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 disabled:opacity-50">
+                      {busy === 'test' ? 'Друкую…' : 'Тестовий аркуш'}
+                    </button>
+                  )}
+                </div>
+                {found && found.length > 0 && (
+                  <div className="mt-2 text-xs">
+                    <div className="text-gray-400 mb-1">Знайдено в мережі — оберіть:</div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {found.map(h => (
+                        <button key={h} onClick={() => void useHost(h)} disabled={!!busy} className="px-2 py-1 rounded-md bg-black text-white dark:bg-white dark:text-black font-semibold">{h}</button>
+                      ))}
+                    </div>
+                  </div>
                 )}
               </div>
             )}

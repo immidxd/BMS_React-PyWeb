@@ -178,3 +178,43 @@ def test_box_label_renders_and_qr_round_trips():
     page = ls.render_box_label("Z9", "UGG зима, коробка велика", "стелаж 2 · полиця 3")
     assert page.mode == "1" and page.size == (799, 799)
     assert "bms:b:Z9" in {r.text for r in zxingcpp.read_barcodes(page.convert("L"))}
+
+
+# ───────────────────────────── мережевий друк (TSPL) ─────────────────────────
+
+def test_tspl_packet_structure():
+    spec = ls.get_layout("2x2")
+    page = ls.render_pages([ls.item_from_row(_row())], "2x2")[0]
+    pkt = ls.page_to_tspl(page, spec, density=10, gap_mm=2.5)
+    head, _, rest = pkt.partition(b"BITMAP 0,0,100,799,0,")
+    assert b"SIZE 100 mm,100 mm\r\n" in head and b"GAP 2.5 mm,0 mm\r\n" in head and b"DENSITY 10\r\n" in head
+    assert head.endswith(b"CLS\r\n")
+    assert rest.endswith(b"\r\nPRINT 1,1\r\n")
+    bitmap = rest[: -len(b"\r\nPRINT 1,1\r\n")]
+    assert len(bitmap) == 100 * 799            # 799 px → 100 байт на рядок
+    # У TSPL 1 = білий: порожні поля аркуша — байти 0xFF
+    assert bitmap[:8] == b"\xff" * 8
+
+
+def test_print_tspl_sends_pages_to_socket():
+    import socket, threading
+    received = bytearray()
+    srv = socket.socket(); srv.bind(("127.0.0.1", 0)); srv.listen(1)
+    port = srv.getsockname()[1]
+
+    def serve():
+        conn, _ = srv.accept()
+        while chunk := conn.recv(65536):
+            received.extend(chunk)
+        conn.close()
+    t = threading.Thread(target=serve, daemon=True); t.start()
+    pages = ls.render_pages([ls.item_from_row(_row(id=i)) for i in range(1, 6)], "2x2")  # 2 аркуші
+    n = ls.print_tspl(pages, ls.get_layout("2x2"), f"127.0.0.1:{port}")
+    t.join(timeout=5); srv.close()
+    assert n == 2
+    assert received.count(b"PRINT 1,1\r\n") == 2 and received.count(b"CLS\r\n") == 2
+
+
+def test_print_tspl_unreachable_raises():
+    with pytest.raises(RuntimeError):
+        ls.print_tspl([], ls.get_layout("2x2"), "127.0.0.1:1")  # порт 1 — ніхто не слухає

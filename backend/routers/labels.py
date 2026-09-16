@@ -14,9 +14,9 @@ from __future__ import annotations
 import base64
 import logging
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
-from fastapi import APIRouter, Body, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
@@ -134,19 +134,81 @@ def _build_items(db: Session, items: List[ItemIn]) -> List[ls.LabelItem]:
 
 # ───────────────────────────── ендпоїнти ─────────────────────────────────────
 
+NET_PREFIX = "net:"  # ім'я «принтера» для мережевого друку: net:192.168.1.150
+
+
+def _printer_options() -> Tuple[List[Dict[str, Any]], Optional[str], bool]:
+    """Принтери для діалогу: мережевий (TSPL, без драйвера) + системні CUPS.
+    Повертає (список, обраний за замовчуванням, чи можна друкувати звідси)."""
+    printers: List[Dict[str, Any]] = []
+    host = ls.network_printer_host()
+    net_ok = bool(host) and ls.network_printer_reachable(host)
+    if host:
+        printers.append({"name": f"{NET_PREFIX}{host}", "label": f"Xprinter по мережі ({host})",
+                         "kind": "network", "reachable": net_ok, "default": net_ok})
+    for p in ls.list_printers():
+        printers.append({"name": p["name"], "label": p["name"], "kind": "cups",
+                         "reachable": True, "default": p.get("default", False) and not net_ok})
+    preferred = f"{NET_PREFIX}{host}" if net_ok else ls.preferred_printer([p for p in printers if p["kind"] == "cups"])
+    can_print = net_ok or (ls.can_print_here() and any(p["kind"] == "cups" for p in printers))
+    return printers, preferred, can_print
+
+
 @router.get("/config")
 def labels_config(db: Session = Depends(get_db)):
-    printers = ls.list_printers()
+    printers, preferred, can_print = _printer_options()
     return {
         "layouts": [spec.to_dict() for spec in ls.LAYOUTS.values()],
         "default_layout": ls.DEFAULT_LAYOUT,
         "printers": printers,
-        "preferred_printer": ls.preferred_printer(printers),
-        "can_print": ls.can_print_here(),
+        "preferred_printer": preferred,
+        "can_print": can_print,
+        "network_printer": ls.network_printer_host(),
         "desktop": is_desktop_shell(),
         "platform": ls.platform_name(),
         "queue_count": ls.queue_count(db),
     }
+
+
+class NetPrinterIn(BaseModel):
+    host: Optional[str] = None   # None/порожньо — забути
+
+
+@router.post("/discover")
+def labels_discover():
+    """Знайти принтери етикеток у локальній мережі (порт 9100)."""
+    return {"hosts": ls.discover_network_printers()}
+
+
+@router.put("/network-printer")
+def labels_set_network_printer(payload: NetPrinterIn = Body(...)):
+    host = (payload.host or "").strip() or None
+    if host and not ls.network_printer_reachable(host):
+        raise HTTPException(status_code=400, detail=f"Принтер {host} не відповідає на порту 9100")
+    ls.save_network_printer_host(host)
+    return {"host": host, "reachable": bool(host)}
+
+
+@router.post("/test-print")
+def labels_test_print(printer: Optional[str] = Query(None)):
+    """Тестовий аркуш: один стікер-зразок і рамка — перевірити носій/щільність."""
+    spec = ls.get_layout(ls.DEFAULT_LAYOUT)
+    sample = ls.item_from_row(dict(id=0, productnumber="#ТЕСТ", sizeeu="40", measurementscm="26",
+                                   brandname="BMS", model="перевірка друку", typename="стікер",
+                                   colorname="чорний", gendername="унісекс", price=1234,
+                                   current_condition_name="Новий"), copies=4)
+    pages = ls.render_pages([sample], spec.key, show_price=True)
+    name = printer or _printer_options()[1]
+    if name and name.startswith(NET_PREFIX):
+        n = ls.print_tspl(pages, spec, name[len(NET_PREFIX):])
+        return {"printed": True, "printer": name, "pages": n}
+    raise HTTPException(status_code=400, detail="Тестовий друк доступний лише для мережевого принтера")
+
+
+@router.get("/queue/count")
+def labels_queue_count(db: Session = Depends(get_db)):
+    """Лише лічильник — для бейджа «До друку: N» (без опитування принтерів)."""
+    return {"count": ls.queue_count(db)}
 
 
 @router.get("/queue")
@@ -280,11 +342,18 @@ def labels_print(payload: PrintIn = Body(...), db: Session = Depends(get_db)):
     path, final_name = save_bytes(pdf, filename, "labels.pdf")
     printed, printer, message = False, None, ""
     if mode == "print":
-        printer = payload.printer or ls.preferred_printer()
+        printer = payload.printer or _printer_options()[1]
         try:
             if not printer:
                 raise RuntimeError("Принтер не знайдено — файл збережено, надрукуйте його вручну")
-            out = ls.print_pdf(path, printer, spec)
+            if printer.startswith(NET_PREFIX):
+                # Напряму на Xprinter по мережі (TSPL, порт 9100) — без драйвера.
+                n = ls.print_tspl(ls.render_pages(items, spec.key, show_price=payload.show_price,
+                                                  cut_marks=payload.cut_marks),
+                                  spec, printer[len(NET_PREFIX):])
+                out = f"Надіслано {n} арк. на {printer[len(NET_PREFIX):]}"
+            else:
+                out = ls.print_pdf(path, printer, spec)
             printed = True
             message = out or "Надіслано на принтер"
         except RuntimeError as exc:
