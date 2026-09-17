@@ -669,28 +669,30 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
                 );
             } },
         condition_name: { title: 'Початковий стан', dataIndex: 'condition_name', key: 'condition_name', width: 120 },
-        current_condition_name: { title: 'Стан', dataIndex: 'current_condition_name', key: 'current_condition_name', width: 110,
+        current_condition_name: { title: 'Стан', dataIndex: 'current_condition_name', key: 'current_condition_name', width: 128,
             render: (text: string, record: Product) => {
-                // Стан по центру + маркери пришпилені до правого краю комірки
-                // (absolute, з невеликим відступом) — це найправіша колонка, тож
-                // іконки лягають у край таблиці й не заважають тексту:
-                //   ▣ «є фото»  ·  ⌂ «запакований у коробку на складі» (з хмари).
+                // Стан + маркери: ▣ «є фото» · ⌂ «запакований у коробку» (з хмари).
+                // Маркери НЕ накладаються на текст: під них у кожному рядку
+                // зарезервовано однакову смужку праворуч (два значки + відступ),
+                // тож текст центрується в решті комірки, а значки стоять рівним
+                // стовпчиком біля краю таблиці й не «втискаються» в слово, коли їх
+                // два (раніше — absolute поверх центрованого тексту).
                 const locs = boxLocations?.[record.id] || [];
                 const boxTitle = locs.length
                     ? `У коробці ${locs.map(l => `${l.box_code}${l.qty > 1 ? ` ×${l.qty}` : ''}`).join(', ')}${locs.some(l => l.needs_check) ? ' · коробку треба перевірити' : ''}`
                     : '';
                 return (
-                    <div className="relative w-full flex items-center justify-center">
-                        <span className="text-xs">{text}</span>
-                        <span className="absolute inline-flex items-center gap-1.5" style={{ right: 10, top: '50%', transform: 'translateY(-50%)' }}>
+                    <div className="grid w-full items-center" style={{ gridTemplateColumns: '1fr 40px' }}>
+                        <span className="text-xs text-center truncate">{text}</span>
+                        <span className="inline-flex items-center justify-end gap-2 pr-1.5 text-slate-400 dark:text-slate-500">
                             {locs.length > 0 && (
                                 <Tooltip title={boxTitle}>
-                                    <InboxOutlined style={{ fontSize: 12, color: '#94a3b8' }} />
+                                    <InboxOutlined style={{ fontSize: 12, lineHeight: 1 }} />
                                 </Tooltip>
                             )}
                             {(record as any).has_photo && (
                                 <Tooltip title="Є фото">
-                                    <PictureOutlined style={{ fontSize: 12, color: '#94a3b8' }} />
+                                    <PictureOutlined style={{ fontSize: 12, lineHeight: 1 }} />
                                 </Tooltip>
                             )}
                         </span>
