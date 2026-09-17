@@ -276,21 +276,60 @@ PROMPT = (
     "замір у см і номер товару (літера + цифри, напр. Ф4403)."
 )
 
+# Для одягу — інший текст: «взуття», «підошва», «устілка» у промпті збивали б
+# модель на кофті. Форма стікера та сама (зелений папірець), але на ньому
+# буквений розмір і заміри одягу, а не EU і устілка.
+PROMPT_CLOTHING = (
+    "Ти оцінюєш вживаний брендовий одяг за фотографіями для картки товару.\n"
+    "Заповни лише те, що ВИДНО НА ЗНІМКАХ. Якщо ознака не видна однозначно — "
+    "постав null. Порожнє значення коштує кілька секунд ручної роботи, а "
+    "неправильне псує дані у двох системах, тож null завжди краще за здогад.\n"
+    "Текстові поля (бренд, артикул, модель) читай ДОСЛІВНО з бирки або лого, "
+    "нічого не додумуючи.\n"
+    "Рукописний стікер (зазвичай зелений папірець) часто повернутий боком або "
+    "догори ногами — прочитай його в будь-якій орієнтації. На ньому: буквений "
+    "розмір (S, M, L, XL, XXL…), ціна, номер товару (літера + цифри, напр. Ф4425) "
+    "і заміри в сантиметрах зі скороченнями: «о/г» або «ОГ» — груди (напівобхват), "
+    "«о/т» — талія, «о/б» — бедра, «д» — довжина виробу, «р» — рукав. "
+    "Число поруч зі скороченням — це і є замір."
+)
+
+# Взуттєві поля закритого переліку — на одязі їх не питаємо взагалі: підошви
+# в кофти нема, а enum без null-відповіді змушував би модель щось вибрати.
+SHOE_ONLY_CLOSED = ("sole_type", "tread_type", "fastening_type", "toe_shape",
+                    "lining", "heel_type")
+
+# Стікер одягу: ключ у відповіді → поле пропозиції. Заміри йдуть як
+# `meas:<name>` — те саме, що materials_by_position для матеріалів:
+# при прийнятті лягають у measurements_edit звичайного update_product.
+STICKER_SIZE_LETTER_KEY = "sticker_size_letter"
+STICKER_MEASUREMENTS_KEY = "sticker_measurements"
+
 DEFAULT_MODEL = os.getenv("AUTOFILL_MODEL", "gemini-3.5-flash")
 _ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/{m}:generateContent"
 
 
 # ── Схема відповіді ─────────────────────────────────────────────────────────
 
-def build_schema(db: Session, type_id: Optional[int] = None) -> Dict[str, Any]:
+def build_schema(db: Session, type_id: Optional[int] = None,
+                 category: str = "shoe", subcat: Optional[str] = None) -> Dict[str, Any]:
     """JSON Schema із ЗАКРИТИМИ переліками з живих довідників.
 
     У перелік потрапляють лише значення, за якими Є товари. Мертві
     («goodyear welt», «wingtip», «хутро») виключені навмисно: подати їх моделі
     означає запросити відповідь, якої в наших даних не існує.
+
+    `category` (див. product_category) міняє ФОРМУ запиту: для одягу зникають
+    взуттєві поля й піктограми ЄС, а стікер читається як буквений розмір +
+    заміри підкатегорії (кофта — груди/рукав/довжина, штани — талія/бедра/
+    довжина). Без цього на #Ф4425 модель прочитала «XXL, о/г 63, д 80», але
+    покласти це не було куди: схема питала EU-розмір числом і устілку в см.
     """
+    pc = _product_category()
     props: Dict[str, Any] = {}
     for field, (table, col, fk, label, _upd) in CLOSED_FIELDS.items():
+        if category != "shoe" and field in SHOE_ONLY_CLOSED:
+            continue
         if field == "subtype" and type_id:
             # Лише підвиди, що трапляються з видом цього товару.
             rows = db.execute(text(
@@ -381,22 +420,24 @@ def build_schema(db: Session, type_id: Optional[int] = None) -> Dict[str, Any]:
     }
     props["season_confidence"] = {"type": "number", "minimum": 0, "maximum": 1,
                                   "description": "певність щодо сезону"}
-    # Піктограми ЄС на бирці: три рядки × чотири символи.
-    props["materials_pictogram"] = {
-        "type": "object",
-        "description": ("стандартні піктограми матеріалів на бирці (ЄС): рядок ВЕРХ, рядок "
-                        "ПІДКЛАДКА/УСТІЛКА, рядок ПІДОШВА. Символи: силует шкури — «шкіра»; "
-                        "шкура з ромбом — «шкіра з покриттям»; плетіння — «текстиль»; ромб — «інше». "
-                        "Немає піктограм на знімках — усі null"),
-        "properties": {
-            "upper":   {"type": ["string", "null"], "enum": list(PICTOGRAM_SYMBOLS) + [None]},
-            "lining":  {"type": ["string", "null"], "enum": list(PICTOGRAM_SYMBOLS) + [None]},
-            "outsole": {"type": ["string", "null"], "enum": list(PICTOGRAM_SYMBOLS) + [None]},
-        },
-        "required": ["upper", "lining", "outsole"],
-    }
-    props["materials_pictogram_confidence"] = {"type": "number", "minimum": 0, "maximum": 1,
-                                               "description": "певність щодо піктограм"}
+    # Піктограми ЄС на бирці (директива 94/11/EC) — це про ВЗУТТЯ; на одязі
+    # склад пишуть текстом, і питати про силует шкури там нема сенсу.
+    if category == "shoe":
+        props["materials_pictogram"] = {
+            "type": "object",
+            "description": ("стандартні піктограми матеріалів на бирці (ЄС): рядок ВЕРХ, рядок "
+                            "ПІДКЛАДКА/УСТІЛКА, рядок ПІДОШВА. Символи: силует шкури — «шкіра»; "
+                            "шкура з ромбом — «шкіра з покриттям»; плетіння — «текстиль»; ромб — «інше». "
+                            "Немає піктограм на знімках — усі null"),
+            "properties": {
+                "upper":   {"type": ["string", "null"], "enum": list(PICTOGRAM_SYMBOLS) + [None]},
+                "lining":  {"type": ["string", "null"], "enum": list(PICTOGRAM_SYMBOLS) + [None]},
+                "outsole": {"type": ["string", "null"], "enum": list(PICTOGRAM_SYMBOLS) + [None]},
+            },
+            "required": ["upper", "lining", "outsole"],
+        }
+        props["materials_pictogram_confidence"] = {"type": "number", "minimum": 0, "maximum": 1,
+                                                   "description": "певність щодо піктограм"}
     # Стікер від руки (зазвичай зелений папірець): ціна, розмір, замір, номер.
     props["sticker_text"] = {"type": ["string", "null"],
                              "description": ("ДОСЛІВНО весь рукописний текст зі стікера/цінника, "
@@ -404,9 +445,31 @@ def build_schema(db: Session, type_id: Optional[int] = None) -> Dict[str, Any]:
     props["sticker_number"] = {"type": ["string", "null"],
                                "description": "номер товару зі стікера, як написано (напр. ф4419)"}
     props["sticker_price"] = {"type": ["number", "null"], "description": "ціна зі стікера, число в гривнях"}
-    props["sticker_size"] = {"type": ["number", "null"], "description": "розмір EU зі стікера, напр. 36 або 45.3"}
-    props["sticker_cm"] = {"type": ["number", "null"], "description": "замір устілки в см зі стікера, напр. 23.5"}
-    for k in ("sticker_price", "sticker_size", "sticker_cm"):
+    conf_keys = ["sticker_price"]
+    if category == "clothing":
+        # Буквений розмір — закритий перелік; заміри — лише ті, що мають сенс для
+        # підкатегорії (кофті не питаємо про бедра, штанам — про рукав).
+        props[STICKER_SIZE_LETTER_KEY] = {
+            "type": ["string", "null"], "enum": list(pc.SIZE_LETTERS) + [None],
+            "description": "буквений розмір зі стікера або бирки (XS…XXXL); null, якщо не видно",
+        }
+        conf_keys.append(STICKER_SIZE_LETTER_KEY)
+        names = [n for n in ("pog", "pot", "pob", "length", "sleeve")
+                 if n in pc.CLOTHING_MEASUREMENTS.get(subcat or "top", set())]
+        props[STICKER_MEASUREMENTS_KEY] = {
+            "type": "object",
+            "description": ("заміри в сантиметрах ЗІ СТІКЕРА, число біля скорочення; "
+                            "немає на стікері — null"),
+            "properties": {n: {"type": ["number", "null"],
+                               "description": pc.MEASUREMENT_STICKER_HINTS[n]} for n in names},
+            "required": names,
+        }
+        conf_keys.append(STICKER_MEASUREMENTS_KEY)
+    else:
+        props["sticker_size"] = {"type": ["number", "null"], "description": "розмір EU зі стікера, напр. 36 або 45.3"}
+        props["sticker_cm"] = {"type": ["number", "null"], "description": "замір устілки в см зі стікера, напр. 23.5"}
+        conf_keys += ["sticker_size", "sticker_cm"]
+    for k in conf_keys:
         props[f"{k}_confidence"] = {"type": "number", "minimum": 0, "maximum": 1,
                                     "description": f"певність щодо {k}"}
     return {"type": "object", "additionalProperties": False,
@@ -449,7 +512,7 @@ def to_gemini_schema(schema: Dict[str, Any]) -> Dict[str, Any]:
 # ── Виклик провайдера ───────────────────────────────────────────────────────
 
 def call_gemini(model: str, api_key: str, photos: List[pathlib.Path],
-                schema: Dict[str, Any]) -> Dict[str, Any]:
+                schema: Dict[str, Any], prompt: str = PROMPT) -> Dict[str, Any]:
     """Один виклик. Повертає розібрану відповідь або {'_error': ...}.
 
     Повторюємо лише 5xx — тимчасове перевантаження минає саме. 429 НЕ
@@ -458,7 +521,7 @@ def call_gemini(model: str, api_key: str, photos: List[pathlib.Path],
     """
     import requests
 
-    parts: List[Dict[str, Any]] = [{"text": PROMPT}]
+    parts: List[Dict[str, Any]] = [{"text": prompt}]
     for p in photos:
         parts.append({"inline_data": {
             "mime_type": "image/webp",
@@ -590,6 +653,15 @@ def _article_reads_agree(first: str, second: Optional[str], anchor: Optional[str
 
 # ── Оркестрація ─────────────────────────────────────────────────────────────
 
+def _product_category():
+    """Модуль категорій — дворежимний імпорт (services.X / backend.services.X)."""
+    try:
+        from services import product_category
+    except ImportError:
+        from backend.services import product_category
+    return product_category
+
+
 def _current_values(db: Session, product_id: int) -> Dict[str, Optional[str]]:
     """Що вже стоїть у картці — щоб не пропонувати вже правильне.
 
@@ -600,10 +672,14 @@ def _current_values(db: Session, product_id: int) -> Dict[str, Optional[str]]:
     sel = ", ".join(f"{t}.{c} AS {upd}" for _f, (t, c, _fk, _l, upd) in CLOSED_FIELDS.items())
     joins = " ".join(f"LEFT JOIN {t} ON {t}.id = p.{fk}"
                      for _f, (t, _c, fk, _l, _u) in CLOSED_FIELDS.items())
+    meas = ", ".join(f"p.measurements_{n}_min AS meas_{n}_min, p.measurements_{n}_max AS meas_{n}_max"
+                     for n in ("pog", "pot", "pob", "length", "sleeve"))
     row = db.execute(text(
-        f"SELECT {sel}, b.brandname AS brand_name, p.marking, p.gtin, p.model, "
-        f"p.price, p.sizeeu, p.measurementscm, p.typeid, p.productnumber, p.season "
+        f"SELECT {sel}, b.brandname AS brand_name, t.typename AS type_name, "
+        f"p.marking, p.gtin, p.model, p.price, p.sizeeu, p.size_letter, p.measurementscm, "
+        f"p.typeid, p.productnumber, p.season, {meas} "
         f"FROM products p {joins} LEFT JOIN brands b ON b.id = p.brandid "
+        f"LEFT JOIN types t ON t.id = p.typeid "
         f"WHERE p.id = :pid"
     ), {"pid": product_id}).mappings().fetchone()
     return dict(row) if row else {}
@@ -778,6 +854,8 @@ def _sticker_proposals(db, product_id, pred, current, photo_names, model,
                 "reason": f"номер на стікері «{number or '—'}» не збігся з карткою {card}"}
 
     out = {"present": True, "matched": True, "text": text_}
+    _clothing_sticker_proposals(db, product_id, pred, current, photo_names, model,
+                                proposed, below_threshold, already)
     for key, (upd_field, lo, hi) in STICKER_FIELDS.items():
         threshold = field_proposals.threshold_for(upd_field)
         raw = pred.get(key)
@@ -803,6 +881,64 @@ def _sticker_proposals(db, product_id, pred, current, photo_names, model,
         else:
             below_threshold.append((upd_field, text_val, conf))
     return out
+
+
+def _fmt_num(val: float) -> str:
+    return str(int(val)) if val == int(val) else f"{val:g}"
+
+
+def _clothing_sticker_proposals(db, product_id, pred, current, photo_names, model,
+                                proposed, below_threshold, already) -> None:
+    """Буквений розмір і заміри одягу зі стікера (ключі є лише у схемі одягу).
+
+    Заміри йдуть пропозицією `meas:<name>`; при прийнятті `_merge_update`
+    складає з них `measurements_edit` — той самий шлях, що й ручна правка
+    замірів у картці (парсинг діапазону, *_min/*_max, write-back «Груди (н/о)»).
+    """
+    pc = _product_category()
+    letter_raw = pred.get(STICKER_SIZE_LETTER_KEY)
+    if letter_raw:
+        conf = pred.get(f"{STICKER_SIZE_LETTER_KEY}_confidence")
+        letter = pc.normalize_size_letter(letter_raw)
+        if letter:
+            cur = pc.normalize_size_letter(current.get("size_letter")) or ""
+            if cur == letter:
+                already.append(("size_letter", letter))
+            elif conf is not None and float(conf) >= field_proposals.threshold_for("size_letter") \
+                    and field_proposals.propose(db, product_id, "size_letter", letter, conf,
+                                                model=model, source_photos=photo_names,
+                                                note="зі стікера"):
+                proposed.append(("size_letter", letter, conf))
+            else:
+                below_threshold.append(("size_letter", letter, conf))
+
+    meas = pred.get(STICKER_MEASUREMENTS_KEY) or {}
+    conf = pred.get(f"{STICKER_MEASUREMENTS_KEY}_confidence")
+    if not isinstance(meas, dict):
+        return
+    for name, raw in meas.items():
+        if raw is None or name not in pc.MEASUREMENT_BOUNDS:
+            continue
+        try:
+            val = float(raw)
+        except (TypeError, ValueError):
+            continue
+        lo, hi = pc.MEASUREMENT_BOUNDS[name]
+        field = f"meas:{name}"
+        if not (lo <= val <= hi):
+            below_threshold.append((field, raw, conf)); continue
+        text_val = _fmt_num(val)
+        cur_min, cur_max = current.get(f"meas_{name}_min"), current.get(f"meas_{name}_max")
+        if cur_min is not None and (cur_max is None or cur_max == cur_min) \
+                and _fmt_num(float(cur_min)) == text_val:
+            already.append((field, text_val)); continue
+        if conf is not None and float(conf) >= field_proposals.threshold_for(field) \
+                and field_proposals.propose(db, product_id, field, text_val, conf,
+                                            model=model, source_photos=photo_names,
+                                            note="зі стікера"):
+            proposed.append((field, text_val, conf))
+        else:
+            below_threshold.append((field, text_val, conf))
 
 
 def _record_run(db: Session, product_id: int, purpose: str, model: Optional[str],
@@ -852,6 +988,12 @@ def extract_and_propose(db: Session, product_id: int, photos: List[pathlib.Path]
         return {"ok": False, "reason": "немає знімків"}
 
     current = _current_values(db, product_id)
+    # Форма запиту залежить від того, ЩО на знімках за типом картки: у кофти
+    # немає підошви, зате є буквений розмір і заміри, про які взуттєва схема
+    # не питала (#Ф4425: стікер прочитано, покласти не було куди).
+    pc = _product_category()
+    category = pc.category_of(current.get("type_name"))
+    subcat = pc.clothing_subcat(current.get("type_name")) if category == "clothing" else None
     proposed, below_threshold, already, confirmed = [], [], [], []
     # ⚠️ Що саме запропонувала модель: поле → (значення, певність, якір).
     # Потрібне шару профілю: `propose()` робить upsert по (товар, поле), тож
@@ -898,6 +1040,7 @@ def extract_and_propose(db: Session, product_id: int, photos: List[pathlib.Path]
         # шар профілю. Третій елемент кортежу називає шар — інакше звіт
         # приписував би штрихкоду те, що сказала власна база.
         payload["confirmed"] = confirmed
+        payload["category"] = category if not subcat else f"{category}/{subcat}"
         # Запис — ОСТАННІМ: перші вісім записів у ai_autofill_runs мали
         # proposed=[] лише тому, що список додавався після запису.
         _record_run(db, product_id, purpose + (":paid" if use_paid else ""),
@@ -924,8 +1067,9 @@ def extract_and_propose(db: Session, product_id: int, photos: List[pathlib.Path]
         return _finish({"ok": False, "reason": verdict.reason, "budget_blocked": True,
                         "spent_usd": verdict.spent_usd})
 
-    schema = build_schema(db, type_id=current.get("typeid"))
-    pred = call_gemini(model, api_key, photos, schema)
+    schema = build_schema(db, type_id=current.get("typeid"), category=category, subcat=subcat)
+    pred = call_gemini(model, api_key, photos, schema,
+                       prompt=PROMPT_CLOTHING if category == "clothing" else PROMPT)
     usage = pred.pop("_usage", {}) or {}
     err = pred.get("_error")
 

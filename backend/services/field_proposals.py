@@ -44,6 +44,9 @@ CONFIDENCE_THRESHOLD: Dict[str, float] = {
     "price":               0.75,
     "sizeeu":              0.75,
     "measurementscm":      0.70,
+    # Одяг: буквений розмір зі стікера/бирки — закритий перелік, помилитись
+    # важко; заміри — див. threshold_for (префікс meas:).
+    "size_letter":         0.75,
     # Штрихкод приймаємо ЛИШЕ від детермінованого читання з контрольною сумою.
     # Поріг 0.99 — це заборона на майбутнє: якщо колись зʼявиться спокуса дати
     # моделі «прочитати цифри очима», вона не пройде сюди навіть із певністю
@@ -60,6 +63,9 @@ def threshold_for(field: str) -> float:
     if field.startswith("material:"):
         # Піктограми ЄС стандартні, але дрібні — читання має бути впевненим.
         return 0.85
+    if field.startswith("meas:"):
+        # Заміри одягу зі стікера: число біля скорочення, як і устілка в см.
+        return 0.70
     return CONFIDENCE_THRESHOLD.get(field, DEFAULT_THRESHOLD)
 
 
@@ -142,6 +148,10 @@ def accept(db: Session, proposal_id: int) -> Optional[Dict[str, Any]]:
 def _merge_update(into: Dict[str, Any], field: str, value: Optional[str]) -> None:
     if field.startswith("material:"):
         into.setdefault("materials_by_position", {})[field.split(":", 1)[1]] = value
+    elif field.startswith("meas:"):
+        # Замір одягу (pog/pot/pob/length/sleeve) — тим самим шляхом, що й ручна
+        # правка замірів у картці: measurements_edit → *_min/*_max + write-back.
+        into.setdefault("measurements_edit", {})[field.split(":", 1)[1]] = value
     else:
         into[field] = value
 

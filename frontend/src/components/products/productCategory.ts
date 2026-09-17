@@ -55,6 +55,14 @@ const CLOTHING_MEASUREMENTS: Record<ClothingSubcat, Set<string>> = {
   top:    new Set(['pog', 'sleeve', 'length']),     // груди, рукав, довжина
 };
 
+/** Заміри одягу, доречні для типу (порожній масив — не одяг). Порядок як у
+ *  MEASUREMENTS картки: груди → талія → бедра → рукав → довжина. */
+export function clothingMeasurementsForType(typeName?: string | null): string[] {
+  if (categoryOf(typeName) !== 'clothing') return [];
+  const allowed = CLOTHING_MEASUREMENTS[clothingSubcat(typeName)];
+  return ['pog', 'pot', 'pob', 'sleeve', 'length'].filter((m) => allowed.has(m));
+}
+
 /** Тип-залежна видимість полів edit-mode картки товару.
  *  Повертає Set ключів, які НЕ треба показувати для типу `typeName`. */
 export function hiddenFieldsForType(typeName?: string | null): Set<string> {
@@ -90,6 +98,10 @@ export function hiddenFieldsForType(typeName?: string | null): Set<string> {
     hidden.add('dimensions');
     hidden.add('geometric_shape');
   }
+
+  // 1b) «Ширина» — повнота колодки (G/W/D…): є лише у взуття. Кофті чи сумці
+  //     це поле ні про що, а порожній інпут у формі змушує думати, що треба заповнити.
+  if (cat !== 'shoe') hidden.add('width');
 
   // 2) Взуттєві характеристики «Інше» (Тип підошви/Форма носка/Застібка/…)
   // ⚠️ «Застібка» (fastening) і «Підкладка» (lining) — УНІВЕРСАЛЬНІ (сумки/валізи/одяг теж

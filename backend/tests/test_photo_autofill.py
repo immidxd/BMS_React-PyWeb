@@ -226,7 +226,7 @@ def _two_call_fake(main: dict, second_article):
 
     Перечитування йде вузькою `ARTICLE_SCHEMA` — саме за нею й розрізняємо.
     """
-    def fake(model, api_key, photos, schema):
+    def fake(model, api_key, photos, schema, prompt=pa.PROMPT):
         if schema is pa.ARTICLE_SCHEMA:
             return {"article_text": second_article, "article_source_text": "x",
                     "_usage": {"promptTokenCount": 10, "candidatesTokenCount": 1}}
@@ -258,7 +258,7 @@ def test_article_is_refused_when_the_reread_fails(monkeypatch, tmp_path):
 
     Закрита відмова: збій мережі не має ставати мовчазним дозволом.
     """
-    def fake(model, api_key, photos, schema):
+    def fake(model, api_key, photos, schema, prompt=pa.PROMPT):
         if schema is pa.ARTICLE_SCHEMA:
             return {"_error": "HTTP 429: quota", "_usage": {"promptTokenCount": 10}}
         return {"article_text": "HQ8708", "article_text_confidence": 0.95,
@@ -282,7 +282,7 @@ def test_article_passes_when_the_reread_agrees(monkeypatch, tmp_path):
 def test_barcode_spares_the_extra_call(monkeypatch, tmp_path):
     """Штрихкод — кращий свідок за перечитування, і зайвий виклик не потрібен."""
     calls = []
-    def fake(model, api_key, photos, schema):
+    def fake(model, api_key, photos, schema, prompt=pa.PROMPT):
         calls.append("вузька" if schema is pa.ARTICLE_SCHEMA else "повна")
         return {"article_text": "JQ8356", "article_text_confidence": 0.95,
                 "article_source_text": "LHG 029003 A JQ8356",

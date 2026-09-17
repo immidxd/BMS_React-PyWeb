@@ -5,7 +5,7 @@ import { Tag, Image, Tooltip } from 'antd';
 import { CloseOutlined, PictureOutlined, LeftOutlined, RightOutlined, WarningOutlined, EditOutlined, CheckOutlined, PlusOutlined, SyncOutlined, EyeOutlined, EyeInvisibleOutlined, StarFilled, ShoppingOutlined, TableOutlined, InboxOutlined, TagOutlined, QrcodeOutlined, DownloadOutlined, CopyOutlined, LoadingOutlined, RotateLeftOutlined, RotateRightOutlined, SwapOutlined } from '@ant-design/icons';
 import { copyImageToClipboard, saveProductPhoto, saveProductPhotosZip } from '../../services/imageTransfer';
 import { CopyOnClick, formatBrandName, getProductDisplayStatus, getProductStock, getConditionColor, effectiveProductNumber, visibleGalleryPhotos } from '../common/displayHelpers';
-import { hiddenFieldsForType } from './productCategory';
+import { hiddenFieldsForType, clothingMeasurementsForType } from './productCategory';
 import AiLimitsBadge, { emitAiLimitsChanged } from './AiLimitsBadge';
 import PhotoStagingModal from '../shipments/PhotoStagingModal';
 import LabelPrintDialog from '../labels/LabelPrintDialog';
@@ -2207,9 +2207,24 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
   // Тип-залежна видимість полів (як у формі «Додати товар»): ховаємо в edit-режимі
   // поля, що не доречні для категорії товару. ⚠️ Хук — ДО early return (нижче), інакше
   // порядок хуків ламається між рендерами → Minified React error #310.
+  // ⚠️ Від типу, який людина БАЧИТЬ, а не від збереженого: у режимі редагування
+  // це чернетка. Інакше, вписавши «Костюм», людина й далі бачила EU/СМ/ширину
+  // взуття, а заміри одягу зʼявлялись лише після збереження й повторного відкриття.
+  const effectiveTypeName: string | undefined = editMode
+    ? ((classDrafts['type_name'] ?? '').trim() || (p as any)?.type_name)
+    : (p as any)?.type_name;
   const hiddenFields = useMemo(
-    () => hiddenFieldsForType((p as any)?.type_name),
-    [(p as any)?.type_name]
+    () => hiddenFieldsForType(effectiveTypeName),
+    [effectiveTypeName]
+  );
+  // Заміри одягу для цього типу — показуються у блоці «Розмір», а не в «Інше».
+  const clothingMeas = useMemo(
+    () => clothingMeasurementsForType(effectiveTypeName),
+    [effectiveTypeName]
+  );
+  const clothingMeasProposals = useMemo(
+    () => clothingMeas.filter((name) => !!proposals[`meas:${name}`]),
+    [clothingMeas, proposals]
   );
 
   // Профіль моделі: тягнемо, коли в режимі редагування задані бренд+модель
@@ -2453,16 +2468,22 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
   };
 
   // Read-only клітинка характеристик: лейбл + значення (порожні ховаємо для компактності).
-  const RoCell: React.FC<{ label: string; value?: React.ReactNode }> = ({ label, value }) => {
-    if (value === null || value === undefined || value === '') return null;
+  const RoCell: React.FC<{ label: string; value?: React.ReactNode; proposalField?: string }> = ({ label, value, proposalField }) => {
+    const empty = value === null || value === undefined || value === '';
+    // Порожню комірку з пропозицією ПОКАЗУЄМО — інакше чіп заміру зі стікера
+    // ніколи не зʼявився б там, де найпотрібніший.
+    if (empty && !(proposalField && proposals[proposalField])) return null;
     return (
       <div className="flex flex-col gap-0.5 min-w-0">
         <span className="text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500 font-medium">{label}</span>
-        <span className="text-sm text-gray-800 dark:text-gray-200 break-words">
-          {(typeof value === 'string' || typeof value === 'number')
-            ? <CopyOnClick value={value as string | number} />
-            : value}
-        </span>
+        {!empty && (
+          <span className="text-sm text-gray-800 dark:text-gray-200 break-words">
+            {(typeof value === 'string' || typeof value === 'number')
+              ? <CopyOnClick value={value as string | number} />
+              : value}
+          </span>
+        )}
+        {proposalField && <ProposalChip field={proposalField} />}
       </div>
     );
   };
@@ -2625,6 +2646,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
   // «Справжній» розмір (EU/буквений/похідні/СМ) — БЕЗ габаритів. Якщо є лише габарити
   // (сумки), заголовок «Розмір» зайвий над самотнім чипом «Габарити» → ховаємо його.
   const hasRealSize = !!(p && (p.sizeeu || (p as any).size_letter || p.measurementscm || derivedSizes.length > 0));
+  const hasClothingMeas = !!(p && MEASUREMENTS.some(({ name, minKey }) => clothingMeas.includes(name) && (p as any)[minKey] != null));
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
@@ -3708,9 +3730,9 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                   {/* Sizes — ховаємо коли розміру нема (напр. сумки), показуємо в edit-режимі
                       АБО коли на розмір/замір є пропозиція зі стікера: інакше чіпи
                       всередині блоку ніколи не побачити. */}
-                  {(editMode || hasAnySize || !!proposals['sizeeu'] || !!proposals['measurementscm']) && (
+                  {(editMode || hasAnySize || hasClothingMeas || !!proposals['sizeeu'] || !!proposals['measurementscm'] || !!proposals['size_letter'] || clothingMeasProposals.length > 0) && (
                   <div className="mb-3">
-                    {(editMode || hasRealSize || proposals['sizeeu'] || proposals['measurementscm']) && (
+                    {(editMode || hasRealSize || hasClothingMeas || proposals['sizeeu'] || proposals['measurementscm'] || proposals['size_letter'] || clothingMeasProposals.length > 0) && (
                       <div className="text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500 mb-2 font-medium">Розмір</div>
                     )}
                     {editMode ? (
@@ -3727,6 +3749,22 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                           <div key={field} className="flex flex-col gap-1">
                             <span className="text-[10px] text-gray-400 dark:text-gray-500 font-medium flex items-center gap-1">{label}<LockDot field={field} /></span>
                             <input value={drafts[field] ?? ''} onChange={(e) => setDraft(field, e.target.value)} className={inputCls + ' !py-1 text-center'} />
+                            {field === 'size_letter' && <ProposalChip field="size_letter" />}
+                          </div>
+                        ))}
+                        {/* Заміри одягу — ТУТ, поруч із буквеним розміром, а не в згорнутому
+                            «Інше» серед підошв і каблуків: для кофти чи костюма це і є розмір. */}
+                        {MEASUREMENTS.filter(({ name }) => clothingMeas.includes(name)).map(({ name, label, hint }) => (
+                          <div key={name} className="flex flex-col gap-1">
+                            <span title={hint} className={`text-[10px] text-gray-400 dark:text-gray-500 font-medium${hint ? ' cursor-help decoration-dotted underline underline-offset-2' : ''}`}>{label}</span>
+                            <input
+                              type="text"
+                              value={measurementDrafts[name] ?? ''}
+                              onChange={(e) => setMeasurementDrafts((d) => ({ ...d, [name]: e.target.value }))}
+                              placeholder="см"
+                              className={inputCls + ' !py-1 text-center'}
+                            />
+                            <ProposalChip field={`meas:${name}`} />
                           </div>
                         ))}
                       </div>
@@ -3750,6 +3788,22 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                             <span className="text-sm font-semibold text-gray-800 dark:text-gray-100">{(p as any).size_letter}</span>
                           </div>
                         )}
+                        {proposals['size_letter'] && (
+                          <div className="flex flex-col justify-center"><span className="text-[10px] text-gray-400 font-medium">Розмір</span><ProposalChip field="size_letter" /></div>
+                        )}
+                        {/* Заміри одягу (груди/талія/бедра/рукав/довжина) — плитками поруч із розміром */}
+                        {MEASUREMENTS.filter(({ name }) => clothingMeas.includes(name)).map(({ name, label, minKey, maxKey }) => {
+                          const val = fmtRange((p as any)[minKey], (p as any)[maxKey]);
+                          const chip = proposals[`meas:${name}`];
+                          if (!val && !chip) return null;
+                          return (
+                            <div key={name} className={`flex flex-col items-center justify-center min-w-[58px] ${val ? 'px-3 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50' : ''}`}>
+                              <span className="text-[10px] text-gray-400 dark:text-gray-500 font-medium">{label}</span>
+                              {val && <span className="text-sm font-semibold text-gray-800 dark:text-gray-100">{val}</span>}
+                              {chip && <ProposalChip field={`meas:${name}`} />}
+                            </div>
+                          );
+                        })}
                         {derivedSizes.map(({ label, val }) => (
                           <div key={label} className="flex flex-col items-center px-3 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50 min-w-[58px]">
                             <span className="text-[10px] text-gray-400 dark:text-gray-500 font-medium">{label}</span>
@@ -3939,6 +3993,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                         {EditCell({ field: 'packaging_name', lockField: 'packagingid', label: 'Пакування' })}
                         {MEASUREMENTS
                           .filter(({ name }) => !(editMode && hiddenFields.has(`meas_${name}`)))
+                          .filter(({ name }) => !clothingMeas.includes(name))
                           .map(({ name, label, minKey, maxKey, hint }) => (
                           editMode ? (
                             <div key={name} className="flex flex-col gap-1 min-w-0">
