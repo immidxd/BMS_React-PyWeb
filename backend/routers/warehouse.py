@@ -64,8 +64,17 @@ def box(code: str):
 
 
 @router.get("/events")
-def events(box: Optional[str] = None, product_id: Optional[int] = None, limit: int = 50):
-    return _fwd("GET", "/events", params={"box": box, "product_id": product_id, "limit": limit})
+def events(box: Optional[str] = None, product_id: Optional[int] = None, actor: Optional[str] = None,
+           kind: Optional[str] = None, limit: int = 50, offset: int = 0):
+    return _fwd("GET", "/events", params={"box": box, "product_id": product_id, "actor": actor,
+                                          "kind": kind, "limit": limit, "offset": offset})
+
+
+@router.post("/events/{event_id}/undo")
+def event_undo(event_id: int):
+    """Скасувати дію зі складу (або повернути скасовану). Адмін-токен BMS —
+    модератор; обернення робить хмара, журнал лишається повним."""
+    return _fwd("POST", f"/events/{event_id}/undo")
 
 
 @router.get("/locations")

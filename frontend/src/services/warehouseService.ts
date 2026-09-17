@@ -30,6 +30,9 @@ export interface WhBox {
 export interface WhEvent {
   id: number; at: string; actor: string | null; kind: string; box_code: string | null;
   product_id: number | null; productnumber: string | null; qty: number | null; details: Record<string, unknown> | null;
+  /** Історія з відкатом (17.09): посилання на подію-обернення й прапорці. */
+  undo_of?: number | null; undone_by?: number | null; undone?: boolean; undoable?: boolean;
+  undone_actor?: string | null; undone_at?: string | null;
 }
 
 export interface WhStatus { configured: boolean; reachable: boolean; message: string; cloud: string }
@@ -88,8 +91,12 @@ export const warehouseService = {
   async unpackAll(code: string) {
     return (await axios.post(`/api/warehouse/boxes/${enc(code)}/unpack-all`)).data as { ok: boolean; unpacked_items: number; units: number };
   },
-  async events(p: { box?: string; product_id?: number; limit?: number }): Promise<WhEvent[]> {
+  async events(p: { box?: string; product_id?: number; actor?: string; kind?: string; limit?: number; offset?: number }): Promise<WhEvent[]> {
     return (await axios.get('/api/warehouse/events', { params: p })).data.events;
+  },
+  /** Скасувати дію (або повернути скасовану — це те саме для події-обернення). */
+  async undoEvent(id: number): Promise<{ ok: boolean; undone: number; by_event: number }> {
+    return (await axios.post(`/api/warehouse/events/${id}/undo`)).data;
   },
   /** Де лежать товари: {product_id: WhLocation[]}. Порожньо, якщо хмара недоступна. */
   async locations(ids: number[]): Promise<Record<number, WhLocation[]>> {

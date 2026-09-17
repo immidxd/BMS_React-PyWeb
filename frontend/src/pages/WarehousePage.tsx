@@ -15,9 +15,13 @@ import { Button, Dropdown, Tooltip } from 'antd';
 import {
   PlusOutlined, PrinterOutlined, ReloadOutlined, SearchOutlined, DownOutlined,
   LockOutlined, UnlockOutlined, CheckOutlined, DeleteOutlined, ExportOutlined, InboxOutlined, TeamOutlined, StopOutlined, SwapOutlined,
+  UndoOutlined, RedoOutlined, HistoryOutlined,
 } from '@ant-design/icons';
 import MainLayout from '../layouts/MainLayout';
 import ProductDetailsModal from '../components/products/ProductDetailsModal';
+import ProductHoverPreview from '../components/products/ProductHoverPreview';
+import { productService } from '../services/productService';
+import type { Product } from '../types/product';
 import WarehouseMapPrototype from './WarehouseMapPrototype';
 import {
   warehouseService as ws, whErr, KIND_UA, CATEGORIES, actorName,
@@ -42,7 +46,7 @@ const CHIP_ERR = `${CHIP} bg-rose-50 text-rose-700 border-rose-200 dark:bg-rose-
 
 const WarehousePage: React.FC = () => {
   const isActive = useIsActivePage();
-  const [tab, setTab] = useState<'boxes' | 'map'>('boxes');
+  const [tab, setTab] = useState<'boxes' | 'history' | 'map'>('boxes');
   const [status, setStatus] = useState<WhStatus | null>(null);
   const [boxes, setBoxes] = useState<WhBox[]>([]);
   const [loading, setLoading] = useState(false);
@@ -57,6 +61,7 @@ const WarehousePage: React.FC = () => {
   const [pendingStaff, setPendingStaff] = useState(0);
   const [detailId, setDetailId] = useState<number | null>(null);
   const loadedOnce = useRef(false);
+  const hover = useProductHover(!!detailId);
 
   const loadBoxes = useCallback(async () => {
     setLoading(true);
@@ -139,6 +144,7 @@ const WarehousePage: React.FC = () => {
           <h1 className="text-2xl font-semibold text-gray-900 dark:text-gray-100">Склад</h1>
           <div className="flex items-center rounded-lg border border-gray-200 dark:border-gray-700 overflow-hidden text-sm">
             <button className={`px-3 py-1.5 ${tab === 'boxes' ? 'bg-black text-white dark:bg-white dark:text-black' : 'text-gray-600 dark:text-gray-300'}`} onClick={() => setTab('boxes')}>Коробки</button>
+            <button className={`px-3 py-1.5 ${tab === 'history' ? 'bg-black text-white dark:bg-white dark:text-black' : 'text-gray-600 dark:text-gray-300'}`} onClick={() => setTab('history')} title="Усі дії на складі — скасувати або повернути будь-яку">Історія</button>
             <button className={`px-3 py-1.5 ${tab === 'map' ? 'bg-black text-white dark:bg-white dark:text-black' : 'text-gray-600 dark:text-gray-300'}`} onClick={() => setTab('map')} title="Прототип плану складу (ще без прив'язки коробок)">Карта · прототип</button>
           </div>
           {status && (
@@ -165,6 +171,10 @@ const WarehousePage: React.FC = () => {
 
         {tab === 'map' ? (
           <WarehouseMapPrototype />
+        ) : tab === 'history' ? (
+          <HistoryTab active={isActive} onOpenProduct={id => setDetailId(id)}
+            onOpenBox={code => { setTab('boxes'); setSelectedCode(code); }}
+            onChanged={() => { void loadBoxes(); if (selectedCode) void loadBox(selectedCode); }} />
         ) : (
           <>
             {searchHits && (
@@ -236,7 +246,7 @@ const WarehousePage: React.FC = () => {
                   <BoxCard box={box} loading={boxLoading} allBoxes={boxes}
                     onChanged={async () => { await loadBox(box.code); await loadBoxes(); }}
                     onDeleted={async () => { setSelectedCode(null); await loadBoxes(); }}
-                    onOpenProduct={id => setDetailId(id)} />
+                    onOpenProduct={id => setDetailId(id)} hover={hover} detailsOpen={!!detailId} />
                 ) : (
                   <div className="text-sm text-gray-400 p-6">{boxLoading ? 'Завантаження…' : 'Коробку не знайдено'}</div>
                 )}
@@ -251,7 +261,199 @@ const WarehousePage: React.FC = () => {
       )}
       {staffOpen && <StaffDialog onClose={() => { setStaffOpen(false); ws.staff().then(st => setPendingStaff(st.pending)).catch(() => undefined); }} />}
       <ProductDetailsModal productId={detailId} open={!!detailId} onClose={() => setDetailId(null)} />
+      {hover.shown && <ProductHoverPreview record={hover.shown.record} x={hover.shown.x} y={hover.shown.y} />}
     </MainLayout>
+  );
+};
+
+/* ───────────────────────────── Швидкий перегляд товару ───────────────────── */
+
+// Та сама плаваюча картка, що в «Товарах» (ProductHoverPreview), але рядки
+// тут — знімки з хмари, а прев'ю потребує картку BMS: підвантажуємо її за id
+// на першому наведенні й кешуємо. Затримка та сама, що в таблиці товарів.
+const _bmsProductCache = new Map<number, Product>();
+function useProductHover(paused: boolean) {
+  const [shown, setShown] = useState<{ record: Product; x: number; y: number } | null>(null);
+  const timer = useRef<number | null>(null);
+  const pos = useRef({ x: 0, y: 0 });
+  const cancel = useCallback(() => {
+    if (timer.current) { window.clearTimeout(timer.current); timer.current = null; }
+    setShown(prev => (prev ? null : prev));
+  }, []);
+  const schedule = useCallback((id: number, e: React.MouseEvent) => {
+    if (paused) return;
+    pos.current = { x: e.clientX, y: e.clientY };
+    if (timer.current) window.clearTimeout(timer.current);
+    timer.current = window.setTimeout(async () => {
+      timer.current = null;
+      let rec = _bmsProductCache.get(id);
+      if (!rec) {
+        try { rec = await productService.getProduct(id); _bmsProductCache.set(id, rec); } catch { return; }
+      }
+      setShown({ record: rec!, x: pos.current.x, y: pos.current.y });
+    }, 420);
+  }, [paused]);
+  const move = useCallback((e: React.MouseEvent) => { pos.current = { x: e.clientX, y: e.clientY }; }, []);
+  useEffect(() => {
+    if (!shown && !timer.current) return;
+    const onScroll = () => cancel();
+    window.addEventListener('scroll', onScroll, true);
+    return () => window.removeEventListener('scroll', onScroll, true);
+  }, [shown, cancel]);
+  useEffect(() => { if (paused) cancel(); }, [paused, cancel]);
+  return { shown, schedule, move, cancel };
+}
+type HoverApi = ReturnType<typeof useProductHover>;
+
+/* ───────────────────────────── Історія ───────────────────────────────────── */
+
+// Усі дії на складі (телефони працівників і BMS) з можливістю скасувати будь-яку
+// або повернути скасовану. Скасування — не видалення: хмара пише подію-
+// обернення, і обидві лишаються в журналі. Нема мережі/конфлікт — хмара каже
+// чому (товар уже деінде, коробки нема) і нічого не змінює.
+const HISTORY_KINDS: { v: string; l: string }[] = [
+  { v: '', l: 'усі дії' }, { v: 'pack', l: 'запаковано' }, { v: 'unpack', l: 'вийнято' }, { v: 'move', l: 'перенесено' },
+  { v: 'seal', l: 'запечатано' }, { v: 'open', l: 'відкрито' }, { v: 'check', l: 'звірено' },
+  { v: 'box_create', l: 'коробку створено' }, { v: 'box_delete', l: 'коробку видалено' }, { v: 'box_edit', l: 'змінено' },
+];
+const PAGE = 100;
+
+const HistoryTab: React.FC<{
+  active: boolean; onOpenProduct: (id: number) => void; onOpenBox: (code: string) => void; onChanged: () => void;
+}> = ({ active, onOpenProduct, onOpenBox, onChanged }) => {
+  const [events, setEvents] = useState<WhEvent[] | null>(null);
+  const [kind, setKind] = useState('');
+  const [boxQ, setBoxQ] = useState('');
+  const [actorQ, setActorQ] = useState('');
+  const [busyId, setBusyId] = useState<number | null>(null);
+  const [more, setMore] = useState(true);
+  const [loading, setLoading] = useState(false);
+
+  const load = useCallback(async (append = false) => {
+    setLoading(true);
+    try {
+      const page = await ws.events({ kind: kind || undefined, box: boxQ.trim() || undefined, actor: actorQ.trim() || undefined,
+        limit: PAGE, offset: append ? (events?.length || 0) : 0 });
+      setEvents(prev => (append && prev ? [...prev, ...page] : page));
+      setMore(page.length === PAGE);
+    } catch (e: any) { notify.error({ message: 'Історія складу', description: whErr(e) }); }
+    finally { setLoading(false); }
+  }, [kind, boxQ, actorQ, events?.length]);
+
+  useEffect(() => { if (active) void load(false); // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active, kind]);
+  // Тихе оновлення, як у списку коробок: дії з телефонів мають зʼявлятись самі.
+  useEffect(() => {
+    if (!active) return;
+    const t = setInterval(() => { void load(false); }, 15_000);
+    return () => clearInterval(t);
+  }, [active, load]);
+
+  const undo = async (e: WhEvent, redo: boolean) => {
+    const what = `${KIND_UA[e.kind] || e.kind}${e.productnumber ? ` · ${e.productnumber.replace(/^#/, '')}` : ''}${e.box_code ? ` → ${e.box_code}` : ''}`;
+    const targetId = redo ? (e.undone_by as number) : e.id;
+    const ok = await confirmDialog({
+      title: redo ? 'Повернути дію?' : 'Скасувати дію?',
+      body: redo
+        ? `${what}\nСкасування буде відкочено — стан коробок повернеться до того, що зробив ${actorName(e.actor) || 'працівник'}.`
+        : `${what}\nХмара запише зворотну дію (наприклад, «вийнято» для «запаковано»). Журнал лишиться повним; згодом дію можна повернути.`,
+      okText: redo ? 'Повернути' : 'Скасувати дію', kind: redo ? 'confirm' : 'warning',
+    });
+    if (!ok) return;
+    setBusyId(e.id);
+    try {
+      await ws.undoEvent(targetId);
+      notify.success({ message: redo ? 'Дію повернуто' : 'Дію скасовано', description: what });
+      await load(false); onChanged();
+    } catch (err: any) { notify.error({ message: redo ? 'Не вдалося повернути' : 'Не вдалося скасувати', description: whErr(err), duration: 7 }); }
+    finally { setBusyId(null); }
+  };
+
+  const detailText = (e: WhEvent) => {
+    const d = (e.details || {}) as any;
+    const parts: string[] = [];
+    if (Array.isArray(d.from) && d.from.length) parts.push(`з ${d.from.join(', ')}`);
+    if (d.all) parts.push('усе');
+    if (d.force) parts.push('з вмістом');
+    if (typeof d.title === 'string' && d.title && e.kind === 'box_edit') parts.push(`назва «${d.title}»`);
+    if (typeof d.location === 'string' && e.kind === 'box_edit') parts.push(`місце «${d.location}»`);
+    if (d.undo) parts.push(e.undo_of ? `скасування дії #${e.undo_of}` : 'скасування');
+    if (d.restored_items != null) parts.push(`відновлено поз.: ${d.restored_items}`);
+    return parts.join(' · ');
+  };
+
+  return (
+    <div>
+      <div className="flex flex-wrap items-center gap-2 mb-3">
+        <select value={kind} onChange={e => setKind(e.target.value)}
+          className="px-2 py-1.5 text-sm rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900">
+          {HISTORY_KINDS.map(k => <option key={k.v} value={k.v}>{k.l}</option>)}
+        </select>
+        <form className="flex items-center gap-1" onSubmit={e => { e.preventDefault(); void load(false); }}>
+          <input value={boxQ} onChange={e => setBoxQ(e.target.value)} placeholder="Коробка, напр. L5"
+            className="w-36 px-3 py-1.5 text-sm rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900" />
+          <input value={actorQ} onChange={e => setActorQ(e.target.value)} placeholder="Хто (імʼя)"
+            className="w-36 px-3 py-1.5 text-sm rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900" />
+          <Button htmlType="submit" icon={<SearchOutlined />} loading={loading} />
+        </form>
+        <span className="text-xs text-gray-400">{events ? `${events.length}${more ? '+' : ''} дій` : ''}</span>
+        <div className="flex-1" />
+        <Button icon={<ReloadOutlined />} onClick={() => void load(false)} loading={loading}>Оновити</Button>
+      </div>
+      <div className="rounded-xl border border-gray-200 dark:border-gray-700 overflow-hidden">
+        <table className="w-full text-sm">
+          <thead className="text-[11px] uppercase tracking-wide text-gray-400 bg-gray-50 dark:bg-gray-900/40">
+            <tr>
+              <th className="px-3 py-2 text-left font-medium">Коли</th>
+              <th className="px-2 py-2 text-left font-medium">Хто</th>
+              <th className="px-2 py-2 text-left font-medium">Дія</th>
+              <th className="px-2 py-2 text-left font-medium">Товар</th>
+              <th className="px-2 py-2 text-left font-medium">Коробка</th>
+              <th className="px-2 py-2 text-right font-medium">К-сть</th>
+              <th className="px-2 py-2 text-left font-medium">Подробиці</th>
+              <th className="px-2 py-2" />
+            </tr>
+          </thead>
+          <tbody>
+            {events === null && <tr><td colSpan={8} className="px-3 py-6 text-center text-gray-400">Завантаження…</td></tr>}
+            {events && events.length === 0 && <tr><td colSpan={8} className="px-3 py-6 text-center text-gray-400">Дій ще не було</td></tr>}
+            {(events || []).map(e => {
+              const isUndo = !!(e.details as any)?.undo;
+              return (
+                <tr key={e.id} className={`border-t border-gray-100 dark:border-gray-700 ${e.undone ? 'opacity-50' : ''} ${isUndo ? 'bg-amber-50/40 dark:bg-amber-900/10' : ''}`}>
+                  <td className="px-3 py-1.5 whitespace-nowrap text-gray-500">{when(e.at)}</td>
+                  <td className="px-2 py-1.5 whitespace-nowrap">{actorName(e.actor)}</td>
+                  <td className="px-2 py-1.5 whitespace-nowrap">
+                    <span className={e.undone ? 'line-through' : 'font-medium'}>{KIND_UA[e.kind] || e.kind}</span>
+                    {e.undone && <span className={`${CHIP_WARN} ml-1.5`} title={e.undone_actor ? `Скасував ${actorName(e.undone_actor)}` : ''}>скасовано</span>}
+                  </td>
+                  <td className="px-2 py-1.5 whitespace-nowrap">
+                    {e.product_id ? <button className="font-semibold hover:underline" onClick={() => onOpenProduct(e.product_id!)}>{(e.productnumber || '').replace(/^#/, '') || `#${e.product_id}`}</button> : ''}
+                  </td>
+                  <td className="px-2 py-1.5 whitespace-nowrap">
+                    {e.box_code ? <button className={CHIP_DARK} onClick={() => onOpenBox(e.box_code!)}>{e.box_code}</button> : ''}
+                  </td>
+                  <td className="px-2 py-1.5 text-right">{e.qty && e.qty > 1 ? `×${e.qty}` : ''}</td>
+                  <td className="px-2 py-1.5 text-xs text-gray-500">{detailText(e)}</td>
+                  <td className="px-2 py-1.5 text-right whitespace-nowrap">
+                    {e.undone
+                      ? <Button size="small" icon={<RedoOutlined />} loading={busyId === e.id} onClick={() => void undo(e, true)}>Повернути</Button>
+                      : e.undoable
+                        ? <Button size="small" icon={<UndoOutlined />} loading={busyId === e.id} onClick={() => void undo(e, false)}>Скасувати</Button>
+                        : null}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+        {events && more && (
+          <div className="p-2 text-center border-t border-gray-100 dark:border-gray-700">
+            <Button size="small" icon={<HistoryOutlined />} loading={loading} onClick={() => void load(true)}>Показати ще</Button>
+          </div>
+        )}
+      </div>
+    </div>
   );
 };
 
@@ -260,7 +462,8 @@ const WarehousePage: React.FC = () => {
 const BoxCard: React.FC<{
   box: WhBox; loading: boolean; allBoxes: WhBox[];
   onChanged: () => Promise<void>; onDeleted: () => Promise<void>; onOpenProduct: (id: number) => void;
-}> = ({ box, loading, allBoxes, onChanged, onDeleted, onOpenProduct }) => {
+  hover: HoverApi; detailsOpen: boolean;
+}> = ({ box, loading, allBoxes, onChanged, onDeleted, onOpenProduct, hover }) => {
   const [busy, setBusy] = useState(false);
   const [edit, setEdit] = useState(false);
   const [title, setTitle] = useState(box.title || '');
@@ -464,7 +667,17 @@ const BoxCard: React.FC<{
               {contents.map(c => {
                 const p = c.product;
                 return (
-                  <tr key={c.item_id} className="border-t border-gray-100 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-900">
+                  // Рядок поводиться як у «Товарах»: наведення — швидкий перегляд,
+                  // клік по рядку — картка товару; чекбокс і «Вийняти» — свої дії.
+                  <tr key={c.item_id} className={`border-t border-gray-100 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-900 ${p.missing ? '' : 'cursor-pointer'}`}
+                    onMouseEnter={e => { if (!p.missing) hover.schedule(p.id, e); }}
+                    onMouseMove={hover.move}
+                    onMouseLeave={hover.cancel}
+                    onClick={e => {
+                      const t = e.target as HTMLElement;
+                      if (t.closest('button, input, a, .ant-btn')) return;
+                      if (!p.missing) { hover.cancel(); onOpenProduct(p.id); }
+                    }}>
                     <td className="px-3 py-1.5"><input type="checkbox" className="accent-black" checked={sel.has(c.item_id)} onChange={e => setSel(s => { const n = new Set(s); if (e.target.checked) n.add(c.item_id); else n.delete(c.item_id); return n; })} /></td>
                     <td className="px-2 py-1.5">
                       <div className="flex items-center gap-2">
