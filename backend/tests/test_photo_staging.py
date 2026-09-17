@@ -138,3 +138,32 @@ def test_counts_tell_which_cards_already_have_photos(monkeypatch):
     assert out["counts"]["#Ф1"] == {"real": 2, "official": 1, "defect": 0}
     assert out["counts"]["#Ф2"] == {"real": 0, "official": 0, "defect": 0}
     assert out["counts"]["#Ф3"]["real"] == 0
+
+
+def test_delete_moves_to_trash_not_unlink(staging):
+    """«Повністю видалити» з розбору = у _trash/ тієї ж категорії: оригінали
+    єдині, і клік не туди в сітці з 60 кадрів не має коштувати знімка."""
+    out = ps.staging_delete({"category": "Взуття", "files": ["a.jpg", "b.jpg"]})
+    assert out["ok"] and out["deleted"] == 2 and sorted(out["files"]) == ["a.jpg", "b.jpg"]
+    assert not (staging / "Взуття" / "a.jpg").exists()
+    assert (staging / "Взуття" / "_trash" / "a.jpg").exists() and (staging / "Взуття" / "_trash" / "b.jpg").exists()
+    # зі списку зникли, а _trash не показується як категорія-вміст
+    assert [f["name"] for f in ps.staging_list("Взуття")["files"]] == ["c.png"]
+
+
+def test_delete_refuses_paths_and_empty_selection(staging):
+    import pytest
+    with pytest.raises(Exception):
+        ps.staging_delete({"category": "Взуття", "files": ["../a.jpg"]})
+    with pytest.raises(Exception):
+        ps.staging_delete({"category": "Взуття", "files": []})
+    assert (staging / "Взуття" / "a.jpg").exists()
+
+
+def test_delete_keeps_a_name_collision_in_trash(staging):
+    ps.staging_delete({"category": "Взуття", "files": ["a.jpg"]})
+    from PIL import Image
+    Image.new("RGB", (10, 10), "red").save(staging / "Взуття" / "a.jpg")   # новий файл з тією ж назвою
+    ps.staging_delete({"category": "Взуття", "files": ["a.jpg"]})
+    names = sorted(p.name for p in (staging / "Взуття" / "_trash").iterdir())
+    assert names == ["a.jpg", "a_1.jpg"]

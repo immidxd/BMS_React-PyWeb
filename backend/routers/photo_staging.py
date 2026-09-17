@@ -49,6 +49,7 @@ STAGING_ROOT = Path(os.environ.get(
     "PRODUCT_PHOTOS_STAGING_DIR",
     os.path.expanduser("~/Downloads/Бізнес/Товар_до_розбору"))).expanduser()
 DONE_DIR = "_done"
+TRASH_DIR = "_trash"   # «видалені» з розбору — не unlink: це єдині оригінали знімка
 IMAGE_EXT = {".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif", ".bmp", ".tif", ".tiff"}
 _SAFE_NAME = re.compile(r"^[^/\\\x00]+$")
 
@@ -231,3 +232,32 @@ def staging_attach(payload: Dict[str, Any] = Body(...), db: Session = Depends(ge
             "category": mirror_category, "kind": kind,
             "added": result.get("added", 0), "moved": moved,
             "errors": result.get("errors", [])}
+
+
+@router.post("/api/photo-staging/delete")
+def staging_delete(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+    """Прибрати знімки з розбору назовсім — у `_trash/` тієї ж категорії.
+
+    Не unlink: у теці «до розбору» лежать ЄДИНІ оригінали, і випадкове
+    видалення (клік не туди в сітці з 60 схожих кадрів) коштувало б знімка.
+    Із сітки файл зникає одразу; фізично прибрати — спорожнити `_trash/`.
+    """
+    category = str(payload.get("category") or "")
+    names: List[str] = [str(n) for n in (payload.get("files") or []) if str(n).strip()]
+    if not names:
+        raise HTTPException(status_code=400, detail="Не вибрано жодного знімка")
+    paths = [_safe_path(category, n) for n in names]
+    trash = _category_dir(category) / TRASH_DIR
+    trash.mkdir(parents=True, exist_ok=True)
+    deleted, errors = [], []
+    for p in paths:
+        target = trash / p.name
+        i = 1
+        while target.exists():
+            target = trash / f"{p.stem}_{i}{p.suffix}"; i += 1
+        try:
+            shutil.move(str(p), str(target))
+            deleted.append(p.name)
+        except OSError as e:  # noqa: BLE001
+            errors.append({"file": p.name, "error": str(e)})
+    return {"ok": True, "deleted": len(deleted), "files": deleted, "trash": str(trash), "errors": errors}

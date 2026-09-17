@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { notify } from '../../ui/feedback';
+import { confirmDialog, notify } from '../../ui/feedback';
 import type { Product } from '../../types/product';
 
 /**
@@ -137,16 +137,48 @@ const PhotoStagingModal: React.FC<Props> = ({ open, onClose, products, defaultCa
     }
   }, [pnum, selected, busy, category, kind, locked, onAttached, loadExisting]);
 
-  // Enter — прикріпити; Esc — зняти виділення
+  // Видалити вибрані з розбору — у _trash/ (не назавжди: оригінали єдині).
+  const remove = useCallback(async () => {
+    if (selected.size === 0 || busy) return;
+    const n = selected.size;
+    const ok = await confirmDialog({
+      title: n === 1 ? 'Видалити знімок із розбору?' : `Видалити ${n} знімків із розбору?`,
+      body: 'Файли переїдуть у теку _trash поруч (їх можна повернути вручну), а з сітки зникнуть одразу.',
+      okText: 'Видалити', danger: true,
+    });
+    if (!ok) return;
+    setBusy(true);
+    try {
+      const r = await fetch('/api/photo-staging/delete', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ category, files: Array.from(selected) }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok || !d?.ok) { notify.error(d?.detail || 'Не вдалося видалити'); return; }
+      const gone = new Set<string>(d.files || []);
+      setFiles((cur) => cur.filter((f) => !gone.has(f.name)));
+      setSelected(new Set());
+      setFocused((f) => (f && gone.has(f) ? null : f));
+      notify.success(`Видалено: ${d.deleted}${(d.errors || []).length ? `, не вдалось ${(d.errors || []).length}` : ''}`);
+    } catch {
+      notify.error('Не вдалося видалити');
+    } finally {
+      setBusy(false);
+    }
+  }, [selected, busy, category]);
+
+  // Enter — прикріпити; Esc — зняти виділення; Delete/Backspace поза полем — видалити вибрані
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') { setSelected(new Set()); }
       if (e.key === 'Enter' && (locked || document.activeElement === inputRef.current)) { e.preventDefault(); attach(); }
+      const inField = document.activeElement === inputRef.current;
+      if ((e.key === 'Delete' || e.key === 'Backspace') && !inField && selected.size > 0) { e.preventDefault(); void remove(); }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [open, attach, locked]);
+  }, [open, attach, locked, remove, selected.size]);
 
   const chips = useMemo(() => {
     const seen = new Set<string>();
@@ -174,7 +206,7 @@ const PhotoStagingModal: React.FC<Props> = ({ open, onClose, products, defaultCa
           </select>
           <span className="text-sm text-gray-500">{loading ? '…' : `${files.length} до розбору`}</span>
           <span className="flex-1" />
-          <span className="text-sm text-gray-500">клік — вибрати · Enter — прикріпити · Esc — зняти</span>
+          <span className="text-sm text-gray-500">клік — вибрати · Enter — прикріпити · Delete — видалити · Esc — зняти</span>
           <button onClick={onClose} aria-label="Закрити" className="text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 text-2xl leading-none ml-2">×</button>
         </div>
 
@@ -218,6 +250,14 @@ const PhotoStagingModal: React.FC<Props> = ({ open, onClose, products, defaultCa
               <button type="button" onClick={attach} disabled={busy || !pnum.trim() || selected.size === 0}
                 className="w-full rounded-lg py-2.5 text-sm font-semibold bg-black text-white hover:bg-gray-800 disabled:opacity-40 disabled:cursor-not-allowed">
                 {busy ? 'Прикріплюю…' : `Прикріпити ${selected.size ? `(${selected.size})` : ''}`}
+              </button>
+              {/* Видалення — окремою тихою кнопкою під головною: браковані/чужі/
+                  дубльовані кадри не мають лишатись у сітці назавжди. Delete — те саме. */}
+              <button type="button" onClick={() => void remove()} disabled={busy || selected.size === 0}
+                title="Видалити вибрані знімки з розбору (у теку _trash). Клавіша Delete."
+                className="w-full rounded-lg py-2 text-sm font-medium border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300
+                  hover:border-red-400 hover:text-red-600 dark:hover:text-red-400 disabled:opacity-40 disabled:cursor-not-allowed">
+                Видалити {selected.size ? `(${selected.size})` : ''}
               </button>
 
               {/* Чіпи товарів завозу: клік ставить номер. Число — скільки знімків
