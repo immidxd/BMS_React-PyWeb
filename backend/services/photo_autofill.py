@@ -295,9 +295,10 @@ PROMPT_CLOTHING = (
 )
 
 # Взуттєві поля закритого переліку — на одязі їх не питаємо взагалі: підошви
-# в кофти нема, а enum без null-відповіді змушував би модель щось вибрати.
-SHOE_ONLY_CLOSED = ("sole_type", "tread_type", "fastening_type", "toe_shape",
-                    "lining", "heel_type")
+# в кофти нема. ⚠️ Застібка й підкладка тут НЕ значаться — вони універсальні
+# (одяг і сумки теж мають блискавку/кнопки/магніт і підкладку), і без поля
+# «застібка» модель на костюмі Dior запхала «на блискавці» у підвид (#Ф4420).
+SHOE_ONLY_CLOSED = ("sole_type", "tread_type", "toe_shape", "heel_type")
 
 # Стікер одягу: ключ у відповіді → поле пропозиції. Заміри йдуть як
 # `meas:<name>` — те саме, що materials_by_position для матеріалів:
@@ -359,6 +360,13 @@ def build_schema(db: Session, type_id: Optional[int] = None,
                   and not is_dead_value(field, n) and not is_misplaced_value(_upd, n)
                   and not is_absence_value(_upd, n)
                   and canonicalize_shoe_attribute(field, n) == " ".join((n or "").split())]
+        if not values:
+            # ⚠️ Порожній перелік — це НЕ «нічого не обереш». У діалекті Gemini
+            # null з enum прибирається, і лишається enum=[] — а його модель
+            # трактує як «будь-який рядок». Так «Костюм» без жодного підвиду в
+            # довіднику отримав вигаданий підвид «кофта на блискавці» (#Ф4420).
+            # Немає з чого обирати — не питаємо.
+            continue
         hints = VALUE_HINTS.get(field, {})
         field_note = hints.get("__field__", "")
         detail = "; ".join(f"«{v}» — {hints[v]}" for v in values if v in hints and v != "__field__")

@@ -144,3 +144,38 @@ def test_sticker_value_equal_to_card_is_already_correct(monkeypatch):
     pa._clothing_sticker_proposals(None, 1, pred, current, "x", "m", proposed, below, already)
     assert proposed == []
     assert ("size_letter", "XXL") in already and ("meas:pog", "63") in already
+
+
+# ── #Ф4420: «кофта на блискавці» у підвиді костюма ──────────────────────────
+
+class _EmptySubtypesDB:
+    """Довідник, де у типу немає ЖОДНОГО підвиду (як у «Костюма»), а решта
+    переліків має по одному значенню."""
+    def execute(self, sql, params=None):
+        q = str(sql)
+        class _R:
+            def __init__(self, rows): self._rows = rows
+            def fetchall(self): return self._rows
+        if "subtypes" in q:
+            return _R([])
+        if "fastening_types" in q:
+            return _R([("блискавка", 5)])
+        return _R([("x", 1)])
+
+
+def test_field_without_options_is_not_asked_at_all():
+    """Порожній enum у діалекті Gemini = «будь-який рядок»: модель вигадала
+    підвид «кофта на блискавці» для костюма. Немає з чого обирати — не питаємо."""
+    props = pa.build_schema(_EmptySubtypesDB(), type_id=181, category="clothing", subcat="dress")["properties"]
+    assert "subtype" not in props
+    assert "subtype_confidence" not in props
+
+
+def test_clothing_keeps_fastening_and_lining():
+    """Застібка й підкладка — універсальні: у костюма теж є блискавка. Без поля
+    «застібка» модель тягне блискавку в підвид."""
+    props = pa.build_schema(_EmptySubtypesDB(), category="clothing", subcat="dress")["properties"]
+    assert "fastening_type" in props and "lining" in props
+    assert "блискавка" in props["fastening_type"]["enum"]
+    for shoe_only in ("sole_type", "tread_type", "toe_shape", "heel_type"):
+        assert shoe_only not in props
