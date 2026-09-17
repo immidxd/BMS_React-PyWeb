@@ -14,7 +14,7 @@
  *    - top    (футболки, светри, …)    → груди, рукав, довжина
  */
 export type ProductCategory = 'shoe' | 'bag' | 'suitcase' | 'clothing' | 'accessory';
-export type ClothingSubcat = 'bottom' | 'dress' | 'top';
+export type ClothingSubcat = 'bottom' | 'dress' | 'suit' | 'top';
 
 // Латинські гомогліфи → кирилиця. У журналі/додатку типи інколи вводять зі
 // змішаною розкладкою: 'Cумка' з ЛАТИНСЬКОЮ 'C' (U+0043) виглядає ідентично до
@@ -44,7 +44,10 @@ export function categoryOf(typeName?: string | null): ProductCategory {
 export function clothingSubcat(typeName?: string | null): ClothingSubcat {
   const s = _deHomoglyph((typeName || '').toLowerCase());
   if (/штан|джинс|шорт|спідниц|лосин|рейтуз|легінс|бермуд/.test(s)) return 'bottom';
-  if (/плат|сукн|комбінезон|сарафан|костюм/.test(s)) return 'dress';
+  // Костюм — окремо: це кофта/жакет + штани, у нього є рукав, а «Довжина» —
+  // сума двох довжин (розклад — у примітці). Дзеркало services/product_category.py.
+  if (/костюм/.test(s)) return 'suit';
+  if (/плат|сукн|комбінезон|сарафан/.test(s)) return 'dress';
   return 'top';
 }
 
@@ -52,6 +55,7 @@ export function clothingSubcat(typeName?: string | null): ClothingSubcat {
 const CLOTHING_MEASUREMENTS: Record<ClothingSubcat, Set<string>> = {
   bottom: new Set(['pot', 'pob', 'length']),       // талія, бедра, довжина
   dress:  new Set(['pog', 'pot', 'pob', 'length']), // груди, талія, бедра, довжина
+  suit:   new Set(['pog', 'pot', 'pob', 'sleeve', 'length']), // + рукав; довжина = верх + низ
   top:    new Set(['pog', 'sleeve', 'length']),     // груди, рукав, довжина
 };
 

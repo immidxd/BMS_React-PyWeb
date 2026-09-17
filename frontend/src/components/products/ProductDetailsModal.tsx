@@ -4073,6 +4073,9 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                     <EditBtn onClick={() => startEdit('extranote', p.extranote ?? '')} title="Редагувати примітку" />
                   )}
                   {notesOpen && <LockBadge field="extranote" />}
+                  {/* Пропозиція примітки (розклад довжини костюма зі стікера) — чіп у
+                      заголовку, щоб його було видно й у згорнутому стані. */}
+                  <ProposalChip field="extranote" />
                 </div>
                 {!notesOpen ? null : editMode ? (
                   <textarea value={drafts['extranote'] ?? ''} onChange={(e) => setDraft('extranote', e.target.value)}

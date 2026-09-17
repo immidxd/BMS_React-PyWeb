@@ -290,8 +290,9 @@ PROMPT_CLOTHING = (
     "догори ногами — прочитай його в будь-якій орієнтації. На ньому: буквений "
     "розмір (S, M, L, XL, XXL…), ціна, номер товару (літера + цифри, напр. Ф4425) "
     "і заміри в сантиметрах зі скороченнями: «о/г» або «ОГ» — груди (напівобхват), "
-    "«о/т» — талія, «о/б» — бедра, «д» — довжина виробу, «р» — рукав. "
-    "Число поруч зі скороченням — це і є замір."
+    "«о/т» — талія, «о/б» — бедра, «д»/«дов» — довжина виробу, «р»/«Р» — довжина РУКАВА "
+    "(не розмір: розмір тут буквений). У костюма довжин дві: «дов 65» — верх (кофта), "
+    "«б-д 102» або «штани 102» — низ (штани). Число поруч зі скороченням — це і є замір."
 )
 
 # Взуттєві поля закритого переліку — на одязі їх не питаємо взагалі: підошви
@@ -462,8 +463,7 @@ def build_schema(db: Session, type_id: Optional[int] = None,
             "description": "буквений розмір зі стікера або бирки (XS…XXXL); null, якщо не видно",
         }
         conf_keys.append(STICKER_SIZE_LETTER_KEY)
-        names = [n for n in ("pog", "pot", "pob", "length", "sleeve")
-                 if n in pc.CLOTHING_MEASUREMENTS.get(subcat or "top", set())]
+        names = list(pc.STICKER_MEASUREMENT_KEYS.get(subcat or "top", pc.STICKER_MEASUREMENT_KEYS["top"]))
         props[STICKER_MEASUREMENTS_KEY] = {
             "type": "object",
             "description": ("заміри в сантиметрах ЗІ СТІКЕРА, число біля скорочення; "
@@ -684,7 +684,7 @@ def _current_values(db: Session, product_id: int) -> Dict[str, Optional[str]]:
                      for n in ("pog", "pot", "pob", "length", "sleeve"))
     row = db.execute(text(
         f"SELECT {sel}, b.brandname AS brand_name, t.typename AS type_name, "
-        f"p.marking, p.gtin, p.model, p.price, p.sizeeu, p.size_letter, p.measurementscm, "
+        f"p.marking, p.gtin, p.model, p.price, p.sizeeu, p.size_letter, p.measurementscm, p.extranote, "
         f"p.typeid, p.productnumber, p.season, {meas} "
         f"FROM products p {joins} LEFT JOIN brands b ON b.id = p.brandid "
         f"LEFT JOIN types t ON t.id = p.typeid "
@@ -924,6 +924,33 @@ def _clothing_sticker_proposals(db, product_id, pred, current, photo_names, mode
     conf = pred.get(f"{STICKER_MEASUREMENTS_KEY}_confidence")
     if not isinstance(meas, dict):
         return
+    meas = dict(meas)
+    # Костюм: довжина верху й низу. Рішення власника — у «Довжина» іде СУМА,
+    # а розклад лягає в примітку, щоб цифра 167 не виглядала помилкою.
+    top, bottom = meas.pop("length_top", None), meas.pop("length_bottom", None)
+    parts = []
+    for label, raw in (("кофта", top), ("штани", bottom)):
+        try:
+            v = float(raw)
+        except (TypeError, ValueError):
+            continue
+        lo, hi = pc.MEASUREMENT_BOUNDS["length_top" if label == "кофта" else "length_bottom"]
+        if lo <= v <= hi:
+            parts.append((label, v))
+        else:
+            below_threshold.append((f"meas:length_{label}", raw, conf))
+    if parts:
+        meas["length"] = sum(v for _l, v in parts)
+        if len(parts) == 2:
+            breakdown = "Довжина: " + ", ".join(f"{l} {_fmt_num(v)} см" for l, v in parts)
+            cur_note = (current.get("extranote") or "").strip()
+            if breakdown.lower() not in cur_note.lower():
+                merged = f"{cur_note}\n{breakdown}" if cur_note else breakdown
+                if conf is not None and float(conf) >= field_proposals.threshold_for("meas:length") \
+                        and field_proposals.propose(db, product_id, "extranote", merged, conf,
+                                                    model=model, source_photos=photo_names,
+                                                    note="розклад довжини костюма зі стікера"):
+                    proposed.append(("extranote", breakdown, conf))
     for name, raw in meas.items():
         if raw is None or name not in pc.MEASUREMENT_BOUNDS:
             continue

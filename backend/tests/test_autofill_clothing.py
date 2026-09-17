@@ -34,7 +34,7 @@ def test_category_mirrors_frontend(type_name, cat):
 
 
 @pytest.mark.parametrize("type_name,sub", [
-    ("Кофта", "top"), ("Футболка", "top"), ("Костюм", "dress"),
+    ("Кофта", "top"), ("Футболка", "top"), ("Костюм", "suit"),
     ("Плаття", "dress"), ("Штани", "bottom"), ("Джинси", "bottom"),
 ])
 def test_clothing_subcategory(type_name, sub):
@@ -71,6 +71,41 @@ def test_clothing_schema_asks_for_letter_size_and_measurements():
     for shoe_only in ("sole_type", "tread_type", "heel_type", "toe_shape",
                       "sticker_size", "sticker_cm", "materials_pictogram"):
         assert shoe_only not in props, shoe_only
+
+
+def test_suit_asks_for_sleeve_and_two_lengths():
+    props = pa.build_schema(_NoDB(), category="clothing", subcat="suit")["properties"]
+    assert set(props["sticker_measurements"]["properties"]) == {
+        "pog", "pot", "pob", "sleeve", "length_top", "length_bottom"}
+
+
+def test_suit_lengths_are_summed_and_explained_in_note(monkeypatch):
+    """Рішення власника: у «Довжина» — сума верху й низу, розклад — у примітку."""
+    rec = _Rec(); monkeypatch.setattr(_FP_USED, "propose", rec)
+    pred = {"sticker_measurements": {"pog": 58, "sleeve": 54, "length_top": 65, "length_bottom": 102},
+            "sticker_measurements_confidence": 0.9}
+    proposed, below, already = [], [], []
+    pa._clothing_sticker_proposals(None, 1, pred, {"extranote": "стара примітка"}, "x", "m",
+                                   proposed, below, already)
+    fields = {f: v for f, v, _c in proposed}
+    assert fields["meas:length"] == "167" and fields["meas:sleeve"] == "54"
+    assert fields["extranote"] == "Довжина: кофта 65 см, штани 102 см"
+    # у базу йде обʼєднання з наявною приміткою, а не заміна
+    saved = {f: v for f, v, _c in rec.calls}
+    assert saved["extranote"] == "стара примітка\nДовжина: кофта 65 см, штани 102 см"
+
+
+def test_suit_with_one_length_has_no_note(monkeypatch):
+    rec = _Rec(); monkeypatch.setattr(_FP_USED, "propose", rec)
+    pred = {"sticker_measurements": {"length_top": 65, "length_bottom": None},
+            "sticker_measurements_confidence": 0.9}
+    proposed, below, already = [], [], []
+    pa._clothing_sticker_proposals(None, 1, pred, {}, "x", "m", proposed, below, already)
+    assert [f for f, _v, _c in proposed] == ["meas:length"]
+
+
+def test_prompt_says_r_is_sleeve_not_size():
+    assert "РУКАВА" in pa.PROMPT_CLOTHING and "не розмір" in pa.PROMPT_CLOTHING
 
 
 def test_bottom_asks_for_waist_and_hips_not_sleeve():
