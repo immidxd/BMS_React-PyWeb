@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { confirmDialog, notify } from '../../ui/feedback';
+import { notify } from '../../ui/feedback';
 import type { Product } from '../../types/product';
 
 /**
@@ -137,35 +137,50 @@ const PhotoStagingModal: React.FC<Props> = ({ open, onClose, products, defaultCa
     }
   }, [pnum, selected, busy, category, kind, locked, onAttached, loadExisting]);
 
-  // Видалити вибрані з розбору — у _trash/ (не назавжди: оригінали єдині).
-  const remove = useCallback(async () => {
-    if (selected.size === 0 || busy) return;
-    const n = selected.size;
-    const ok = await confirmDialog({
-      title: n === 1 ? 'Видалити знімок із розбору?' : `Видалити ${n} знімків із розбору?`,
-      body: 'Файли переїдуть у теку _trash поруч (їх можна повернути вручну), а з сітки зникнуть одразу.',
-      okText: 'Видалити', danger: true,
-    });
-    if (!ok) return;
+  // Видалити з розбору — × на кадрі або × біля лічильника вибраних. Без
+  // діалогу: файли йдуть у _trash/, а в тості є «Повернути» — це дешевше і
+  // безпечніше за зайве питання на кожен кадр.
+  const restore = useCallback(async (names: string[]) => {
+    try {
+      const r = await fetch('/api/photo-staging/restore', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ category, files: names }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok || !d?.ok) { notify.error(d?.detail || 'Не вдалося повернути'); return; }
+      await load();
+      notify.success(`Повернуто: ${(d.restored || []).length}`);
+    } catch { notify.error('Не вдалося повернути'); }
+  }, [category, load]);
+
+  const remove = useCallback(async (names: string[]) => {
+    if (names.length === 0 || busy) return;
     setBusy(true);
     try {
       const r = await fetch('/api/photo-staging/delete', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ category, files: Array.from(selected) }),
+        body: JSON.stringify({ category, files: names }),
       });
       const d = await r.json().catch(() => ({}));
       if (!r.ok || !d?.ok) { notify.error(d?.detail || 'Не вдалося видалити'); return; }
-      const gone = new Set<string>(d.files || []);
-      setFiles((cur) => cur.filter((f) => !gone.has(f.name)));
-      setSelected(new Set());
-      setFocused((f) => (f && gone.has(f) ? null : f));
-      notify.success(`Видалено: ${d.deleted}${(d.errors || []).length ? `, не вдалось ${(d.errors || []).length}` : ''}`);
+      const gone: string[] = d.files || [];
+      const goneSet = new Set(gone);
+      setFiles((cur) => cur.filter((f) => !goneSet.has(f.name)));
+      setSelected((cur) => { const n = new Set(cur); gone.forEach((x) => n.delete(x)); return n; });
+      setFocused((f) => (f && goneSet.has(f) ? null : f));
+      const key = `staging-del-${Date.now()}`;
+      notify.info({
+        key, message: gone.length === 1 ? 'Знімок видалено' : `Видалено: ${gone.length}`,
+        description: 'Лежить у _trash поруч із текою — можна повернути.', duration: 6,
+        btn: <button type="button" className="text-sm font-semibold underline underline-offset-2"
+          onClick={() => { void restore(gone); }}>Повернути</button>,
+      });
     } catch {
       notify.error('Не вдалося видалити');
     } finally {
       setBusy(false);
     }
-  }, [selected, busy, category]);
+  }, [busy, category, restore]);
 
   // Enter — прикріпити; Esc — зняти виділення; Delete/Backspace поза полем — видалити вибрані
   useEffect(() => {
@@ -174,11 +189,11 @@ const PhotoStagingModal: React.FC<Props> = ({ open, onClose, products, defaultCa
       if (e.key === 'Escape') { setSelected(new Set()); }
       if (e.key === 'Enter' && (locked || document.activeElement === inputRef.current)) { e.preventDefault(); attach(); }
       const inField = document.activeElement === inputRef.current;
-      if ((e.key === 'Delete' || e.key === 'Backspace') && !inField && selected.size > 0) { e.preventDefault(); void remove(); }
+      if ((e.key === 'Delete' || e.key === 'Backspace') && !inField && selected.size > 0) { e.preventDefault(); void remove(Array.from(selected)); }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [open, attach, locked, remove, selected.size]);
+  }, [open, attach, locked, remove, selected]);
 
   const chips = useMemo(() => {
     const seen = new Set<string>();
@@ -205,8 +220,18 @@ const PhotoStagingModal: React.FC<Props> = ({ open, onClose, products, defaultCa
             {CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
           </select>
           <span className="text-sm text-gray-500">{loading ? '…' : `${files.length} до розбору`}</span>
+          {selected.size > 0 && (
+            <span className="inline-flex items-center gap-1 text-sm text-gray-700 dark:text-gray-200">
+              · вибрано {selected.size}
+              <button type="button" onClick={() => void remove(Array.from(selected))} disabled={busy}
+                title="Видалити вибрані з розбору (Delete)"
+                className="ml-1 inline-flex items-center justify-center w-6 h-6 rounded-full text-gray-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/30 transition-colors">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M18 6 6 18M6 6l12 12" /></svg>
+              </button>
+            </span>
+          )}
           <span className="flex-1" />
-          <span className="text-sm text-gray-500">клік — вибрати · Enter — прикріпити · Delete — видалити · Esc — зняти</span>
+          <span className="text-sm text-gray-500">клік — вибрати · Enter — прикріпити · × або Delete — видалити · Esc — зняти</span>
           <button onClick={onClose} aria-label="Закрити" className="text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 text-2xl leading-none ml-2">×</button>
         </div>
 
@@ -251,14 +276,7 @@ const PhotoStagingModal: React.FC<Props> = ({ open, onClose, products, defaultCa
                 className="w-full rounded-lg py-2.5 text-sm font-semibold bg-black text-white hover:bg-gray-800 disabled:opacity-40 disabled:cursor-not-allowed">
                 {busy ? 'Прикріплюю…' : `Прикріпити ${selected.size ? `(${selected.size})` : ''}`}
               </button>
-              {/* Видалення — окремою тихою кнопкою під головною: браковані/чужі/
-                  дубльовані кадри не мають лишатись у сітці назавжди. Delete — те саме. */}
-              <button type="button" onClick={() => void remove()} disabled={busy || selected.size === 0}
-                title="Видалити вибрані знімки з розбору (у теку _trash). Клавіша Delete."
-                className="w-full rounded-lg py-2 text-sm font-medium border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300
-                  hover:border-red-400 hover:text-red-600 dark:hover:text-red-400 disabled:opacity-40 disabled:cursor-not-allowed">
-                Видалити {selected.size ? `(${selected.size})` : ''}
-              </button>
+
 
               {/* Чіпи товарів завозу: клік ставить номер. Число — скільки знімків
                   у картці ВЖЕ Є (реальні + офіційні); залитий чіп = фото є,
@@ -307,18 +325,27 @@ const PhotoStagingModal: React.FC<Props> = ({ open, onClose, products, defaultCa
               {files.map((f) => {
                 const isSel = selected.has(f.name);
                 return (
-                  <button key={f.name} type="button"
-                    onClick={() => toggle(f.name)} onMouseEnter={() => setFocused(f.name)}
-                    className={`relative aspect-square rounded-lg overflow-hidden border-2 bg-gray-100 dark:bg-gray-800 ${
-                      isSel ? 'border-gray-900 dark:border-gray-100 ring-2 ring-gray-900/30' : 'border-transparent'}`}>
-                    <img src={imgUrl(category, f.name, THUMB)} alt="" loading="lazy" decoding="async"
-                      className="w-full h-full object-cover pointer-events-none" />
-                    {isSel && (
-                      <span className="absolute top-1.5 left-1.5 w-6 h-6 rounded-full bg-gray-900 text-white text-xs flex items-center justify-center">
-                        {Array.from(selected).indexOf(f.name) + 1}
-                      </span>
-                    )}
-                  </button>
+                  <div key={f.name} className="relative group">
+                    <button type="button"
+                      onClick={() => toggle(f.name)} onMouseEnter={() => setFocused(f.name)}
+                      className={`relative w-full aspect-square rounded-lg overflow-hidden border-2 bg-gray-100 dark:bg-gray-800 ${
+                        isSel ? 'border-gray-900 dark:border-gray-100 ring-2 ring-gray-900/30' : 'border-transparent'}`}>
+                      <img src={imgUrl(category, f.name, THUMB)} alt="" loading="lazy" decoding="async"
+                        className="w-full h-full object-cover pointer-events-none" />
+                      {isSel && (
+                        <span className="absolute top-1.5 left-1.5 w-6 h-6 rounded-full bg-gray-900 text-white text-xs flex items-center justify-center">
+                          {Array.from(selected).indexOf(f.name) + 1}
+                        </span>
+                      )}
+                    </button>
+                    {/* × — видалити САМЕ цей кадр; зʼявляється при наведенні, щоб сітка лишалась чистою. */}
+                    <button type="button" onClick={(e) => { e.stopPropagation(); void remove([f.name]); }} disabled={busy}
+                      title="Видалити з розбору"
+                      className="absolute top-1.5 right-1.5 w-6 h-6 rounded-full bg-black/55 text-white flex items-center justify-center
+                        opacity-0 group-hover:opacity-100 focus:opacity-100 hover:bg-red-600 transition-opacity">
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round"><path d="M18 6 6 18M6 6l12 12" /></svg>
+                    </button>
+                  </div>
                 );
               })}
             </div>

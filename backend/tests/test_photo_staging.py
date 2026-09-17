@@ -167,3 +167,11 @@ def test_delete_keeps_a_name_collision_in_trash(staging):
     ps.staging_delete({"category": "Взуття", "files": ["a.jpg"]})
     names = sorted(p.name for p in (staging / "Взуття" / "_trash").iterdir())
     assert names == ["a.jpg", "a_1.jpg"]
+
+
+def test_restore_brings_a_file_back_from_trash(staging):
+    """«Повернути» в тості після ×: файл повертається з _trash у розбір."""
+    ps.staging_delete({"category": "Взуття", "files": ["a.jpg"]})
+    out = ps.staging_restore({"category": "Взуття", "files": ["a.jpg", "ghost.jpg", "../x.jpg"]})
+    assert out["restored"] == ["a.jpg"] and len(out["errors"]) == 2
+    assert (staging / "Взуття" / "a.jpg").exists() and not (staging / "Взуття" / "_trash" / "a.jpg").exists()

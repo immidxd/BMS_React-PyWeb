@@ -261,3 +261,30 @@ def staging_delete(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
         except OSError as e:  # noqa: BLE001
             errors.append({"file": p.name, "error": str(e)})
     return {"ok": True, "deleted": len(deleted), "files": deleted, "trash": str(trash), "errors": errors}
+
+
+@router.post("/api/photo-staging/restore")
+def staging_restore(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+    """Повернути з `_trash/` назад у розбір — «Повернути» в тості після ×."""
+    category = str(payload.get("category") or "")
+    names: List[str] = [str(n) for n in (payload.get("files") or []) if str(n).strip()]
+    if not names:
+        raise HTTPException(status_code=400, detail="Нема що повертати")
+    cat = _category_dir(category)
+    trash = cat / TRASH_DIR
+    restored, errors = [], []
+    for name in names:
+        if not _SAFE_NAME.match(name) or name.startswith("."):
+            errors.append({"file": name, "error": "некоректна назва"}); continue
+        src = trash / name
+        if not src.is_file():
+            errors.append({"file": name, "error": "у _trash немає"}); continue
+        target = cat / name
+        i = 1
+        while target.exists():
+            target = cat / f"{src.stem}_{i}{src.suffix}"; i += 1
+        try:
+            shutil.move(str(src), str(target)); restored.append(target.name)
+        except OSError as e:  # noqa: BLE001
+            errors.append({"file": name, "error": str(e)})
+    return {"ok": True, "restored": restored, "errors": errors}
