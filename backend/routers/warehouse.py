@@ -167,6 +167,40 @@ def unpack_anywhere(payload: UnpackIn = Body(...)):
     return _fwd("POST", "/unpack", json=payload.dict())
 
 
+# ───────────────────────────── працівники ────────────────────────────────────
+# Доступ до Mini App: працівник тисне «Попросити доступ» у телефоні → тут
+# власник підтверджує. Уся логіка в хмарі; тут лише проксі з адмін-токеном.
+
+class StaffAdd(BaseModel):
+    tg_id: int = Field(..., ge=1)
+    name: Optional[str] = None
+    note: Optional[str] = None
+
+
+class StaffStatus(BaseModel):
+    status: str = Field(..., pattern="^(active|blocked)$")
+
+
+@router.get("/staff")
+def staff_list():
+    return _fwd("GET", "/staff")
+
+
+@router.post("/staff", status_code=201)
+def staff_add(payload: StaffAdd = Body(...)):
+    return _fwd("POST", "/staff", json=payload.dict())
+
+
+@router.post("/staff/{tg_id}/status")
+def staff_status(tg_id: int, payload: StaffStatus = Body(...)):
+    return _fwd("POST", f"/staff/{tg_id}/status", json=payload.dict())
+
+
+@router.delete("/staff/{tg_id}")
+def staff_delete(tg_id: int):
+    return _fwd("DELETE", f"/staff/{tg_id}")
+
+
 # ───────────────────────────── етикетка коробки ──────────────────────────────
 
 class LabelIn(BaseModel):

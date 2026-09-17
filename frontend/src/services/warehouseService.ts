@@ -33,6 +33,11 @@ export interface WhEvent {
 }
 
 export interface WhStatus { configured: boolean; reachable: boolean; message: string; cloud: string }
+export interface WhStaff {
+  tg_id: number; name: string; username: string; status: 'pending' | 'active' | 'blocked';
+  requested_at: string | null; approved_at: string | null; approved_by: string | null; last_seen_at: string | null; note: string | null;
+}
+export interface WhStaffList { owners: number[]; staff: WhStaff[]; pending: number }
 
 export type WhScan =
   | { kind: 'product'; product: WhProduct }
@@ -98,6 +103,10 @@ export const warehouseService = {
   },
   async search(q: string): Promise<WhProduct[]> { return (await axios.get('/api/warehouse/search', { params: { q } })).data.products; },
   async scan(code: string): Promise<WhScan> { return (await axios.get('/api/warehouse/scan', { params: { code } })).data; },
+  async staff(): Promise<WhStaffList> { return (await axios.get('/api/warehouse/staff')).data; },
+  async staffAdd(p: { tg_id: number; name?: string; note?: string }): Promise<WhStaff> { return (await axios.post('/api/warehouse/staff', p)).data; },
+  async staffStatus(tg_id: number, status: 'active' | 'blocked'): Promise<WhStaff> { return (await axios.post(`/api/warehouse/staff/${tg_id}/status`, { status })).data; },
+  async staffDelete(tg_id: number): Promise<void> { await axios.delete(`/api/warehouse/staff/${tg_id}`); },
   labelPngUrl(code: string): string { return `/api/warehouse/boxes/${enc(code)}/label.png?t=${Date.now()}`; },
   async printLabel(code: string, mode: 'print' | 'save' | 'download', printer?: string | null, copies = 1) {
     if (mode === 'download') {

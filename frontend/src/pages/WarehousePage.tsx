@@ -14,7 +14,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Button, Dropdown, Tooltip } from 'antd';
 import {
   PlusOutlined, PrinterOutlined, ReloadOutlined, SearchOutlined, DownOutlined,
-  LockOutlined, UnlockOutlined, CheckOutlined, DeleteOutlined, ExportOutlined, InboxOutlined,
+  LockOutlined, UnlockOutlined, CheckOutlined, DeleteOutlined, ExportOutlined, InboxOutlined, TeamOutlined, StopOutlined,
 } from '@ant-design/icons';
 import MainLayout from '../layouts/MainLayout';
 import ProductDetailsModal from '../components/products/ProductDetailsModal';
@@ -22,6 +22,7 @@ import WarehouseMapPrototype from './WarehouseMapPrototype';
 import {
   warehouseService as ws, whErr, KIND_UA, CATEGORIES, actorName,
   type WhBox, type WhProduct, type WhEvent, type WhStatus,
+  WhStaff, WhStaffList,
 } from '../services/warehouseService';
 import { isDesktopShell, saveBlob } from '../services/imageTransfer';
 import { confirmDialog, notify } from '../ui/feedback';
@@ -52,14 +53,16 @@ const WarehousePage: React.FC = () => {
   const [search, setSearch] = useState('');
   const [searchHits, setSearchHits] = useState<WhProduct[] | null>(null);
   const [newOpen, setNewOpen] = useState(false);
+  const [staffOpen, setStaffOpen] = useState(false);
+  const [pendingStaff, setPendingStaff] = useState(0);
   const [detailId, setDetailId] = useState<number | null>(null);
   const loadedOnce = useRef(false);
 
   const loadBoxes = useCallback(async () => {
     setLoading(true);
     try {
-      const [st, list] = await Promise.all([ws.status(), ws.boxes().catch(() => [] as WhBox[])]);
-      setStatus(st); setBoxes(list);
+      const [st, list, staff] = await Promise.all([ws.status(), ws.boxes().catch(() => [] as WhBox[]), ws.staff().catch(() => null)]);
+      setStatus(st); setBoxes(list); if (staff) setPendingStaff(staff.pending);
     } catch (e: any) { notify.error({ message: 'Склад недоступний', description: whErr(e) }); }
     finally { setLoading(false); }
   }, []);
@@ -86,6 +89,7 @@ const WarehousePage: React.FC = () => {
     try {
       const list = await ws.boxes();
       setBoxes(list);
+      ws.staff().then(st => setPendingStaff(st.pending)).catch(() => undefined);
       if (selectedCode) {
         const fresh = await ws.box(selectedCode);
         setBox(prev => (prev && prev.updated_at === fresh.updated_at && prev.units === fresh.units && prev.items === fresh.items ? prev : fresh));
@@ -151,6 +155,9 @@ const WarehousePage: React.FC = () => {
                 <Button htmlType="submit" icon={<SearchOutlined />} />
               </form>
               <Button icon={<ReloadOutlined />} onClick={() => void refreshAll()} loading={loading}>Оновити</Button>
+              <Button icon={<TeamOutlined />} onClick={() => setStaffOpen(true)} title="Хто має доступ до міні-застосунку складу">
+                Працівники{pendingStaff > 0 && <span className="ml-1.5 inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full bg-red-500 text-white text-[11px] font-bold">{pendingStaff}</span>}
+              </Button>
               <Button type="primary" icon={<PlusOutlined />} onClick={() => setNewOpen(true)}>Нова коробка</Button>
             </>
           )}
@@ -242,6 +249,7 @@ const WarehousePage: React.FC = () => {
       {newOpen && (
         <NewBoxDialog onClose={() => setNewOpen(false)} onCreated={async b => { setNewOpen(false); await loadBoxes(); setSelectedCode(b.code); }} />
       )}
+      {staffOpen && <StaffDialog onClose={() => { setStaffOpen(false); ws.staff().then(st => setPendingStaff(st.pending)).catch(() => undefined); }} />}
       <ProductDetailsModal productId={detailId} open={!!detailId} onClose={() => setDetailId(null)} />
     </MainLayout>
   );
@@ -585,6 +593,86 @@ const BoxLabelDialog: React.FC<{ box: WhBox; onClose: () => void }> = ({ box, on
           <Button onClick={onClose} disabled={!!busy}>Закрити</Button>
           <Button onClick={() => void run('save')} loading={busy === 'save'} type={canPrint ? 'default' : 'primary'}>{cfg?.desktop ? 'Зберегти PDF' : 'Завантажити PDF'}</Button>
           {canPrint && <Button type="primary" icon={<PrinterOutlined />} loading={busy === 'print'} onClick={() => void run('print')}>Друк</Button>}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+/* ───────────────────────────── Працівники ───────────────────────────────── */
+// Хто має доступ до міні-застосунку складу. Працівник у телефоні тисне
+// «Попросити доступ» → тут з'являється запит → «Дозволити». Власники — з
+// налаштувань сервера (WAREHOUSE_TG_IDS), їх тут не редагують.
+const StaffDialog: React.FC<{ onClose: () => void }> = ({ onClose }) => {
+  const [data, setData] = useState<WhStaffList | null>(null);
+  const [busy, setBusy] = useState<number | 'add' | null>(null);
+  const [addId, setAddId] = useState('');
+  const [addName, setAddName] = useState('');
+  const load = useCallback(async () => {
+    try { setData(await ws.staff()); }
+    catch (e: any) { notify.error({ message: 'Працівники', description: whErr(e) }); }
+  }, []);
+  useEffect(() => { void load(); }, [load]);
+  const act = async (id: number, fn: () => Promise<unknown>, ok: string) => {
+    setBusy(id);
+    try { await fn(); notify.success({ message: ok }); await load(); }
+    catch (e: any) { notify.error({ message: 'Працівники', description: whErr(e) }); }
+    finally { setBusy(null); }
+  };
+  const add = async () => {
+    const id = Number(addId.replace(/\D/g, ''));
+    if (!id) { notify.warning({ message: 'Введіть Telegram id (число)' }); return; }
+    setBusy('add');
+    try { await ws.staffAdd({ tg_id: id, name: addName.trim() || undefined }); setAddId(''); setAddName(''); notify.success({ message: `Доступ надано: ${id}` }); await load(); }
+    catch (e: any) { notify.error({ message: 'Працівники', description: whErr(e) }); }
+    finally { setBusy(null); }
+  };
+  const STATUS: Record<WhStaff['status'], { label: string; cls: string }> = {
+    pending: { label: 'чекає підтвердження', cls: 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200' },
+    active: { label: 'доступ є', cls: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-200' },
+    blocked: { label: 'заблоковано', cls: 'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-200' },
+  };
+  const fmt = (iso: string | null) => (iso ? new Date(iso).toLocaleString('uk-UA', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '—');
+  return (
+    <div className="bms-dialog-host fixed inset-0 z-[100] flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/45 backdrop-blur-[2px]" onClick={busy ? undefined : onClose} />
+      <div className="relative w-full max-w-2xl rounded-2xl bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 shadow-2xl overflow-hidden bms-fade-in">
+        <div className="px-5 py-4 border-b border-gray-100 dark:border-gray-800">
+          <div className="text-base font-semibold">Працівники складу</div>
+          <div className="text-xs text-gray-400">Хто може відкривати міні-застосунок «BMS Склад» у Telegram. Працівник відкриває бота @bmssklad_bot → «Попросити доступ» → ви підтверджуєте тут.</div>
+        </div>
+        <div className="px-5 py-4 space-y-3 max-h-[60vh] overflow-y-auto text-sm">
+          {!data && <div className="text-gray-400">Завантаження…</div>}
+          {data && data.staff.length === 0 && <div className="text-gray-500">Запитів ще нема. Попросіть працівника відкрити бота «BMS Склад» і натиснути «Попросити доступ».</div>}
+          {data?.staff.map(p => (
+            <div key={p.tg_id} className={`flex items-center gap-3 rounded-xl border px-3 py-2 ${p.status === 'pending' ? 'border-amber-300 dark:border-amber-700 bg-amber-50/60 dark:bg-amber-950/20' : 'border-gray-200 dark:border-gray-700'}`}>
+              <div className="min-w-0 flex-1">
+                <div className="font-semibold truncate">{p.name || 'Без імені'}{p.username ? <span className="ml-1.5 font-normal text-gray-400">@{p.username}</span> : null}</div>
+                <div className="text-xs text-gray-400">id {p.tg_id} · запит {fmt(p.requested_at)}{p.status === 'active' ? ` · був(ла) ${fmt(p.last_seen_at)}` : ''}</div>
+              </div>
+              <span className={`px-2 py-0.5 rounded-full text-[11px] font-semibold ${STATUS[p.status].cls}`}>{STATUS[p.status].label}</span>
+              {p.status !== 'active' && <Button size="small" type="primary" icon={<CheckOutlined />} loading={busy === p.tg_id} onClick={() => void act(p.tg_id, () => ws.staffStatus(p.tg_id, 'active'), `${p.name || p.tg_id}: доступ надано`)}>Дозволити</Button>}
+              {p.status === 'active' && <Button size="small" icon={<StopOutlined />} loading={busy === p.tg_id} onClick={() => void act(p.tg_id, () => ws.staffStatus(p.tg_id, 'blocked'), `${p.name || p.tg_id}: заблоковано`)}>Заблокувати</Button>}
+              <Tooltip title="Видалити зі списку (зможе попросити доступ знову)">
+                <Button size="small" danger icon={<DeleteOutlined />} loading={busy === p.tg_id} onClick={() => void act(p.tg_id, () => ws.staffDelete(p.tg_id), 'Видалено')} />
+              </Tooltip>
+            </div>
+          ))}
+          {data && data.owners.length > 0 && (
+            <div className="text-xs text-gray-400 pt-1">Власники (з налаштувань сервера, завжди мають доступ): {data.owners.join(', ')}</div>
+          )}
+          <div className="pt-2 border-t border-gray-100 dark:border-gray-800">
+            <div className="text-[11px] uppercase tracking-wide text-gray-400 mb-1">Додати вручну за Telegram id</div>
+            <div className="flex flex-wrap items-center gap-2">
+              <input value={addId} onChange={e => setAddId(e.target.value)} placeholder="Telegram id" inputMode="numeric" className="w-36 px-2 py-1 rounded-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800" />
+              <input value={addName} onChange={e => setAddName(e.target.value)} placeholder="Ім'я (необов'язково)" className="w-44 px-2 py-1 rounded-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800" />
+              <Button size="small" loading={busy === 'add'} onClick={() => void add()}>Додати</Button>
+              <span className="text-xs text-gray-400">Id видно у міні-застосунку на екрані «Потрібен доступ» — але простіше, щоб працівник сам натиснув «Попросити доступ».</span>
+            </div>
+          </div>
+        </div>
+        <div className="px-5 py-3 border-t border-gray-100 dark:border-gray-800 flex justify-end">
+          <Button onClick={onClose} disabled={!!busy}>Закрити</Button>
         </div>
       </div>
     </div>
