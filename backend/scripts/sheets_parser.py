@@ -3214,6 +3214,11 @@ def _parse_products_sheet(
     # Deferred productnumber renames: {product.id: desired_productnumber}
     # Applied after the main loop to safely handle swaps (A↔B).
     pending_renames: dict[int, str] = {}
+    # Сироти, яким одразу дали тимчасовий номер (див. [dedup-orphan]): їхній
+    # справжній початковий номер — щоб на конфлікті Phase 2 повернути '???',
+    # а не лишити '__tmp_rename_…'.
+    reclaimed_originals: dict[int, str] = {}
+    placeholder_rows: list[int] = []   # рядки з «#???» замість номера — пропущені
 
     for i, row in enumerate(rows[1:], 1):
         if progress_cb and i % 20 == 0:
@@ -3226,6 +3231,18 @@ def _parse_products_sheet(
         # Canonicalize: leading #, uppercase known prefix, Latin homoglyphs
         # (T642) folded to Cyrillic (Т642). Empty string if normalize() rejected.
         pnum = _normalize_pnum(pnum) or pnum
+        # «#???» у колонці «Номер» — не номер, а позначка «номера ще нема»
+        # (власник так пише). Раніше парсер брав її за справжній номер: усі
+        # товари з '???' ставали однією «ростовкою», рядок 28 оновлював чужу
+        # сироту й ловив uix_products_num_size_color_letter — повні парси
+        # 2707/2709 (17.09.2026) падали на вкладці 21.01.2025(Андрій). Такий
+        # рядок пропускаємо як безномерний; наявні '???'-товари орфан-звірка
+        # й так не чіпає (_is_placeholder_num). Людина дає номер — рядок
+        # заходить звичайним шляхом.
+        if _is_placeholder_num(pnum):
+            skipped += 1
+            placeholder_rows.append(i + 1)
+            continue
 
         clones     = col(row, "Номера-клони")
         type_val   = col(row, "Вид")
@@ -3801,6 +3818,18 @@ def _parse_products_sheet(
                 ).first()
             if orphan:
                 # Reclaim orphan: update its productnumber + data
+                #
+                # ⚠️ Номер — ПЕРШИМ, до будь-яких даних. Перейменування на pnum
+                # відкладене (двофазне, наприкінці), а колір/розмір оновлюються
+                # зараз — і проміжний стан ('???', новий розмір, новий колір) при
+                # flush ловив uix_products_num_size_color_letter об ІНШУ сироту
+                # '???' з тим самим розміром і кольором. Саме так падали повні
+                # парси 2707/2709 (17.09.2026) на вкладці 21.01.2025(Андрій):
+                # ('???', '0', '', 1) already exists. Тимчасовий унікальний номер
+                # прибирає колізію; фінальний ставить Phase 2.
+                if pnum != orphan.productnumber:
+                    reclaimed_originals[orphan.id] = orphan.productnumber
+                    orphan.productnumber = f"__tmp_rename_{orphan.id}"
                 cnt = seen_in_run.get(orphan.id, 0) + 1
                 seen_in_run[orphan.id] = cnt
                 orphan.quantity = cnt
@@ -3830,11 +3859,11 @@ def _parse_products_sheet(
                     technologies=technologies_parsed,
                     source=ws.title,
                 )
-                if pnum != orphan.productnumber:
+                if orphan.id in reclaimed_originals:
                     pending_renames[orphan.id] = pnum
                     logger.info(
                         f"[dedup-orphan] Reclaimed id={orphan.id} "
-                        f"'{orphan.productnumber}' → '{pnum}' (deferred)"
+                        f"'{reclaimed_originals[orphan.id]}' → '{pnum}' (deferred)"
                     )
                 updated += 1
             else:
@@ -4411,6 +4440,12 @@ def _parse_products_sheet(
                         else:
                             skipped += 1
 
+    if placeholder_rows:
+        logger.warning(
+            f"[placeholder] {ws.title}: рядки {placeholder_rows} мають «#???» замість номера — "
+            f"пропущено; дайте номер у журналі, і товар зайде звичайним шляхом."
+        )
+
     # ── Apply deferred productnumber renames (two-phase for swap safety) ──
     if pending_renames:
         # ── Номер, який тримає ЧУЖИЙ нерухомий запис, не відвойовуємо ────────
@@ -4441,7 +4476,7 @@ def _parse_products_sheet(
             prod = session.query(Product).get(pid)
             if prod is None:
                 continue
-            original_map[pid] = prod.productnumber
+            original_map[pid] = reclaimed_originals.get(pid, prod.productnumber)
             tmp_name = f"__tmp_rename_{pid}"
             logger.debug(f"[pnum-sync] Phase 1: id={pid} '{prod.productnumber}' → '{tmp_name}'")
             prod.productnumber = tmp_name

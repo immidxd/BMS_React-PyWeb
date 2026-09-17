@@ -56,3 +56,25 @@ def test_journal_numbers_skip_headers_and_blanks():
         {},                      # вкладка без даних
     ]
     assert _numbers_from_value_ranges(vrs) == {"Ф955", "Ф956", "Ф986-2"}
+
+
+def test_sheet_placeholder_number_is_not_a_number():
+    """«#???» у колонці «Номер» — позначка власника «номера ще нема», не номер.
+    Парсер брав його за справжній: усі '???' ставали однією ростовкою, і повні
+    парси 2707/2709 (17.09.2026) падали на uix_products_num_size_color_letter."""
+    from backend.scripts.sheets_parser import _normalize_pnum
+    for raw in ("#???", "???", "# ???"):
+        assert _is_placeholder_num(_normalize_pnum(raw) or raw) is True
+    assert _is_placeholder_num(_normalize_pnum("#Ф4408")) is False
+
+
+def test_placeholder_rows_are_skipped_by_the_products_parser():
+    """Гілка пропуску стоїть ДО будь-якого пошуку в базі — інакше '???' знову
+    став би «базовим номером» для LIKE-пошуку сімʼї."""
+    import inspect
+    from backend.scripts import sheets_parser as sp
+    src = inspect.getsource(sp._parse_products_sheet)
+    skip = src.index("if _is_placeholder_num(pnum):")
+    first_lookup = src.index("existing_all")
+    assert skip < first_lookup
+    assert "placeholder_rows.append" in src[skip:skip + 200]
