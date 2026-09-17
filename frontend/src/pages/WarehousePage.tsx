@@ -14,7 +14,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Button, Dropdown, Tooltip } from 'antd';
 import {
   PlusOutlined, PrinterOutlined, ReloadOutlined, SearchOutlined, DownOutlined,
-  LockOutlined, UnlockOutlined, CheckOutlined, DeleteOutlined, ExportOutlined, InboxOutlined, TeamOutlined, StopOutlined,
+  LockOutlined, UnlockOutlined, CheckOutlined, DeleteOutlined, ExportOutlined, InboxOutlined, TeamOutlined, StopOutlined, SwapOutlined,
 } from '@ant-design/icons';
 import MainLayout from '../layouts/MainLayout';
 import ProductDetailsModal from '../components/products/ProductDetailsModal';
@@ -210,11 +210,11 @@ const WarehousePage: React.FC = () => {
                   )}
                   {visibleBoxes.map(b => (
                     <button key={b.id} onClick={() => setSelectedCode(b.code)}
-                      className={`text-left rounded-xl border px-3 py-2 transition-colors ${selectedCode === b.code ? 'border-black dark:border-white bg-gray-50 dark:bg-gray-900' : 'border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-900'}`}>
+                      className={`w-full min-w-0 overflow-hidden text-left rounded-xl border px-3 py-2 transition-colors ${selectedCode === b.code ? 'border-black dark:border-white bg-gray-50 dark:bg-gray-900' : 'border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-900'}`}>
                       <div className="flex items-center gap-2">
-                        <span className="text-lg font-extrabold w-12">{b.code}</span>
+                        <span className="text-lg font-extrabold w-12 shrink-0">{b.code}</span>
                         <span className="flex-1 min-w-0 truncate text-sm text-gray-800 dark:text-gray-100">{b.title || <span className="text-gray-400">без назви</span>}</span>
-                        <span className="text-xs text-gray-500 whitespace-nowrap">{b.units} шт</span>
+                        <span className="text-xs text-gray-500 whitespace-nowrap shrink-0">{b.units} шт</span>
                       </div>
                       <div className="flex items-center gap-1.5 mt-1 flex-wrap">
                         {b.location && <span className="text-xs text-gray-400 truncate">{b.location}</span>}
@@ -233,7 +233,7 @@ const WarehousePage: React.FC = () => {
                     Оберіть коробку ліворуч
                   </div>
                 ) : box ? (
-                  <BoxCard box={box} loading={boxLoading}
+                  <BoxCard box={box} loading={boxLoading} allBoxes={boxes}
                     onChanged={async () => { await loadBox(box.code); await loadBoxes(); }}
                     onDeleted={async () => { setSelectedCode(null); await loadBoxes(); }}
                     onOpenProduct={id => setDetailId(id)} />
@@ -258,9 +258,9 @@ const WarehousePage: React.FC = () => {
 /* ───────────────────────────── Картка коробки ────────────────────────────── */
 
 const BoxCard: React.FC<{
-  box: WhBox; loading: boolean;
+  box: WhBox; loading: boolean; allBoxes: WhBox[];
   onChanged: () => Promise<void>; onDeleted: () => Promise<void>; onOpenProduct: (id: number) => void;
-}> = ({ box, loading, onChanged, onDeleted, onOpenProduct }) => {
+}> = ({ box, loading, allBoxes, onChanged, onDeleted, onOpenProduct }) => {
   const [busy, setBusy] = useState(false);
   const [edit, setEdit] = useState(false);
   const [title, setTitle] = useState(box.title || '');
@@ -312,6 +312,26 @@ const BoxCard: React.FC<{
     if (!(await confirmDialog({ title: `Вийняти ${ids.length} поз. з ${box.code}?`, okText: 'Вийняти' }))) return;
     await run(async () => { for (const c of ids) await ws.unpackFrom(box.code, c.product_id); }, `Вийнято ${ids.length} поз.`);
   };
+
+  // «Перекласти в…»: вибрані позиції переносимо в іншу коробку тим самим
+  // pack(move=true), що й сканер («товар уже в іншій коробці → перенести»).
+  // Кількість — уся, що лежить тут (ростовка переїжджає цілком).
+  const moveSelected = async (target: WhBox) => {
+    const rows = contents.filter(c => sel.has(c.item_id));
+    if (rows.length === 0) return;
+    const sealedNote = target.status === 'sealed' ? ` Коробка ${target.code} запечатана — стане відкритою.` : '';
+    if (!(await confirmDialog({ title: `Перекласти ${rows.length} поз. з ${box.code} у ${target.code}?`,
+      body: `${rows.map(c => c.product.number).join(', ')}.${sealedNote}`, okText: 'Перекласти' }))) return;
+    setBusy(true);
+    try {
+      for (const c of rows) await ws.pack(target.code, c.product_id, c.qty, true);
+      notify.success({ message: `${rows.length} поз. → ${target.code}`, description: rows.map(c => c.product.number).join(', ') });
+      setSel(new Set());
+      await onChanged();
+    } catch (e: any) { notify.error({ message: `Не вдалося перекласти в ${target.code}`, description: whErr(e) }); await onChanged(); }
+    finally { setBusy(false); }
+  };
+  const moveTargets = allBoxes.filter(b => b.code !== box.code && b.status !== 'archived');
 
   const statusChip = box.status === 'sealed' ? <span className={CHIP_DARK}><LockOutlined className="mr-1" />запечатана</span>
     : box.status === 'archived' ? <span className={CHIP_ERR}>видалена</span> : <span className={CHIP_MUTED}>відкрита</span>;
@@ -399,6 +419,25 @@ const BoxCard: React.FC<{
           </div>
         )}
         <div className="flex-1" />
+        {sel.size > 0 && (
+          <Dropdown trigger={['click']} disabled={busy} menu={{
+            items: moveTargets.length === 0
+              ? [{ key: 'none', label: 'Інших коробок нема — створіть нову', disabled: true }]
+              : moveTargets.map(b => ({
+                  key: b.code,
+                  label: (
+                    <span className="flex items-center gap-2">
+                      <span className="font-extrabold w-9">{b.code}</span>
+                      <span className="text-gray-600 dark:text-gray-300 truncate max-w-[220px]">{b.title || 'без назви'}</span>
+                      <span className="text-xs text-gray-400">{b.units} шт{b.status === 'sealed' ? ' · запечатана' : ''}</span>
+                    </span>
+                  ),
+                  onClick: () => void moveSelected(b),
+                })),
+          }}>
+            <Button size="small" icon={<SwapOutlined />} loading={busy}>Перекласти в… ({sel.size}) <DownOutlined /></Button>
+          </Dropdown>
+        )}
         {sel.size > 0 && <Button size="small" icon={<ExportOutlined />} loading={busy} onClick={() => void unpackSelected()}>Вийняти вибрані ({sel.size})</Button>}
       </div>
 
