@@ -840,6 +840,24 @@ def compute_order_fingerprint(client_name: str, order_date, product_numbers) -> 
     return hashlib.md5(fp_raw.encode("utf-8")).hexdigest()
 
 
+def _pick_pnum_key_candidate(matches):
+    """Кого вважати «тим самим рядком» серед збігів за pnum_key+сума+клієнт+вікно.
+
+    Один збіг — він. Кілька — раніше «ambiguous, skip», і парсер створював
+    ТРЕТЮ копію: #Ф1298 22.07.2025 мав два legacy-двійники (без gid), і
+    v9 замість злиття додав #65200. Тепер серед кількох беремо ЄДИНОГО з
+    `source_sheet_gid` (його веде нинішній парсер), а legacy-копії лишаємо
+    скрипту remove_legacy_order_twins. Кілька tracked або самі legacy —
+    справді неоднозначно → None (як і було).
+    """
+    if not matches:
+        return None
+    if len(matches) == 1:
+        return matches[0]
+    tracked = [m for m in matches if getattr(m, "source_sheet_gid", None) is not None]
+    return tracked[0] if len(tracked) == 1 else None
+
+
 def compute_pnum_key(product_numbers) -> str:
     """Resolution-INDEPENDENT order identity = md5(sorted normalized RAW product
     numbers from the sheet 'Номера товарів' cell).
@@ -5432,13 +5450,15 @@ def _parse_orders_sheet(
             _kq = _kq.filter(Order.client_id.is_(None)) if client_id is None \
                 else _kq.filter(Order.client_id == client_id)
             _kmatches = _kq.all()
-            if len(_kmatches) == 1:
-                existing_order = _kmatches[0]
+            _pick = _pick_pnum_key_candidate(_kmatches)
+            if _pick is not None:
+                existing_order = _pick
                 existing_order.order_date = order_date
                 existing_order.source_fingerprint = source_fp
                 logger.info(
                     "Order #%d: matched via resolution-independent pnum_key "
-                    "(date→%s, total=%s)", existing_order.id, order_date, total_amount,
+                    "(date→%s, total=%s, candidates=%d)", existing_order.id, order_date,
+                    total_amount, len(_kmatches),
                 )
             elif len(_kmatches) > 1:
                 logger.warning(
