@@ -172,7 +172,7 @@ class LabelItem:
     payload: str                 # текст у QR
     number: str                  # великий рядок (номер без «#»)
     size: str = ""               # «EU 40» / «XL»
-    insole: str = ""             # «26 см» (устілка / заміри)
+    insole: str = ""             # «26 см» (устілка) / «Г 48 · Д 66» (заміри одягу)
     line1: str = ""              # бренд · модель
     line2: str = ""              # вид · колір · стать · сезон
     price: Optional[str] = None  # «1 200 ₴» (друкується лише за show_price)
@@ -244,6 +244,45 @@ def _insole_text(row: Dict[str, Any]) -> str:
     return f"{cm} см" if cm else ""
 
 
+# Заміри одягу на бірці: груди · талія · бедра · рукав · довжина (н/о — половина
+# кола, як у картці). Одна літера замість «о/г»: на стікері 47×31 мм місця
+# рівно на «Г 48 · Т 36 · Б 50 · Д 95» в один рядок.
+_CLOTHING_MEASURE_LABELS = (
+    ("pog", "Г"), ("pot", "Т"), ("pob", "Б"), ("sleeve", "Р"), ("length", "Д"),
+)
+
+
+def _fmt_cm(v: Any) -> str:
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return ""
+    return f"{f:g}"
+
+
+def _clothing_measure_text(row: Dict[str, Any]) -> str:
+    """«Г 48 · Д 66» для одягу; для решти — "" (там слот зайнятий устілкою).
+
+    Показуємо ВСІ заповнені заміри, а не лише «типові» для підкатегорії: якщо
+    хтось виміряв рукав у сукні, він потрібен на бірці так само."""
+    try:
+        from services.product_category import category_of
+    except ImportError:  # pragma: no cover
+        from backend.services.product_category import category_of
+    if category_of(row.get("typename")) != "clothing":
+        return ""
+    parts = []
+    for key, abbr in _CLOTHING_MEASURE_LABELS:
+        lo = _fmt_cm(row.get(f"measurements_{key}_min"))
+        hi = _fmt_cm(row.get(f"measurements_{key}_max"))
+        val = lo or hi
+        if lo and hi and lo != hi:
+            val = f"{lo}-{hi}"
+        if val:
+            parts.append(f"{abbr} {val}")
+    return SEG.join(parts)
+
+
 def _price_text(price: Any) -> Optional[str]:
     try:
         v = float(price or 0)
@@ -273,7 +312,7 @@ def item_from_row(row: Dict[str, Any], copies: Optional[int] = None) -> LabelIte
         payload=qr_payload_product(row["id"], row["productnumber"]),
         number=display_number(row.get("productnumber")),
         size=_size_text(row),
-        insole=_insole_text(row),
+        insole=_clothing_measure_text(row) or _insole_text(row),
         line1=line1,
         line2=line2,
         price=_price_text(row.get("price")),
@@ -423,8 +462,21 @@ def _draw_cell(page: Image.Image, draw: ImageDraw.ImageDraw, box: Tuple[int, int
     # Порядок і кеглі слотів сталі, але порожні слоти місця НЕ тримають:
     # «XL → Вживаний → 650 ₴» без дірки на місці устілки.
     values = [item.size, item.insole, item.condition, item.price if show_price else ""]
-    col_rows = [(v, f, hh) for v, f, hh in zip(values, fonts, slot_h) if v]
+    col_rows = []
+    for v, f, hh in zip(values, fonts, slot_h):
+        if not v:
+            continue
+        for line, lf in _wrap_slot(v, f, cw):
+            col_rows.append((line, lf, hh if lf is f else _ink_h(lf, "29-29.5 см")))
     col_h = sum(hh for _v, _f, hh in col_rows) + lgap * max(0, len(col_rows) - 1)
+    # Заміри на два рядки можуть не влізти поруч із QR — тоді жертвуємо описом
+    # (бренд є на самому товарі), а не цифрами.
+    # Рахуємо лише ПРИРІСТ понад QR: у дрібних розкладках QR і так тримає
+    # мінімум і займає всю висоту — це не привід знімати бренд.
+    extra = col_h - qr.height
+    while footer and extra > 0 and extra > ih - num_h - qr.height - footer_height(footer) - 2 * band_gap:
+        footer.pop()
+    f_h = footer_height(footer)
 
     # ── Вертикальний розподіл: лишок — порівну між смугами ─────────────────
     body_h = max(qr.height, col_h)
@@ -459,6 +511,30 @@ def _draw_cell(page: Image.Image, draw: ImageDraw.ImageDraw, box: Tuple[int, int
         for t, f in footer:
             _draw_tight(draw, ix0, y, t, f)
             y += _ink_h(f, t) + lgap
+
+
+def _wrap_slot(text_: str, font, max_w: int):
+    """Значення слота → [(рядок, шрифт)]. Влазить — один рядок. Ні, і воно
+    складене із сегментів («Г 48 · Р 60 · Д 66») — ділимо на два рядки по
+    сегментах, без розриву числа. Лише якщо й так завелике — зменшуємо кегль."""
+    if _text_w(font, text_) <= max_w:
+        return [(text_, font)]
+    parts = [p for p in text_.split(SEG) if p]
+    lines = [text_]
+    if len(parts) > 1:
+        best = None
+        for k in range(1, len(parts)):
+            a, b = SEG.join(parts[:k]), SEG.join(parts[k:])
+            wmax = max(_text_w(font, a), _text_w(font, b))
+            if best is None or wmax < best[0]:
+                best = (wmax, [a, b])
+        lines = best[1]
+    widest = max(lines, key=lambda t: _text_w(font, t))
+    f = font
+    if _text_w(font, widest) > max_w:
+        bold = "Bold" in str(getattr(font, "path", ""))
+        f = _fit_font(bold, widest, font.size, max_w, min_size=7)
+    return [(t, f) for t in lines]
 
 
 def _draw_cut_marks(draw: ImageDraw.ImageDraw, spec: LayoutSpec, page_w: int, page_h: int) -> None:
@@ -611,6 +687,11 @@ def _from_sql() -> str:
 _ROW_SELECT = """
     SELECT p.id, p.productnumber, p.model, p.price, p.quantity,
            p.sizeeu, p.size_letter, p.sizeua, p.measurementscm, p.season,
+           p.measurements_pog_min, p.measurements_pog_max,
+           p.measurements_pot_min, p.measurements_pot_max,
+           p.measurements_pob_min, p.measurements_pob_max,
+           p.measurements_sleeve_min, p.measurements_sleeve_max,
+           p.measurements_length_min, p.measurements_length_max,
            p.mainimage, p.deliveryid, p.label_printed_at,
            b.brandname, t.typename, st.subtypename, c.colorname, g.gendername,
            s.statusname,

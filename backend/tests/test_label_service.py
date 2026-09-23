@@ -70,6 +70,45 @@ def test_item_from_row_composes_lines():
     assert it.payload == "bms:p:350399:#Ф3153"
 
 
+def test_clothing_label_shows_measurements_instead_of_insole():
+    # Футболка: груди (н/о) і довжина — те, що просять на бірці одягу.
+    it = ls.item_from_row(_row(typename="Футболка", sizeeu=None, size_letter="XL", measurementscm=None,
+                               measurements_pog_min=59.0, measurements_pog_max=59.0,
+                               measurements_length_min=77.0, measurements_length_max=77.0))
+    assert it.size == "XL"
+    assert it.insole == "Г 59 · Д 77"
+
+
+def test_clothing_measurements_order_ranges_and_halves():
+    it = ls.item_from_row(_row(typename="Сукня", sizeeu=None, size_letter="S", measurementscm=None,
+                               measurements_pog_min=48.0, measurements_pog_max=50.0,
+                               measurements_pot_min=36.5, measurements_pot_max=36.5,
+                               measurements_length_min=95.0, measurements_length_max=95.0))
+    assert it.insole == "Г 48-50 · Т 36.5 · Д 95"
+
+
+def test_shoe_label_ignores_clothing_fields_and_empty_clothing_is_blank():
+    assert ls.item_from_row(_row(measurements_pog_min=50.0)).insole == "26 см"
+    assert ls.item_from_row(_row(typename="Футболка", measurementscm=None)).insole == ""
+
+
+def test_long_measurements_wrap_by_segment_not_mid_number():
+    f = ls._font(False, 22)
+    text = "Г 48-50 · Т 38 · Б 52 · Р 60 · Д 102"
+    lines = ls._wrap_slot(text, f, int(ls._text_w(f, text) * 0.6))
+    assert len(lines) == 2
+    assert " · ".join(t for t, _f in lines) == text
+
+
+def test_clothing_sheet_renders_all_layouts():
+    it = ls.item_from_row(_row(typename="Костюм", sizeeu=None, size_letter="S", measurementscm=None,
+                               measurements_pog_min=48.0, measurements_pot_min=38.0,
+                               measurements_pob_min=52.0, measurements_sleeve_min=60.0,
+                               measurements_length_min=102.0))
+    for key in ls.LAYOUTS:
+        assert ls.render_pages([it], key, show_price=True)
+
+
 def test_condition_prefers_current_then_original():
     assert ls.item_from_row(_row(condition_name="Новий", current_condition_name="вживаний")).condition == "Вживаний"
     assert ls.item_from_row(_row(condition_name="хороший", current_condition_name=None)).condition == "Хороший"
