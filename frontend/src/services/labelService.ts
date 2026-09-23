@@ -30,6 +30,7 @@ export interface LabelsConfig {
   preferred_printer: string | null;
   can_print: boolean;     // є мережевий принтер (TSPL) або CUPS lp на цій машині
   network_printer: string | null;  // збережений IP Xprinter по мережі
+  network_hint?: string | null;    // «Mac в іншій мережі, ніж принтер» — лише коли принтер мовчить
   desktop: boolean;       // PyWebView — файли зберігає бекенд
   platform: string;
   queue_count: number;
@@ -122,9 +123,9 @@ export const labelService = {
     await axios.delete('/api/labels/queue');
     labelQueue.set(0);
   },
-  async discover(): Promise<string[]> {
+  async discover(): Promise<{ hosts: string[]; myIp: string | null }> {
     const r = await axios.post('/api/labels/discover');
-    return r.data.hosts as string[];
+    return { hosts: (r.data.hosts || []) as string[], myIp: r.data.my_ip || null };
   },
   async setNetworkPrinter(host: string | null): Promise<void> {
     try { await axios.put('/api/labels/network-printer', { host }); }

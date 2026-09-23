@@ -175,6 +175,9 @@ def labels_config(db: Session = Depends(get_db)):
         "preferred_printer": preferred,
         "can_print": can_print,
         "network_printer": ls.network_printer_host(),
+        # Лише коли принтер мовчить: у робочому стані підказка не потрібна.
+        "network_hint": None if any(p["kind"] == "network" and p["reachable"] for p in printers)
+                        else ls.network_hint(),
         "print_agent": _agent_status(),
         "desktop": is_desktop_shell(),
         "platform": ls.platform_name(),
@@ -189,7 +192,7 @@ class NetPrinterIn(BaseModel):
 @router.post("/discover")
 def labels_discover():
     """Знайти принтери етикеток у локальній мережі (порт 9100)."""
-    return {"hosts": ls.discover_network_printers()}
+    return {"hosts": ls.discover_network_printers(), "my_ip": ls.local_ipv4()}
 
 
 @router.put("/network-printer")

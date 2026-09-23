@@ -218,9 +218,17 @@ const LabelPrintDialog: React.FC<Props> = ({ open, source, title, subtitle, onCl
   const discover = async () => {
     setBusy('discover'); setFound(null);
     try {
-      const hosts = await labelService.discover();
+      const { hosts, myIp } = await labelService.discover();
       setFound(hosts);
-      if (hosts.length === 0) notify.warning({ message: 'Принтерів у мережі не знайдено', description: 'Перевірте, що Xprinter увімкнений і підключений до цього ж Wi-Fi (порт 9100).' });
+      if (hosts.length === 0) {
+        // Кажемо, ДЕ шукали: «не знайдено» без мережі не пояснює, що Mac міг
+        // опинитися в іншому Wi-Fi, ніж Windows-ПК із мостом.
+        const net = myIp ? `у мережі ${myIp.replace(/\.\d+$/, '.x')} ` : '';
+        notify.warning({
+          message: 'Принтерів у мережі не знайдено',
+          description: `Шукав ${net}— ніхто не відповідає на порту 9100. Найчастіше: Windows-ПК вимкнений, на ньому не запущений міст, або ПК і цей Mac у різних Wi-Fi.`,
+        });
+      }
     } catch (e: any) { notify.error({ message: 'Пошук не вдався', description: e?.message }); }
     finally { setBusy(null); }
   };
@@ -374,6 +382,7 @@ const LabelPrintDialog: React.FC<Props> = ({ open, source, title, subtitle, onCl
                 {selected?.kind === 'network' && !selected.reachable && (
                   <div className="mt-2 rounded-lg border border-red-200 dark:border-red-900 bg-red-50 dark:bg-red-950/40 px-3 py-2 text-xs text-red-700 dark:text-red-300 space-y-1">
                     <div className="font-semibold">Принтер не відповідає ({selected.name.replace(/^net:/, '')})</div>
+                    {config?.network_hint && <div className="font-medium">{config.network_hint}</div>}
                     <div>Xprinter підключений до Windows-ПК — той має бути увімкнений, а на ньому запущений міст (порт 9100). Поки що можна лише зберегти PDF.</div>
                     <button type="button" className="underline font-medium disabled:opacity-50" disabled={!!busy} onClick={() => void refreshConfig()}>{busy === 'refresh' ? 'Перевіряю…' : 'Перевірити ще раз'}</button>
                   </div>

@@ -970,16 +970,45 @@ def print_tspl(pages: Sequence[Image.Image], spec: LayoutSpec, host: Optional[st
     return len(pages) * max(1, int(copies))
 
 
+def local_ipv4() -> Optional[str]:
+    """IPv4 цього компʼютера в локальній мережі (UDP-«connect» нічого не шле)."""
+    try:
+        probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            probe.connect(("8.8.8.8", 80))
+            return probe.getsockname()[0]
+        finally:
+            probe.close()
+    except OSError:
+        return None
+
+
+def network_hint(host: Optional[str] = None, my_ip: Optional[str] = None) -> Optional[str]:
+    """Людське пояснення, чому збережений принтер НЕ може відповісти: він в іншій
+    мережі, ніж цей Mac. 23.09 так і було — Mac у 192.168.0.x, міст збережений як
+    192.168.1.105, а діалог казав лише «не відповідає». None — підмережі збігаються
+    або порівняти нема з чим (хост — імʼя, немає мережі)."""
+    host = host or network_printer_host()
+    my_ip = my_ip or local_ipv4()
+    if not host or not my_ip:
+        return None
+    h, _port = _split_host(host)
+    if not re.fullmatch(r"\d{1,3}(\.\d{1,3}){3}", h) or h.startswith("127."):
+        return None
+    mine, theirs = my_ip.rsplit(".", 1)[0], h.rsplit(".", 1)[0]
+    if mine == theirs:
+        return None
+    return (f"Цей Mac зараз у мережі {mine}.x, а принтер збережений як {h} — це інша мережа. "
+            "Підключіть Mac до того самого Wi-Fi, що й Windows-ПК з принтером, "
+            "або натисніть «Знайти Xprinter у Wi-Fi».")
+
+
 def discover_network_printers(timeout: float = 0.5) -> List[str]:
     """Хости локальної /24 з відкритим портом 9100 (принтери етикеток). Швидкий
     скан у потоках — для кнопки «Знайти принтер у мережі»."""
     import concurrent.futures as cf
-    try:
-        probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        probe.connect(("8.8.8.8", 80))
-        my_ip = probe.getsockname()[0]
-        probe.close()
-    except OSError:
+    my_ip = local_ipv4()
+    if not my_ip:
         return []
     sub = my_ip.rsplit(".", 1)[0]
 

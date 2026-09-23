@@ -375,3 +375,17 @@ def test_agent_tick_defers_edits_while_journal_parse_runs(monkeypatch):
     print_agent._tick([0.0])
     assert "/print-jobs/9/claim" not in log
     assert "парсинг" in (print_agent._state["error"] or "")
+
+
+# ───────────────────────────── мережа принтера ───────────────────────────────
+
+def test_network_hint_flags_other_subnet():
+    # 23.09: Mac у 192.168.0.x, міст збережений як 192.168.1.105 — діалог мав це сказати.
+    hint = ls.network_hint("192.168.1.105:9100", my_ip="192.168.0.103")
+    assert hint and "192.168.0.x" in hint and "192.168.1.105" in hint
+
+
+def test_network_hint_silent_when_same_subnet_or_unknown():
+    assert ls.network_hint("192.168.0.105:9100", my_ip="192.168.0.103") is None
+    assert ls.network_hint("printer.local:9100", my_ip="192.168.0.103") is None
+    assert ls.network_hint("127.0.0.1:9100", my_ip="192.168.0.103") is None
