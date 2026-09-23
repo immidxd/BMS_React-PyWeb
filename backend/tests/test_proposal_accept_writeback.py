@@ -37,6 +37,11 @@ def _patch(monkeypatch, js):
     fake = types.ModuleType("journal_sync"); fake.enqueue_many = js.enqueue_many; fake.kick = js.kick
     monkeypatch.setitem(sys.modules, "services.journal_sync", fake)
     monkeypatch.setitem(sys.modules, "backend.services.journal_sync", fake)
+    # `from services import journal_sync` бере АТРИБУТ пакета, якщо справжній
+    # модуль уже імпортував інший тест, — sys.modules тоді не читається.
+    for pkg in ("services", "backend.services"):
+        if pkg in sys.modules:
+            monkeypatch.setattr(sys.modules[pkg], "journal_sync", fake, raising=False)
     monkeypatch.setattr(ps, "get_delivery_name", lambda db, did: "05.09.2026(Соня)")
     monkeypatch.setattr(ps, "resolve_lookup_name", lambda db, f, v: f"назва({v})")
 
