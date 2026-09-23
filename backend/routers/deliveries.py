@@ -175,13 +175,13 @@ def add_product_to_delivery(
     """
     try:
         from scripts.journal_writer import append_product_row, ADD_PRODUCT_ENABLED
-        from scripts.sheets_parser import _get_or_create, _apply_product_materials
+        from scripts.sheets_parser import _get_or_create, _apply_product_relations, _split_technologies_cell
         from services.product_service import _resolve_lookup_id_by_name, LOOKUP_NAME_FIELDS
         from utils.productnumber_normalizer import normalize as _norm_pn
         from models import models
     except ImportError:
         from backend.scripts.journal_writer import append_product_row, ADD_PRODUCT_ENABLED
-        from backend.scripts.sheets_parser import _get_or_create, _apply_product_materials
+        from backend.scripts.sheets_parser import _get_or_create, _apply_product_relations, _split_technologies_cell
         from backend.services.product_service import _resolve_lookup_id_by_name, LOOKUP_NAME_FIELDS
         from backend.utils.productnumber_normalizer import normalize as _norm_pn
         from backend.models import models
@@ -240,7 +240,9 @@ def add_product_to_delivery(
         db.flush()  # отримати id, FK-рядки персистовані; ще НЕ commit
 
         # Хаб «Деталі» — взуттєві lookup (name→id через спільний резолвер)
-        for nf in ("sole_type_name", "fastening_type_name", "toe_shape_name", "technology_name",
+        # technology_name тут НЕМАЄ: з 04.09 технології — many-to-many
+        # (product_technologies), їх пише _apply_product_relations нижче.
+        for nf in ("sole_type_name", "fastening_type_name", "toe_shape_name",
                    "sole_color_name", "lining_name", "heel_type_name", "lace_type_name"):
             v = getattr(payload, nf, None)
             if v and str(v).strip():
@@ -270,8 +272,11 @@ def add_product_to_delivery(
             mv = getattr(payload, f, None)
             if mv and str(mv).strip():
                 mat[pos] = [x.strip() for x in _re_m.split(r"[;,/]", str(mv)) if x.strip()]
-        if mat:
-            _apply_product_materials(db, prod.id, mat, sheet_source=deliveryname)
+        # Матеріали й технології — той самий шлях, що й у парсера Журналу.
+        techs = _split_technologies_cell(payload.technology_name or "")
+        if mat or techs:
+            _apply_product_relations(db, prod.id, mat, technologies=techs,
+                                     sheet_source=deliveryname)
         db.flush()
     except Exception as e:
         db.rollback()
