@@ -177,8 +177,18 @@ def run_autofill(product_id: int = Path(..., ge=1),
     # цента. Стеля в 12 — запобіжник від товару з півсотнею фото.
     paths = _kind_files(product.productnumber, category, "real")[:photos]
     if not paths:
+        # Знімків немає — але артикул може бути. Тоді запускаємо лише шар
+        # виробника: одна дія «Розпізнати» має робити все, що зараз можливо,
+        # а не відмовляти цілком через відсутність одного з джерел.
+        cur = photo_autofill._current_values(db, product_id)
+        if web_enrich.available(cur):
+            result = web_enrich.enrich_by_article(db, product_id)
+            db.commit()
+            result.setdefault("sources_used", ["артикул"])
+            return result
         return {"ok": False,
-                "reason": "у товару немає живих знімків — спершу додайте фото"}
+                "reason": "у товару немає ані живих знімків, ані артикула — "
+                          "додайте фото або впишіть маркування"}
 
     result = photo_autofill.extract_and_propose(db, product_id, paths, use_paid=use_paid)
     # Комітимо в БУДЬ-ЯКОМУ разі: навіть на провалі в сесії лежить запис про

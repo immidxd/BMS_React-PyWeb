@@ -175,11 +175,51 @@ def _norm_material(value: Optional[str]) -> Optional[str]:
     return v or None
 
 
+def available(cur: Dict[str, Any]) -> bool:
+    """Чи є з чим і чим шукати: артикул у картці + платний ключ.
+
+    Потрібно, щоб спільна дія «Розпізнати» могла мовчки пропустити цей шар, а
+    не падати з помилкою на кожному товарі без артикула.
+    """
+    return bool((cur.get("marking") or "").strip()) and bool(os.getenv("GEMINI_API_KEY_PAID"))
+
+
+def layer(db: Session, product_id: int, cur: Dict[str, Any], *,
+          proposed: List[Any], already: List[Any], confirmed: List[Any],
+          made: Dict[str, tuple], model: Optional[str] = None,
+          api_key: Optional[str] = None) -> Dict[str, Any]:
+    """Шар у спільному прогоні: пише в ті самі списки, що й решта.
+
+    Зустріч шарів — за тим самим правилом, що й у профілю: збіг ПІДІЙМАЄ
+    певність, а розбіжність нічого не ховає — рішення лишається за шаром, що
+    бачив саме цю пару (модель на знімках), а альтернатива зі сторінки
+    виробника йде в підпис поруч. Для звірки це й потрібно: «на фото носок
+    здався заокругленим, а виробник пише „загострений“» — видно обидва.
+    """
+    return _run(db, product_id, cur, proposed, already, confirmed, made,
+                model=model, api_key=api_key)
+
+
 def enrich_by_article(db: Session, product_id: int, *,
                       model: Optional[str] = None,
                       api_key: Optional[str] = None) -> Dict[str, Any]:
-    """Знайти офіційні характеристики за артикулом і скласти пропозиції."""
+    """Окремий прогін лише цього шару (ендпоїнт /enrich-web, скрипти)."""
     cur = photo_autofill._current_values(db, product_id)
+    proposed: List[Any] = []
+    already: List[Any] = []
+    confirmed: List[Any] = []
+    made: Dict[str, tuple] = {}
+    out = _run(db, product_id, cur, proposed, already, confirmed, made,
+               model=model, api_key=api_key)
+    out.setdefault("proposed", proposed)
+    out.setdefault("already_correct", already)
+    return out
+
+
+def _run(db: Session, product_id: int, cur: Dict[str, Any],
+         proposed: List[Any], already: List[Any], confirmed: List[Any],
+         made: Dict[str, tuple], *, model: Optional[str] = None,
+         api_key: Optional[str] = None) -> Dict[str, Any]:
     article = (cur.get("marking") or "").strip()
     brand = (cur.get("brand_name") or "").strip()
     if not article:
@@ -226,8 +266,8 @@ def enrich_by_article(db: Session, product_id: int, *,
                 "reason": "сторінку саме цього артикула не знайдено"}
 
     conf = float(pred.get("confidence") or 0)
-    src_note = f"сторінка виробника за артикулом {article}: {sources[0]}"
-    proposed, already, below = [], [], []
+    src_note = f"виробник за артикулом {article}: {sources[0]}"
+    below: List[Any] = []
 
     def _try(field: str, value: Any) -> None:
         if value in (None, "", []):
@@ -238,10 +278,35 @@ def enrich_by_article(db: Session, product_id: int, *,
         if photo_autofill._same_as_current(cur.get(field), val):
             already.append((field, val))
             return
-        if conf >= field_proposals.threshold_for(field) and field_proposals.propose(
-                db, product_id, field, val, conf, model=model, source="web",
-                note=src_note[:200]):
+        if conf < field_proposals.threshold_for(field):
+            below.append((field, val, conf))
+            return
+
+        prev = made.get(field)
+        if prev:
+            # Поле вже озвучив інший шар — це зустріч, а не перезапис.
+            prev_value, prev_conf, prev_note = prev
+            if photo_autofill._same_as_current(prev_value, val):
+                # ДВА НЕЗАЛЕЖНІ ДЖЕРЕЛА ЗІЙШЛИСЬ: знімок і сторінка виробника.
+                best = max(conf, float(prev_conf or 0))
+                field_proposals.propose(db, product_id, field, val, best, model=model,
+                                        source="photo+web",
+                                        note=f"{prev_note + ' · ' if prev_note else ''}{src_note}"[:200])
+                proposed[:] = [(f, v, best) if f == field else (f, v, c) for f, v, c in proposed]
+                made[field] = (val, best, src_note)
+            else:
+                # Розбіжність. Рішення лишається за шаром, що бачив САМЕ цю пару,
+                # але альтернативу показуємо поруч — заради звірки це й робилось.
+                field_proposals.propose(db, product_id, field, prev_value, prev_conf, model=model,
+                                        source="photo",
+                                        note=f"{prev_note + ' · ' if prev_note else ''}"
+                                             f"у виробника: {val} ({sources[0]})"[:200])
+            return
+
+        if field_proposals.propose(db, product_id, field, val, conf, model=model,
+                                   source="web", note=src_note[:200]):
             proposed.append((field, val, conf))
+            made[field] = (val, conf, src_note)
         else:
             below.append((field, val, conf))
 
@@ -282,4 +347,4 @@ def enrich_by_article(db: Session, product_id: int, *,
                                {"ok": True, "proposed": proposed, "sources": sources})
     return {"ok": True, "found": True, "cost_usd": cost, "article": article,
             "model": model, "sources": sources, "confidence": conf,
-            "proposed": proposed, "already_correct": already, "below_threshold": below}
+            "below_threshold": below}

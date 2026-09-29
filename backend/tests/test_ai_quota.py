@@ -89,22 +89,48 @@ class _DB:
         return _R()
 
 
-def _row(hours_ago, purpose, ok, err=None, now=None):
-    return (now - timedelta(hours=hours_ago), purpose, ok, err)
+# ⚠️ П'ятий елемент — МОДЕЛЬ: добова межа рахується помодельно
+# (`GenerateRequestsPerDayPerProjectPerModel`), тож облік без неї брехав би.
+MAIN = "gemini-3.5-flash"
+
+
+def _row(hours_ago, purpose, ok, err=None, now=None, model=MAIN):
+    return (now - timedelta(hours=hours_ago), purpose, ok, err, model)
 
 
 NOW = datetime(2026, 9, 15, 10, 40, tzinfo=timezone.utc)   # 13:40 Київ, вікно з 07:00 UTC
 
 
 def test_exhausted_only_when_denial_came_after_the_last_success():
+    day = _429("GenerateRequestsPerDayPerProjectPerModel-FreeTier", 20)
     rows = [_row(3, "autofill", True, now=NOW), _row(2, "autofill", True, now=NOW),
-            _row(1, "autofill", False, _429("GenerateRequestsPerDayPerProjectPerModel-FreeTier", 20), now=NOW)]
+            _row(1, "autofill", False, day, now=NOW)]
     s = aq.status(_DB(rows), NOW)
-    assert s["free"]["used"] == 2 and s["free"]["exhausted"] is True
-    assert s["free"]["limit"] == 20 and s["free"]["resets_at"] == "2026-09-16T07:00:00+00:00"
+
+    assert s["free"]["used"] == 2
+    assert s["free"]["per_model"][MAIN]["exhausted"] is True
+    assert s["free"]["resets_at"] == "2026-09-16T07:00:00+00:00"
+    # Межа НА МОДЕЛЬ — 20; у ротації їх три, тож на добу разом 60.
+    assert s["free"]["per_model"][MAIN]["limit"] == 20
+    assert s["free"]["limit"] == 20 * len(s["free"]["rotation"])
+    # Основна модель вичерпана, але сусідні мають СВОЇ 20 — загалом не вичерпано.
+    assert s["free"]["exhausted"] is False
+
     # успіх ПІСЛЯ відмови — то була хвилинна або тимчасова, квота жива
     rows.append(_row(0.5, "autofill", True, now=NOW))
-    assert aq.status(_DB(rows), NOW)["free"]["exhausted"] is False
+    assert aq.status(_DB(rows), NOW)["free"]["per_model"][MAIN]["exhausted"] is False
+
+
+def test_exhausted_only_when_every_model_is_spent():
+    """«Квоту вичерпано» = скінчились усі моделі ротації, а не одна."""
+    day = _429("GenerateRequestsPerDayPerProjectPerModel-FreeTier", 20)
+    rotation = aq.status(_DB([]), NOW)["free"]["rotation"]
+    rows = [_row(1, "autofill", False, day, now=NOW, model=m) for m in rotation]
+
+    s = aq.status(_DB(rows), NOW)
+
+    assert s["free"]["exhausted"] is True
+    assert all(v["exhausted"] for v in s["free"]["per_model"].values())
 
 
 def test_paid_calls_do_not_count_against_the_free_window():
@@ -122,7 +148,7 @@ def test_yesterdays_calls_stay_in_yesterdays_window():
 
 def test_minute_pause_is_reported_while_retry_delay_lasts():
     rows = [(NOW - timedelta(seconds=10), "autofill", False,
-             _429("GenerateRequestsPerMinutePerProjectPerModel-FreeTier", 10, "30s"))]
+             _429("GenerateRequestsPerMinutePerProjectPerModel-FreeTier", 10, "30s"), MAIN)]
     assert aq.status(_DB(rows), NOW)["free"]["retry_after_s"] == 20
     assert aq.status(_DB(rows), NOW + timedelta(minutes=1))["free"]["retry_after_s"] == 0
 

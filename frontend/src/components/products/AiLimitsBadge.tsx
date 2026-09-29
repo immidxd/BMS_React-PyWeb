@@ -10,6 +10,10 @@ export interface AiLimits {
     used: number; limit: number | null; observed_max: number; exhausted: boolean; denials: number;
     last_ok_at: string | null; last_denial_at: string | null;
     window_start: string; resets_at: string; retry_after_s: number;
+    // Добова межа рахується Google НА КОЖНУ МОДЕЛЬ окремо, тож і облік такий:
+    // вичерпана основна ще не означає, що розпізнавання стало.
+    rotation?: string[];
+    per_model?: Record<string, { used: number; limit: number | null; exhausted: boolean }>;
   };
   paid: { available: boolean; credits_depleted: boolean; last_at: string | null; calls_this_month: number; spent_usd: number };
   now: string;
@@ -34,7 +38,14 @@ export function describeLimits(l: AiLimits, now: Date = new Date()): LimitsText 
   const money = `$${l.month.spent_usd.toFixed(2)} з $${l.month.cap_usd.toFixed(0)} за місяць`;
 
   const lines: string[] = [];
-  if (l.free.limit != null) lines.push(`Безкоштовна добова межа: ${l.free.limit} запитів (Google повідомив у відмові).`);
+  const models = Object.entries(l.free.per_model || {});
+  if (l.free.limit != null && models.length > 1) {
+    const each = models[0]?.[1]?.limit;
+    lines.push(`Безкоштовна добова межа: ${each ?? '?'} запитів НА КОЖНУ модель, `
+      + `${models.length} моделі в ротації — разом ${l.free.limit}.`);
+    lines.push(...models.map(([name, m]) =>
+      `  · ${name}: ${m.used}${m.limit != null ? ` з ${m.limit}` : ''}${m.exhausted ? ' — вичерпано' : ''}`));
+  } else if (l.free.limit != null) lines.push(`Безкоштовна добова межа: ${l.free.limit} запитів (Google повідомив у відмові).`);
   else if (l.free.observed_max > 0) lines.push(`Безкоштовна добова межа невідома — Google каже її лише у відмові; найбільше за день проходило ${l.free.observed_max}.`);
   else lines.push('Безкоштовна добова межа невідома — Google каже її лише у відмові.');
   lines.push(`Сьогодні пройшло: ${l.free.used}. Квота скидається ${when} (північ за тихоокеанським часом).`);

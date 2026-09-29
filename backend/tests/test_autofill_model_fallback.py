@@ -20,18 +20,43 @@ from backend.services import photo_autofill as pa  # noqa: E402
 
 
 OVERLOAD = ('HTTP 503: {"error": {"code": 503, "status": "UNAVAILABLE"}}')
+# Тіло реальної відмови 29.09: межа названа ПОМОДЕЛЬНО.
+DAY_QUOTA = ('HTTP 429: {"error": {"status": "RESOURCE_EXHAUSTED"}, "violations": '
+             '[{"quotaId": "GenerateRequestsPerDayPerProjectPerModel-FreeTier", '
+             '"quotaValue": "20"}]}')
+MINUTE_QUOTA = ('HTTP 429: {"violations": [{"quotaId": '
+                '"GenerateRequestsPerMinutePerProjectPerModel-FreeTier"}]}')
 
 
 @pytest.mark.parametrize("err,expected", [
     (OVERLOAD, True),
     ("HTTP 500: internal", True),
-    ('HTTP 429: {"error": {"status": "RESOURCE_EXHAUSTED"}}', False),   # квота — не перевантаження
+    (DAY_QUOTA, False),            # квота — не перевантаження
     ("HTTP 400: bad request", False),
     ("JSONDecodeError: x", False),
     (None, False),
 ])
-def test_only_overload_is_worth_another_model(err, expected):
+def test_overload_is_recognised(err, expected):
     assert pa._is_overloaded(err) is expected
+
+
+@pytest.mark.parametrize("err,expected", [
+    (DAY_QUOTA, True),
+    (MINUTE_QUOTA, False),         # хвилинна межа спільна на проєкт
+    (OVERLOAD, False),
+    (None, False),
+])
+def test_daily_quota_is_per_model(err, expected):
+    """Тіло 429 каже `PerDayPerProjectPerModel` — у сусідньої моделі СВОЇ 20/добу
+    (перевірено прямо: 3.5-flash → 429, 3.6-flash тим самим ключем → 200)."""
+    assert pa._is_per_model_quota(err) is expected
+
+
+@pytest.mark.parametrize("err,expected", [
+    (OVERLOAD, True), (DAY_QUOTA, True), (MINUTE_QUOTA, False), ("HTTP 400: x", False),
+])
+def test_what_is_worth_another_model(err, expected):
+    assert pa._worth_another_model(err) is expected
 
 
 class _DB:
@@ -90,16 +115,33 @@ def test_healthy_model_is_not_second_guessed(monkeypatch, tmp_path):
     assert report["model_fallback"] is False
 
 
-def test_quota_error_does_not_burn_other_models(monkeypatch, tmp_path):
-    """429 — наша вичерпана квота. Сусідня модель ділить ту саму квоту ключа,
-    тож питати її безглуздо: це лише спалило б час і ще один запит."""
-    quota = {"_error": 'HTTP 429: {"error": {"status": "RESOURCE_EXHAUSTED"}}',
-             "_quota_exhausted": True}
+def test_daily_quota_moves_to_the_next_model(monkeypatch, tmp_path):
+    """Добова квота вичерпана на m1 — у m2 вона СВОЯ. Це втричі більше
+    безкоштовних розпізнавань на добу, а не обхід ліміту."""
+    ok = {"_usage": {"promptTokenCount": 10, "candidatesTokenCount": 2}}
+    report, calls = _run(monkeypatch, tmp_path,
+                         {"m1": {"_error": DAY_QUOTA, "_quota_exhausted": True}, "m2": ok})
+
+    assert calls == ["m1", "m2"]
+    assert report["ok"] is True and report["model"] == "m2"
+
+
+def test_minute_quota_does_not_burn_other_models(monkeypatch, tmp_path):
+    """Хвилинна межа — спільна на проєкт: бігати по моделях означало б ловити
+    ту саму відмову й палити час."""
+    quota = {"_error": MINUTE_QUOTA, "_quota_exhausted": True}
     report, calls = _run(monkeypatch, tmp_path, {"m1": quota})
 
     assert calls == ["m1"]
-    assert report["ok"] is False
     assert report.get("quota_exhausted") is True
+
+
+def test_all_daily_quotas_spent_says_when_it_resets(monkeypatch, tmp_path):
+    q = {"_error": DAY_QUOTA, "_quota_exhausted": True}
+    report, calls = _run(monkeypatch, tmp_path, {"m1": q, "m2": q, "m3": q})
+
+    assert calls == ["m1", "m2", "m3"]
+    assert "10:00" in report["reason"] and "вичерпано" in report["reason"].lower()
 
 
 def test_all_models_overloaded_says_it_plainly(monkeypatch, tmp_path):

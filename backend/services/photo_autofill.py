@@ -309,13 +309,19 @@ STICKER_MEASUREMENTS_KEY = "sticker_measurements"
 
 DEFAULT_MODEL = os.getenv("AUTOFILL_MODEL", "gemini-3.5-flash")
 
-# ⚠️ Запасні моделі на випадок 503 «experiencing high demand». Це НЕ те саме, що
-# 429: квота наша й чекати нема сенсу, а 503 — це перевантаження КОНКРЕТНОЇ
-# моделі у Google, і сусідня тієї ж родини о тій самій хвилині відповідає
-# нормально (перевірено 29.09: 3.5-flash віддавав 503 підряд, а 3.6-flash,
-# 3.5-flash-lite і 3-flash-preview — 200). Без цього списку перевантаження на
-# боці Google повністю зупиняло розпізнавання, хоча працездатна модель була
-# поруч. Порядок — від найближчої до основної.
+# ⚠️ Запасні моделі. Потрібні у ДВОХ випадках, і обидва виміряні 29.09.2026:
+#
+# 1. 503 «experiencing high demand» — перевантаження КОНКРЕТНОЇ моделі: о тій
+#    самій хвилині 3.5-flash віддавав 503 підряд, а 3.6-flash, 3.5-flash-lite
+#    і 3-flash-preview — 200.
+# 2. 429 — вичерпана ДОБОВА квота. Спершу я вважав, що квота спільна на ключ,
+#    і фолбек на 429 вимикав. Тіло відмови каже інше:
+#    `GenerateRequestsPerDayPerProjectPerModel-FreeTier, quotaValue: 20` —
+#    межа НА КОЖНУ МОДЕЛЬ окремо. Перевірено прямо: 3.5-flash → 429, а
+#    3.6-flash і 3.5-flash-lite тим самим ключем → 200. Тобто кожна модель у
+#    списку додає ще 20 безкоштовних розпізнавань на добу.
+#
+# Порядок — від найближчої до основної.
 MODEL_FALLBACKS = tuple(
     m.strip() for m in os.getenv(
         "AUTOFILL_MODEL_FALLBACKS", "gemini-3.6-flash,gemini-3.5-flash-lite"
@@ -328,6 +334,21 @@ def _is_overloaded(err: Optional[str]) -> bool:
     if not err:
         return False
     return "HTTP 503" in err or "UNAVAILABLE" in err or "HTTP 500" in err
+
+
+def _is_per_model_quota(err: Optional[str]) -> bool:
+    """429 саме на ДОБОВУ квоту цієї моделі — сусідня має власну.
+
+    Хвилинну межу (`PerMinute`) сюди не зараховуємо: вона спільна на проєкт,
+    і бігати по моделях означало б ловити ту саму відмову.
+    """
+    if not err or "HTTP 429" not in err:
+        return False
+    return "PerDayPerProjectPerModel" in err
+
+
+def _worth_another_model(err: Optional[str]) -> bool:
+    return _is_overloaded(err) or _is_per_model_quota(err)
 _ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/{m}:generateContent"
 
 
@@ -688,6 +709,21 @@ def _article_reads_agree(first: str, second: Optional[str], anchor: Optional[str
 
 
 # ── Оркестрація ─────────────────────────────────────────────────────────────
+
+def _web_enrich():
+    """Шар артикула — імпорт ЛІНИВИЙ і в обидва боки.
+
+    Ліниво, бо `web_enrich` імпортує цей модуль: на рівні файлу це кільце.
+    """
+    try:
+        from services import web_enrich
+    except ImportError:
+        try:
+            from backend.services import web_enrich
+        except ImportError:
+            return None
+    return web_enrich
+
 
 def _product_category():
     """Модуль категорій — дворежимний імпорт (services.X / backend.services.X)."""
@@ -1095,6 +1131,21 @@ def extract_and_propose(db: Session, product_id: int, photos: List[pathlib.Path]
             confirmed.append(("marking", marking_now, "barcode"))
         _profile_layer(db, product_id, pred_box, current,
                        proposed, already, confirmed, made)
+        # Четвертий шар — сторінка виробника за артикулом. ОДНА дія на всі
+        # джерела: заміри й стікер видно на знімках, офіційні характеристики —
+        # лише в виробника, а розбіжність між ними і є звіркою. Пропускаємо
+        # мовчки, коли нема за чим шукати (артикул) або чим (платний ключ) —
+        # інакше товар без артикула отримував би помилку на кожному запуску.
+        web_report: Dict[str, Any] = {"skipped": True}
+        try:
+            wr = _web_enrich()
+            if wr is not None and wr.available(current):
+                web_report = wr.layer(db, product_id, current, proposed=proposed,
+                                      already=already, confirmed=confirmed, made=made)
+        except Exception as e:  # noqa: BLE001 — шар назовні не має ламати решту
+            logger.warning("[autofill] шар артикула не спрацював: %s", e)
+            web_report = {"ok": False, "reason": str(e)[:200]}
+        payload["web"] = web_report
         payload.setdefault("proposed", proposed)
         payload.setdefault("already_correct", already)
         payload["barcodes"] = [{"format": h.format, "text": h.text, "photo": h.photo}
@@ -1150,13 +1201,18 @@ def extract_and_propose(db: Session, product_id: int, photos: List[pathlib.Path]
             output_tokens=int(usage.get("candidatesTokenCount", 0)),
             ok=not err, error=err,
         )
-        if not err or not _is_overloaded(err):
+        if not err or not _worth_another_model(err):
             break
-        logger.warning("[autofill] %s перевантажена (503) — пробую наступну модель", candidate)
+        logger.warning("[autofill] %s недоступна (%s) — пробую наступну модель",
+                       candidate, "503" if _is_overloaded(err) else "добова квота")
     model = tried[-1]
     if err:
         payload: Dict[str, Any] = {"ok": False, "reason": err, "cost_usd": cost,
                                    "models_tried": tried}
+        if _is_per_model_quota(err) and len(tried) > 1:
+            # Вичерпані ДОБОВІ квоти всіх моделей — далі лише платний ключ.
+            payload["reason"] = ("Безкоштовну добову квоту вичерпано на всіх моделях "
+                                 f"({', '.join(tried)}). Скидається о 10:00.")
         if _is_overloaded(err) and len(tried) > 1:
             # Усі моделі лежать — це вже не наша проблема, і людині треба сказати
             # саме це, а не показувати сире тіло 503.

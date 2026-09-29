@@ -167,3 +167,56 @@ def test_402_is_translated_into_human_words(monkeypatch):
     assert out["needs_paid"] is True
     assert "поповни" in out["reason"].lower()
     assert "402" not in out["reason"]
+
+
+# ── Одна дія на всі джерела ─────────────────────────────────────────────────
+
+def test_layer_is_skipped_without_article_or_paid_key(monkeypatch):
+    """Спільний прогін «Розпізнати» не має падати на товарі без артикула."""
+    monkeypatch.setenv("GEMINI_API_KEY_PAID", "k")
+    assert we.available({"marking": "9-25404"}) is True
+    assert we.available({"marking": ""}) is False
+    monkeypatch.delenv("GEMINI_API_KEY_PAID", raising=False)
+    assert we.available({"marking": "9-25404"}) is False
+
+
+def test_agreement_with_photo_raises_confidence(monkeypatch):
+    """Знімок і сторінка виробника сказали те саме — певність росте, і в
+    підписі видно обидва джерела."""
+    calls = _setup(monkeypatch, CAPRICE)
+    proposed = [("toe_shape_name", "заокруглена", 0.7)]
+    made = {"toe_shape_name": ("заокруглена", 0.7, "фото")}
+
+    we.layer(_DB(), 1, dict(CURRENT), proposed=proposed, already=[], confirmed=[], made=made)
+
+    assert made["toe_shape_name"][1] == pytest.approx(0.95)   # max(0.7, 0.95)
+    assert ("toe_shape_name", "заокруглена", 0.95) in proposed
+    note = [n for f, _v, _s, n in calls if f == "toe_shape_name"][0]
+    assert "фото" in note and "caprice.de" in note
+
+
+def test_disagreement_keeps_the_photo_value_and_shows_the_other(monkeypatch):
+    """Фото каже «круглий», виробник — «заокруглена». Рішення за знімком (він
+    бачив саме цю пару), але альтернатива має бути на очах — це і є звірка."""
+    calls = _setup(monkeypatch, CAPRICE)
+    proposed = [("toe_shape_name", "круглий", 0.8)]
+    made = {"toe_shape_name": ("круглий", 0.8, "фото")}
+
+    we.layer(_DB(), 1, dict(CURRENT), proposed=proposed, already=[], confirmed=[], made=made)
+
+    kept = [(f, v) for f, v, _s, _n in calls if f == "toe_shape_name"]
+    assert kept == [("toe_shape_name", "круглий")], "значення знімка не підмінюємо"
+    note = [n for f, _v, _s, n in calls if f == "toe_shape_name"][0]
+    assert "у виробника: заокруглена" in note
+
+
+def test_fields_untouched_by_photo_come_straight_from_the_page(monkeypatch):
+    calls = _setup(monkeypatch, CAPRICE)
+    proposed: list = []
+    made: dict = {}
+
+    we.layer(_DB(), 1, dict(CURRENT), proposed=proposed, already=[], confirmed=[], made=made)
+
+    got = {f: v for f, v, _s, _n in calls}
+    assert got["width"] == "G"          # знімки про ширину колодки не знають
+    assert made["width"][0] == "G"

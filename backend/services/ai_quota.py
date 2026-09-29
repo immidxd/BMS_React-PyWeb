@@ -97,7 +97,7 @@ def status(db: Session, now: Optional[datetime] = None, *, paid_available: bool 
     now = now or datetime.now(timezone.utc)
     start, resets_at = quota_window(now)
     rows = db.execute(text("""
-        SELECT called_at, purpose, ok, error FROM ai_spend_log
+        SELECT called_at, purpose, ok, error, model FROM ai_spend_log
         WHERE called_at >= :since ORDER BY called_at
     """), {"since": now - timedelta(days=LOOKBACK_DAYS)}).fetchall()
 
@@ -137,6 +137,49 @@ def status(db: Session, now: Optional[datetime] = None, *, paid_available: bool 
             retry_after_s = max(0, int((until - now).total_seconds()))
             break
 
+    # ⚠️ Добова межа — НА КОЖНУ МОДЕЛЬ окремо: тіло відмови каже
+    # `GenerateRequestsPerDayPerProjectPerModel-FreeTier` (перевірено 29.09:
+    # 3.5-flash → 429, 3.6-flash тим самим ключем → 200). Тому рахунок «X з 20»
+    # по всіх моделях разом брехав би в обидва боки: показував би вичерпання,
+    # коли сусідня модель вільна, і навпаки.
+    try:
+        from services.photo_autofill import DEFAULT_MODEL, MODEL_FALLBACKS
+    except ImportError:  # pragma: no cover
+        from backend.services.photo_autofill import DEFAULT_MODEL, MODEL_FALLBACKS
+    rotation = [DEFAULT_MODEL, *(m for m in MODEL_FALLBACKS if m != DEFAULT_MODEL)]
+
+    per_model: Dict[str, Dict[str, Any]] = {}
+    for name in rotation:
+        of_model = [r for r in window if (r[4] or "") == name]
+        m_used = sum(1 for r in of_model if r[2])
+        m_last_ok = max((r[0] for r in of_model if r[2]), default=None)
+        m_day_denials = [r[0] for r in of_model
+                         if not r[2] and parse_quota_error(r[3])["kind"] in ("day", "unknown")
+                         and (r[3] or "").startswith("HTTP 429")]
+        m_last_denial = m_day_denials[-1] if m_day_denials else None
+        m_limit = None
+        for r in free_all:
+            if (r[4] or "") != name or r[2] or not (r[3] or "").startswith("HTTP 429"):
+                continue
+            q = parse_quota_error(r[3])
+            if q["kind"] == "day" and q["quota_value"]:
+                m_limit = max(m_limit or 0, q["quota_value"])
+        per_model[name] = {
+            "used": m_used, "limit": m_limit,
+            "exhausted": m_last_denial is not None and (m_last_ok is None or m_last_denial > m_last_ok),
+        }
+    # Межу однієї моделі переносимо на решту ротації: вона однакова (20), а
+    # дізнаємось ми її лише з відмови — тобто по одній моделі за раз.
+    known = [m["limit"] for m in per_model.values() if m["limit"]]
+    if known:
+        for m in per_model.values():
+            m.setdefault("limit", None)
+            if not m["limit"]:
+                m["limit"] = max(known)
+        limit = sum(m["limit"] for m in per_model.values())
+    # Вичерпано — лише коли ЖОДНА модель ротації вже не відповідає.
+    exhausted = all(m["exhausted"] for m in per_model.values())
+
     paid_rows = [r for r in rows if _is_paid(r[1])]
     last_paid = paid_rows[-1] if paid_rows else None
     paid_q = parse_quota_error(last_paid[3]) if last_paid and not last_paid[2] else None
@@ -149,6 +192,7 @@ def status(db: Session, now: Optional[datetime] = None, *, paid_available: bool 
                   "reason": v.reason},
         "free": {
             "used": used, "limit": limit, "observed_max": observed_max,
+            "per_model": per_model, "rotation": rotation,
             "exhausted": exhausted, "denials": len(denials),
             "last_ok_at": last_ok.isoformat() if last_ok else None,
             "last_denial_at": last_day_denial.isoformat() if last_day_denial else None,
