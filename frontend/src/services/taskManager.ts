@@ -25,11 +25,25 @@ export interface Task {
 
 type Listener = () => void;
 
+// Обрив звʼязку у fetch — це TypeError («Failed to fetch» / «Load failed» у
+// WKWebView). Будь-яка інша помилка має СВІЙ текст, і показувати замість нього
+// «немає звʼязку» означає збрехати: саме так справжня відмова бекенда на
+// розпізнаванні виглядала як проблема з мережею.
+const NETWORK_HINTS = ['failed to fetch', 'load failed', 'networkerror', 'network request failed'];
+
+function isNetworkError(e: any): boolean {
+  if (e?.response) return false;                 // axios: відповідь є — не мережа
+  if (e?.request && !e?.response) return true;   // axios: запит пішов, відповіді нема
+  const msg = String(e?.message || '').toLowerCase();
+  return e instanceof TypeError || NETWORK_HINTS.some((h) => msg.includes(h));
+}
+
 function errDetail(e: any): string {
-  if (!e?.response) return "Немає зв'язку з програмою — спробуйте ще раз";
-  const d = e.response?.data?.detail;
+  if (isNetworkError(e)) return "Немає зв'язку з програмою — спробуйте ще раз";
+  const d = e?.response?.data?.detail;
   if (typeof d === 'string' && d.trim()) return d;
-  return e?.message || 'Помилка';
+  const msg = String(e?.message || '').trim();
+  return msg || 'Помилка';
 }
 
 // Скільки завершений запис живе в Сповіщеннях, поки не зникне сам (власник:

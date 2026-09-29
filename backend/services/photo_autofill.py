@@ -308,6 +308,26 @@ STICKER_SIZE_LETTER_KEY = "sticker_size_letter"
 STICKER_MEASUREMENTS_KEY = "sticker_measurements"
 
 DEFAULT_MODEL = os.getenv("AUTOFILL_MODEL", "gemini-3.5-flash")
+
+# ⚠️ Запасні моделі на випадок 503 «experiencing high demand». Це НЕ те саме, що
+# 429: квота наша й чекати нема сенсу, а 503 — це перевантаження КОНКРЕТНОЇ
+# моделі у Google, і сусідня тієї ж родини о тій самій хвилині відповідає
+# нормально (перевірено 29.09: 3.5-flash віддавав 503 підряд, а 3.6-flash,
+# 3.5-flash-lite і 3-flash-preview — 200). Без цього списку перевантаження на
+# боці Google повністю зупиняло розпізнавання, хоча працездатна модель була
+# поруч. Порядок — від найближчої до основної.
+MODEL_FALLBACKS = tuple(
+    m.strip() for m in os.getenv(
+        "AUTOFILL_MODEL_FALLBACKS", "gemini-3.6-flash,gemini-3.5-flash-lite"
+    ).split(",") if m.strip()
+)
+
+
+def _is_overloaded(err: Optional[str]) -> bool:
+    """Чи це перевантаження моделі (503/UNAVAILABLE), а не наша квота чи запит."""
+    if not err:
+        return False
+    return "HTTP 503" in err or "UNAVAILABLE" in err or "HTTP 500" in err
 _ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/{m}:generateContent"
 
 
@@ -1103,21 +1123,38 @@ def extract_and_propose(db: Session, product_id: int, photos: List[pathlib.Path]
                         "spent_usd": verdict.spent_usd})
 
     schema = build_schema(db, type_id=current.get("typeid"), category=category, subcat=subcat)
-    pred = call_gemini(model, api_key, photos, schema,
-                       prompt=PROMPT_CLOTHING if category == "clothing" else PROMPT)
-    usage = pred.pop("_usage", {}) or {}
-    err = pred.get("_error")
+    prompt = PROMPT_CLOTHING if category == "clothing" else PROMPT
 
-    # Записуємо ЗАВЖДИ: провайдер тарифікує вхід навіть на провалі.
-    cost = ai_budget.record(
-        db, model=model, purpose=(purpose + ":paid" if use_paid else purpose),
-        product_id=product_id,
-        prompt_tokens=int(usage.get("promptTokenCount", 0)),
-        output_tokens=int(usage.get("candidatesTokenCount", 0)),
-        ok=not err, error=err,
-    )
+    # Перевантажена модель (503) — привід узяти сусідню, а не здатись: квота
+    # наша не витрачена, а поруч у тій самій родині є працездатна.
+    cost = 0.0
+    tried: List[str] = []
+    for candidate in (model, *(m for m in MODEL_FALLBACKS if m != model)):
+        tried.append(candidate)
+        pred = call_gemini(candidate, api_key, photos, schema, prompt=prompt)
+        usage = pred.pop("_usage", {}) or {}
+        err = pred.get("_error")
+        # Записуємо ЗАВЖДИ: провайдер тарифікує вхід навіть на провалі.
+        cost += ai_budget.record(
+            db, model=candidate, purpose=(purpose + ":paid" if use_paid else purpose),
+            product_id=product_id,
+            prompt_tokens=int(usage.get("promptTokenCount", 0)),
+            output_tokens=int(usage.get("candidatesTokenCount", 0)),
+            ok=not err, error=err,
+        )
+        if not err or not _is_overloaded(err):
+            break
+        logger.warning("[autofill] %s перевантажена (503) — пробую наступну модель", candidate)
+    model = tried[-1]
     if err:
-        payload: Dict[str, Any] = {"ok": False, "reason": err, "cost_usd": cost}
+        payload: Dict[str, Any] = {"ok": False, "reason": err, "cost_usd": cost,
+                                   "models_tried": tried}
+        if _is_overloaded(err) and len(tried) > 1:
+            # Усі моделі лежать — це вже не наша проблема, і людині треба сказати
+            # саме це, а не показувати сире тіло 503.
+            payload["reason"] = ("Google тимчасово перевантажений: жодна з моделей "
+                                 f"({', '.join(tried)}) не відповідає. Спробуй за кілька хвилин.")
+            payload["overloaded"] = True
         if pred.get("_quota_exhausted") and not use_paid:
             # Безкоштовна квота вичерпана. Це не помилка для людини, а вибір:
             # інтерфейс покаже діалог і, якщо вона погодиться, повторить запит
@@ -1234,5 +1271,7 @@ def extract_and_propose(db: Session, product_id: int, photos: List[pathlib.Path]
                                     proposed, below_threshold, already)
 
     return _finish({"ok": True, "cost_usd": cost, "model": model,
+                    # Відповіла не основна модель — картка скаже про це людині.
+                    "model_fallback": len(tried) > 1, "models_tried": tried,
                     "below_threshold": below_threshold, "photos": len(photos),
                     "sticker": sticker, "materials": materials})

@@ -1350,13 +1350,25 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
           if (ok) await runAutofill(true);
           return;
         }
+        // 503 — це перевантаження на боці Google, а не наша помилка й не квота.
+        // Кажемо це словами: сире тіло відповіді людині ні про що.
+        if (d?.overloaded) {
+          notify.warning({ message: 'Google тимчасово перевантажений',
+            description: d?.reason || 'Модель не відповідає — спробуй за кілька хвилин.', duration: 8 });
+          return;
+        }
         notify.warning({ message: d?.budget_blocked ? 'Місячний ліміт розпізнавання вичерпано' : 'Не вдалося розпізнати',
           description: d?.budget_blocked ? undefined : (d?.reason || undefined) });
         return;
       }
       await reloadProposals(pid);
       const n = (d.proposed || []).length;
-      if (n) notify.success({ message: `Розпізнано полів: ${n}${usePaid ? ' (платний ключ)' : ''}`, duration: 2.5 });
+      if (n) notify.success({
+        message: `Розпізнано полів: ${n}${usePaid ? ' (платний ключ)' : ''}`,
+        // Основна модель лежала — відповіла запасна. Людина має знати, чиїми
+        // очима дивились: у різних моделей різна якість читання бирок.
+        description: d?.model_fallback ? `Основна модель була перевантажена — відповіла ${d.model}` : undefined,
+        duration: d?.model_fallback ? 6 : 2.5 });
       else notify.info({ message: 'Нічого впевнено не розпізналось', duration: 3 });
       // Стікер — окрема історія: людина бачить його на знімку й чекає ціни та
       // розміру. Мовчазне «не розпізнало» тут найгірше — кажемо, ЩО сталось.
