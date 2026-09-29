@@ -18,6 +18,9 @@
 - Не перезаписуй сторонні незакомічені зміни. Міграції БД додавай окремими файлами й перевіряй без незворотних операцій на бойових даних.
 - Перейменування чи видалення функції — лише після пошуку ВСІХ викликів, зокрема імпортів усередині функцій (`from scripts.X import _name` у тілі обробника). Такі імпорти не падають на старті, а лише коли користувач натискає кнопку: 04.09 перейменування `_apply_product_materials` мовчки зламало «Додати товар» до 23.09. Сторож — `backend/tests/test_lazy_imports_resolve.py`; не вимикай і не звужуй його, а виправ імпорт.
 - Бекенд-правка не діє в запущеному застосунку користувача, доки його не перезапустити (`main.py` часто працює днями). Після фіксу завжди прямо кажи, що потрібен перезапуск.
+- **Хук після early-return кладе ВСЮ сторінку.** У великих компонентах (`ProductDetailsModal` — `if (!open) return null` приблизно посередині файла) будь-який `useMemo`/`useState`/`useEffect`/`useCallback` НИЖЧЕ раннього виходу викликається лише в одному зі станів. Кількість хуків між рендерами розходиться → React кидає Minified error #310, і падає не картка, а вся вкладка: «Не вдалося відкрити сторінку». Новий хук клади у блок хуків НАГОРІ, до раннього виходу, навіть якщо читати зручніше поруч із місцем використання. Це ламало UI двічі — 08.2026 і 29.09.2026.
+- **`npm run build` сам по собі НЕ є доказом коректності фронтенду.** Він іде з `DISABLE_ESLINT_PLUGIN=true`, тож «Compiled successfully» означає лише, що пройшов TypeScript, — а порядок хуків типами не перевіряється взагалі. Тому в `build` вшито `npm run lint:hooks` (єдине правило `react-hooks/rules-of-hooks` по всьому `src`): збірка падає ДО компіляції з точним рядком. Не прибирай цей префікс зі скрипта і не запускай `react-scripts build` навпростець.
+- Не називай `use…` те, що не є хуком: правило вважає хуком будь-яку функцію з таким префіксом, дає хибне спрацювання і за ним ховаються справжні порушення (так було з обробником `useHost` у `LabelPrintDialog` — перейменовано на `applyHost`).
 - «Принтер стікерів не знаходиться» — спершу перевір мережу Mac (`route -n get default`): Mac перемикається між двома роутерами TP-Link (`192.168.1.x`, де міст Xprinter `192.168.1.105:9100`, і `192.168.0.x`, де його немає). Це не баг коду.
 
 ## Двостороння синхронізація товарів і Журналу (2026-08-20)
@@ -183,7 +186,7 @@
 - Фото: `PYTHONDONTWRITEBYTECODE=1 ./venv/bin/python -m pytest backend/tests/test_photo_manager_transform.py -q`
 - Статистика: `PYTHONDONTWRITEBYTECODE=1 ./venv/bin/python -m pytest backend/tests/test_sales_channel_detection.py backend/tests/test_advertising_expense_parser.py -q`
 - Top‑9: `PYTHONDONTWRITEBYTECODE=1 ./venv/bin/python -m pytest backend/tests/test_auto_collection.py backend/tests/test_auto_collection_scheduler.py backend/tests/test_auto_collection_cloud_sync.py -q`; Worker — `pnpm test` і Wrangler `deploy --dry-run` у `cloudflare/auto-collection-drafts`.
-- Frontend: `npm run build` у `frontend` (або коренева команда, якщо вона проксіює цей build).
+- Frontend: `npm run build` у `frontend` (або коренева команда, якщо вона проксіює цей build). Збірка сама спершу проганяє `npm run lint:hooks` — порядок хуків; окремо його запускати не треба, але й обходити збірку не можна.
 - Після змін перевір `git diff --check` і чистоту обох репозиторіїв.
 
 Станом на 2026-08-11 повний backend suite мав один відомий локальний збій у `test_parser_brand_linking` через відсутній UNIQUE constraint для `brands.normalized_name` у локальній схемі. Не маскуй нові регресії цим застереженням і не змінюй схему поза межами конкретного завдання.

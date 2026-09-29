@@ -43,7 +43,7 @@
   },
   "scripts": {
     "start": "DISABLE_ESLINT_PLUGIN=true react-scripts start",
-    "build": "DISABLE_ESLINT_PLUGIN=true GENERATE_SOURCEMAP=false NODE_OPTIONS=--max-old-space-size=2048 react-scripts build",
+    "build": "npm run lint:hooks && DISABLE_ESLINT_PLUGIN=true GENERATE_SOURCEMAP=false NODE_OPTIONS=--max-old-space-size=2048 react-scripts build",
     "test": "react-scripts test",
     "eject": "react-scripts eject",
     "lint:hooks": "eslint --no-eslintrc --parser @typescript-eslint/parser --parser-options '{\"ecmaFeatures\":{\"jsx\":true},\"ecmaVersion\":2020,\"sourceType\":\"module\"}' --plugin react-hooks --rule '{\"react-hooks/rules-of-hooks\":\"error\"}' --ext .ts,.tsx src"
