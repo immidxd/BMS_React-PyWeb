@@ -233,7 +233,10 @@ const LabelPrintDialog: React.FC<Props> = ({ open, source, title, subtitle, onCl
     finally { setBusy(null); }
   };
 
-  const useHost = async (host: string) => {
+  // ⚠️ НЕ «use…»: це звичайний обробник, а не хук. Назва з префіксом use
+  // ламала перевірку react-hooks (правило вважає будь-яке useX хуком) і
+  // ховала за собою справжні порушення порядку хуків.
+  const applyHost = async (host: string) => {
     setBusy('discover');
     try { await labelService.setNetworkPrinter(host); setFound(null); await reloadConfig(); notify.success({ message: `Принтер ${host} збережено` }); }
     catch (e: any) { notify.error({ message: 'Принтер', description: e?.message }); }
@@ -402,7 +405,7 @@ const LabelPrintDialog: React.FC<Props> = ({ open, source, title, subtitle, onCl
                     <div className="text-gray-400 mb-1">Знайдено в мережі — оберіть:</div>
                     <div className="flex flex-wrap gap-1.5">
                       {found.map(h => (
-                        <button key={h} onClick={() => void useHost(h)} disabled={!!busy} className="px-2 py-1 rounded-md bg-black text-white dark:bg-white dark:text-black font-semibold">{h}</button>
+                        <button key={h} onClick={() => void applyHost(h)} disabled={!!busy} className="px-2 py-1 rounded-md bg-black text-white dark:bg-white dark:text-black font-semibold">{h}</button>
                       ))}
                     </div>
                   </div>

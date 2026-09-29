@@ -2237,6 +2237,23 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     () => clothingMeasurementsForType(effectiveTypeName),
     [effectiveTypeName]
   );
+  // ⚠️ ХУК — ДО `if (!open) return null` нижче. Тримати його поруч із кнопкою
+  // було зручно читати, але при закритій картці він не викликався, а при
+  // відкритій — викликався: різна кількість хуків між рендерами, і React
+  // валив усю сторінку з #310 (саме так «перестали відкриватись картки»).
+  const autofillTitle = useMemo(() => {
+    const src: string[] = [];
+    if (realCount > 0) src.push(`${realCount} живими знімками`);
+    if ((product as any)?.marking) src.push(`артикулом ${(product as any).marking}`);
+    if (!src.length) {
+      return officialCount > 0
+        ? `Усі ${officialCount} фото — у наборі «Офіційні». Розпізнавання працює з реальними знімками; натисни — запропоную перенести.`
+        : 'Немає ані живих фото, ані артикула — додайте знімки або впишіть маркування';
+    }
+    return `Розпізнати за ${src.join(' і ')}. Значення потраплять у картку лише після вашого підтвердження.`;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [realCount, officialCount, (product as any)?.marking]);
+
   const clothingMeasProposals = useMemo(
     () => clothingMeas.filter((name) => !!proposals[`meas:${name}`]),
     [clothingMeas, proposals]
@@ -2662,20 +2679,6 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
   // (сумки), заголовок «Розмір» зайвий над самотнім чипом «Габарити» → ховаємо його.
   const hasRealSize = !!(p && (p.sizeeu || (p as any).size_letter || p.measurementscm || derivedSizes.length > 0));
   const hasClothingMeas = !!(p && MEASUREMENTS.some(({ name, minKey }) => clothingMeas.includes(name) && (p as any)[minKey] != null));
-  // Одна дія — усі джерела. Підказка чесно перелічує, що саме зараз спрацює:
-  // знімки дають заміри й стікер, артикул — офіційні характеристики виробника,
-  // а розбіжність між ними видно поруч і є звіркою.
-  const autofillTitle = useMemo(() => {
-    const src: string[] = [];
-    if (realCount > 0) src.push(`${realCount} живими знімками`);
-    if ((p as any)?.marking) src.push(`артикулом ${(p as any).marking}`);
-    if (!src.length) {
-      return officialCount > 0
-        ? `Усі ${officialCount} фото — у наборі «Офіційні». Розпізнавання працює з реальними знімками; натисни — запропоную перенести.`
-        : 'Немає ані живих фото, ані артикула — додайте знімки або впишіть маркування';
-    }
-    return `Розпізнати за ${src.join(' і ')}. Значення потраплять у картку лише після вашого підтвердження.`;
-  }, [realCount, officialCount, (p as any)?.marking]);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
