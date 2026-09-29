@@ -508,11 +508,29 @@ def test_sole_concepts_are_never_heel_types(value):
     assert not is_misplaced_value("sole_type_name", "платформа")
 
 
+class _LookupDB:
+    """Довідник типів каблука, у якому осіла чужа «платформа»."""
+    def __init__(self, rows): self._rows = rows
+    def execute(self, sql, params=None):
+        rows = self._rows
+        class _R:
+            def fetchall(self): return rows
+        return _R()
+
+
 def test_schema_excludes_misplaced_values_from_enum():
-    """Модель фізично не має побачити «платформа» серед типів каблука."""
-    import inspect
-    src = inspect.getsource(pa.build_schema)
-    assert "is_misplaced_value(_upd, n)" in src
+    """Модель фізично не має побачити «платформа» серед типів каблука.
+
+    Перевіряємо ПОВЕДІНКУ переліку, а не текст функції: сам добір значень
+    живе в `closed_enum_values` (спільному для шарів фото й артикула), і
+    перевірка за вихідним кодом ламалась би від будь-якого переносу.
+    """
+    db = _LookupDB([("блок", 17), ("платформа", 3), ("шпилька", 5)])
+
+    values = pa.closed_enum_values(db, "heel_type")
+
+    assert "платформа" not in values, "чуже значення довідника не подаємо моделі"
+    assert "блок" in values and "шпилька" in values
 
 
 def test_sole_type_hints_distinguish_platform_from_heel():

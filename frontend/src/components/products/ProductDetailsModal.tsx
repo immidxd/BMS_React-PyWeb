@@ -301,6 +301,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
   // Кілька чіпів можуть бути «в польоті» одночасно — людина клацає по черзі,
   // не чекаючи журналу. Set замість одного id.
   const [proposalBusy, setProposalBusy] = useState<Set<number>>(() => new Set());
+  const [webEnrichRunning, setWebEnrichRunning] = useState(false);
   const [acceptAllBusy, setAcceptAllBusy] = useState(false);
   // «З теки до розбору» — той самий модал, що й у картці завозу, лише з
   // фіксованим номером цього товару.
@@ -1393,6 +1394,46 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [productId, autofillRunning, reloadProposals, realCount, officialCount, loadImages]);
+
+  // Четвертий шар: офіційна сторінка виробника за артикулом. Окрема дія, а не
+  // частина «З фото»: вона потребує платного ключа (пошук Google на
+  // безкоштовному недоступний), тож витрату людина має вибрати свідомо.
+  const runWebEnrich = React.useCallback(async () => {
+    const pid = productId;
+    if (!pid || webEnrichRunning) return;
+    setWebEnrichRunning(true);
+    try {
+      const d = await taskManager.run(`За артикулом ${(p as any)?.marking || ''}`.trim(), async () => {
+        const r = await fetch(`/api/products/${pid}/enrich-web`, { method: 'POST' });
+        const body = await r.json().catch(() => ({}));
+        if (!r.ok && !body?.reason) throw new Error(body?.detail || `HTTP ${r.status}`);
+        return body;
+      }, {
+        silentSuccess: true,
+        resultStatus: (res: any) => res?.ok && res?.found
+          ? { status: 'success', detail: `Зі сторінки виробника: ${(res.proposed || []).length}` }
+          : { status: 'partial', detail: res?.reason || 'Нічого не знайдено' },
+      });
+      if (curPidRef.current !== pid) return;
+      if (!d?.ok || !d?.found) {
+        notify.warning({
+          message: d?.needs_paid ? 'Потрібен платний ключ' : 'Сторінку артикула не знайдено',
+          description: d?.reason || undefined, duration: 8 });
+        return;
+      }
+      await reloadProposals(pid);
+      const n = (d.proposed || []).length;
+      notify[n ? 'success' : 'info']({
+        message: n ? `Зі сторінки виробника: ${n}` : 'Сторінку знайдено, нового нічого',
+        description: d.sources?.[0] ? `Джерело: ${d.sources[0]}` : undefined, duration: 7 });
+    } catch (e: any) {
+      notify.error({ message: 'Не вдалося пошукати за артикулом', description: e?.message || undefined });
+    } finally {
+      setWebEnrichRunning(false);
+      emitAiLimitsChanged();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [productId, webEnrichRunning, reloadProposals]);
 
   // ── Менеджер фото (editMode) ────────────────────────────────────────────
   // Керуємо official/real/defect із локального мірора + R2. Фото, що лишились
@@ -3897,6 +3938,22 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                         {autofillRunning ? <LoadingOutlined style={{ fontSize: 11 }} /> : <SyncOutlined style={{ fontSize: 11 }} />}
                         <span>З фото</span>
                       </button>
+                      {/* Четвертий шар: те, що про цю пару написав сам виробник.
+                          Без артикула шукати нема за чим — кнопки просто немає. */}
+                      {!!(p as any)?.marking && (
+                        <button
+                          type="button" onClick={runWebEnrich} disabled={webEnrichRunning}
+                          title={`Знайти офіційні характеристики за артикулом ${(p as any).marking} `
+                            + '(ширина колодки, висота халяви й каблука, матеріали, технології). '
+                            + 'Значення потраплять у картку лише після вашого підтвердження.'}
+                          className="inline-flex items-center gap-1 text-[11px] px-1.5 py-0.5 rounded shrink-0 whitespace-nowrap
+                            text-gray-400 hover:text-gray-700 dark:text-gray-500 dark:hover:text-gray-200
+                            hover:bg-gray-100 dark:hover:bg-gray-700/60 transition-colors
+                            disabled:opacity-50 disabled:cursor-default">
+                          {webEnrichRunning ? <LoadingOutlined style={{ fontSize: 11 }} /> : <TagOutlined style={{ fontSize: 11 }} />}
+                          <span>За артикулом</span>
+                        </button>
+                      )}
                       </div>
                     </div>
                     <div className={`grid ${charCols} gap-x-6 gap-y-3`}>

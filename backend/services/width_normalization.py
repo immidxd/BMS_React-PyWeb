@@ -42,6 +42,14 @@ def _key(value: str) -> str:
     return re.sub(r"\s+", " ", value.strip()).casefold()
 
 
+# Виробники пишуть повноту словом поруч із літерою: Caprice — «G-ширина»
+# (укр. сторінка) і «G-Weite» (нім.), Gabor — «G-width». Літера тут та сама,
+# тож слово просто зрізаємо, перш ніж перевіряти форму.
+_WIDTH_WORD_TAIL = re.compile(
+    r"[\s\-–—]*(ширина|шир\.?|повнота|width|weite|fit)\.?$", re.IGNORECASE
+)
+
+
 # Словесні форми з журналу → літера. Розширювати ЛИШЕ за підтвердженою
 # відповідністю: «Вузька» свідомо відсутня — у базі її не було, а вгадувати
 # літеру за вузькість (D? A?) означало б вигадати дані.
@@ -65,7 +73,7 @@ def normalize_width(value: object) -> Optional[str]:
     """
     if value is None:
         return None
-    raw = str(value).strip()
+    raw = _WIDTH_WORD_TAIL.sub("", str(value).strip()).strip()
     if not raw:
         return None
 

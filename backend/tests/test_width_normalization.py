@@ -30,6 +30,14 @@ from services.width_normalization import (  # noqa: E402
     ("F 1/2", "F 1/2"),
     ("g1/2", "G 1/2"),
     ("G 1 / 2", "G 1/2"),
+    # Як пише виробник на сторінці товару: Caprice «G-ширина» / «G-Weite»,
+    # Gabor «G-width». Літера та сама — слово «ширина» просто зрізаємо.
+    ("G-ширина", "G"),
+    ("G-Weite", "G"),
+    ("G-width", "G"),
+    ("H-повнота", "H"),
+    # Те саме слово після словесної форми: це все одно стандартна повнота.
+    ("Стандартна ширина", "G"),
 ])
 def test_normalize_known_widths(raw, expected):
     assert normalize_width(raw) == expected
@@ -42,9 +50,9 @@ def test_empty_is_none(raw):
 
 @pytest.mark.parametrize("raw", [
     "дуже широка колодка",
-    "Стандартна ширина",
     "Вузька",            # свідомо не мапимо: у базі не було, літеру не вгадуємо
     "35",                # розмір, а не ширина
+    "ширина",            # саме слово, без літери — не значення
 ])
 def test_non_width_text_is_rejected(raw):
     assert normalize_width(raw) is None
@@ -79,7 +87,7 @@ def test_product_update_blank_clears_field():
 def test_product_create_uses_same_rule():
     assert ProductCreate(productnumber="Ф1", width="Стандартна").width == "G"
     with pytest.raises(ValueError):
-        ProductCreate(productnumber="Ф1", width="Стандартна ширина")
+        ProductCreate(productnumber="Ф1", width="дуже широка колодка")
 
 
 def test_parser_normalizes_on_read():

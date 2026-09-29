@@ -20,12 +20,12 @@ from sqlalchemy.orm import Session
 try:
     from models.database import get_db
     from schemas import product as schemas
-    from services import field_proposals, photo_autofill, product_service, ai_budget, ai_quota
+    from services import field_proposals, photo_autofill, product_service, ai_budget, ai_quota, web_enrich
     from services.photo_manager import resolve_category, _kind_files
 except ImportError:  # pragma: no cover
     from backend.models.database import get_db
     from backend.schemas import product as schemas
-    from backend.services import field_proposals, photo_autofill, product_service, ai_budget, ai_quota
+    from backend.services import field_proposals, photo_autofill, product_service, ai_budget, ai_quota, web_enrich
     from backend.services.photo_manager import resolve_category, _kind_files
 
 logger = logging.getLogger(__name__)
@@ -183,6 +183,24 @@ def run_autofill(product_id: int = Path(..., ge=1),
     result = photo_autofill.extract_and_propose(db, product_id, paths, use_paid=use_paid)
     # Комітимо в БУДЬ-ЯКОМУ разі: навіть на провалі в сесії лежить запис про
     # витрату, і втратити його означало б занизити витрачене.
+    db.commit()
+    return result
+
+
+@router.post("/api/products/{product_id}/enrich-web", response_model=Dict[str, Any])
+def run_web_enrich(product_id: int = Path(..., ge=1),
+                   db: Session = Depends(get_db)):
+    """Знайти офіційні характеристики за АРТИКУЛОМ і скласти пропозиції.
+
+    Четвертий шар (див. services/web_enrich): три наявні дивляться всередину —
+    на знімки, штрихкод і наші минулі записи, — а тут ми читаємо те, що про цю
+    пару опублікував сам виробник. Як і решта, у картку не пише.
+    """
+    product = product_service.get_product(db, product_id)
+    if not product:
+        raise HTTPException(status_code=404, detail="Товар не знайдено")
+    result = web_enrich.enrich_by_article(db, product_id)
+    # Комітимо завжди: навіть на провалі в сесії лежить запис про витрату.
     db.commit()
     return result
 

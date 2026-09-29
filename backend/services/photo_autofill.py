@@ -333,6 +333,42 @@ _ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/{m}:generat
 
 # ── Схема відповіді ─────────────────────────────────────────────────────────
 
+def closed_enum_values(db: Session, field: str, type_id: Optional[int] = None) -> List[str]:
+    """Дозволені значення поля із закритим переліком — ЄДИНЕ джерело для всіх
+    шарів (фото й пошук за артикулом).
+
+    У перелік не потрапляють ані мертві значення, ані ті, що лежать не в тому
+    довіднику: «платформа» в типах каблука — це підошва, і модель пропонувала
+    її як каблук лише тому, що бачила в списку.
+
+    ⚠️ Значення з ВИЗНАЧЕННЯМ у VALUE_HINTS канонічне за побудовою — воно
+    входить у перелік навіть без товарів. Інакше «гладка» (0 товарів) не
+    потрапляла в перелік протектора, і на кожній гладкій підошві модель МУСИЛА
+    обирати з трьох, що лишились. Фільтр `k > 0` — проти сміття в довідниках, а
+    не проти справжніх категорій, які ще не заповнювали. Варіант написання з
+    товарами («мигдалевидний», 1 товар) — теж не в перелік: моделі дають лише
+    КАНОН, інакше картка отримає слово, яке власник щойно виправляв руками.
+    """
+    table, col, fk, _label, upd = CLOSED_FIELDS[field]
+    if field == "subtype" and type_id:
+        # Лише підвиди, що трапляються з видом цього товару.
+        rows = db.execute(text(
+            f"SELECT l.{col}, count(p.id) FROM {table} l "
+            f"JOIN products p ON p.{fk} = l.id AND p.typeid = :tid GROUP BY l.{col} ORDER BY l.{col}"
+        ), {"tid": type_id}).fetchall()
+    else:
+        rows = db.execute(text(
+            f"SELECT l.{col}, count(p.id) FROM {table} l "
+            f"LEFT JOIN products p ON p.{fk} = l.id GROUP BY l.{col} ORDER BY l.{col}"
+        )).fetchall()
+    defined = set(VALUE_HINTS.get(field, {}))
+    return [(n or "").strip() for n, k in rows
+            if (n or "").strip() and (k > 0 or (n or "").strip() in defined)
+            and not is_dead_value(field, n) and not is_misplaced_value(upd, n)
+            and not is_absence_value(upd, n)
+            and canonicalize_shoe_attribute(field, n) == " ".join((n or "").split())]
+
+
 def build_schema(db: Session, type_id: Optional[int] = None,
                  category: str = "shoe", subcat: Optional[str] = None) -> Dict[str, Any]:
     """JSON Schema із ЗАКРИТИМИ переліками з живих довідників.
@@ -352,35 +388,7 @@ def build_schema(db: Session, type_id: Optional[int] = None,
     for field, (table, col, fk, label, _upd) in CLOSED_FIELDS.items():
         if category != "shoe" and field in SHOE_ONLY_CLOSED:
             continue
-        if field == "subtype" and type_id:
-            # Лише підвиди, що трапляються з видом цього товару.
-            rows = db.execute(text(
-                f"SELECT l.{col}, count(p.id) FROM {table} l "
-                f"JOIN products p ON p.{fk} = l.id AND p.typeid = :tid GROUP BY l.{col} ORDER BY l.{col}"
-            ), {"tid": type_id}).fetchall()
-        else:
-            rows = db.execute(text(
-                f"SELECT l.{col}, count(p.id) FROM {table} l "
-                f"LEFT JOIN products p ON p.{fk} = l.id GROUP BY l.{col} ORDER BY l.{col}"
-            )).fetchall()
-        # У перелік не потрапляють ані мертві значення, ані ті, що лежать не в
-        # тому довіднику: «платформа» в типах каблука — це підошва, і модель
-        # пропонувала її як каблук лише тому, що бачила в списку.
-        # ⚠️ Значення з ВИЗНАЧЕННЯМ у VALUE_HINTS канонічне за побудовою — воно
-        # входить у перелік навіть без товарів. Інакше «гладка» (0 товарів) не
-        # потрапляла в перелік протектора, і на кожній гладкій підошві модель
-        # МУСИЛА обирати з трьох, що лишились, — звідси «рифлена» на класичних
-        # черевиках, відхилена вже чотири рази. Фільтр `k > 0` — проти сміття
-        # в довідниках, а не проти справжніх категорій, які ще не заповнювали.
-        # Варіант написання з товарами («мигдалевидний», 1 товар) — теж не в
-        # перелік: моделі дають лише КАНОН, інакше вона обере синонім, і картка
-        # отримає слово, яке власник щойно виправляв руками.
-        defined = set(VALUE_HINTS.get(field, {}))
-        values = [(n or "").strip() for n, k in rows
-                  if (n or "").strip() and (k > 0 or (n or "").strip() in defined)
-                  and not is_dead_value(field, n) and not is_misplaced_value(_upd, n)
-                  and not is_absence_value(_upd, n)
-                  and canonicalize_shoe_attribute(field, n) == " ".join((n or "").split())]
+        values = closed_enum_values(db, field, type_id=type_id)
         if not values:
             # ⚠️ Порожній перелік — це НЕ «нічого не обереш». У діалекті Gemini
             # null з enum прибирається, і лишається enum=[] — а його модель
