@@ -9,6 +9,7 @@ import Pagination from '../common/Pagination';
 import BmsEmpty from '../common/BmsEmpty';
 import DeliveryCardModal from './DeliveryCardModal';
 import * as autofillBatch from '../../services/autofillBatch';
+import { ScanOutlined, FileTextOutlined } from '@ant-design/icons';
 
 type SortCol = 'id' | 'shipment_date' | 'supplier_name' | 'items_count' | 'total_cost' | 'created_at';
 
@@ -309,10 +310,10 @@ const ShipmentsTable: React.FC<ShipmentsTableProps> = ({
                         }}
                         title="Розпізнати ШІ всі товари цієї поставки (пропозиції, без запису в картки)"
                         className="text-gray-400 hover:text-gray-800 dark:hover:text-gray-100 px-1"
-                      >✨</button>
+                      ><ScanOutlined style={{ fontSize: 14 }} /></button>
                     )}
                     {sh.notes && (
-                      <span className="text-xs text-gray-400" title={sh.notes}>📝</span>
+                      <span className="text-gray-400 px-1" title={sh.notes}><FileTextOutlined style={{ fontSize: 13 }} /></span>
                     )}
                   </td>
                 </tr>

@@ -10,6 +10,14 @@ import QuickAddProductForm from './QuickAddProductForm';
 import PhotoStagingModal from './PhotoStagingModal';
 import LabelPrintDialog from '../labels/LabelPrintDialog';
 import ProductDetailsModal from '../products/ProductDetailsModal';
+import ProductHoverPreview from '../products/ProductHoverPreview';
+import { warehouseService, type WhLocation } from '../../services/warehouseService';
+import {
+  InboxOutlined, PictureOutlined, InfoCircleOutlined, SortAscendingOutlined, ScanOutlined,
+  TagsOutlined, PlusOutlined, DeleteOutlined, EditOutlined, CheckOutlined, CloseOutlined,
+  CopyOutlined, SelectOutlined, CalendarOutlined, ShopOutlined, ShoppingOutlined,
+  DollarOutlined, LoadingOutlined,
+} from '@ant-design/icons';
 import { alertDialog, confirmDialog, notify } from '../../ui/feedback';
 import * as autofillBatch from '../../services/autofillBatch';
 import LoadingSpinner from '../common/LoadingSpinner';
@@ -96,6 +104,19 @@ const fmtDate = (d: string | null) => {
 const fmtPrice = (n?: number | null) =>
   (n ?? 0).toLocaleString('uk-UA', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
+// Кнопки шапки завозу. Один клас на всіх — інакше довгий підпис переносився
+// в два рядки й та кнопка ставала вищою за сусідні («Розкласти фото»).
+// `whitespace-nowrap` тримає підпис в один рядок, `h-9` — однакову висоту.
+const HEAD_BTN =
+  'inline-flex h-9 items-center gap-1.5 whitespace-nowrap rounded-lg border px-3 text-sm font-medium '
+  + 'transition-colors disabled:opacity-50';
+const HEAD_BTN_PLAIN = `${HEAD_BTN} border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 `
+  + 'hover:bg-gray-100 dark:hover:bg-gray-800';
+// Розмір іконок однаковий усюди — це і є «пропорційно».
+const ICON = { fontSize: 14 } as const;
+// Значок метаданих у підзаголовку (дата, постачальник, кількість, сума).
+const META_ICON = { fontSize: 12 } as const;
+
 const DeliveryCardModal: React.FC<Props> = ({ shipment, open, onClose }) => {
   const [products, setProducts] = useState<Product[]>([]);
   const [stagingOpen, setStagingOpen] = useState(false);
@@ -128,6 +149,14 @@ const DeliveryCardModal: React.FC<Props> = ({ shipment, open, onClose }) => {
   const [ctx, setCtx] = useState<{ x: number; y: number; p: Product } | null>(null);
   const [prefill, setPrefill] = useState<Record<string, string> | null>(null);
   const [prefillNonce, setPrefillNonce] = useState(0);
+  // Склад: де лежать товари завозу (колонка-значок ⌂). Довантажується після
+  // списку й не блокує його; хмара недоступна — просто порожньо, як у «Товарах».
+  const [boxLocations, setBoxLocations] = useState<Record<number, WhLocation[]>>({});
+  // Швидкий перегляд картки при наведенні — той самий компонент, що й у
+  // «Товарах»: гортати завіз, не відкриваючи повну картку.
+  const [hover, setHover] = useState<{ record: Product; x: number; y: number } | null>(null);
+  const hoverTimerRef = useRef<number | null>(null);
+  const mousePosRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
   // Пакетне ШІ-розпізнавання завозу. Робота йде на бекенді; тут лише живий
   // прогрес і підтвердження. ⚠️ Хуки — ТІЛЬКИ вище раннього виходу (#310).
   const [batch, setBatch] = useState<autofillBatch.BatchJob | null>(autofillBatch.currentJob());
@@ -145,7 +174,13 @@ const DeliveryCardModal: React.FC<Props> = ({ shipment, open, onClose }) => {
     if (!shipment) return Promise.resolve();
     return productService
       .getProducts({ shipment_id: shipment.id, per_page: 200 })
-      .then(r => setProducts([...(r.items || [])].sort(byNumber)))  // числовий сорт у картці
+      .then(r => {
+        const items = [...(r.items || [])].sort(byNumber);   // числовий сорт у картці
+        setProducts(items);
+        // Коробки — окремим запитом у хмару, без очікування: значок ⌂ або
+        // з'явиться, або ні, і список від цього не затримується.
+        void warehouseService.locations(items.map(p => p.id)).then(setBoxLocations);
+      })
       .catch(() => setError('Помилка завантаження товарів завозу'));
   }, [shipment]);
 
@@ -211,6 +246,19 @@ const DeliveryCardModal: React.FC<Props> = ({ shipment, open, onClose }) => {
     });
   }, [open]);
 
+  // Ховаємо прев'ю при скролі (позиція біля курсора стає нерелевантною).
+  // ⚠️ Гасимо ТУТ, а не через `cancelHover`: той оголошений нижче раннього
+  // виходу, тож у закритому вікні хук звернувся б до неініціалізованої змінної.
+  useEffect(() => {
+    if (!open) return;
+    const onScroll = () => {
+      if (hoverTimerRef.current) { window.clearTimeout(hoverTimerRef.current); hoverTimerRef.current = null; }
+      setHover(prev => (prev ? null : prev));
+    };
+    window.addEventListener('scroll', onScroll, true);
+    return () => window.removeEventListener('scroll', onScroll, true);
+  }, [open]);
+
   if (!open || !shipment) return null;
   const sid = shipment.id;
   const batchRunning = !!batch && (batch.state === 'running' || batch.state === 'waiting');
@@ -259,6 +307,24 @@ const DeliveryCardModal: React.FC<Props> = ({ shipment, open, onClose }) => {
       });
     } finally { setSavingNum(false); }
   };
+
+  // ── Швидкий перегляд при наведенні (як у «Товарах») ──────────────────────
+  const cancelHover = () => {
+    if (hoverTimerRef.current) { window.clearTimeout(hoverTimerRef.current); hoverTimerRef.current = null; }
+    setHover(prev => (prev ? null : prev));
+  };
+  const scheduleHover = (record: Product, e: React.MouseEvent) => {
+    // Не заважаємо відкритим вікнам, меню й інлайн-правці номера.
+    if (detailId || ctx || stagingOpen || labelsOpen || showForm || editNumId) return;
+    mousePosRef.current = { x: e.clientX, y: e.clientY };
+    if (hoverTimerRef.current) window.clearTimeout(hoverTimerRef.current);
+    // Позицію фіксуємо в мить появи — без слідування за мишею, щоб не
+    // перерендерювати таблицю на кожен рух.
+    hoverTimerRef.current = window.setTimeout(
+      () => setHover({ record, x: mousePosRef.current.x, y: mousePosRef.current.y }), 420);
+  };
+  // Лише ref, без setState: поки картка не з'явилась, стежимо за курсором дешево.
+  const moveHover = (e: React.MouseEvent) => { mousePosRef.current = { x: e.clientX, y: e.clientY }; };
 
   // ✨ Розпізнати весь завіз. Сама робота — фонова задача бекенда, тож
   // закриття картки її не перериває.
@@ -373,16 +439,16 @@ const DeliveryCardModal: React.FC<Props> = ({ shipment, open, onClose }) => {
           <div>
             <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">{shipment.sheet_name || `Завіз #${shipment.id}`}</h2>
             <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-gray-500 dark:text-gray-400">
-              <span>📅 {fmtDate(shipment.shipment_date)}</span>
-              <span>🏷 {shipment.supplier_name || 'Без постачальника'}</span>
+              <span className="inline-flex items-center gap-1.5"><CalendarOutlined style={META_ICON} />{fmtDate(shipment.shipment_date)}</span>
+              <span className="inline-flex items-center gap-1.5"><ShopOutlined style={META_ICON} />{shipment.supplier_name || 'Без постачальника'}</span>
               {/* Ростовка = ОДИН запис у БД на розмір із quantity>1 (унікальний
                   індекс не дає завести 10 однакових рядків). Тому «скільки речей
                   у завозі» — це сума quantity, а не кількість записів: 5 розмірів
                   Ф4083 = 10 фізичних пар. Показуємо і те, і те. */}
-              <span title={itemsCount !== products.length
+              <span className="inline-flex items-center gap-1.5" title={itemsCount !== products.length
                 ? `${products.length} позицій (розмірів), ${itemsCount} речей разом`
                 : undefined}>
-                📦 {itemsCount} товарів
+                <ShoppingOutlined style={META_ICON} />{itemsCount} товарів
                 {itemsCount !== products.length && (
                   <span className="text-gray-400"> · {products.length} позицій</span>
                 )}
@@ -396,41 +462,41 @@ const DeliveryCardModal: React.FC<Props> = ({ shipment, open, onClose }) => {
               {/* Сума продажних цін товарів — live, рахується з реально завантажених,
                   а не зі stale shipment.total_cost зі списку завозів. */}
               {products.length > 0 && (
-                <span title="Сума продажних цін товарів цього завозу (з урахуванням кількості в ростовках)">
-                  💰 {fmtPrice(products.reduce((s, p) => s + (Number(p.price) || 0) * qtyOf(p), 0))}
+                <span className="inline-flex items-center gap-1.5" title="Сума продажних цін товарів цього завозу (з урахуванням кількості в ростовках)">
+                  <DollarOutlined style={META_ICON} />{fmtPrice(products.reduce((s, p) => s + (Number(p.price) || 0) * qtyOf(p), 0))}
                 </span>
               )}
             </div>
           </div>
           <div className="flex items-center gap-2">
             <button onClick={toggleInfo} disabled={loading} title="Інформація про завоз"
-              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium border transition-colors disabled:opacity-50 ${infoOpen
+              className={`${HEAD_BTN} ${infoOpen
                 ? 'border-gray-400 bg-gray-100 dark:bg-gray-700 text-gray-800 dark:text-gray-100'
                 : 'border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800'}`}>
-              ℹ Завіз
+              <InfoCircleOutlined style={ICON} /> Завіз
             </button>
             <button onClick={handleSort} disabled={loading || sorting || products.length < 2} title="Впорядкувати за номером (і в журналі)"
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 disabled:opacity-50">
-              {sorting ? '…' : '⇅'} Впорядкувати
+              className={HEAD_BTN_PLAIN}>
+              {sorting ? <LoadingOutlined style={ICON} /> : <SortAscendingOutlined style={ICON} />} Впорядкувати
             </button>
             <button onClick={runBatchAutofill} disabled={loading || products.length === 0 || batchRunning}
               title="ШІ перегляне живі знімки кожного товару завозу й складе пропозиції. У картки нічого не запишеться без вашого підтвердження."
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 disabled:opacity-50">
-              {batchRunning ? '…' : '✨'} Розпізнати
+              className={HEAD_BTN_PLAIN}>
+              {batchRunning ? <LoadingOutlined style={ICON} /> : <ScanOutlined style={ICON} />} Розпізнати
             </button>
             <button onClick={() => setLabelsOpen(true)} disabled={loading || products.length === 0}
               title="Надрукувати QR-стікери на всі товари цього завозу (аркуш 100×100)"
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 disabled:opacity-50">
-              🏷 Стікери
+              className={HEAD_BTN_PLAIN}>
+              <TagsOutlined style={ICON} /> Стікери
             </button>
             <button onClick={() => setStagingOpen(true)} disabled={loading}
               title="Розкласти знімки з теки «до розбору» по товарах цього завозу"
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 disabled:opacity-50">
-              🖼 Розкласти фото
+              className={HEAD_BTN_PLAIN}>
+              <PictureOutlined style={ICON} /> Розкласти фото
             </button>
             <button onClick={() => setShowForm(s => !s)} disabled={loading}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium bg-black text-white hover:bg-gray-800 disabled:opacity-50">
-              <span className="text-base leading-none">＋</span> Додати товар
+              className={`${HEAD_BTN} border-transparent bg-black text-white hover:bg-gray-800`}>
+              <PlusOutlined style={ICON} /> Додати товар
             </button>
             <button onClick={onClose} aria-label="Закрити" className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 text-2xl leading-none">×</button>
           </div>
@@ -445,15 +511,15 @@ const DeliveryCardModal: React.FC<Props> = ({ shipment, open, onClose }) => {
               </span>
               {infoFields && !infoEditing && (
                 <button onClick={startInfoEdit}
-                  className="text-[12px] px-2.5 py-1 rounded-md border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700">✎ Редагувати</button>
+                  className="text-[12px] px-2.5 py-1 rounded-md border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"><EditOutlined style={META_ICON} /> Редагувати</button>
               )}
               {infoEditing && (
                 <div className="flex items-center gap-2">
                   <button onClick={() => setInfoEditing(false)} disabled={infoSaving}
                     className="text-[12px] px-2.5 py-1 rounded-md text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-700">Скасувати</button>
                   <button onClick={saveInfo} disabled={infoSaving}
-                    className="text-[12px] px-3 py-1 rounded-md bg-green-600 hover:bg-green-700 !text-white disabled:opacity-50">
-                    {infoSaving ? 'Збереження…' : '✓ Зберегти'}
+                    className="inline-flex items-center gap-1.5 text-[12px] px-3 py-1 rounded-md bg-green-600 hover:bg-green-700 !text-white disabled:opacity-50">
+                    {infoSaving ? 'Збереження…' : <><CheckOutlined style={META_ICON} /> Зберегти</>}
                   </button>
                 </div>
               )}
@@ -527,7 +593,8 @@ const DeliveryCardModal: React.FC<Props> = ({ shipment, open, onClose }) => {
                     )}
                     {!batchRunning && (
                       <button onClick={() => setBatch(null)}
-                        className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200">✕</button>
+                        title="Прибрати підсумок"
+                        className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"><CloseOutlined style={META_ICON} /></button>
                     )}
                   </div>
                 </div>
@@ -539,8 +606,8 @@ const DeliveryCardModal: React.FC<Props> = ({ shipment, open, onClose }) => {
                   </span>
                   <button onClick={acceptAllPending} disabled={accepting}
                     title="Прийняти всі пропозиції цього завозу одним записом"
-                    className="ml-auto px-3 py-1 rounded-md bg-black text-white hover:bg-gray-800 disabled:opacity-50">
-                    {accepting ? 'Записую…' : `✓ Підтвердити все (${pendingIds.length})`}
+                    className="ml-auto inline-flex items-center gap-1.5 px-3 py-1 rounded-md bg-black text-white hover:bg-gray-800 disabled:opacity-50">
+                    {accepting ? 'Записую…' : <><CheckOutlined style={META_ICON} /> Підтвердити все ({pendingIds.length})</>}
                   </button>
                 </div>
               )}
@@ -556,6 +623,7 @@ const DeliveryCardModal: React.FC<Props> = ({ shipment, open, onClose }) => {
                       <th className="px-2 py-2 text-left font-semibold">Тип</th>
                       <th className="px-2 py-2 text-left font-semibold">Бренд</th>
                       <th className="px-2 py-2 text-left font-semibold">Модель</th>
+                      <th className="px-2 py-2 text-center font-semibold">Колір</th>
                       <th className="px-2 py-2 text-center font-semibold">Розмір</th>
                       <th className="px-2 py-2 text-right font-semibold">Ціна</th>
                       <th className="px-2 py-2 text-center font-semibold">Статус</th>
@@ -566,8 +634,11 @@ const DeliveryCardModal: React.FC<Props> = ({ shipment, open, onClose }) => {
                     {products.map(p => {
                       const st = statusOf(p);
                       return (
-                      <tr key={p.id} onClick={() => { if (editNumId !== p.id) setDetailId(p.id); }}
-                        onContextMenu={e => { e.preventDefault(); setCtx({ x: e.clientX, y: e.clientY, p }); }}
+                      <tr key={p.id} onClick={() => { if (editNumId !== p.id) { cancelHover(); setDetailId(p.id); } }}
+                        onContextMenu={e => { e.preventDefault(); cancelHover(); setCtx({ x: e.clientX, y: e.clientY, p }); }}
+                        onMouseEnter={e => scheduleHover(p, e)}
+                        onMouseMove={moveHover}
+                        onMouseLeave={cancelHover}
                         className="border-b last:border-b-0 border-gray-50 dark:border-gray-800/50 hover:bg-gray-50 dark:hover:bg-gray-800/40 cursor-pointer">
                         <td className="px-2 py-2 font-medium tabular-nums">
                           {editNumId === p.id ? (
@@ -584,13 +655,16 @@ const DeliveryCardModal: React.FC<Props> = ({ shipment, open, onClose }) => {
                               {p.productnumber}
                               <button title="Редагувати номер"
                                 onClick={e => { e.stopPropagation(); startNumEdit(p); }}
-                                className="opacity-0 group-hover/num:opacity-100 text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 text-xs transition-opacity">✎</button>
+                                className="opacity-0 group-hover/num:opacity-100 text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition-opacity"><EditOutlined style={{ fontSize: 11 }} /></button>
                             </span>
                           )}
                         </td>
                         <td className="px-2 py-2">{p.type_name || '—'}</td>
                         <td className="px-2 py-2">{p.brand_name || '—'}</td>
                         <td className="px-2 py-2 text-gray-600 dark:text-gray-300 max-w-[200px] truncate" title={p.model || ''}>{p.model || '—'}</td>
+                        <td className="px-2 py-2 text-center text-gray-600 dark:text-gray-300 max-w-[120px] truncate" title={p.color_name || ''}>
+                          {p.color_name || <span className="text-gray-300 dark:text-gray-600">—</span>}
+                        </td>
                         <td className="px-2 py-2 text-center tabular-nums">
                           {p.sizeeu || p.size_letter || '—'}
                           {/* ×N — скільки пар цього розміру приїхало (ростовка) */}
@@ -610,7 +684,24 @@ const DeliveryCardModal: React.FC<Props> = ({ shipment, open, onClose }) => {
                             </span>
                           )}
                         </td>
-                        <td className={`px-2 py-2 text-center text-xs font-medium ${st.cls}`}>{st.label}</td>
+                        <td className={`px-2 py-2 text-xs font-medium ${st.cls}`}>
+                          {/* Значки не накладаються на текст: під них зарезервовано
+                              однакову смужку праворуч, як у «Товарах», — тож вони
+                              стоять рівним стовпчиком і не втискаються у слово. */}
+                          <div className="grid w-full items-center" style={{ gridTemplateColumns: '1fr 34px' }}>
+                            <span className="text-center">{st.label}</span>
+                            <span className="inline-flex items-center justify-end gap-1.5 pr-0.5 text-gray-400 dark:text-gray-500">
+                              {(boxLocations[p.id] || []).length > 0 && (
+                                <span title={`У коробці ${(boxLocations[p.id] || []).map(l => `${l.box_code}${l.qty > 1 ? ` ×${l.qty}` : ''}`).join(', ')}`}>
+                                  <InboxOutlined style={{ fontSize: 12, lineHeight: 1 }} />
+                                </span>
+                              )}
+                              {(p as any).has_photo && (
+                                <span title="Є фото"><PictureOutlined style={{ fontSize: 12, lineHeight: 1 }} /></span>
+                              )}
+                            </span>
+                          </div>
+                        </td>
                         <td className="px-2 py-2 text-center whitespace-nowrap">
                           {/* Пропозиції ШІ — підтверджуються просто в рядку.
                               Після розпізнавання завозу інакше довелось би
@@ -618,12 +709,12 @@ const DeliveryCardModal: React.FC<Props> = ({ shipment, open, onClose }) => {
                           {(p.proposals_count || 0) > 0 && (
                             <button onClick={e => { e.stopPropagation(); acceptOne(p); }} disabled={accepting}
                               title={`Прийняти ${p.proposals_count} пропозицій ШІ для цього товару`}
-                              className="mr-1 rounded border border-gray-900/20 dark:border-gray-100/25 px-1.5 py-0.5 text-[11px] font-medium text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-50">
-                              ✓ {p.proposals_count}
+                              className="mr-1 inline-flex items-center gap-1 rounded border border-gray-900/20 dark:border-gray-100/25 px-1.5 py-0.5 text-[11px] font-medium text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-50">
+                              <CheckOutlined style={{ fontSize: 11 }} /> {p.proposals_count}
                             </button>
                           )}
                           <button onClick={e => { e.stopPropagation(); removeProduct(p); }} title="Видалити товар"
-                            className="text-gray-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 rounded px-1.5 py-0.5">🗑</button>
+                            className="text-gray-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 rounded px-1.5 py-0.5"><DeleteOutlined style={{ fontSize: 13 }} /></button>
                         </td>
                       </tr>
                       );
@@ -636,6 +727,10 @@ const DeliveryCardModal: React.FC<Props> = ({ shipment, open, onClose }) => {
         </div>
       </div>
 
+      {/* Швидкий перегляд (наведення на рядок) — той самий компонент, що й у
+          «Товарах»; рендериться в портал поверх цього вікна. */}
+      {hover && <ProductHoverPreview record={hover.record} x={hover.x} y={hover.y} />}
+
       {/* Контекст-меню (right-click по рядку) */}
       {ctx && (
         <div className="fixed inset-0 z-[60]" onMouseDown={() => setCtx(null)} onContextMenu={e => { e.preventDefault(); setCtx(null); }}>
@@ -643,11 +738,11 @@ const DeliveryCardModal: React.FC<Props> = ({ shipment, open, onClose }) => {
             style={{ top: ctx.y, left: ctx.x }} onMouseDown={e => e.stopPropagation()}>
             <div className="px-3 py-1 text-[11px] text-gray-400 truncate">{ctx.p.productnumber}</div>
             <button onClick={() => duplicateProduct(ctx.p)}
-              className="w-full text-left px-3 py-1.5 hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center gap-2">⧉ Дублювати</button>
+              className="w-full text-left px-3 py-1.5 hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center gap-2"><CopyOutlined style={META_ICON} /> Дублювати</button>
             <button onClick={() => { setCtx(null); setDetailId(ctx.p.id); }}
-              className="w-full text-left px-3 py-1.5 hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center gap-2">↗ Відкрити картку</button>
+              className="w-full text-left px-3 py-1.5 hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center gap-2"><SelectOutlined style={META_ICON} /> Відкрити картку</button>
             <button onClick={() => { const pp = ctx.p; setCtx(null); removeProduct(pp); }}
-              className="w-full text-left px-3 py-1.5 hover:bg-red-50 dark:hover:bg-red-900/20 text-red-600 flex items-center gap-2">🗑 Видалити</button>
+              className="w-full text-left px-3 py-1.5 hover:bg-red-50 dark:hover:bg-red-900/20 text-red-600 flex items-center gap-2"><DeleteOutlined style={META_ICON} /> Видалити</button>
           </div>
         </div>
       )}

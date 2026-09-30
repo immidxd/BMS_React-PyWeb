@@ -10,7 +10,7 @@ import { Button, Dropdown, Tooltip } from 'antd';
 import { toast } from 'react-toastify';
 import Pagination from '../components/common/Pagination';
 import AddProductModal from '../components/shipments/AddProductModal';
-import { PlusOutlined, SendOutlined, CheckSquareOutlined, DownOutlined, TagOutlined } from '@ant-design/icons';
+import { PlusOutlined, SendOutlined, CheckSquareOutlined, DownOutlined, TagOutlined, ScanOutlined } from '@ant-design/icons';
 import LabelPrintDialog from '../components/labels/LabelPrintDialog';
 import { labelQueue, useLabelQueueCount, type LabelSource } from '../services/labelService';
 import { warehouseService, type WhLocation } from '../services/warehouseService';
@@ -1319,8 +1319,7 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
                     ] : []),
                     { type: 'divider' as const },
                     { key: 'labels', icon: <TagOutlined />, label: `Стікери з QR (${selection.size})…` },
-                    { key: 'autofill', icon: <span className="inline-block w-4 text-center">✨</span>,
-                      label: `Розпізнати ШІ (${selection.size})` },
+                    { key: 'autofill', icon: <ScanOutlined />, label: `Розпізнати ШІ (${selection.size})` },
                     { type: 'divider' as const },
                     { key: 'clear', label: 'Зняти виділення' },
                   ],
