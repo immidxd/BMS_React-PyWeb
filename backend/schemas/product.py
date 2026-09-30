@@ -531,6 +531,19 @@ class ProductList(BaseModel):
     shafa_status: Optional[str] = None # waiting_prom|bridge_ready|confirmed|manual_existing
     published_catalog: bool = False    # є в публічному інтернет-каталозі (catalog_listings)
     has_photo: bool = False            # має ≥1 фото (локально/Drive)
+    # ⚠️ Поле мусить бути ТУТ, а не лише в сервісі: `/api/products` віддається
+    # через `response_model=ProductListResponse`, і все, чого немає у схемі,
+    # FastAPI мовчки викидає з JSON. Саме через це кнопки «✓ N» у рядку й
+    # «Підтвердити все» не показувались жодного разу: сервіс лічильник рахував,
+    # у відповідь він не потрапляв.
+    proposals_count: int = 0           # нерозглянутих пропозицій автозаповнення
+    # Ці чотири сервіс теж клав у рядок, а схема мовчки викидала — фронтенд
+    # оголошував їх обовʼязковими й не отримував ніколи. Знайдено тим самим
+    # сторожем (`test_product_list_schema_covers_service`).
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    manufacturercountryid: Optional[int] = None
+    ownercountryid: Optional[int] = None
 
     class Config:
         from_attributes = True

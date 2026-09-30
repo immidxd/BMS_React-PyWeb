@@ -543,6 +543,43 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     taskManager.setExternal(`proposal-fail-${Date.now()}`, what, 'error', detail);
   }, []);
 
+  // ⚠️ РЕЖИМ РЕДАГУВАННЯ ТРИМАЄ ВЛАСНУ КОПІЮ ЗНАЧЕНЬ. `enterEditMode` знімає
+  // знімок усіх полів у `drafts`, і саме він показується в інпутах. Тому
+  // прийнята пропозиція лягала в базу, картка перечитувалась — а на екрані
+  // лишалось СТАРЕ значення (#Ф4413: «гладка» прийнято, у полі далі
+  // «рельєфна»). Гірше: наступне «Зберегти все» записало б застарілий драфт
+  // назад і мовчки скасувало прийняте. Тож після прийняття освіжаємо саме ті
+  // чернетки, яких торкнувся сервер, — решта незбережених правок людини
+  // лишається на місці.
+  const syncDraftsAfterAccept = React.useCallback((applied: Record<string, any> | undefined, fresh: any) => {
+    if (!editMode || !fresh || !applied) return;
+    const keys = Object.keys(applied);
+    const fromFresh = (k: string) => { const v = fresh?.[k]; return v === null || v === undefined ? '' : String(v); };
+    const patch = (prev: Record<string, string>) => {
+      const next = { ...prev };
+      for (const k of keys) if (k in next) next[k] = fromFresh(k);
+      return next;
+    };
+    setDrafts(patch);
+    setClassDrafts(patch);
+    if (applied.materials_by_position) {
+      const freshMat = groupMaterialsByPosition(fresh?.materials);
+      setMaterialDrafts((prev) => {
+        const next = { ...prev };
+        for (const pos of Object.keys(applied.materials_by_position || {})) next[pos] = freshMat[pos] ?? '';
+        return next;
+      });
+    }
+    if (applied.measurements_edit) {
+      const freshMeas = measurementsFromProduct(fresh);
+      setMeasurementDrafts((prev) => {
+        const next = { ...prev };
+        for (const k of Object.keys(applied.measurements_edit || {})) next[k] = freshMeas[k] ?? '';
+        return next;
+      });
+    }
+  }, [editMode]);
+
   const decideProposal = React.useCallback(async (id: number, accept: boolean) => {
     if (!productId) return;
     const pid = productId;
@@ -570,15 +607,19 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
       });
       // Прийняте значення потрапило в базу звичайним update_product — картку
       // перечитуємо, щоб поле показало нове значення без повторного відкриття.
-      await Promise.all([reloadProposals(pid), accept ? loadProduct(false) : Promise.resolve()]);
-      if (accept) notifyParentSaved(pid);
+      const [, fresh] = await Promise.all([reloadProposals(pid),
+        accept ? loadProduct(false) : Promise.resolve(null)]);
+      if (accept) {
+        syncDraftsAfterAccept(d?.applied, fresh);
+        notifyParentSaved(pid);
+      }
     } catch (e: any) {
       proposalFailure('Не вдалося застосувати пропозицію', e?.message || 'Немає звʼязку з програмою');
     } finally {
       setProposalBusy((prev) => { const n = new Set(prev); n.delete(id); return n; });
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [productId, proposals, reloadProposals, notifyParentSaved, proposalFailure]);
+  }, [productId, proposals, reloadProposals, notifyParentSaved, proposalFailure, syncDraftsAfterAccept]);
 
   // Усі пропозиції товару — одним записом: один update_product, один пакет у
   // журнал. Поле за полем це N перечитувань і N окремих записів в аркуш.
@@ -597,7 +638,8 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
       }
       if (curPidRef.current !== pid) return;
       setProposals({});
-      await Promise.all([reloadProposals(pid), loadProduct(false)]);
+      const [, fresh] = await Promise.all([reloadProposals(pid), loadProduct(false)]);
+      syncDraftsAfterAccept(d?.applied, fresh);
       notifyParentSaved(pid);
       notify.success({ message: `Прийнято полів: ${d.accepted ?? n}`,
         description: 'Записуються в журнал у фоні.', duration: 2.5 });
@@ -607,7 +649,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
       setAcceptAllBusy(false);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [productId, proposals, acceptAllBusy, reloadProposals, notifyParentSaved, proposalFailure]);
+  }, [productId, proposals, acceptAllBusy, reloadProposals, notifyParentSaved, proposalFailure, syncDraftsAfterAccept]);
 
 
   useEffect(() => {
@@ -1060,8 +1102,12 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
         setProduct(prod);
         setJournalState(((prod as any).journal_sync || null) as JournalSyncState | null);
       }
+      // Повертаємо свіжий товар: прийняття пропозиції мусить освіжити з нього
+      // чернетки режиму редагування, інакше поле показує старе значення.
+      return prod as any;
     } catch (e) {
       console.error('Failed to load product', e);
+      return null;
     } finally {
       if (withSpinner) setLoading(false);
     }
