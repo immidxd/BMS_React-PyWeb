@@ -39,16 +39,35 @@ def _fast_and_isolated(monkeypatch):
 
 
 def _stub(monkeypatch, *, run_one, quota=None):
-    """Підмінити те, що воркер імпортує ЛІНИВО (всередині `_run`)."""
+    """Підмінити те, що воркер імпортує ЛІНИВО (всередині `_run`).
+
+    ⚠️ Саме АТРИБУТИ пакета, а не `sys.modules`. `from services import ai_quota`
+    бере атрибут пакета, якщо модуль уже імпортовано, — а в повному прогоні його
+    імпортували сусідні тести. Підміна лише в `sys.modules` тоді мовчки не діє:
+    поодинці тест проходив, разом з усіма — падав.
+    """
     quota = quota or {"free": {"exhausted": False, "retry_after_s": 0}, "month": {"allowed": True}}
-    mods = {
-        "models.database": types.SimpleNamespace(SessionLocal=lambda: _FakeSession()),
-        "services.ai_quota": types.SimpleNamespace(status=lambda db, **kw: quota),
-        "services.autofill_run": types.SimpleNamespace(run_one=run_one),
-        "services.photo_autofill": types.SimpleNamespace(paid_key_available=lambda: False),
-    }
-    for name, mod in mods.items():
-        monkeypatch.setitem(sys.modules, name, mod)
+    import models.database as _db
+    import services as _services
+    monkeypatch.setattr(_db, "SessionLocal", lambda: _FakeSession(), raising=False)
+    monkeypatch.setattr(_services, "ai_quota",
+                        types.SimpleNamespace(status=lambda db, **kw: quota), raising=False)
+    monkeypatch.setattr(_services, "autofill_run",
+                        types.SimpleNamespace(run_one=run_one), raising=False)
+    monkeypatch.setattr(_services, "photo_autofill",
+                        types.SimpleNamespace(paid_key_available=lambda: False), raising=False)
+    # Той самий пакет під другим іменем (services.X і backend.services.X — два
+    # різні об'єкти); воркер може прийти будь-яким із двох шляхів.
+    try:
+        import backend.services as _bservices
+        import backend.models.database as _bdb
+        monkeypatch.setattr(_bdb, "SessionLocal", lambda: _FakeSession(), raising=False)
+        for name, mod in (("ai_quota", types.SimpleNamespace(status=lambda db, **kw: quota)),
+                          ("autofill_run", types.SimpleNamespace(run_one=run_one)),
+                          ("photo_autofill", types.SimpleNamespace(paid_key_available=lambda: False))):
+            monkeypatch.setattr(_bservices, name, mod, raising=False)
+    except ImportError:  # pragma: no cover
+        pass
 
 
 class _FakeSession:
