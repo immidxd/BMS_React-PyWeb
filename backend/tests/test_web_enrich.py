@@ -29,6 +29,7 @@ CAPRICE = {
     "width": "G-ширина",
     "toe_shape": "заокруглена", "fastening_type": "блискавка",
     "lining": "текстиль", "heel_type": "блок", "sole_type": "каблук",
+    "measurements_for_size": 38.5,
     "heel_height_cm": 3.2, "shaft_height_cm": 13, "sole_thickness_cm": None,
     "material_upper": "шкіра", "material_lining": "текстиль", "material_sole": "синтетичний",
     "technologies": ["CAPRICE AIRMOTION"],
@@ -38,7 +39,7 @@ CAPRICE = {
 
 CURRENT = {"productnumber": "#Ф4400", "brand_name": "Caprice", "marking": "9-25404-45-855",
            "type_name": "Ботинки", "model": None, "width": None,
-           "heel_type_name": "блок"}          # уже стоїть у картці
+           "sizeeu": "38.5", "heel_type_name": "блок"}          # уже стоїть у картці
 
 
 class _DB:
@@ -220,3 +221,49 @@ def test_fields_untouched_by_photo_come_straight_from_the_page(monkeypatch):
     got = {f: v for f, v, _s, _n in calls}
     assert got["width"] == "G"          # знімки про ширину колодки не знають
     assert made["width"][0] == "G"
+
+
+# ── Заміри залежать від розміру ─────────────────────────────────────────────
+
+@pytest.mark.parametrize("card,page,expected", [
+    ("38.5", 38.5, True),
+    ("38.5", "38,5", True),      # кома на європейській сторінці
+    ("38.5", 37, False),
+    ("41", 42, False),
+    ("38.5", None, None),        # сторінка розміру не назвала
+    (None, 37, None),
+])
+def test_reference_size_comparison(card, page, expected):
+    assert we._same_size(card, page) is expected
+
+
+def test_measurements_of_another_size_are_not_proposed(monkeypatch):
+    """Халява 37-го й 41-го різняться на пару сантиметрів. Взяти чуже число —
+    записати в картку правдоподібну неправду."""
+    calls = _setup(monkeypatch, {**CAPRICE, "measurements_for_size": 37})
+
+    out = we.enrich_by_article(_DB(), 1)
+
+    proposed_fields = {f for f, _v, _s, _n in calls}
+    assert "meas:heel" not in proposed_fields
+    assert "meas:height" not in proposed_fields
+    # але людина має побачити, ЩО там було і чому не взяли
+    weak = " ".join(str(x) for x in out["below_threshold"])
+    assert "для розміру 37" in weak and "38.5" in weak
+
+
+def test_measurements_of_the_same_size_are_proposed(monkeypatch):
+    calls = _setup(monkeypatch, CAPRICE)          # measurements_for_size = 38.5
+    we.enrich_by_article(_DB(), 1)
+
+    got = {f: v for f, v, _s, _n in calls}
+    assert got["meas:heel"] == "3.2" and got["meas:height"] == "13"
+
+
+def test_unknown_reference_size_is_flagged_in_the_note(monkeypatch):
+    """Сторінка мовчить про розмір — пропонуємо, але чесно кажемо про це."""
+    calls = _setup(monkeypatch, {**CAPRICE, "measurements_for_size": None})
+    we.enrich_by_article(_DB(), 1)
+
+    notes = [n for f, _v, _s, n in calls if f == "meas:heel"]
+    assert notes and "не вказала, для якого розміру" in notes[-1]

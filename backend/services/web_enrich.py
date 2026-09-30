@@ -61,11 +61,33 @@ _ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/{m}:generat
 WEB_CLOSED_FIELDS = ("toe_shape", "fastening_type", "lining", "heel_type", "sole_type")
 
 # Заміри зі сторінки → поле пропозиції. Значення в сантиметрах.
+# ⚠️ Заміри взуття залежать ВІД РОЗМІРУ: халява 38-го й 41-го різняться на
+# пару сантиметрів, каблук — на міліметри. Виробники публікують числа для
+# ОДНОГО еталонного розміру (Caprice — зазвичай 37, чоловіче — 42) і пишуть
+# це дрібним шрифтом поруч. Взяти таке число для іншого розміру означає
+# записати в картку правдоподібну неправду — рівно те, чого вся архітектура
+# уникає. Тому заміри приймаються, лише коли еталонний розмір збігається з
+# розміром картки; інакше вони йдуть у `below_threshold` із поясненням.
 WEB_MEASUREMENTS: Dict[str, tuple] = {
     "heel_height_cm":  ("meas:heel",   0.5, 20.0),
     "shaft_height_cm": ("meas:height", 3.0, 60.0),
     "sole_thickness_cm": ("meas:sole_thickness", 0.3, 12.0),
 }
+
+
+def _same_size(card: Optional[str], page: Optional[Any]) -> Optional[bool]:
+    """Чи еталонний розмір сторінки — це розмір картки.
+
+    None — сторінка розміру не назвала (тоді рішення за людиною).
+    """
+    if page in (None, ""):
+        return None
+    try:
+        a = float(str(card).replace(",", "."))
+        b = float(str(page).replace(",", "."))
+    except (TypeError, ValueError):
+        return None
+    return abs(a - b) < 0.01
 
 # Матеріали за позиціями (ті самі позиції, що й у піктограмах ЄС).
 WEB_MATERIALS = {"upper": "material:upper", "lining": "material:middle", "sole": "material:sole"}
@@ -107,6 +129,12 @@ def _build_schema(db: Session) -> Dict[str, Any]:
         label = photo_autofill.CLOSED_FIELDS[field][3]
         props[field] = {"type": ["string", "null"], "enum": values + [None],
                         "description": f"{label} за сторінкою виробника; null, якщо не вказано"}
+    props["measurements_for_size"] = {
+        "type": ["number", "null"],
+        "description": ("ЕТАЛОННИЙ розмір EU, для якого на сторінці наведені заміри "
+                        "(зазвичай написано «заміри для розміру 37»). null, якщо сторінка "
+                        "розміру не називає. Це критично: халява й каблук різняться від розміру"),
+    }
     for key in WEB_MEASUREMENTS:
         props[key] = {"type": ["number", "null"],
                       "description": f"{key} — сантиметри зі сторінки; null, якщо не вказано"}
@@ -334,6 +362,7 @@ def _run(db: Session, product_id: int, cur: Dict[str, Any],
         if field in photo_autofill.CLOSED_FIELDS:
             _try(photo_autofill.CLOSED_FIELDS[field][4], pred.get(field))
 
+    size_match = _same_size(cur.get("sizeeu"), pred.get("measurements_for_size"))
     for key, (upd_field, lo, hi) in WEB_MEASUREMENTS.items():
         raw = pred.get(key)
         if raw is None:
@@ -345,7 +374,23 @@ def _run(db: Session, product_id: int, cur: Dict[str, Any],
         if not (lo <= v <= hi):
             below.append((upd_field, raw, conf))
             continue
-        _try(upd_field, str(int(v)) if v == int(v) else f"{v:g}")
+        if size_match is False:
+            # Число з іншого розміру — правдоподібна неправда. Показуємо
+            # людині як «непевне», але в картку не пропонуємо.
+            below.append((upd_field, f"{v:g} (для розміру {pred.get('measurements_for_size')}, "
+                                     f"а тут {cur.get('sizeeu')})", conf))
+            continue
+        text_val = str(int(v)) if v == int(v) else f"{v:g}"
+        if size_match is None:
+            # Сторінка розміру не назвала — пропонуємо, але кажемо про це в підписі.
+            before = len(proposed)
+            _try(upd_field, text_val)
+            if len(proposed) > before:
+                f, val, c = proposed[-1]
+                field_proposals.propose(db, product_id, f, val, c, model=model, source="web",
+                                        note=f"{src_note} · сторінка не вказала, для якого розміру"[:200])
+            continue
+        _try(upd_field, text_val)
 
     for pos, upd_field in WEB_MATERIALS.items():
         _try(upd_field, _norm_material(pred.get(f"material_{pos}")))
