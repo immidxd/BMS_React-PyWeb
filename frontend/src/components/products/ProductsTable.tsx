@@ -29,6 +29,7 @@ import { useNavigate } from 'react-router-dom';
 import { productService } from '../../services/productService';
 import { CopyOnClick, UnknownIf, isUnknownValue, BrandName, getProductDisplayStatus, getProductStock, effectiveProductNumber, vanishedItemAnchor } from '../common/displayHelpers';
 import { notify } from '../../ui/feedback';
+import * as autofillBatch from '../../services/autofillBatch';
 import LoadingSpinner from '../common/LoadingSpinner';
 // Pagination is rendered at page level
 
@@ -261,6 +262,8 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
         pendingNavRef.current = null;
         if (target) setDetailsId(target.id);
     }, [products.items]);
+    // Товар, чиї пропозиції ШІ саме приймаються (щоб не клікнути двічі).
+    const [acceptingId, setAcceptingId] = useState<number | null>(null);
     const [mergeId, setMergeId] = useState<number | null>(null);
     const [mergeOpen, setMergeOpen] = useState<boolean>(false);
     // Контекстне меню керування колонками (тільки на шапці таблиці)
@@ -775,11 +778,36 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
                     </span>
                 );
             } },
-        actions: { title: 'Дії', key: 'actions', width: 130, fixed: 'right' as const,
+        actions: { title: 'Дії', key: 'actions', width: 168, fixed: 'right' as const,
             render: (_: any, record: Product) => {
                 const pendingCount = (record as any).pending_candidates_count || 0;
+                const proposals = record.proposals_count || 0;
                 return (
                     <Space>
+                        {/* Пропозиції ШІ приймаються просто з рядка: після
+                            пакетного розпізнавання завозу інакше довелось би
+                            відкрити двадцять карток підряд лише щоб натиснути
+                            «Прийняти всі». Перегляд по одному чіпу нікуди не
+                            дівся — він у картці. */}
+                        {proposals > 0 && (
+                            <Tooltip title={`Прийняти ${proposals} пропозицій ШІ`}>
+                                <Button
+                                    size="small"
+                                    loading={acceptingId === record.id}
+                                    onClick={async (e) => {
+                                        e.stopPropagation();
+                                        setAcceptingId(record.id);
+                                        try {
+                                            const r = await autofillBatch.acceptAllFor(record.id);
+                                            notify.success({ message: `${record.productnumber}: прийнято ${r.accepted} полів`, duration: 3 });
+                                            onProductSaved?.();
+                                        } catch (err: any) {
+                                            notify.error({ message: 'Не вдалося підтвердити', description: String(err?.message || err) });
+                                        } finally { setAcceptingId(null); }
+                                    }}
+                                >✓ {proposals}</Button>
+                            </Tooltip>
+                        )}
                         {pendingCount > 0 && (
                             <Tooltip title={`Кандидатів на об'єднання: ${pendingCount}`}>
                                 <Button

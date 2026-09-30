@@ -48,6 +48,7 @@ import CollectionCollageDialog, {
   type CollectionPlatform, type CollectionPublishRequest,
 } from '../components/products/CollectionCollageDialog';
 import { AiLimitsTip } from '../components/products/AiLimitsBadge';
+import * as autofillBatch from '../services/autofillBatch';
 
 // Placeholder for actual filter components for Products
 
@@ -140,6 +141,25 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
   // Виділення — ЄДИНИЙ глобальний буфер (selectionManager, поза React): переживає
   // відкриття/закриття картки й перемикання вкладок; скидається лише за дією користувача.
   const selection = useSelection();
+  // ✨ Розпізнати виділені товари. Та сама фонова задача, що й у картці
+  // завозу: одна на програму, тож два входи не можуть спалити квоту вдвічі.
+  const runAutofillOnSelection = useCallback(async () => {
+    const ids = Array.from(selection.ids);
+    if (!ids.length) return;
+    const res = await autofillBatch.confirmAndStart({
+      count: ids.length, productIds: ids, label: `Виділені товари (${ids.length})`,
+    });
+    // Пропозиції з'являться поступово — оновлюємо список, коли пакет добіг.
+    if (res?.ok) {
+      const stop = autofillBatch.subscribe((job) => {
+        if (job.state === 'done' || job.state === 'cancelled' || job.state === 'error') {
+          stop();
+          void fetchProducts();
+        }
+      });
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selection.ids]);
   const [selectionMode, setSelectionMode] = useState<boolean>(false);
   const abortRef = useRef<AbortController | null>(null);
   const fetchIdRef = useRef(0);
@@ -1299,11 +1319,14 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
                     ] : []),
                     { type: 'divider' as const },
                     { key: 'labels', icon: <TagOutlined />, label: `Стікери з QR (${selection.size})…` },
+                    { key: 'autofill', icon: <span className="inline-block w-4 text-center">✨</span>,
+                      label: `Розпізнати ШІ (${selection.size})` },
                     { type: 'divider' as const },
                     { key: 'clear', label: 'Зняти виділення' },
                   ],
                   onClick: ({ key }) => {
                     if (key === 'labels') setLabelSource({ product_ids: Array.from(selection.ids) });
+                    else if (key === 'autofill') void runAutofillOnSelection();
                     else if (key === 'prom') sendSelectedToProm();
                     else if (key === 'shafa') void sendSelectedToShafa();
                     else if (key === 'olx') void sendSelectedToOlx();

@@ -1070,6 +1070,23 @@ def get_products(
             logger.warning(f"get_products: photo-set unavailable: {_pe}")
             _photo_set = frozenset()
 
+        # Скільки нерозглянутих пропозицій автозаповнення має кожен рядок
+        # СТОРІНКИ. Окремим запитом, а не підзапитом у головному SELECT:
+        # головний і так зшиває десяток LEFT JOIN, а тут потрібні лише id вже
+        # відібраних рядків. Порожньо (таблиці нема, помилка) — це нуль, а не
+        # падіння списку: чіп «Підтвердити» лише прикраса поруч із карткою.
+        _prop_counts = {}
+        try:
+            _page_ids = [r._mapping.get('id') for r in rows]
+            if _page_ids:
+                _prop_counts = {r[0]: r[1] for r in db.execute(text("""
+                    SELECT product_id, COUNT(*) FROM product_field_proposals
+                    WHERE status = 'pending' AND product_id = ANY(:ids)
+                    GROUP BY product_id
+                """), {"ids": _page_ids}).fetchall()}
+        except Exception as _ce:
+            logger.warning(f"get_products: proposals count unavailable: {_ce}")
+
         # Convert rows to dictionaries using _mapping (safe regardless of column order)
         items = []
         for row in rows:
@@ -1182,6 +1199,11 @@ def get_products(
                     product_has_photo(m.get('productnumber'), _photo_set)
                     or product_has_photo(m.get('official_photos_from'), _photo_set)
                 ),
+                # Нерозглянуті пропозиції ШІ. Потрібне рядку таблиці, щоб
+                # показати «Підтвердити» просто там, не відкриваючи картку:
+                # після пакетного розпізнавання завозу інакше довелось би
+                # клікати по двадцяти картках підряд.
+                'proposals_count': int(_prop_counts.get(m.get('id'), 0)),
             }
             items.append(product_dict)
         

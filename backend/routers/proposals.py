@@ -15,18 +15,20 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
+from pydantic import BaseModel
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 try:
     from models.database import get_db
     from schemas import product as schemas
-    from services import field_proposals, photo_autofill, product_service, ai_budget, ai_quota, web_enrich
-    from services.photo_manager import resolve_category, _kind_files
+    from services import (field_proposals, photo_autofill, product_service, ai_budget,
+                          ai_quota, web_enrich, autofill_run, autofill_batch)
 except ImportError:  # pragma: no cover
     from backend.models.database import get_db
     from backend.schemas import product as schemas
-    from backend.services import field_proposals, photo_autofill, product_service, ai_budget, ai_quota, web_enrich
-    from backend.services.photo_manager import resolve_category, _kind_files
+    from backend.services import (field_proposals, photo_autofill, product_service, ai_budget,
+                                  ai_quota, web_enrich, autofill_run, autofill_batch)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -156,58 +158,17 @@ def run_autofill(product_id: int = Path(..., ge=1),
                  db: Session = Depends(get_db)):
     """Розпізнати товар за його живими знімками й скласти пропозиції.
 
+    Сам порядок шарів живе в `services/autofill_run.run_one` — той самий код
+    виконує й пакетне розпізнавання завозу. Два однакові з вигляду шляхи
+    розійшлися б при першій же правці, і різницю помітили б на живих товарах.
+
     Нічого не пише в картку. Якщо бюджет вичерпано — повертає це як звичайну
     відповідь, а не помилку: відмова гальма це штатний стан, і автозаповнення
     просто тихо вимикається.
     """
-    product = product_service.get_product(db, product_id)
-    if not product:
+    result = autofill_run.run_one(db, product_id, photos=photos, use_paid=use_paid)
+    if result.get("not_found"):
         raise HTTPException(status_code=404, detail="Товар не знайдено")
-
-    # Живі знімки (kind='real'), у порядку індексу. Студійні official для
-    # розпізнавання не годяться: на них немає ані бирки, ані реального стану.
-    # ⚠️ resolve_category шукає за НАЯВНИМИ файлами товару, а не лише за типом —
-    # інакше товар, у якого є тільки живі знімки, «не знаходить» своєї папки.
-    type_name = getattr(product.type, "typename", None) if product.type else None
-    category = resolve_category(product.productnumber, type_name)
-    # ⚠️ Беремо ВСІ кадри, а не перші N. Програма не вміє (і не має вміти)
-    # вгадувати, на якому знімку бирка: у #Ф4372 вона пʼята з пʼяти, і при
-    # ліміті в три артикул просто не потрапляв у кадр. Ліміт Google рахує
-    # ЗАПИТИ, а не токени, тож зайві знімки не коштують квоти — лише частки
-    # цента. Стеля в 12 — запобіжник від товару з півсотнею фото.
-    paths = _kind_files(product.productnumber, category, "real")[:photos]
-    if not paths:
-        # Знімків немає — але артикул може бути. Тоді запускаємо лише шар
-        # виробника: одна дія «Розпізнати» має робити все, що зараз можливо,
-        # а не відмовляти цілком через відсутність одного з джерел.
-        cur = photo_autofill._current_values(db, product_id)
-        if web_enrich.available(cur):
-            result = web_enrich.enrich_by_article(db, product_id)
-            db.commit()
-            result.setdefault("sources_used", ["артикул"])
-            return result
-        return {"ok": False,
-                "reason": "у товару немає ані живих знімків, ані артикула — "
-                          "додайте фото або впишіть маркування"}
-
-    try:
-        result = photo_autofill.extract_and_propose(db, product_id, paths, use_paid=use_paid)
-    except Exception as e:  # noqa: BLE001
-        # ⚠️ Голий 500 тут неприпустимий. Людина бачила «Internal server error»
-        # і не мала ЖОДНОГО способу дізнатись причину: сліду в обліку витрат
-        # немає (виняток стався до запису), лог застосунку йде в консоль.
-        # Тепер відмова виглядає як звичайна відповідь із текстом, а повне
-        # трасування лишається в логах.
-        logger.exception("autofill failed for product %s", product_id)
-        try:
-            db.rollback()
-        except Exception:  # noqa: BLE001
-            pass
-        return {"ok": False, "failed": True,
-                "reason": f"Розпізнавання перервалось: {type(e).__name__}: {str(e)[:200]}"}
-    # Комітимо в БУДЬ-ЯКОМУ разі: навіть на провалі в сесії лежить запис про
-    # витрату, і втратити його означало б занизити витрачене.
-    db.commit()
     return result
 
 
@@ -243,3 +204,122 @@ def limits_status(db: Session = Depends(get_db)):
     """Ліміти ШІ одним поглядом: добова квота безкоштовного рівня (з нашого
     обліку — Google залишок не віддає), місячна стеля, стан платного ключа."""
     return ai_quota.status(db, paid_available=photo_autofill.paid_key_available())
+
+
+# ─────────────────────────── Пакетне розпізнавання ───────────────────────────
+# «Розпізнати» на цілий завіз. Товари беруться або списком id (виділення у
+# «Товарах»), або за завозом (кнопка в картці завозу та в «Поставках»).
+
+
+class BatchAutofillRequest(BaseModel):
+    product_ids: Optional[List[int]] = None
+    delivery_id: Optional[int] = None
+    label: Optional[str] = None
+    # ⚠️ Платний ключ у пакеті — лише за явним підтвердженням людини, як і в
+    # картці: двадцять товарів поспіль коштують у двадцять разів більше.
+    use_paid: bool = False
+    # Не витрачати квоту на те, що вже розпізнано: товар із відкритими
+    # пропозиціями пропускається, якщо людина не попросила інакше.
+    skip_with_proposals: bool = True
+
+
+@router.post("/api/autofill/batch", response_model=Dict[str, Any])
+def start_batch_autofill(req: BatchAutofillRequest, db: Session = Depends(get_db)):
+    """Поставити пакет у роботу й одразу повернути задачу (не чекаючи на неї).
+
+    Один товар — це до 90 секунд, тож завіз із двадцяти живе пів години:
+    тримати на цьому HTTP-запит не можна ані з боку вебв'ю, ані з боку
+    сервера. Прогрес видно у спільному Task Center.
+    """
+    ids: List[int] = list(req.product_ids or [])
+    label = (req.label or "").strip()
+    if req.delivery_id:
+        rows = db.execute(text("""
+            SELECT p.id FROM products p WHERE p.deliveryid = :d
+            ORDER BY p.productnumber
+        """), {"d": req.delivery_id}).fetchall()
+        ids = [r[0] for r in rows]
+        if not label:
+            name = db.execute(text("SELECT deliveryname FROM deliveries WHERE id = :d"),
+                              {"d": req.delivery_id}).scalar()
+            label = f"Завіз {name or req.delivery_id}"
+    if not ids:
+        raise HTTPException(status_code=400, detail="Немає товарів для розпізнавання")
+
+    considered = len(ids)
+    if req.skip_with_proposals:
+        have = {r[0] for r in db.execute(text("""
+            SELECT DISTINCT product_id FROM product_field_proposals
+            WHERE status = 'pending' AND product_id = ANY(:ids)
+        """), {"ids": ids}).fetchall()}
+        ids = [i for i in ids if i not in have]
+    if not ids:
+        return {"ok": False, "nothing_to_do": True, "considered": considered,
+                "reason": "Усі ці товари вже мають нерозглянуті пропозиції — "
+                          "спершу підтвердіть або відхиліть їх"}
+
+    try:
+        job = autofill_batch.start(ids, label or f"Розпізнавання ({len(ids)})",
+                                   use_paid=req.use_paid)
+    except RuntimeError as e:
+        # Друга задача не помилка інтерфейсу, а зайнятість — 409, з текстом.
+        raise HTTPException(status_code=409, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"ok": True, "job": job, "considered": considered, "queued": len(ids)}
+
+
+@router.get("/api/autofill/batch/active", response_model=Dict[str, Any])
+def active_batch_autofill():
+    """Чи щось іде просто зараз — щоб Task Center показав це й після
+    перезавантаження сторінки, а не лише у вікні, з якого запустили."""
+    job = autofill_batch.active()
+    return {"active": bool(job), "job": job}
+
+
+@router.get("/api/autofill/batch/{job_id}", response_model=Dict[str, Any])
+def batch_autofill_status(job_id: str = Path(..., min_length=3, max_length=64)):
+    job = autofill_batch.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Задачу не знайдено")
+    return job
+
+
+@router.post("/api/autofill/batch/{job_id}/cancel", response_model=Dict[str, Any])
+def cancel_batch_autofill(job_id: str = Path(..., min_length=3, max_length=64)):
+    """Спинити пакет. Поточний товар дороблюється: обірвати виклик моделі
+    посеред роботи означало б заплатити за нього й викинути результат."""
+    return {"ok": autofill_batch.cancel(job_id), "job": autofill_batch.get(job_id)}
+
+
+class AcceptProductsRequest(BaseModel):
+    product_ids: List[int]
+
+
+@router.post("/api/proposals/accept-products", response_model=Dict[str, Any])
+def accept_for_products(req: AcceptProductsRequest, db: Session = Depends(get_db)):
+    """«Підтвердити все» над набором товарів (завіз або виділення).
+
+    Кожен товар іде тим самим шляхом, що й «Прийняти всі» в картці: один
+    `update_product` + один пакет у чергу журналу. Провал одного не спиняє
+    решту — він у відповіді.
+    """
+    done, fields, errors = 0, 0, []
+    for pid in dict.fromkeys(req.product_ids or []):
+        try:
+            payload = field_proposals.accept_all(db, pid)
+            if payload is None:
+                continue
+            update = schemas.ProductUpdate(**payload["update"])
+            updated = product_service.update_product(db, pid, update)
+            if not updated:
+                raise RuntimeError("товар не знайдено")
+            product_service.enqueue_writeback_for(db, updated)
+            db.commit()
+            done += 1
+            fields += len(payload["ids"])
+        except Exception as e:  # noqa: BLE001 — один товар не спиняє решту
+            db.rollback()
+            logger.warning("accept-products: product %s failed: %s", pid, e)
+            errors.append({"product_id": pid, "error": str(e)[:200]})
+    return {"ok": True, "products": done, "fields": fields, "errors": errors}

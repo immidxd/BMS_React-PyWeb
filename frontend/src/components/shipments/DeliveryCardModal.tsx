@@ -11,6 +11,7 @@ import PhotoStagingModal from './PhotoStagingModal';
 import LabelPrintDialog from '../labels/LabelPrintDialog';
 import ProductDetailsModal from '../products/ProductDetailsModal';
 import { alertDialog, confirmDialog, notify } from '../../ui/feedback';
+import * as autofillBatch from '../../services/autofillBatch';
 import LoadingSpinner from '../common/LoadingSpinner';
 
 // Числовий ключ сортування номера (як бекенд _pn_sort_key): (prefix, base, suffix).
@@ -127,6 +128,17 @@ const DeliveryCardModal: React.FC<Props> = ({ shipment, open, onClose }) => {
   const [ctx, setCtx] = useState<{ x: number; y: number; p: Product } | null>(null);
   const [prefill, setPrefill] = useState<Record<string, string> | null>(null);
   const [prefillNonce, setPrefillNonce] = useState(0);
+  // Пакетне ШІ-розпізнавання завозу. Робота йде на бекенді; тут лише живий
+  // прогрес і підтвердження. ⚠️ Хуки — ТІЛЬКИ вище раннього виходу (#310).
+  const [batch, setBatch] = useState<autofillBatch.BatchJob | null>(autofillBatch.currentJob());
+  const [accepting, setAccepting] = useState(false);
+  // Скільки товарів завозу чекають на підтвердження пропозицій.
+  const pendingIds = useMemo(
+    () => products.filter(p => (p.proposals_count || 0) > 0).map(p => p.id),
+    [products]);
+  const pendingFields = useMemo(
+    () => products.reduce((s, p) => s + (p.proposals_count || 0), 0),
+    [products]);
 
   // Швидке завантаження товарів з БД (без re-sync) — для рефрешу після add/delete.
   const loadProducts = useCallback(() => {
@@ -181,8 +193,27 @@ const DeliveryCardModal: React.FC<Props> = ({ shipment, open, onClose }) => {
     return () => window.removeEventListener('bms:delivery-changed', handler as EventListener);
   }, [open, shipment]);
 
+  // Живий прогрес пакетного розпізнавання. Поки воно йде, картка час від
+  // часу перечитує список — щоб чіпи «Підтвердити» з'являлись самі, а не
+  // після ручного переоткриття. Перечитуємо на ЗМІНУ лічильника `done`, а не
+  // на кожне опитування: інакше список смикався б кожні дві секунди.
+  const lastDoneRef = useRef(-1);
+  useEffect(() => {
+    if (!open) return;
+    autofillBatch.watch();
+    return autofillBatch.subscribe((job) => {
+      setBatch(job);
+      const finished = job.state === 'done' || job.state === 'cancelled' || job.state === 'error';
+      if (job.done !== lastDoneRef.current || finished) {
+        lastDoneRef.current = job.done;
+        loadProductsRef.current();
+      }
+    });
+  }, [open]);
+
   if (!open || !shipment) return null;
   const sid = shipment.id;
+  const batchRunning = !!batch && (batch.state === 'running' || batch.state === 'waiting');
 
   const removeProduct = async (p: Product) => {
     if (!(await confirmDialog(`Видалити товар ${p.productnumber}?`))) return;
@@ -227,6 +258,51 @@ const DeliveryCardModal: React.FC<Props> = ({ shipment, open, onClose }) => {
         description: d || 'Помилка', duration: 7,
       });
     } finally { setSavingNum(false); }
+  };
+
+  // ✨ Розпізнати весь завіз. Сама робота — фонова задача бекенда, тож
+  // закриття картки її не перериває.
+  const runBatchAutofill = async () => {
+    await autofillBatch.confirmAndStart({
+      count: products.length, deliveryId: sid,
+      label: shipment.sheet_name || `Завіз #${sid}`,
+    });
+  };
+
+  // ✓ Підтвердити пропозиції одного товару — той самий шлях, що й «Прийняти
+  // всі» в картці товару (update_product + черга журналу).
+  const acceptOne = async (p: Product) => {
+    setAccepting(true);
+    try {
+      const r = await autofillBatch.acceptAllFor(p.id);
+      notify.success({ message: `${p.productnumber}: прийнято ${r.accepted} полів`, duration: 3 });
+      await loadProducts();
+    } catch (e: any) {
+      notify.error({ message: 'Не вдалося підтвердити', description: String(e?.message || e) });
+    } finally { setAccepting(false); }
+  };
+
+  // ✓ Підтвердити весь пакет одразу.
+  const acceptAllPending = async () => {
+    const ok = await confirmDialog({
+      title: `Прийняти ${pendingFields} пропозицій на ${pendingIds.length} товарах?`,
+      body: 'Значення запишуться в картки звичайним шляхом і підуть у журнал у фоні.\n'
+        + 'Якщо хочете переглянути щось окремо — відкрийте картку товару замість цього.',
+      okText: 'Прийняти всі', kind: 'confirm',
+    });
+    if (!ok) return;
+    setAccepting(true);
+    try {
+      const r = await autofillBatch.acceptForProducts(pendingIds);
+      notify.success({
+        message: `Прийнято ${r.fields} полів на ${r.products} товарах`,
+        description: r.errors?.length ? `Не вдалося: ${r.errors.length}` : 'Записуються в журнал у фоні.',
+        duration: 6,
+      });
+      await loadProducts();
+    } catch (e: any) {
+      notify.error({ message: 'Не вдалося підтвердити', description: String(e?.message || e) });
+    } finally { setAccepting(false); }
   };
 
   // ⇅ Впорядкувати рядки завозу за номером (UI вже сортований; синкаємо журнал).
@@ -337,6 +413,11 @@ const DeliveryCardModal: React.FC<Props> = ({ shipment, open, onClose }) => {
               className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 disabled:opacity-50">
               {sorting ? '…' : '⇅'} Впорядкувати
             </button>
+            <button onClick={runBatchAutofill} disabled={loading || products.length === 0 || batchRunning}
+              title="ШІ перегляне живі знімки кожного товару завозу й складе пропозиції. У картки нічого не запишеться без вашого підтвердження."
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 disabled:opacity-50">
+              {batchRunning ? '…' : '✨'} Розпізнати
+            </button>
             <button onClick={() => setLabelsOpen(true)} disabled={loading || products.length === 0}
               title="Надрукувати QR-стікери на всі товари цього завозу (аркуш 100×100)"
               className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 disabled:opacity-50">
@@ -427,6 +508,42 @@ const DeliveryCardModal: React.FC<Props> = ({ shipment, open, onClose }) => {
               {syncInfo && (
                 <div className="mb-3 text-xs text-gray-400">{syncInfo}</div>
               )}
+              {/* Пакетне розпізнавання: живий стан + чесна можливість спинити.
+                  Показуємо навіть коли пакет запустили не звідси — задача одна
+                  на програму, і бачити її тут корисніше, ніж гадати. */}
+              {batch && (
+                <div className="mb-3 flex items-center gap-3 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/40 px-3 py-2 text-xs">
+                  {batchRunning && <span className="w-3.5 h-3.5 border-2 border-gray-300 border-t-gray-600 rounded-full animate-spin shrink-0" />}
+                  <span className="text-gray-600 dark:text-gray-300 truncate">
+                    {batchRunning ? 'Розпізнавання' : 'Розпізнано'} · {autofillBatch.describe(batch)}
+                  </span>
+                  <div className="ml-auto flex items-center gap-2 shrink-0">
+                    {batchRunning && (
+                      <button onClick={() => autofillBatch.cancel(batch.id)} disabled={batch.cancel_requested}
+                        title="Поточний товар дороблюється до кінця — обірвати виклик моделі посеред роботи означало б заплатити й викинути"
+                        className="px-2 py-0.5 rounded border border-gray-300 dark:border-gray-600 text-gray-500 hover:bg-white dark:hover:bg-gray-700 disabled:opacity-50">
+                        {batch.cancel_requested ? 'Зупиняється…' : 'Спинити'}
+                      </button>
+                    )}
+                    {!batchRunning && (
+                      <button onClick={() => setBatch(null)}
+                        className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200">✕</button>
+                    )}
+                  </div>
+                </div>
+              )}
+              {pendingIds.length > 0 && (
+                <div className="mb-3 flex items-center gap-3 rounded-lg border border-gray-900/15 dark:border-gray-100/15 bg-white dark:bg-gray-800 px-3 py-2 text-xs">
+                  <span className="text-gray-700 dark:text-gray-200">
+                    Пропозицій ШІ: <b>{pendingFields}</b> на {pendingIds.length} товарах
+                  </span>
+                  <button onClick={acceptAllPending} disabled={accepting}
+                    title="Прийняти всі пропозиції цього завозу одним записом"
+                    className="ml-auto px-3 py-1 rounded-md bg-black text-white hover:bg-gray-800 disabled:opacity-50">
+                    {accepting ? 'Записую…' : `✓ Підтвердити все (${pendingIds.length})`}
+                  </button>
+                </div>
+              )}
               {error && <div className="py-16 text-center text-red-500">{error}</div>}
               {!error && products.length === 0 && (
                 <div className="py-16 text-center text-gray-400">У цьому завозі ще немає товарів</div>
@@ -494,7 +611,17 @@ const DeliveryCardModal: React.FC<Props> = ({ shipment, open, onClose }) => {
                           )}
                         </td>
                         <td className={`px-2 py-2 text-center text-xs font-medium ${st.cls}`}>{st.label}</td>
-                        <td className="px-2 py-2 text-center">
+                        <td className="px-2 py-2 text-center whitespace-nowrap">
+                          {/* Пропозиції ШІ — підтверджуються просто в рядку.
+                              Після розпізнавання завозу інакше довелось би
+                              відкривати двадцять карток підряд. */}
+                          {(p.proposals_count || 0) > 0 && (
+                            <button onClick={e => { e.stopPropagation(); acceptOne(p); }} disabled={accepting}
+                              title={`Прийняти ${p.proposals_count} пропозицій ШІ для цього товару`}
+                              className="mr-1 rounded border border-gray-900/20 dark:border-gray-100/25 px-1.5 py-0.5 text-[11px] font-medium text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-50">
+                              ✓ {p.proposals_count}
+                            </button>
+                          )}
                           <button onClick={e => { e.stopPropagation(); removeProduct(p); }} title="Видалити товар"
                             className="text-gray-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 rounded px-1.5 py-0.5">🗑</button>
                         </td>

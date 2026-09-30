@@ -8,6 +8,7 @@ import {
 import Pagination from '../common/Pagination';
 import BmsEmpty from '../common/BmsEmpty';
 import DeliveryCardModal from './DeliveryCardModal';
+import * as autofillBatch from '../../services/autofillBatch';
 
 type SortCol = 'id' | 'shipment_date' | 'supplier_name' | 'items_count' | 'total_cost' | 'created_at';
 
@@ -293,7 +294,23 @@ const ShipmentsTable: React.FC<ShipmentsTableProps> = ({
                       <span className="text-xs text-gray-400">—</span>
                     )}
                   </td>
-                  <td className="px-3 py-2 text-center">
+                  <td className="px-3 py-2 text-center whitespace-nowrap">
+                    {/* ✨ Розпізнати всю поставку, не відкриваючи її. Задача
+                        фонова й ОДНА на програму, тож звідси й з картки завозу
+                        запускається той самий контур. */}
+                    {sh.items_count > 0 && (
+                      <button
+                        onClick={e => {
+                          e.stopPropagation();
+                          void autofillBatch.confirmAndStart({
+                            count: sh.items_count, deliveryId: sh.id,
+                            label: sh.sheet_name || `Завіз #${sh.id}`,
+                          });
+                        }}
+                        title="Розпізнати ШІ всі товари цієї поставки (пропозиції, без запису в картки)"
+                        className="text-gray-400 hover:text-gray-800 dark:hover:text-gray-100 px-1"
+                      >✨</button>
+                    )}
                     {sh.notes && (
                       <span className="text-xs text-gray-400" title={sh.notes}>📝</span>
                     )}

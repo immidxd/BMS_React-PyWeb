@@ -165,6 +165,10 @@ export interface Product {
     shafa_status?: 'waiting_prom' | 'bridge_ready' | 'confirmed' | 'manual_existing' | null;
     published_catalog?: boolean;
     has_photo?: boolean;       // має ≥1 фото
+    // Скільки нерозглянутих пропозицій автозаповнення має товар. Рядок
+    // таблиці показує за цим кнопку «Підтвердити» — після пакетного
+    // розпізнавання завозу інакше довелось би відкривати двадцять карток.
+    proposals_count?: number;
 }
 
 export interface ProductListResponse {

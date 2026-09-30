@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useSyncExternalStore } from 'react';
 import { taskManager, type Task } from '../../services/taskManager';
+import * as autofillBatch from '../../services/autofillBatch';
 
 /** Плаваючий центр фонових задач (правий нижній кут). Дзвоник із badge (активні/помилки),
  *  розкривна панель зі списком останніх задач (виконується/готово/помилка). Монтується ОДИН
@@ -130,6 +131,11 @@ const TaskCenter: React.FC = () => {
       if (timer !== undefined) window.clearTimeout(timer);
     };
   }, []);
+
+  // Пакетне ШІ-розпізнавання йде на бекенді й переживає і закриту картку,
+  // і перезавантаження сторінки. Тому його стан підхоплюємо тут, на рівні
+  // App, а не лише у вікні, з якого запустили.
+  useEffect(() => { autofillBatch.watch(); }, []);
 
   // Оновлювати «N с тому» поки панель відкрита.
   useEffect(() => {
