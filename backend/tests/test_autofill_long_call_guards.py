@@ -75,19 +75,35 @@ def test_timeout_becomes_an_error_field_not_an_exception(monkeypatch, tmp_path):
 
 
 class _Session:
-    """Сесія, яка запам'ятовує, чи звільнили транзакцію."""
-    def __init__(self): self.rolled_back = 0
+    """Сесія, яка запам'ятовує, як саме звільнили транзакцію."""
+    def __init__(self): self.committed = 0; self.rolled_back = 0
+    def commit(self): self.committed += 1
     def rollback(self): self.rolled_back += 1
 
 
 def test_transaction_is_released_before_the_network_call():
     db = _Session()
     pa._release_db(db)
-    assert db.rolled_back == 1, "перед мережевим викликом транзакція має бути закрита"
+    assert db.committed == 1, "перед мережевим викликом транзакція має бути закрита"
+
+
+def test_release_keeps_already_made_proposals():
+    """⚠️ COMMIT, а не ROLLBACK.
+
+    Другий мережевий виклик у тому ж запиті (`verify_article` — перечитування
+    артикула) стається ПІСЛЯ того, як частина пропозицій уже вставлена. Відкат
+    мовчки стирав їх: на #Ф4402 прогін знайшов протектор «гладка», записав у
+    звіт, а в картці не зʼявилось нічого — і виглядало це як «ШІ нічого не
+    додав».
+    """
+    db = _Session()
+    pa._release_db(db)
+    assert db.rolled_back == 0, "відкат стер би вже зроблені пропозиції"
 
 
 def test_release_db_never_raises():
     """Збій звільнення не має ламати розпізнавання — воно й так уже в дорозі."""
     class _Bad:
+        def commit(self): raise RuntimeError("no connection")
         def rollback(self): raise RuntimeError("no connection")
     pa._release_db(_Bad())   # не кидає
