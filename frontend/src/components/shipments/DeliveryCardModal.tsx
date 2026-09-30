@@ -433,11 +433,16 @@ const DeliveryCardModal: React.FC<Props> = ({ shipment, open, onClose }) => {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4" onMouseDown={onClose}>
-      <div className="relative bg-white dark:bg-gray-900 rounded-2xl shadow-2xl w-full max-w-5xl h-[88vh] flex flex-col" onMouseDown={e => e.stopPropagation()}>
+      <div className="relative bg-white dark:bg-gray-900 rounded-2xl shadow-2xl w-full max-w-6xl h-[88vh] flex flex-col" onMouseDown={e => e.stopPropagation()}>
         {/* Header */}
-        <div className="flex items-start justify-between px-6 pt-5 pb-4 border-b border-gray-100 dark:border-gray-800">
-          <div>
-            <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">{shipment.sheet_name || `Завіз #${shipment.id}`}</h2>
+        <div className="flex flex-wrap items-start justify-between gap-x-6 gap-y-3 px-6 pt-5 pb-4 border-b border-gray-100 dark:border-gray-800">
+          {/* Заголовок просить собі 420 px. Разом із рядом дій (~830 px) це
+              більше за ширину вікна, тож зовнішній flex-wrap ЗАВЖДИ зносить
+              кнопки на власний рядок — і назва не тиснеться в кілька літер,
+              і вигляд не стрибає від довжини назви завозу. */}
+          <div className="min-w-0 flex-1 basis-[420px]">
+            <h2 className="truncate text-lg font-semibold text-gray-900 dark:text-gray-100"
+              title={shipment.sheet_name || `Завіз #${shipment.id}`}>{shipment.sheet_name || `Завіз #${shipment.id}`}</h2>
             <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-gray-500 dark:text-gray-400">
               <span className="inline-flex items-center gap-1.5"><CalendarOutlined style={META_ICON} />{fmtDate(shipment.shipment_date)}</span>
               <span className="inline-flex items-center gap-1.5"><ShopOutlined style={META_ICON} />{shipment.supplier_name || 'Без постачальника'}</span>
@@ -468,7 +473,11 @@ const DeliveryCardModal: React.FC<Props> = ({ shipment, open, onClose }) => {
               )}
             </div>
           </div>
-          <div className="flex items-center gap-2">
+          {/* ⚠️ БЕЗ `shrink-0`: із ним ряд тримав свою max-content ширину й не
+              переносився всередині себе — на вузькому вікні кнопки просто
+              вилазили за край картки. Тепер, коли не вміщаються навіть на
+              власному рядку, вони переходять на наступний. */}
+          <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-2">
             <button onClick={toggleInfo} disabled={loading} title="Інформація про завоз"
               className={`${HEAD_BTN} ${infoOpen
                 ? 'border-gray-400 bg-gray-100 dark:bg-gray-700 text-gray-800 dark:text-gray-100'
@@ -498,7 +507,10 @@ const DeliveryCardModal: React.FC<Props> = ({ shipment, open, onClose }) => {
               className={`${HEAD_BTN} border-transparent bg-black text-white hover:bg-gray-800`}>
               <PlusOutlined style={ICON} /> Додати товар
             </button>
-            <button onClick={onClose} aria-label="Закрити" className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 text-2xl leading-none">×</button>
+            <button onClick={onClose} aria-label="Закрити" title="Закрити"
+              className="ml-1 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-800 dark:hover:text-gray-200">
+              <CloseOutlined style={ICON} />
+            </button>
           </div>
         </div>
 
