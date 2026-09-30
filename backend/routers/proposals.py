@@ -190,7 +190,21 @@ def run_autofill(product_id: int = Path(..., ge=1),
                 "reason": "у товару немає ані живих знімків, ані артикула — "
                           "додайте фото або впишіть маркування"}
 
-    result = photo_autofill.extract_and_propose(db, product_id, paths, use_paid=use_paid)
+    try:
+        result = photo_autofill.extract_and_propose(db, product_id, paths, use_paid=use_paid)
+    except Exception as e:  # noqa: BLE001
+        # ⚠️ Голий 500 тут неприпустимий. Людина бачила «Internal server error»
+        # і не мала ЖОДНОГО способу дізнатись причину: сліду в обліку витрат
+        # немає (виняток стався до запису), лог застосунку йде в консоль.
+        # Тепер відмова виглядає як звичайна відповідь із текстом, а повне
+        # трасування лишається в логах.
+        logger.exception("autofill failed for product %s", product_id)
+        try:
+            db.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+        return {"ok": False, "failed": True,
+                "reason": f"Розпізнавання перервалось: {type(e).__name__}: {str(e)[:200]}"}
     # Комітимо в БУДЬ-ЯКОМУ разі: навіть на провалі в сесії лежить запис про
     # витрату, і втратити його означало б занизити витрачене.
     db.commit()

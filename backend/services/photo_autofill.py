@@ -347,9 +347,25 @@ def _is_per_model_quota(err: Optional[str]) -> bool:
     return "PerDayPerProjectPerModel" in err
 
 
+def _is_network_failure(err: Optional[str]) -> bool:
+    """Таймаут/обрив зв'язку — та сама категорія, що й 503: ця модель зараз
+    не відповідає, а сусідня може."""
+    if not err:
+        return False
+    return any(k in err for k in ("Timeout", "ConnectionError", "ChunkedEncoding",
+                                  "TooManyRedirects", "SSLError"))
+
+
 def _worth_another_model(err: Optional[str]) -> bool:
-    return _is_overloaded(err) or _is_per_model_quota(err)
+    return _is_overloaded(err) or _is_per_model_quota(err) or _is_network_failure(err)
 _ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/{m}:generateContent"
+
+# ⚠️ Свідомо МЕНШЕ за `idle_in_transaction_session_timeout` бази (120 с, див.
+# models/database.py). Було 180 с: будь-який повільний виклик переживав межу,
+# Postgres рвав з'єднання («server closed the connection unexpectedly»), і
+# запит падав у 500 вже ПІСЛЯ відповіді моделі. Ця межа — другий рубіж; перший
+# — звільнення транзакції перед мережевим викликом (`_release_db`).
+REQUEST_TIMEOUT_S = float(os.getenv("AUTOFILL_HTTP_TIMEOUT_S", "90"))
 
 
 # ── Схема відповіді ─────────────────────────────────────────────────────────
@@ -594,10 +610,16 @@ def call_gemini(model: str, api_key: str, photos: List[pathlib.Path],
     }
     r = None
     for attempt in range(4):
-        r = requests.post(_ENDPOINT.format(m=model),
-                          headers={"x-goog-api-key": api_key,
-                                   "Content-Type": "application/json"},
-                          json=body, timeout=180)
+        try:
+            r = requests.post(_ENDPOINT.format(m=model),
+                              headers={"x-goog-api-key": api_key,
+                                       "Content-Type": "application/json"},
+                              json=body, timeout=REQUEST_TIMEOUT_S)
+        except requests.RequestException as e:
+            # Таймаут/обрив — НЕ виняток назовні. Раніше він летів крізь
+            # `extract_and_propose` у глобальний обробник, і людина бачила
+            # «Internal server error» без жодного сліду в обліку витрат.
+            return {"_error": f"{type(e).__name__}: {str(e)[:200]}", "_network": True}
         if r.status_code not in (500, 502, 503, 504):
             break
         time.sleep(2 ** attempt)
@@ -662,6 +684,7 @@ def verify_article(db: Session, model: str, api_key: str,
     розійшлось. Правило свідомо схиляє до зайвого питання людині, а не до
     зайвої довіри.
     """
+    _release_db(db)   # другий мережевий виклик у тому ж запиті — та сама пастка
     pred = call_gemini(model, api_key, photos, ARTICLE_SCHEMA)
     usage = pred.pop("_usage", {}) or {}
     err = pred.get("_error")
@@ -723,6 +746,23 @@ def _web_enrich():
         except ImportError:
             return None
     return web_enrich
+
+
+def _release_db(db: Session) -> None:
+    """Закрити читальну транзакцію ПЕРЕД довгим мережевим викликом.
+
+    ⚠️ Це головний запобіжник, а не оптимізація. Сесія відкриває транзакцію на
+    перших же SELECT-ах (`_current_values`, `build_schema`), а далі ми йдемо в
+    Google на десятки секунд. Postgres має
+    `idle_in_transaction_session_timeout=120000` і через 2 хвилини РВЕ таке
+    з'єднання; запит падав у 500 після того, як модель уже відповіла, — без
+    запису у витрати й без пропозицій. `pool_pre_ping` тут не рятує: він
+    перевіряє з'єднання на видачі з пулу, а не посеред використання.
+    """
+    try:
+        db.rollback()   # читання вже виконані; писати ще нічого
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[autofill] не вдалось звільнити транзакцію: %s", e)
 
 
 def _product_category():
@@ -1190,6 +1230,7 @@ def extract_and_propose(db: Session, product_id: int, photos: List[pathlib.Path]
     tried: List[str] = []
     for candidate in (model, *(m for m in MODEL_FALLBACKS if m != model)):
         tried.append(candidate)
+        _release_db(db)
         pred = call_gemini(candidate, api_key, photos, schema, prompt=prompt)
         usage = pred.pop("_usage", {}) or {}
         err = pred.get("_error")

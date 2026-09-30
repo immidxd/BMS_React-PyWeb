@@ -137,9 +137,12 @@ def _call(model: str, api_key: str, prompt: str, schema: Dict[str, Any]) -> Dict
         "tools": [{"google_search": {}}],
         "generationConfig": {"temperature": 0},
     }
-    r = requests.post(_ENDPOINT.format(m=model),
-                      headers={"x-goog-api-key": api_key, "Content-Type": "application/json"},
-                      json=body, timeout=180)
+    try:
+        r = requests.post(_ENDPOINT.format(m=model),
+                          headers={"x-goog-api-key": api_key, "Content-Type": "application/json"},
+                          json=body, timeout=photo_autofill.REQUEST_TIMEOUT_S)
+    except requests.RequestException as e:
+        return {"_error": f"{type(e).__name__}: {str(e)[:200]}", "_network": True}
     if r.status_code != 200:
         return {"_error": f"HTTP {r.status_code}: {r.text[:800]}",
                 "_status": r.status_code}
@@ -240,6 +243,7 @@ def _run(db: Session, product_id: int, cur: Dict[str, Any],
 
     model = model or photo_autofill.DEFAULT_MODEL
     schema = _build_schema(db)
+    photo_autofill._release_db(db)   # пошук у Google теж довгий — див. _release_db
     prompt = (f"{PROMPT}\n\nБренд: {brand or 'невідомий'}\nАртикул: {article}\n"
               f"Тип товару: {cur.get('type_name') or '—'}")
     pred = _call(model, api_key, prompt, schema)

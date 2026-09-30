@@ -1326,7 +1326,16 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
         resultStatus: (res: any) => res?.ok
           ? { status: 'success', detail: `Розпізнано полів: ${(res.proposed || []).length}` }
           : { status: 'partial', detail: res?.quota_exhausted ? 'Безкоштовну квоту вичерпано' : (res?.reason || 'Не розпізнано') },
-      }).catch(() => ({ ok: false, reason: 'Немає звʼязку з програмою' }));
+        // ⚠️ НЕ підписувати будь-який збій як «немає звʼязку»: саме так
+        // справжня відмова бекенда (500) виглядала як проблема з мережею, і
+        // причину доводилось шукати годину. Беремо текст помилки, а «немає
+        // звʼязку» лишаємо для випадку, коли його справді немає.
+      }).catch((e: any) => ({
+        ok: false,
+        reason: (e && typeof e.message === 'string' && e.message.trim())
+          ? e.message
+          : 'Немає звʼязку з програмою',
+      }));
       if (curPidRef.current !== pid) return;
       if (!d?.ok) {
         // Безкоштовну добову квоту вичерпано (межу Google каже лише у відмові). Це не помилка, а
