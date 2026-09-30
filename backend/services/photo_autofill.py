@@ -135,6 +135,17 @@ PICTOGRAM_TO_MATERIAL: Dict[str, str] = {
     "інше": "синтетика",
 }
 
+# ⚠️ Піктограма ЄС знає лише ЧОТИРИ символи, тож хутряна підкладка за
+# директивою — теж «текстиль». Формально правильно, комерційно — ні: покупець
+# зимових ботинок шукає саме хутро (#Ф4406, власник виправив руками). Тому
+# середину й устілку модель ще й ДИВИТЬСЯ на знімку, а ці значення вважаються
+# уточненням піктограми «текстиль», а не суперечністю їй.
+TEXTILE_SUBTYPES: Tuple[str, ...] = ("штучне хутро", "вовна", "фліс", "бавовна")
+
+# Що модель може назвати, подивившись усередину. Лише те, що Є в нашому
+# словнику матеріалів — вигадати новий вона не може за побудовою.
+LINING_VISUAL_VALUES: Tuple[str, ...] = TEXTILE_SUBTYPES + ("текстиль", "шкіра", "екошкіра")
+
 
 def _current_materials(db: Session, product_id: int) -> Dict[str, str]:
     """{позиція: 'назва, назва'} — щоб не пропонувати вже вписане."""
@@ -159,11 +170,24 @@ def _material_proposals(db, product_id, pred, photo_names, model,
         if sym not in PICTOGRAM_TO_MATERIAL:
             continue
         name = PICTOGRAM_TO_MATERIAL[sym]
+        # Уточнення піктограми побаченим. Піктограма знає лише «текстиль», а
+        # на знімку всередині видно хутро — це не суперечність, а ТОЧНІШЕ
+        # значення того самого сімейства. Підміняємо лише в цей бік: якщо
+        # піктограма каже «шкіра», побачене її не перебиває (декларація
+        # виробника важить більше за здогад по фото).
+        if name == "текстиль" and pos in ("middle",):
+            seen = (pred.get("lining_visual") or "").strip().lower()
+            seen_conf = pred.get("lining_visual_confidence")
+            if seen in TEXTILE_SUBTYPES and (seen_conf is None
+                                             or float(seen_conf) >= field_proposals.threshold_for(f"material:{pos}")):
+                name = seen
         field = f"material:{pos}"
         cur = current.get(pos, "")
         if name in {t.strip().lower() for t in cur.split(",") if t.strip()}:
             already.append((field, cur)); continue
         note = f"піктограма ЄС: {sym}" + (" (у нас — шкіра)" if sym == "шкіра з покриттям" else "")
+        if name != PICTOGRAM_TO_MATERIAL[sym]:
+            note = f"видно на знімку: {name}; піктограма ЄС каже «{sym}» (за директивою хутро теж текстиль)"
         if field_proposals.propose(db, product_id, field, name, conf, model=model,
                                    source_photos=photo_names, note=note):
             proposed.append((field, name, conf)); out[pos] = name
@@ -512,6 +536,15 @@ def build_schema(db: Session, type_id: Optional[int] = None,
         }
         props["materials_pictogram_confidence"] = {"type": "number", "minimum": 0, "maximum": 1,
                                                    "description": "певність щодо піктограм"}
+        props["lining_visual"] = {
+            "type": ["string", "null"], "enum": list(LINING_VISUAL_VALUES) + [None],
+            "description": ("матеріал ПІДКЛАДКИ, як він ВИГЛЯДАЄ на знімку зсередини черевика: "
+                            "ворсистий білий/сірий ворс — «штучне хутро»; гладка тканина — «текстиль»; "
+                            "гладка шкіра — «шкіра». null, якщо всередину не видно. "
+                            "Піктограма на бирці тут не допоможе: за директивою хутро теж «текстиль»"),
+        }
+        props["lining_visual_confidence"] = {"type": "number", "minimum": 0, "maximum": 1,
+                                             "description": "певність щодо побаченої підкладки"}
     # Стікер від руки (зазвичай зелений папірець): ціна, розмір, замір, номер.
     props["sticker_text"] = {"type": ["string", "null"],
                              "description": ("ДОСЛІВНО весь рукописний текст зі стікера/цінника, "

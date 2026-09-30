@@ -214,3 +214,67 @@ def test_clothing_keeps_fastening_and_lining():
     assert "блискавка" in props["fastening_type"]["enum"]
     for shoe_only in ("sole_type", "tread_type", "toe_shape", "heel_type"):
         assert shoe_only not in props
+
+
+# ── Підкладка: піктограма ЄС занадто груба ──────────────────────────────────
+
+def _material_run(monkeypatch, pred, current=None):
+    calls = []
+
+    def fake_propose(db, pid, field, value, conf, **kw):
+        calls.append((field, value, kw.get("note"))); return True
+    monkeypatch.setattr(_FP_USED, "propose", fake_propose)
+    monkeypatch.setattr(pa, "_current_materials", lambda db, pid: dict(current or {}))
+    proposed, below, already = [], [], []
+    pa._material_proposals(None, 1, pred, "x", "m", proposed, below, already)
+    return calls, proposed, already
+
+
+def test_fur_lining_beats_the_pictogram_textile(monkeypatch):
+    """#Ф4406: на знімку всередині хутро, а піктограма ЄС знає лише чотири
+    символи — за директивою хутро теж «текстиль». Формально вірно, а покупцю
+    зимових ботинок потрібне саме хутро."""
+    pred = {"materials_pictogram": {"upper": "шкіра", "lining": "текстиль", "outsole": "інше"},
+            "materials_pictogram_confidence": 0.9,
+            "lining_visual": "штучне хутро", "lining_visual_confidence": 0.9}
+
+    calls, _proposed, _already = _material_run(monkeypatch, pred)
+
+    middle = [(v, n) for f, v, n in calls if f == "material:middle"]
+    assert middle and middle[0][0] == "штучне хутро"
+    assert "видно на знімку" in middle[0][1] and "текстиль" in middle[0][1]
+
+
+def test_visual_never_overrides_leather_pictogram(monkeypatch):
+    """Декларація виробника важить більше за здогад по фото: якщо піктограма
+    каже «шкіра», побачене її не перебиває."""
+    pred = {"materials_pictogram": {"upper": "шкіра", "lining": "шкіра", "outsole": "інше"},
+            "materials_pictogram_confidence": 0.9,
+            "lining_visual": "штучне хутро", "lining_visual_confidence": 0.95}
+
+    calls, _p, _a = _material_run(monkeypatch, pred)
+
+    middle = [v for f, v, _n in calls if f == "material:middle"]
+    assert middle == ["шкіра"]
+
+
+def test_plain_textile_stays_textile(monkeypatch):
+    pred = {"materials_pictogram": {"upper": "шкіра", "lining": "текстиль", "outsole": "інше"},
+            "materials_pictogram_confidence": 0.9,
+            "lining_visual": "текстиль", "lining_visual_confidence": 0.9}
+
+    calls, _p, _a = _material_run(monkeypatch, pred)
+
+    assert [v for f, v, _n in calls if f == "material:middle"] == ["текстиль"]
+
+
+def test_unsure_visual_does_not_refine(monkeypatch):
+    """Нижче порога — лишаємо піктограму: вигадане хутро гірше за грубий, але
+    чесний «текстиль»."""
+    pred = {"materials_pictogram": {"upper": "шкіра", "lining": "текстиль", "outsole": "інше"},
+            "materials_pictogram_confidence": 0.9,
+            "lining_visual": "штучне хутро", "lining_visual_confidence": 0.4}
+
+    calls, _p, _a = _material_run(monkeypatch, pred)
+
+    assert [v for f, v, _n in calls if f == "material:middle"] == ["текстиль"]
