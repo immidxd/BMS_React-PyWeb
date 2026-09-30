@@ -863,16 +863,22 @@ def looks_like_article_code(value: Optional[str]) -> bool:
     if not any(ch.isdigit() for ch in v):
         return False            # без цифр це слово: «Gazelle», «SLIP»
     tokens = [t for t in re.split(r"[\s._/\-]+", v) if t]
-    # Токен, що МІШАЄ літери й цифри, — певна ознака коду: «GWTIAH5»,
-    # «CC1», «INT1222K075». У назвах моделей число стоїть окремим словом
-    # («Air Max 90», «Gazelle 85»), а не зростається з літерами.
-    if any(t.isalnum() and not t.isalpha() and not t.isdigit() for t in tokens):
-        return True
+    # ⚠️ СЛОВО рятує від вироку. Ознака коду — змішані літери з цифрами в
+    # одному токені («GWTIAH5», «CC1», «XM001683»), АЛЕ такий токен буває і в
+    # справжніх назвах: «Hurricane XLT2» (Teva), «R78 Voyage» (Puma),
+    # «ST Runner V4 NL» (Puma). Різниця — у наявності повноцінного слова
+    # поруч. Перша версія цього не враховувала й відкинула б назви, які
+    # модель читає з бирки правильно.
+    if any(len(t) >= 4 and t.isalpha() for t in tokens):
+        return False
     # Виняток: суцільне коротке число — це назва в New Balance («574», «990»,
     # «1906»). Код завжди має розділювачі або літери поруч.
     if len(tokens) == 1 and tokens[0].isdigit() and len(tokens[0]) <= 4:
         return False
-    # Цифри є, а жодного справжнього слова немає — теж код: «9-25100-45».
+    # Слова немає. Код — якщо літери зрослися з цифрами в одному токені…
+    if any(t.isalnum() and not t.isalpha() and not t.isdigit() for t in tokens):
+        return True
+    # …або це самі цифри з розділювачами: «9-25100-45».
     return not any(len(t) >= 2 and t.isalpha() for t in tokens)
 
 

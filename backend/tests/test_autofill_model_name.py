@@ -30,6 +30,14 @@ from backend.services import photo_autofill as pa  # noqa: E402
     "INT1222K075-KRK2PR",
     "9-25100-45",            # артикул Caprice
     "9-25404-45-855",
+    # Усе нижче ЗАРАЗ лежить у полі «Модель» опублікованих товарів і
+    # показується покупцю заголовком картки:
+    "XM001683-AF17360-MB034",   # Emporio Armani
+    "BW9325P6115",              # Guess
+    "SP61408",                  # Go Soft
+    "L9350",                    # Rieker
+    "B8120",                    # Carinii
+    "1-3",                      # Gino Rossi
 ])
 def test_article_codes_are_not_model_names(value):
     assert pa.looks_like_article_code(value) is True
@@ -39,6 +47,11 @@ def test_article_codes_are_not_model_names(value):
     "M ANACAPA BREEZE LOW",  # реально прочитане з бирки Merrell
     "Air Max 90",            # число стоїть ОКРЕМИМ словом — це назва
     "Gazelle 85",
+    # ⚠️ Справжні назви з АЛФАВІТНО-ЦИФРОВИМ токеном. Перша версія гарда
+    # відкидала їх як «код» — а це рівно те, що модель читає з бирки.
+    "Hurricane XLT2",        # Teva
+    "R78 Voyage",            # Puma
+    "ST Runner V4 NL",       # Puma
     "Melissa",
     "SLIP",
     "574",                   # New Balance називає моделі числами
