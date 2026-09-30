@@ -810,6 +810,39 @@ def _current_values(db: Session, product_id: int) -> Dict[str, Optional[str]]:
     return dict(row) if row else {}
 
 
+# Назва моделі — СЛОВА («Anacapa Breeze Low», «Gazelle»), а не код. Модель
+# плутає їх із артикулом: у прогонах вона вже віддавала «GWTIAH5-EL» як назву
+# моделі. У базі такі коди теж є («MLR-W-CC1-03», «INT1222K075-KRK2PR») — вони
+# затекли з журналу й показуються покупцю заголовком товару в каталозі.
+_CODE_LIKE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9\s._/\-]*$")
+
+
+def looks_like_article_code(value: Optional[str]) -> bool:
+    """Чи це код виробника, а не назва моделі.
+
+    Ознака коду — латиниця ВПЕРЕМІШ із цифрами й без жодного «словесного»
+    токена: «GWTIAH5-EL» так, «Anacapa Breeze Low» ні, «Air Max 90» ні
+    (є справжні слова). Кирилиця — завжди назва.
+    """
+    v = (value or "").strip()
+    if not v or not _CODE_LIKE.match(v):
+        return False
+    if not any(ch.isdigit() for ch in v):
+        return False            # без цифр це слово: «Gazelle», «SLIP»
+    tokens = [t for t in re.split(r"[\s._/\-]+", v) if t]
+    # Токен, що МІШАЄ літери й цифри, — певна ознака коду: «GWTIAH5»,
+    # «CC1», «INT1222K075». У назвах моделей число стоїть окремим словом
+    # («Air Max 90», «Gazelle 85»), а не зростається з літерами.
+    if any(t.isalnum() and not t.isalpha() and not t.isdigit() for t in tokens):
+        return True
+    # Виняток: суцільне коротке число — це назва в New Balance («574», «990»,
+    # «1906»). Код завжди має розділювачі або літери поруч.
+    if len(tokens) == 1 and tokens[0].isdigit() and len(tokens[0]) <= 4:
+        return False
+    # Цифри є, а жодного справжнього слова немає — теж код: «9-25100-45».
+    return not any(len(t) >= 2 and t.isalpha() for t in tokens)
+
+
 def _norm_code(v: Optional[str]) -> str:
     """Артикул до порівнянного вигляду: лише літери й цифри, у верхньому.
 
@@ -1332,10 +1365,22 @@ def extract_and_propose(db: Session, product_id: int, photos: List[pathlib.Path]
     norm_codes = {_norm_code(c) for c in codes}
 
     # Текст із бирки. Артикул має найвищий поріг — помилка там найдорожча.
-    for src, upd_field in (("article_text", "marking"), ("brand_text", "brand_name")):
+    # ⚠️ `model_text` тут не було ВЗАГАЛІ. Схема про назву моделі питала,
+    # модель її читала (у прогонах: «M ANACAPA BREEZE LOW»), запис лягав у
+    # ai_autofill_runs — і на цьому все: пропозиція не створювалась ніколи,
+    # жодної за всю історію таблиці. Поле «Модель» — це заголовок товару в
+    # публічному каталозі, тож мовчазна втрата тут найдорожча.
+    for src, upd_field in (("article_text", "marking"), ("brand_text", "brand_name"),
+                           ("model_text", "model")):
         val = pred.get(src)
         if not val:
             continue
+        if upd_field == "model":
+            # Назва моделі — слова, а не код. Інакше в заголовок каталогу
+            # поїде «GWTIAH5-EL», і покупець побачить артикул замість назви.
+            if looks_like_article_code(val) or _norm_code(val) == _norm_code(current.get("marking")):
+                below_threshold.append((upd_field, val, pred.get("model_text_confidence")))
+                continue
         # ⚠️ Раніше тут стояло жорстке 0.9 — тобто НАШЕ припущення подавалось як
         # оцінка моделі, і вигаданий артикул виглядав майже впевненим. Тепер
         # беремо те, що сказала вона сама; немає оцінки — вважаємо ненадійним.

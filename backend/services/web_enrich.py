@@ -321,7 +321,14 @@ def _run(db: Session, product_id: int, cur: Dict[str, Any],
         from backend.services.width_normalization import normalize_width
     _try("width", normalize_width(pred.get("width")))
 
-    _try("model", (pred.get("model_name") or "").strip() or None)
+    # Та сама перевірка, що й для шару фото: сторінка виробника теж часто
+    # називає «моделлю» артикул.
+    model_name = (pred.get("model_name") or "").strip()
+    if model_name and not photo_autofill.looks_like_article_code(model_name) \
+            and photo_autofill._norm_code(model_name) != photo_autofill._norm_code(article):
+        _try("model", model_name)
+    elif model_name:
+        below.append(("model", model_name, conf))
 
     for field in WEB_CLOSED_FIELDS:
         if field in photo_autofill.CLOSED_FIELDS:
