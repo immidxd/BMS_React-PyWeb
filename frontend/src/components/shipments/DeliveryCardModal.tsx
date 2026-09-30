@@ -108,14 +108,14 @@ const fmtPrice = (n?: number | null) =>
 // в два рядки й та кнопка ставала вищою за сусідні («Розкласти фото»).
 // `whitespace-nowrap` тримає підпис в один рядок, `h-9` — однакову висоту.
 const HEAD_BTN =
-  'inline-flex h-9 items-center gap-1.5 whitespace-nowrap rounded-lg border px-3 text-sm font-medium '
+  'inline-flex h-8 items-center gap-1.5 whitespace-nowrap rounded-lg border px-2.5 text-[13px] font-medium '
   + 'transition-colors disabled:opacity-50';
 const HEAD_BTN_PLAIN = `${HEAD_BTN} border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 `
   + 'hover:bg-gray-100 dark:hover:bg-gray-800';
 // Розмір іконок однаковий усюди — це і є «пропорційно».
-const ICON = { fontSize: 14 } as const;
+const ICON = { fontSize: 13 } as const;
 // Значок метаданих у підзаголовку (дата, постачальник, кількість, сума).
-const META_ICON = { fontSize: 12 } as const;
+const META_ICON = { fontSize: 11 } as const;
 
 const DeliveryCardModal: React.FC<Props> = ({ shipment, open, onClose }) => {
   const [products, setProducts] = useState<Product[]>([]);
@@ -434,50 +434,30 @@ const DeliveryCardModal: React.FC<Props> = ({ shipment, open, onClose }) => {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4" onMouseDown={onClose}>
       <div className="relative bg-white dark:bg-gray-900 rounded-2xl shadow-2xl w-full max-w-6xl h-[88vh] flex flex-col" onMouseDown={e => e.stopPropagation()}>
-        {/* Header */}
-        <div className="flex flex-wrap items-start justify-between gap-x-6 gap-y-3 px-6 pt-5 pb-4 border-b border-gray-100 dark:border-gray-800">
-          {/* Заголовок просить собі 420 px. Разом із рядом дій (~830 px) це
-              більше за ширину вікна, тож зовнішній flex-wrap ЗАВЖДИ зносить
-              кнопки на власний рядок — і назва не тиснеться в кілька літер,
-              і вигляд не стрибає від довжини назви завозу. */}
-          <div className="min-w-0 flex-1 basis-[420px]">
-            <h2 className="truncate text-lg font-semibold text-gray-900 dark:text-gray-100"
+        {/* Header — ДВА яруси, не три. Перший: назва ліворуч, дії праворуч
+            у ТОМУ Ж рядку; другий: метадані одним компактним рядком під ними.
+            Раніше назва, метадані й кнопки стояли трьома поверхами й шапка
+            з'їдала забагато висоти. Назва стискається (min-w-0 + truncate),
+            ряд дій не тримає свою max-content ширину, тож на вузькому вікні
+            він спершу падає на власний рядок, а вже потім переноситься
+            всередині себе — і ніколи не вилазить за край картки. */}
+        {/* Хрестик живе в КУТІ картки, а не в ряду дій: усередині ряду він
+            переносився разом із кнопками й на вузькому вікні зависав сам
+            на другому рядку. Праве поле першого ярусу (pr-9) лишає йому
+            місце, тож кнопки під нього не заїжджають. */}
+        <button onClick={onClose} aria-label="Закрити" title="Закрити"
+          className="absolute right-3 top-3 z-10 inline-flex h-8 w-8 items-center justify-center rounded-lg text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-800 dark:hover:text-gray-200">
+          <CloseOutlined style={ICON} />
+        </button>
+        <div className="px-6 pt-4 pb-3 border-b border-gray-100 dark:border-gray-800">
+          <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 pr-9">
+            <h2 className="min-w-0 flex-1 basis-[240px] truncate text-lg font-semibold text-gray-900 dark:text-gray-100"
               title={shipment.sheet_name || `Завіз #${shipment.id}`}>{shipment.sheet_name || `Завіз #${shipment.id}`}</h2>
-            <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-gray-500 dark:text-gray-400">
-              <span className="inline-flex items-center gap-1.5"><CalendarOutlined style={META_ICON} />{fmtDate(shipment.shipment_date)}</span>
-              <span className="inline-flex items-center gap-1.5"><ShopOutlined style={META_ICON} />{shipment.supplier_name || 'Без постачальника'}</span>
-              {/* Ростовка = ОДИН запис у БД на розмір із quantity>1 (унікальний
-                  індекс не дає завести 10 однакових рядків). Тому «скільки речей
-                  у завозі» — це сума quantity, а не кількість записів: 5 розмірів
-                  Ф4083 = 10 фізичних пар. Показуємо і те, і те. */}
-              <span className="inline-flex items-center gap-1.5" title={itemsCount !== products.length
-                ? `${products.length} позицій (розмірів), ${itemsCount} речей разом`
-                : undefined}>
-                <ShoppingOutlined style={META_ICON} />{itemsCount} товарів
-                {itemsCount !== products.length && (
-                  <span className="text-gray-400"> · {products.length} позицій</span>
-                )}
-              </span>
-              {bgSyncing && (
-                <span className="inline-flex items-center gap-1 text-gray-400" title="Фонова синхронізація з журналом">
-                  <LoadingSpinner variant="inline" size="small" text={null} />
-                  синхронізація…
-                </span>
-              )}
-              {/* Сума продажних цін товарів — live, рахується з реально завантажених,
-                  а не зі stale shipment.total_cost зі списку завозів. */}
-              {products.length > 0 && (
-                <span className="inline-flex items-center gap-1.5" title="Сума продажних цін товарів цього завозу (з урахуванням кількості в ростовках)">
-                  <DollarOutlined style={META_ICON} />{fmtPrice(products.reduce((s, p) => s + (Number(p.price) || 0) * qtyOf(p), 0))}
-                </span>
-              )}
-            </div>
-          </div>
           {/* ⚠️ БЕЗ `shrink-0`: із ним ряд тримав свою max-content ширину й не
               переносився всередині себе — на вузькому вікні кнопки просто
               вилазили за край картки. Тепер, коли не вміщаються навіть на
               власному рядку, вони переходять на наступний. */}
-          <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-2">
+          <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-1.5">
             <button onClick={toggleInfo} disabled={loading} title="Інформація про завоз"
               className={`${HEAD_BTN} ${infoOpen
                 ? 'border-gray-400 bg-gray-100 dark:bg-gray-700 text-gray-800 dark:text-gray-100'
@@ -507,10 +487,36 @@ const DeliveryCardModal: React.FC<Props> = ({ shipment, open, onClose }) => {
               className={`${HEAD_BTN} border-transparent bg-black text-white hover:bg-gray-800`}>
               <PlusOutlined style={ICON} /> Додати товар
             </button>
-            <button onClick={onClose} aria-label="Закрити" title="Закрити"
-              className="ml-1 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-800 dark:hover:text-gray-200">
-              <CloseOutlined style={ICON} />
-            </button>
+          </div>
+          </div>
+          {/* Метадані завозу одним рядком. Ростовка = ОДИН запис у БД на
+              розмір із quantity>1 (унікальний індекс не дає завести 10
+              однакових рядків), тому «скільки речей у завозі» — це сума
+              quantity, а не кількість записів: 5 розмірів Ф4083 = 10 пар. */}
+          <div className="mt-1.5 flex flex-wrap items-center gap-x-3.5 gap-y-1 text-[13px] text-gray-500 dark:text-gray-400">
+            <span className="inline-flex items-center gap-1.5"><CalendarOutlined style={META_ICON} />{fmtDate(shipment.shipment_date)}</span>
+            <span className="inline-flex items-center gap-1.5"><ShopOutlined style={META_ICON} />{shipment.supplier_name || 'Без постачальника'}</span>
+            <span className="inline-flex items-center gap-1.5" title={itemsCount !== products.length
+              ? `${products.length} позицій (розмірів), ${itemsCount} речей разом`
+              : undefined}>
+              <ShoppingOutlined style={META_ICON} />{itemsCount} товарів
+              {itemsCount !== products.length && (
+                <span className="text-gray-400">· {products.length} позицій</span>
+              )}
+            </span>
+            {/* Сума продажних цін — live, з реально завантажених товарів, а не
+                зі stale shipment.total_cost зі списку завозів. */}
+            {products.length > 0 && (
+              <span className="inline-flex items-center gap-1.5" title="Сума продажних цін товарів цього завозу (з урахуванням кількості в ростовках)">
+                <DollarOutlined style={META_ICON} />{fmtPrice(products.reduce((s, p) => s + (Number(p.price) || 0) * qtyOf(p), 0))}
+              </span>
+            )}
+            {bgSyncing && (
+              <span className="inline-flex items-center gap-1 text-gray-400" title="Фонова синхронізація з журналом">
+                <LoadingSpinner variant="inline" size="small" text={null} />
+                синхронізація…
+              </span>
+            )}
           </div>
         </div>
 
