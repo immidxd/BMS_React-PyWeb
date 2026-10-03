@@ -54,6 +54,10 @@ try:
     from routers import merge_candidates  # optional — workspace merge UX
 except Exception:
     merge_candidates = None
+try:
+    from routers import cloud_budget as cloud_budget_router  # лічильник безкоштовного ліміту Neon
+except Exception:
+    cloud_budget_router = None
 
 # НАЛАШТУВАННЯ ЛОГУВАННЯ
 # Використовуємо абсолютний шлях і гарантуємо наявність директорії,
@@ -203,6 +207,8 @@ if publications:
     app.include_router(publications.router, tags=["publications"])  # routes already prefixed with /api
 if merge_candidates:
     app.include_router(merge_candidates.router, tags=["merge-candidates"])  # routes already prefixed with /api
+if cloud_budget_router:
+    app.include_router(cloud_budget_router.router, tags=["cloud-budget"])
 
 # Mount product images directory (local + Google Drive overlay; abstraction in services/product_images.py)
 try:
@@ -406,6 +412,30 @@ async def _journal_change_poller():
             except Exception as e:
                 logger.warning(f"Journal-poller error: {e}")
             await asyncio.sleep(poll_sec)
+
+    asyncio.create_task(_loop())
+
+
+# ── Лічильник безкоштовного ліміту Neon (ЖОРСТКЕ ПРАВИЛО, CLAUDE.md) ──────────
+# Раз на NEON_BUDGET_REFRESH_SEC (30 хв) читає витрату через Neon API — це control
+# plane: сам запит НЕ будить хмарну БД. Рівень керує синком каталогу й банером.
+@app.on_event("startup")
+async def _neon_budget_watch():
+    import asyncio
+    try:
+        from services import cloud_budget
+    except ImportError:
+        from backend.services import cloud_budget
+    period = max(int(os.getenv("NEON_BUDGET_REFRESH_SEC", "1800") or 1800), 300)
+
+    async def _loop():
+        await asyncio.sleep(10)
+        while True:
+            try:
+                await asyncio.to_thread(cloud_budget.refresh)
+            except Exception as e:
+                logger.warning(f"Neon budget refresh failed: {e}")
+            await asyncio.sleep(period)
 
     asyncio.create_task(_loop())
 

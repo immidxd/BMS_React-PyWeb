@@ -9,6 +9,7 @@ import { ParsingStatus } from './components/ParsingStatus';
 import TaskCenter from './components/common/TaskCenter';
 import DevBadge from './components/common/DevBadge';
 import UpdateBanner from './components/common/UpdateBanner';
+import CloudBudgetBanner from './components/common/CloudBudgetBanner';
 import LoadingSpinner from './components/common/LoadingSpinner';
 import { ToastContainer, toast } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
@@ -332,6 +333,7 @@ const App: React.FC = () => {
           <TaskCenter />
           <DevBadge />
           <UpdateBanner />
+          <CloudBudgetBanner />
         </FilterPanelProvider>
       </AppThemeProvider>
     </Router>
