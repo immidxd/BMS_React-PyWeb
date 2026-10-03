@@ -13,6 +13,7 @@ import UpdateBanner from './components/common/UpdateBanner';
 import PageBoundary from './components/common/PageBoundary';
 import { lazyWithRetry } from './services/chunkReload';
 import { refreshPromLimitWatch } from './services/promLimitMonitor';
+import CloudBudgetBanner from './components/common/CloudBudgetBanner';
 import { ToastContainer, toast } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
 import './App.css';
@@ -405,6 +406,7 @@ const App: React.FC = () => {
           </Routes>
           <TaskCenter />
           <UpdateBanner />
+          <CloudBudgetBanner />
         </FilterPanelProvider>
       </AppThemeProvider>
     </Router>

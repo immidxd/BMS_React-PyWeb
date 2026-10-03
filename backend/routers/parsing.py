@@ -190,31 +190,18 @@ def _cancel_auto_if_running() -> None:
 # ── Тригер синку ХМАРНОГО каталогу після успішного парсингу ──────────────────
 # Ланцюг свіжості: правка в таблиці → journal-poller (≤90с) → quick-parse →
 # ЦЕЙ тригер → BMS_catalog/cloud/sync_to_cloud.py → Neon → каталог 24/7.
-# Неблокуючий Popen у venv каталогу; фейл — лише warning (щогодинний launchd
-# лишається фолбеком). Тротл 120с (серія парсингів = один синк). На машинах без
+# ⚠️ Безкоштовний ліміт Neon (CLAUDE.md): кожен синк будить хмарну БД на ~6 хв,
+# тому автоматичний синк — через catalog_sync_service: не частіше ніж раз на
+# 20–60 хв (залежно від рівня бюджету), з відкладеним запуском для останньої
+# зміни, і жодного синку на рівні «stop». Фейл — лише warning. На машинах без
 # BMS_catalog (Windows-прод) — тихий no-op. Вимкнути: CATALOG_CLOUD_SYNC=0.
-_CATALOG_DIR = os.path.expanduser("~/Desktop/BMS_catalog")
-_cloud_sync_last_ts: float = 0.0
-
-
 def _trigger_catalog_cloud_sync(reason: str) -> None:
-    global _cloud_sync_last_ts
-    import time as _time
-    import subprocess as _sp
-    if os.getenv("CATALOG_CLOUD_SYNC", "1") == "0":
-        return
-    py = os.path.join(_CATALOG_DIR, "venv", "bin", "python")
-    script = os.path.join(_CATALOG_DIR, "cloud", "sync_to_cloud.py")
-    if not (os.path.isfile(py) and os.path.isfile(script)):
-        return
-    now = _time.time()
-    if now - _cloud_sync_last_ts < 120:
-        return
-    _cloud_sync_last_ts = now
     try:
-        with open("/tmp/bms_catalog_sync.out", "ab") as out:
-            _sp.Popen([py, script], cwd=_CATALOG_DIR, stdout=out, stderr=out)
-        logger.info(f"Catalog cloud-sync triggered ({reason})")
+        try:
+            from services import catalog_sync_service
+        except ImportError:
+            from backend.services import catalog_sync_service
+        catalog_sync_service.trigger_catalog_cloud_sync(reason, urgent=False)
     except Exception as e:
         logger.warning(f"Catalog cloud-sync trigger failed: {e}")
 

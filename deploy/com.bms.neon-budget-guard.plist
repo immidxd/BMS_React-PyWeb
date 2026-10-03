@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Сторож бюджету Neon кожні 15 хв — працює, навіть коли BMS закритий
+  (ЖОРСТКЕ ПРАВИЛО, CLAUDE.md). Читає витрату через Neon API (базу не будить),
+  на «stop» вимикає compute, доки власник не дозволить більше в BMS.
+
+  Шукає BMS у ~/Desktop/react-fastapi-app або ~/Desktop/BMS_React-PyWeb (з venv);
+  якщо BMS лежить деінде — допиши шлях у ProgramArguments перед встановленням.
+
+  Встановити (з КОРЕНЯ теки BMS — шлях до неї підставиться сам):
+    sed "s#\$BMS_DIR#$(pwd)#" deploy/com.bms.neon-budget-guard.plist > ~/Library/LaunchAgents/com.bms.neon-budget-guard.plist
+    launchctl load ~/Library/LaunchAgents/com.bms.neon-budget-guard.plist
+  Перевірити зараз:  launchctl start com.bms.neon-budget-guard ; cat /tmp/bms_neon_guard.out
+  Прибрати:          launchctl unload ~/Library/LaunchAgents/com.bms.neon-budget-guard.plist
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.bms.neon-budget-guard</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/sh</string>
+        <string>-c</string>
+        <string>for d in "$BMS_DIR" "$HOME/Desktop/react-fastapi-app" "$HOME/Desktop/BMS_React-PyWeb"; do [ -f "$d/backend/scripts/neon_budget_guard.py" ] &amp;&amp; cd "$d" &amp;&amp; exec ./venv/bin/python backend/scripts/neon_budget_guard.py; done; echo "BMS не знайдено" >&amp;2; exit 1</string>
+    </array>
+    <key>StartInterval</key>
+    <integer>900</integer>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/tmp/bms_neon_guard.out</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/bms_neon_guard.err</string>
+</dict>
+</plist>

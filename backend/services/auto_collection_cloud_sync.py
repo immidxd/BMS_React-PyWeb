@@ -18,6 +18,7 @@ from typing import Any, Dict, Iterable, List, Optional
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
+from sqlalchemy.pool import NullPool
 
 try:
     from backend.models.database import SessionLocal
@@ -85,10 +86,11 @@ def _engine() -> Engine:
             url = cloud_database_url()
             if not url:
                 raise RuntimeError("Хмарна база каталогу не налаштована")
+            # ⚠️ Бюджет Neon (CLAUDE.md): NullPool — з'єднання закривається одразу після
+            # синку. Пул тримав його відкритим, і compute не засинав між циклами.
             _ENGINE = create_engine(
                 url,
-                pool_pre_ping=True,
-                pool_recycle=300,
+                poolclass=NullPool,
                 connect_args={"connect_timeout": 12},
             )
         return _ENGINE
@@ -437,6 +439,37 @@ def sync_once(*, force_snapshot: bool = False) -> Dict[str, Any]:
     }
 
 
+# ── Бюджет Neon: фоновий цикл BMS (кожні 5 хв) НЕ ходить у хмару щоразу ──────
+# Раніше sync_once() викликався на КОЖНОМУ 5-хвилинному циклі → Neon не засинав,
+# поки відкритий BMS. Тепер фонове «підтягнути чернетки з хмари» — не частіше ніж
+# раз на AUTO_COLLECTION_CLOUD_PULL_SEC (6 год — як і Cloudflare Worker), і лише
+# коли бюджет дозволяє будити хмару. Дії користувача (trigger) — одразу.
+_LAST_BACKGROUND_PULL = 0.0
+
+
+def cloud_wake_allowed() -> bool:
+    """Чи дозволяє бюджет Neon будити хмару (на рівні stop — ні)."""
+    try:
+        from backend.services import cloud_budget
+    except ImportError:
+        from services import cloud_budget
+    return cloud_budget.cloud_wake_allowed()
+
+
+def background_pull_due() -> bool:
+    import time as _time
+    if not cloud_wake_allowed():
+        return False
+    period = max(float(os.getenv("AUTO_COLLECTION_CLOUD_PULL_SEC", "21600") or 21600), 300.0)
+    return _time.time() - _LAST_BACKGROUND_PULL >= period
+
+
+def mark_background_pull() -> None:
+    import time as _time
+    global _LAST_BACKGROUND_PULL
+    _LAST_BACKGROUND_PULL = _time.time()
+
+
 def status() -> Dict[str, Any]:
     worker_url = str(os.getenv("AUTO_COLLECTION_DRAFT_WORKER_URL") or "").strip()
     with _LOCK:
@@ -457,6 +490,9 @@ def status() -> Dict[str, Any]:
 def trigger(reason: str = "auto-collection") -> bool:
     """Queue a coalesced sync; repeated UI actions never create parallel jobs."""
     if os.getenv("AUTO_COLLECTION_CLOUD_SYNC", "1") == "0" or not is_configured():
+        return False
+    if not cloud_wake_allowed():
+        logger.warning("Auto-collection cloud sync skipped: бюджет Neon на рівні stop (%s)", reason)
         return False
     global _RUNNING, _PENDING_REASON
     with _LOCK:

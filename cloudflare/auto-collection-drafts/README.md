@@ -1,6 +1,7 @@
 # BMS automatic collection drafts
 
-This Worker runs every five minutes and may create only `awaiting_review`
+This Worker runs every six hours (cron `17 */6 * * *` — Neon budget, see BMS
+`CLAUDE.md`) and may create only `awaiting_review`
 Top-9 snapshots in Neon. It has no social-platform tokens, R2 credentials,
 publisher imports or publication endpoints. Viber/Facebook delivery remains a
 separate manual action in BMS.

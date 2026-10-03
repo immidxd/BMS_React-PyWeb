@@ -81,6 +81,10 @@ try:
     from routers import content_plan  # optional — контент-план з Obsidian TaskNotes
 except Exception:
     content_plan = None
+try:
+    from routers import cloud_budget as cloud_budget_router  # лічильник безкоштовного ліміту Neon
+except Exception:
+    cloud_budget_router = None
 
 # НАЛАШТУВАННЯ ЛОГУВАННЯ
 # Використовуємо абсолютний шлях і гарантуємо наявність директорії,
@@ -253,6 +257,8 @@ if labels_router:
     app.include_router(labels_router.router)  # /api/labels/...
 if warehouse_router:
     app.include_router(warehouse_router.router)  # /api/warehouse/...
+if cloud_budget_router:
+    app.include_router(cloud_budget_router.router, tags=["cloud-budget"])
 
 # Mount product images directory (local + Google Drive overlay; abstraction in services/product_images.py)
 try:
@@ -670,6 +676,31 @@ async def _journal_change_poller():
     asyncio.create_task(_loop())
 
 
+# ── Бюджет Neon + жорсткий запобіжник (ЖОРСТКЕ ПРАВИЛО, CLAUDE.md) ────────────
+# Раз на 30 хв (поблизу межі — 10 хв) читає витрату через Neon API — це control
+# plane: сам запит НЕ будить хмарну БД. Рівень керує синком каталогу й банером;
+# на «stop» compute вимикається, доки власник не дозволить більше (services/cloud_budget.py).
+@app.on_event("startup")
+async def _neon_budget_watch():
+    import asyncio
+    try:
+        from services import cloud_budget
+    except ImportError:
+        from backend.services import cloud_budget
+
+    async def _loop():
+        await asyncio.sleep(10)
+        while True:
+            try:
+                await asyncio.to_thread(cloud_budget.refresh)
+            except Exception as e:
+                logger.warning(f"Neon budget refresh failed: {e}")
+            # поблизу межі — частіше (10 хв), щоб запобіжник вимкнув базу вчасно
+            await asyncio.sleep(cloud_budget.next_refresh_sec())
+
+    asyncio.create_task(_loop())
+
+
 # ── Auto-sync publications (Telegram) ─────────────────────────────────────────
 # Single sync cycle: scan channels → relink → recovery.
 # Triggered on startup (after 15s delay) and periodically every PERIOD seconds.
@@ -952,13 +983,18 @@ async def _auto_collection_draft_cycle() -> None:
         try:
             # First pull any draft created by Cloudflare while this BMS process
             # was offline.  A cloud outage never prevents the local safety net.
-            try:
-                cloud_before = auto_collection_cloud_sync.sync_once()
-            except Exception as exc:
-                cloud_before = {"ok": False, "error": str(exc)}
+            # Бюджет Neon (CLAUDE.md): у хмару — не на кожному 5-хв циклі, а раз на 6 год.
+            cloud_before = {"ok": True, "skipped": "budget_throttle"}
+            if auto_collection_cloud_sync.background_pull_due():
+                auto_collection_cloud_sync.mark_background_pull()
+                try:
+                    cloud_before = auto_collection_cloud_sync.sync_once()
+                except Exception as exc:
+                    cloud_before = {"ok": False, "error": str(exc)}
             result = auto_collection_scheduler.generate_due_drafts(db)
             cloud_after = None
-            if result.get("created"):
+            # Нова чернетка (раз на тиждень) — одразу в хмару, якщо бюджет дозволяє.
+            if result.get("created") and auto_collection_cloud_sync.cloud_wake_allowed():
                 try:
                     cloud_after = auto_collection_cloud_sync.sync_once()
                 except Exception as exc:
