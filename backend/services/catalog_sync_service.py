@@ -133,7 +133,10 @@ def _sync_worker(catalog_dir: Path, py: Path, script: Path, reason: str) -> None
 
 
 def _run_once(catalog_dir: Path, py: Path, script: Path, reason: str) -> None:
-    timeout = int(os.getenv("CATALOG_CLOUD_SYNC_TIMEOUT", "180"))
+    # Повний синк із фото й аналітикою може йти кілька хвилин; 180 с колись вбивали б
+    # його посередині (хмарна транзакція відкотилась би). Захист від зависання —
+    # keepalive/таймаути в самому sync_to_cloud.py; тут лише запобіжник від «вічного» процесу.
+    timeout = int(os.getenv("CATALOG_CLOUD_SYNC_TIMEOUT", "900"))
     log_path = Path(os.getenv("CATALOG_CLOUD_SYNC_LOG", "/tmp/bms_catalog_sync.out"))
     stamp = _dt.datetime.now().isoformat(timespec="seconds")
 
