@@ -110,8 +110,9 @@
 **Чекає на власника (без цього захист не працює повністю):**
 1. ✅ PR #2 злиті в обох репо; ✅ каталог передеплоєно на Railway (03.10.2026).
 2. Передеплоїти Worker Топ-9 (див. вище) — інакше він далі будить Neon кожні 5 хв.
-3. `NEON_API_KEY` (з ПРАВОМ ЗАПИСУ) + `NEON_PROJECT_ID=plain-breeze-73014199` — дописати У ФАЙЛ
-   `.env` у корені BMS (не вводити в терміналі — так змінна живе лише до закриття вікна).
+3. ✅ `NEON_API_KEY` (**Org-wide**) + `NEON_PROJECT_ID=plain-breeze-73014199` у `.env` у корені BMS
+   (не в терміналі — так змінна живе лише до закриття вікна). ⚠️ Ключ показувався на скриншоті —
+   перевипустити (Revoke → новий Org-wide).
 4. У BMS: `git pull` (гілка `feature/windows-autonomous-deploy`), перезапуск BMS; launchd-сторож —
    команда в `deploy/com.bms.neon-budget-guard.plist` (запускати з кореня BMS).
 5. Після першого запуску перевірити `/tmp/bms_neon_guard.out` (рівень, `cost_usd`, без `cap_error`).
@@ -120,6 +121,22 @@
 (⚠️ показувався на скриншоті — власнику порадили перевипустити). Реальне споживання
 1–2.10: 165 і 452 CU-с на добу (≈$0.02) — після передеплою каталогу база переважно спить.
 Worker Топ-9: розклад треба змінити в Cloudflare (Node 20 не тягне Wrangler 4 — потрібен Node 22).
+
+### 2026-10-03 · Статистика → «Сервери й хмара» (моніторинг витрат на серверну частину)
+**Запит власника:** бачити, скільки грошей іде на сервери бізнесу — окремо Каталог, Склад,
+BMS і всі разом (Railway, Neon тощо).
+**Зроблено** (гілка `feature/windows-autonomous-deploy`, коміти `0de3c5b`, `976a751`):
+`services/cloud_costs.py` (провайдери Neon / Railway / Cloudflare Workers+R2 / AI-Gemini +
+ручні пункти, розподіл за напрямами, курс НБУ), `routers/cloud_costs.py`
+(`GET /api/cloud-costs`, `POST /refresh`, `PUT /config`), `components/statistics/CloudCostsPanel.tsx`
+(нова підвкладка статистики), `scripts/cloud_costs_check.py` (перевірка без секретів),
+тести `test_cloud_costs.py`. Оновлення разом із лічильником Neon; базу не будить.
+**Чекає на власника:** у `.env` — `RAILWAY_API_TOKEN`, `RAILWAY_PROJECT_ID`
+(`9e8963c6-9138-4fbc-bdd5-77b2e233a2b9`, з адреси Railway), `CLOUDFLARE_API_TOKEN`
+(Account Analytics: Read), `CLOUDFLARE_ACCOUNT_ID`; потім прогнати `cloud_costs_check.py` —
+формат Railway/Cloudflare API ще НЕ звірено на живих токенах (лише фікстури).
+**Синхронізація з `main`:** PR #3 (лічильник через API споживання) відкритий; «Сервери й хмара»
+поки лише в робочій гілці — в `main` потрапить разом зі злиттям робочої гілки.
 
 **Пам'ятати надалі:**
 - Вимикання ендпоінта через Neon API покрите тестами з підміною API; на живому Neon ще не
