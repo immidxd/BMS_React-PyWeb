@@ -26,11 +26,13 @@ logger = logging.getLogger(__name__)
 
 try:
     from backend.services import r2_storage
+    from backend.services.photo_edit import apply_edit
     from backend.scripts.ingest_photos import (
         WEBP_METHOD, WEBP_QUALITY, convert_to_webp_master,
     )
 except ImportError:  # запуск з backend/
     from services import r2_storage  # type: ignore
+    from services.photo_edit import apply_edit  # type: ignore
     from scripts.ingest_photos import (  # type: ignore
         WEBP_METHOD, WEBP_QUALITY, convert_to_webp_master,
     )
@@ -231,7 +233,9 @@ def _next_index(pnum: str, category: str, kind: str) -> int:
 
 
 def add_photos(pnum: str, category: str, sources: List[tuple], kind: str = "official") -> dict:
-    """Додати фото потрібного типу. sources = [(tmp_path, _orig_name), …].
+    """Додати фото потрібного типу. sources = [(tmp_path, _orig_name), …] або
+    [(tmp_path, _orig_name, edit), …], де `edit` — кадр із редактора
+    (`photo_edit.parse_edit`: поворот + обрізка 1:1), застосований до оригіналу.
     official → `_NN`; real → `_00N`; defect → `_defN`.
     Конвертує у WebP-майстер, нумерує з наступного вільного індексу, синкає R2.
 
@@ -246,11 +250,16 @@ def add_photos(pnum: str, category: str, sources: List[tuple], kind: str = "offi
     (MIRROR_ROOT / category).mkdir(parents=True, exist_ok=True)
     added = 0
     errors: List[dict] = []
-    for tmp_path, _orig in sources:
+    for src in sources:
+        tmp_path, _orig = src[0], src[1]
+        edit = src[2] if len(src) > 2 else None
         name = _kind_filename(pn, kind, next_idx)
         dest = MIRROR_ROOT / category / name
         try:
-            convert_to_webp_master(Path(tmp_path), dest)
+            convert_to_webp_master(
+                Path(tmp_path), dest,
+                prepare=(lambda im, e=edit: apply_edit(im, e)) if edit else None,
+            )
             _sync_one(category, dest)
         except Exception as e:  # noqa: BLE001 — один файл не має валити весь батч
             if dest.exists():
@@ -305,16 +314,14 @@ PHOTO_TRANSFORMS = frozenset({
 })
 
 
-def transform_photo(pnum: str, category: str, filename: str, operation: str) -> dict:
-    """Повернути/віддзеркалити канонічне фото та синхронно замінити його в R2.
+def _rewrite_master(pnum: str, category: str, filename: str, mutate, tmp_tag: str) -> dict:
+    """Переписати канонічне фото на місці: та сама назва, індекс і R2-ключ.
 
-    Ім'я, індекс і R2-ключ не змінюються — тому всі споживачі (картка,
-    Telegram, Prom/інші експортери) наступного разу читають одну й ту саму
-    відредаговану версію. Розмір кадру не зменшується повторно.
+    Спільна основа повороту й кадрування. Новий файл готується поруч, спершу
+    їде в R2 і лише тоді атомарно стає локальним майстром (`_commit_replacement`)
+    — тож збій R2 лишає старий файл байт-у-байт.
     """
     pn = _norm(pnum)
-    if operation not in PHOTO_TRANSFORMS:
-        raise ValueError(f"Невідома операція з фото: {operation}")
     if not photo_belongs_to(pn, filename):
         raise ValueError("Можна редагувати лише фото цього товару")
 
@@ -324,23 +331,16 @@ def transform_photo(pnum: str, category: str, filename: str, operation: str) -> 
             f"Файл {filename} є лише у старому хмарному джерелі; "
             "спочатку додай його до керованих фото BMS"
         )
-
-    transpose = {
-        "rotate_left": Image.Transpose.ROTATE_90,
-        "rotate_180": Image.Transpose.ROTATE_180,
-        "rotate_right": Image.Transpose.ROTATE_270,
-        "flip_horizontal": Image.Transpose.FLIP_LEFT_RIGHT,
-    }[operation]
-    staged = dest.with_name(f".__bms_transform_{uuid.uuid4().hex}.webp")
+    staged = dest.with_name(f".__bms_{tmp_tag}_{uuid.uuid4().hex}.webp")
 
     with _lock_for(dest):
         try:
             with Image.open(dest) as opened:
-                image = ImageOps.exif_transpose(opened).transpose(transpose)
+                image = ImageOps.exif_transpose(opened)
                 has_alpha = image.mode in ("RGBA", "LA") or (
                     image.mode == "P" and "transparency" in image.info
                 )
-                image = image.convert("RGBA" if has_alpha else "RGB")
+                image = mutate(image.convert("RGBA" if has_alpha else "RGB"))
                 width, height = image.size
                 image.save(
                     staged,
@@ -358,7 +358,6 @@ def transform_photo(pnum: str, category: str, filename: str, operation: str) -> 
     stat = dest.stat()
     return {
         "filename": filename,
-        "operation": operation,
         "width": width,
         "height": height,
         "bytes": stat.st_size,
@@ -366,6 +365,39 @@ def transform_photo(pnum: str, category: str, filename: str, operation: str) -> 
         # може одразу показати нові пікселі без повторного сканування галереї.
         "version": f"{stat.st_mtime_ns:x}{stat.st_size:x}",
     }
+
+
+def transform_photo(pnum: str, category: str, filename: str, operation: str) -> dict:
+    """Повернути/віддзеркалити канонічне фото та синхронно замінити його в R2.
+
+    Ім'я, індекс і R2-ключ не змінюються — тому всі споживачі (картка,
+    Telegram, Prom/інші експортери) наступного разу читають одну й ту саму
+    відредаговану версію. Розмір кадру не зменшується повторно.
+    """
+    if operation not in PHOTO_TRANSFORMS:
+        raise ValueError(f"Невідома операція з фото: {operation}")
+    transpose = {
+        "rotate_left": Image.Transpose.ROTATE_90,
+        "rotate_180": Image.Transpose.ROTATE_180,
+        "rotate_right": Image.Transpose.ROTATE_270,
+        "flip_horizontal": Image.Transpose.FLIP_LEFT_RIGHT,
+    }[operation]
+    result = _rewrite_master(pnum, category, filename,
+                             lambda im: im.transpose(transpose), "transform")
+    return {**result, "operation": operation}
+
+
+def edit_photo(pnum: str, category: str, filename: str, edit: dict) -> dict:
+    """Кадрувати (1:1) / повернути фото, що вже є в картці, — на місці.
+
+    `edit` — уже перевірений `photo_edit.parse_edit`. Ріжемо з поточного
+    майстра (≤1512 px): оригіналу вже немає, тож квадрат вийде за меншою
+    стороною — для картки цього досить.
+    """
+    if not edit:
+        raise ValueError("Порожній кадр — нічого змінювати")
+    return _rewrite_master(pnum, category, filename,
+                           lambda im: apply_edit(im, edit), "edit")
 
 
 def reorder_photos(pnum: str, category: str, ordered_filenames: List[str], kind: str = "official") -> List[str]:

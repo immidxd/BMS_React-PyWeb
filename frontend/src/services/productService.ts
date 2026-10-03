@@ -4,6 +4,7 @@ import {
     ProductFilters
 } from '../types/product';
 import { filenameFromDisposition } from './imageTransfer';
+import type { PhotoEdit } from '../types/photoEdit';
 
 // Базовий URL для API товарів
 const API_URL = '/api/products';
@@ -182,9 +183,14 @@ export const productService = {
     
     /** Додати фото товару (конверт у WebP + R2 на бекенді).
      *  kind='official' → нумерація `_NN`; kind='real' → `_00N`. */
-    async addProductPhotos(id: number, files: File[], kind: 'official' | 'real' | 'defect' = 'official'): Promise<{ added: number; category: string; kind: string; errors?: { file: string; reason: string }[] }> {
+    async addProductPhotos(
+        id: number, files: File[], kind: 'official' | 'real' | 'defect' = 'official',
+        /** кадри 1:1 у порядку `files` (null — як є); ріже бекенд з оригіналу */
+        edits?: (PhotoEdit | null)[],
+    ): Promise<{ added: number; category: string; kind: string; errors?: { file: string; reason: string }[] }> {
         const fd = new FormData();
         files.forEach((f) => fd.append('files', f));
+        if (edits && edits.some(Boolean)) fd.append('edits', JSON.stringify(edits));
         const res = await axios.post(`${API_URL}/${id}/photos`, fd, {
             params: { kind },
             headers: { 'Content-Type': 'multipart/form-data' },
@@ -242,6 +248,13 @@ export const productService = {
         const res = await axios.post(`${API_URL}/${id}/photos/transform`, { operation }, {
             params: { filename },
         });
+        return res.data;
+    },
+
+    /** Кадрувати (1:1) / повернути фото, що вже є в картці, — на місці (та сама назва й R2-ключ). */
+    async editProductPhoto(id: number, filename: string, edit: PhotoEdit,
+    ): Promise<{ edited: string; width: number; height: number; version: string }> {
+        const res = await axios.post(`${API_URL}/${id}/photos/edit`, { edit }, { params: { filename } });
         return res.data;
     },
 

@@ -1,5 +1,5 @@
 from typing import List, Optional, Dict, Any, Tuple
-from fastapi import APIRouter, Depends, HTTPException, Query, Body, Path, status, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, Query, Body, Path, status, UploadFile, File, Form
 from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import text
@@ -560,27 +560,45 @@ async def add_product_photos(
     files: List[UploadFile] = File(...),
     kind: str = Query("official", regex="^(official|real|defect)$",
                       description="куди вантажити: official (_NN) або real (_00N)"),
+    edits: Optional[str] = Form(None, description=(
+        "JSON-список кадрів у порядку `files` (null = без змін): "
+        "{rotate, crop:{x,y,w,h}} — див. services/photo_edit.py")),
     db: Session = Depends(get_db),
 ):
     """Додати фото товару (multipart). kind='official'→`_NN`; 'real'→`_00N`.
-    Конверт у WebP → мірор + R2."""
+    Конверт у WebP → мірор + R2. Кадр 1:1 із редактора ріжеться з оригіналу
+    ДО конвертації — у R2 лягає вже квадратна версія."""
+    import json as _json
     import tempfile, os as _os
     try:
         from services.photo_manager import add_photos
+        from services.photo_edit import parse_edit
     except ImportError:
         from backend.services.photo_manager import add_photos
+        from backend.services.photo_edit import parse_edit
     from starlette.concurrency import run_in_threadpool
+    edit_list: list = []
+    if edits:
+        try:
+            raw = _json.loads(edits)
+            if not isinstance(raw, list):
+                raise ValueError("очікується список")
+            edit_list = [parse_edit(e) for e in raw]
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=f"Некоректний кадр: {e}")
+        if len(edit_list) != len(files):
+            raise HTTPException(status_code=400, detail="Кадрів не стільки ж, скільки файлів")
     pnum, category = _pnum_and_category(product_id, db)
     sources = []
     tmps = []
     try:
-        for uf in files:
+        for i, uf in enumerate(files):
             suffix = _os.path.splitext(uf.filename or "")[1] or ".img"
             fd, tmp = tempfile.mkstemp(suffix=suffix)
             with _os.fdopen(fd, "wb") as out:
                 out.write(await uf.read())
             tmps.append(tmp)
-            sources.append((tmp, uf.filename))
+            sources.append((tmp, uf.filename, edit_list[i] if edit_list else None))
         # ⚠️ add_photos — важка синхронна робота (декод + конверт у WebP через Pillow
         # + мережева заливка в R2). Виклик просто в корутині морозив event loop на
         # весь час: завантаження 10 фото = секунди, коли бекенд не відповідає взагалі.
@@ -727,6 +745,53 @@ async def transform_product_photo(
         )
     _invalidate_photo_cache(pnum)
     return {"transformed": filename, "category": category, **result}
+
+
+@router.post("/api/products/{product_id}/photos/edit")
+async def edit_product_photo(
+    product_id: int = Path(..., ge=1),
+    filename: str = Query(..., description="ім'я канонічного фото"),
+    edit: Dict[str, Any] = Body(..., embed=True,
+                                description="{rotate, crop:{x,y,w,h}} — див. services/photo_edit.py"),
+    db: Session = Depends(get_db),
+):
+    """Кадрувати (1:1) фото, що вже є в картці, — на місці, як і поворот:
+    та сама назва/позиція/R2-ключ, новий `?v=` скидає кеш скрізь."""
+    try:
+        from services.photo_manager import edit_photo
+        from services.photo_edit import parse_edit
+    except ImportError:
+        from backend.services.photo_manager import edit_photo
+        from backend.services.photo_edit import parse_edit
+    from starlette.concurrency import run_in_threadpool
+
+    try:
+        parsed = parse_edit(edit)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Некоректний кадр: {e}")
+    if not parsed:
+        raise HTTPException(status_code=400, detail="Порожній кадр — нічого змінювати")
+    pnum, category = _photo_owner_and_category(product_id, filename, db)
+    try:
+        result = await run_in_threadpool(edit_photo, pnum, category, filename, parsed)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except OSError as e:
+        logger.exception("Photo edit failed locally for product %s", product_id)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Не вдалося обробити фото; оригінал не змінено: {e}",
+        )
+    except Exception as e:
+        logger.exception("Photo edit/R2 sync failed for product %s", product_id)
+        raise HTTPException(
+            status_code=502,
+            detail=f"Не вдалося синхронізувати фото з Cloudflare; оригінал не змінено: {e}",
+        )
+    _invalidate_photo_cache(pnum)
+    return {"edited": filename, "category": category, **result}
 
 
 @router.put("/api/products/{product_id}/photos/reorder")

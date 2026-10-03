@@ -75,12 +75,14 @@ DEFAULT_MIRROR_ROOT = os.environ.get(
 VALID_CATEGORIES = {"Взуття", "Сумки", "Одяг", "Аксесуари", "Інше"}
 
 
-def convert_to_webp_master(src_path: Path, dest_path: Path) -> int:
+def convert_to_webp_master(src_path: Path, dest_path: Path, prepare=None) -> int:
     """Конвертує зображення у WebP-майстер. Повертає розмір результату в байтах.
 
     - даунскейл до MASTER_MAX_SIDE по довшій стороні (НЕ апскейлить менші);
     - поважає EXIF-орієнтацію, далі EXIF викидається;
-    - зберігає прозорість, якщо є (WebP підтримує alpha), інакше RGB.
+    - зберігає прозорість, якщо є (WebP підтримує alpha), інакше RGB;
+    - `prepare(im) -> im` — необовʼязкова правка ДО даунскейлу (кадрування 1:1
+      з картки/«Розкласти фото»): ріжемо з оригіналу, а не з 1512-копії.
     """
     with Image.open(src_path) as im:
         im = ImageOps.exif_transpose(im)  # застосувати поворот, прибрати EXIF
@@ -89,6 +91,8 @@ def convert_to_webp_master(src_path: Path, dest_path: Path) -> int:
             im.mode == "P" and "transparency" in im.info
         )
         im = im.convert("RGBA" if has_alpha else "RGB")
+        if prepare is not None:
+            im = prepare(im)
 
         # тільки зменшення (thumbnail не збільшує)
         im.thumbnail((MASTER_MAX_SIDE, MASTER_MAX_SIDE), Image.LANCZOS)

@@ -20,6 +20,10 @@ def staging(tmp_path, monkeypatch):
     root = tmp_path / "до_розбору"
     (root / "Взуття").mkdir(parents=True)
     monkeypatch.setattr(ps, "STAGING_ROOT", root)
+    # Кеш мініатюр — у тимчасовій теці, а не в ~/.cache користувача; фоновий
+    # прогрів вимкнено, щоб потік не жив довше за tmp_path.
+    monkeypatch.setattr(ps, "_THUMB_DIR", tmp_path / "thumbs")
+    monkeypatch.setattr(ps, "_PREWARM_ENABLED", False)
     from PIL import Image
     for n in ("a.jpg", "b.jpg", "c.png"):
         Image.new("RGB", (400, 400), "gray").save(root / "Взуття" / n)
@@ -175,3 +179,111 @@ def test_restore_brings_a_file_back_from_trash(staging):
     out = ps.staging_restore({"category": "Взуття", "files": ["a.jpg", "ghost.jpg", "../x.jpg"]})
     assert out["restored"] == ["a.jpg"] and len(out["errors"]) == 2
     assert (staging / "Взуття" / "a.jpg").exists() and not (staging / "Взуття" / "_trash" / "a.jpg").exists()
+
+
+# ── Швидкість сітки: мініатюри й сортування ─────────────────────────────────
+
+def test_list_carries_added_time_for_sorting(staging):
+    """Сортування «нові спершу» — за часом, коли файл ЛІГ у теку (ctime)."""
+    files = ps.staging_list("Взуття")["files"]
+    assert files and all(isinstance(f["added"], int) and f["added"] > 0 for f in files)
+
+
+def test_thumbnail_is_cached_on_disk_and_survives_memory(staging, monkeypatch):
+    """Друге звернення не декодує оригінал — читає готовий кадр із диска."""
+    calls = []
+    real = ps._render_thumb
+    monkeypatch.setattr(ps, "_render_thumb", lambda p, w: calls.append(w) or real(p, w))
+    a = ps.staging_image(category="Взуття", name="a.jpg", w=400, v="1").body
+    b = ps.staging_image(category="Взуття", name="a.jpg", w=400, v="1").body
+    assert a == b and calls == [400]
+    assert list((staging.parent / "thumbs" / "400").rglob("*.jpg"))
+
+
+def test_thumbnail_cache_follows_file_changes(staging):
+    """Заміна файлу під тією ж назвою — новий ключ кешу, а не старий кадр."""
+    from PIL import Image
+    p = staging / "Взуття" / "a.jpg"
+    before = ps._thumb_cache_path(p, 400)
+    import os, time
+    Image.new("RGB", (300, 500), "white").save(p)
+    os.utime(p, ns=(time.time_ns(), time.time_ns() + 5_000_000_000))
+    assert ps._thumb_cache_path(p, 400) != before
+
+
+def test_grid_thumb_covers_and_preview_contains(staging):
+    """Плитка: МЕНША сторона = 400 (квадрат без розмиття на retina);
+    превʼю: БІЛЬША сторона ≤ 1200. Довільна ширина — до найближчої дозволеної."""
+    from PIL import Image
+    import io
+    Image.new("RGB", (3000, 1500), "gray").save(staging / "Взуття" / "wide.jpg")
+    grid = Image.open(io.BytesIO(ps.staging_image(category="Взуття", name="wide.jpg", w=220).body))
+    prev = Image.open(io.BytesIO(ps.staging_image(category="Взуття", name="wide.jpg", w=1200).body))
+    assert grid.size == (800, 400)
+    assert prev.size == (1200, 600)
+    assert ps._norm_width(220) == 400 and ps._norm_width(999) == 1200 and ps._norm_width(5000) == 1200
+
+
+def test_immutable_cache_header_only_with_version(staging):
+    with_v = ps.staging_image(category="Взуття", name="a.jpg", w=400, v="123")
+    without = ps.staging_image(category="Взуття", name="a.jpg", w=400, v=None)
+    assert "immutable" in with_v.headers["cache-control"]
+    assert "immutable" not in without.headers["cache-control"]
+
+
+def test_attach_passes_crop_edits_by_file_name(staging, monkeypatch):
+    """Кадр 1:1 із редактора доїжджає до add_photos разом із файлом."""
+    seen = {}
+    monkeypatch.setattr(ps, "add_photos", lambda pnum, cat, sources, kind: seen.update(
+        src={s[1]: s[2] for s in sources}) or {"added": len(sources), "errors": []})
+    monkeypatch.setattr(ps, "resolve_category", lambda pnum, t: "Взуття")
+    monkeypatch.setattr(ps, "invalidate_image_list_cache", lambda *a: None)
+    import types
+    fake = types.ModuleType("routers.products"); fake._invalidate_photo_cache = lambda *a, **k: None
+    monkeypatch.setitem(sys.modules, "routers.products", fake)
+    monkeypatch.setitem(sys.modules, "backend.routers.products", fake)
+    prod = SimpleNamespace(id=7, productnumber="#Ф4400", type=None)
+    db = SimpleNamespace(query=lambda m: _Q([prod]))
+    crop = {"rotate": 90, "crop": {"x": 0.1, "y": 0, "w": 0.8, "h": 1}}
+    ps.staging_attach({"category": "Взуття", "productnumber": "Ф4400", "files": ["a.jpg", "b.jpg"],
+                       "edits": {"a.jpg": crop}}, db=db)
+    assert seen["src"]["a.jpg"] == {"rotate": 90, "crop": {"x": 0.1, "y": 0.0, "w": 0.8, "h": 1.0}}
+    assert seen["src"]["b.jpg"] is None
+
+
+def test_attach_refuses_garbage_edit_and_keeps_files(staging):
+    db = SimpleNamespace(query=lambda m: _Q([SimpleNamespace(id=7, productnumber="#Ф4400", type=None)]))
+    with pytest.raises(HTTPException) as e:
+        ps.staging_attach({"category": "Взуття", "productnumber": "Ф4400", "files": ["a.jpg"],
+                           "edits": {"a.jpg": {"crop": {"x": 5, "y": 0, "w": 1, "h": 1}}}}, db=db)
+    assert e.value.status_code == 400
+    assert (staging / "Взуття" / "a.jpg").exists()
+
+
+def test_api_middleware_keeps_explicit_immutable_but_blocks_the_rest():
+    """`/api/*` за замовчуванням не кешується (свіжі дані), але мініатюра з
+    `?v=` сама оголошує себе immutable — middleware не має це затирати."""
+    from fastapi import FastAPI
+    from fastapi.responses import Response as R
+    from fastapi.testclient import TestClient
+    from backend.app import main as m
+    app = FastAPI()
+    app.middleware("http")(m.no_cache_api)
+    app.get("/api/x")(lambda: {"ok": 1})
+    app.get("/api/img")(lambda: R(b"x", headers={"Cache-Control": "private, max-age=31536000, immutable"}))
+    c = TestClient(app)
+    assert "no-store" in c.get("/api/x").headers["cache-control"]
+    assert c.get("/api/img").headers["cache-control"] == "private, max-age=31536000, immutable"
+
+
+def test_added_time_falls_back_to_ctime(staging, monkeypatch):
+    """«Дата додавання» Finder — лише на macOS; деінде (і при збої) — ctime."""
+    import os
+    p = staging / "Взуття" / "a.jpg"
+    st = os.stat(p)
+    monkeypatch.setattr(ps, "_added_time", None)
+    assert ps._file_added(str(p), st) == int(st.st_ctime)
+    monkeypatch.setattr(ps, "_added_time", lambda path: (_ for _ in ()).throw(OSError("x")))
+    assert ps._file_added(str(p), st) == int(st.st_ctime)
+    monkeypatch.setattr(ps, "_added_time", lambda path: 1_700_000_000)
+    assert ps._file_added(str(p), st) == 1_700_000_000

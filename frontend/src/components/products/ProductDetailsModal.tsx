@@ -8,6 +8,8 @@ import { CopyOnClick, formatBrandName, getProductDisplayStatus, getProductStock,
 import { hiddenFieldsForType, clothingMeasurementsForType } from './productCategory';
 import AiLimitsBadge, { emitAiLimitsChanged } from './AiLimitsBadge';
 import PhotoStagingModal from '../shipments/PhotoStagingModal';
+import PhotoCropEditor, { isSquare, loadImageSize } from '../common/PhotoCropEditor';
+import type { CropItem, PhotoEdit } from '../common/PhotoCropEditor';
 import LabelPrintDialog from '../labels/LabelPrintDialog';
 import { warehouseService, type WhLocation } from '../../services/warehouseService';
 import { taskManager, emitProductPhotosChanged } from '../../services/taskManager';
@@ -305,6 +307,9 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
   // «З теки до розбору» — той самий модал, що й у картці завозу, лише з
   // фіксованим номером цього товару.
   const [stagingOpen, setStagingOpen] = useState(false);
+  // Кадр 1:1: або черга нових файлів перед заливкою, або одне фото, що вже в картці.
+  const [cropUpload, setCropUpload] = useState<{ pid: number; kind: GalleryKind; files: File[]; urls: string[]; items: CropItem[] } | null>(null);
+  const [cropExisting, setCropExisting] = useState<GalleryImage | null>(null);
   const [autofillRunning, setAutofillRunning] = useState(false);
   const [promPublishing, setPromPublishing] = useState(false);  // публікація в процесі (фон, до ~3.6хв)
   const [promPreview, setPromPreview] = useState<any | null>(null);  // дані діалогу публікації
@@ -1530,15 +1535,11 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     prevRects.current = nextRects;
   }, [mgrOrder]);
 
-  const handleAddPhotos = React.useCallback((files: FileList | null) => {
-    if (!productId || !files || files.length === 0) return;
-    const pid = productId;
-    const kind = activeKind;
-    const arr = Array.from(files);  // знімок ДО скиду input.value
+  const uploadPhotos = React.useCallback((pid: number, arr: File[], kind: GalleryKind, edits?: (PhotoEdit | null)[]) => {
     setPhotoBusy(true);
     // Фонова задача — завантаження доробиться навіть якщо закрити картку.
     // silentSuccess: повідомлення формуємо самі за результатом (частковий збій теж).
-    taskManager.run(`Завантаження ${arr.length} фото`, () => productService.addProductPhotos(pid, arr, kind), {
+    taskManager.run(`Завантаження ${arr.length} фото`, () => productService.addProductPhotos(pid, arr, kind, edits), {
       silentSuccess: true,
       onSuccess: (res) => {
         emitProductPhotosChanged(pid);
@@ -1557,7 +1558,45 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
       .then(() => { if (curPidRef.current === pid) loadImages(true); })
       .catch(() => { /* помилку показав taskManager */ })
       .finally(() => { if (curPidRef.current === pid) setPhotoBusy(false); });
-  }, [productId, activeKind, loadImages]);
+  }, [loadImages]);
+
+  // «Додати»: стандарт картки — квадрат. Неквадратні знімки спершу проходять
+  // кадр 1:1 (як «Обрізати» на iPhone), квадратні — одразу в заливку. Ріже
+  // бекенд з оригіналу, тож у R2 лягає вже квадратна версія.
+  const handleAddPhotos = React.useCallback(async (files: FileList | null) => {
+    if (!productId || !files || files.length === 0) return;
+    const pid = productId;
+    const kind = activeKind;
+    const arr = Array.from(files);  // знімок ДО скиду input.value
+    const urls = arr.map((f) => URL.createObjectURL(f));
+    const sizes = await Promise.all(urls.map(loadImageSize));
+    // Не відкрився в браузері (рідкісний формат) — не кадруємо, бекенд розбереться сам.
+    const items: CropItem[] = arr
+      .map((f, i) => ({ f, i, sz: sizes[i] }))
+      .filter(({ sz }) => sz && !isSquare(sz.w, sz.h))
+      .map(({ f, i }) => ({ key: String(i), src: urls[i], label: f.name }));
+    if (items.length === 0) {
+      urls.forEach((u) => URL.revokeObjectURL(u));
+      uploadPhotos(pid, arr, kind);
+      return;
+    }
+    setCropUpload({ pid, kind, files: arr, urls, items });
+  }, [productId, activeKind, uploadPhotos]);
+
+  const handleCropExisting = React.useCallback(async (img: GalleryImage, edit: PhotoEdit | null) => {
+    if (!productId || !edit) return;
+    setPhotoBusy(true);
+    try {
+      await productService.editProductPhoto(productId, img.filename, edit);
+      await loadImages(true);
+      emitProductPhotosChanged(productId);
+      notify.success({ message: 'Фото обрізано 1:1', description: 'Збережено в BMS і синхронізовано з Cloudflare.', duration: 3 });
+    } catch (e: any) {
+      notify.error({ message: 'Фото не змінено', description: e?.response?.data?.detail || e?.message || String(e), duration: 8 });
+    } finally {
+      setPhotoBusy(false);
+    }
+  }, [productId, loadImages]);
 
   // ── Групове виділення фото в менеджері ──────────────────────────────────────
   // ⌘/Ctrl + клік — додати/зняти одне; Shift + клік — діапазон від попереднього
@@ -2739,6 +2778,24 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     <div className="fixed inset-0 z-50 flex items-center justify-center">
       {/* «З теки до розбору» — той самий модал, що в картці завозу; номер
           зафіксовано, знімки лягають лише в цей товар тим самим add_photos. */}
+      {cropUpload && (
+        <PhotoCropEditor items={cropUpload.items}
+          title={`Кадр 1:1 · ${cropUpload.files.length > 1 ? `${cropUpload.items.length} з ${cropUpload.files.length} неквадратні` : 'перед завантаженням'}`}
+          confirmLabel="Завантажити"
+          onCancel={() => { cropUpload.urls.forEach((u) => URL.revokeObjectURL(u)); setCropUpload(null); }}
+          onDone={(res) => {
+            const { pid, kind, files, urls } = cropUpload;
+            urls.forEach((u) => URL.revokeObjectURL(u));
+            setCropUpload(null);
+            uploadPhotos(pid, files, kind, files.map((_, i) => res[String(i)] ?? null));
+          }} />
+      )}
+      {cropExisting && (
+        <PhotoCropEditor items={[{ key: cropExisting.filename, src: cropExisting.url, label: cropExisting.filename }]}
+          title={`Кадр 1:1 · ${cropExisting.filename}`} confirmLabel="Зберегти"
+          onCancel={() => setCropExisting(null)}
+          onDone={(res) => { const img = cropExisting; setCropExisting(null); void handleCropExisting(img, res[img.filename] ?? null); }} />
+      )}
       <PhotoStagingModal open={stagingOpen} onClose={() => setStagingOpen(false)}
         products={[]} fixedNumber={pnumClean ? `#${pnumClean.replace(/^#/, '')}` : undefined}
         defaultKind="real"
@@ -3338,6 +3395,12 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                                 <RotateRightOutlined style={{ fontSize: 15 }} />
                               </button>
                               <span className="h-5 w-px bg-white/20 mx-0.5" aria-hidden="true" />
+                              <button type="button" disabled={photoBusy}
+                                onClick={(e) => { e.stopPropagation(); setCropExisting(activeImage); }}
+                                className="w-8 h-8 inline-flex items-center justify-center rounded-full hover:bg-white/20 active:scale-95 transition disabled:opacity-45"
+                                title="Кадрувати 1:1 та зберегти" aria-label="Кадрувати фото 1:1">
+                                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M6 2v14a2 2 0 0 0 2 2h14" /><path d="M18 22V8a2 2 0 0 0-2-2H2" /></svg>
+                              </button>
                               <button type="button" disabled={photoBusy}
                                 onClick={(e) => { e.stopPropagation(); handleTransformPhoto(activeImage, 'flip_horizontal'); }}
                                 className="w-8 h-8 inline-flex items-center justify-center rounded-full hover:bg-white/20 active:scale-95 transition disabled:opacity-45"

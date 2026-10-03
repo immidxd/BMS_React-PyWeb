@@ -177,12 +177,17 @@ app.add_middleware(
 )
 
 # Prevent caching of API responses + index.html (PyWebView кешує index.html → 404 після нового білду)
+# Виняток — відповідь, що САМА оголосила себе `immutable`: картинки за адресою з
+# версією (`?v=mtime` мініатюр «Розкласти фото», sha256-ассети Студії). Раніше
+# middleware затирав і їх, і сітка з 2000+ знімків щоразу качалась наново.
 @app.middleware("http")
 async def no_cache_api(request: Request, call_next):
     response = await call_next(request)
     path = request.url.path
     is_api = path.startswith("/api/")
     is_index = path in ("/", "/index.html") or (not path.startswith("/static/") and "." not in path.split("/")[-1])
+    if "immutable" in (response.headers.get("cache-control") or ""):
+        return response
     if is_api or is_index:
         response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
         response.headers["Pragma"] = "no-cache"
