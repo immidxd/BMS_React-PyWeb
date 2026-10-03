@@ -72,15 +72,53 @@ def test_september_incident_on_launch_caps_early(monkeypatch):
     assert cloud_budget.compute_status(_usd(0.25 * 24 * 4.25), early)["level"] == "stop"
 
 
+def _consumption(daily_values):
+    """Формат реальної відповіді Neon (знімок 03.10.2026)."""
+    return {"projects": [{"project_id": "plain-breeze-73014199", "periods": [{
+        "period_id": "p", "period_plan": "launch", "period_start": "2026-10-01T00:00:00Z",
+        "consumption": [{"timeframe_start": f"2026-10-0{i + 1}T00:00:00Z",
+                         "timeframe_end": f"2026-10-0{i + 2}T00:00:00Z",
+                         "metrics": [{"metric_name": "compute_unit_seconds", "value": v},
+                                     {"metric_name": "root_branch_bytes_month", "value": 1081344}]}
+                        for i, v in enumerate(daily_values)]}]}]}
+
+
+def test_metric_sum_real_neon_response():
+    # 165 + 452 CU-с за 1–2 жовтня; root_branch_bytes_month не плутаємо з compute
+    assert cloud_budget._metric_sum(_consumption([165, 452]), "compute_unit_seconds") == 617
+
+
+def test_consumption_daily_plus_today_hourly(monkeypatch):
+    monkeypatch.setenv("NEON_PROJECT_ID", "plain-breeze-73014199")
+    calls = []
+
+    def api(method, path, body=None, params=None):
+        calls.append(params)
+        return _consumption([1000] if params["granularity"] == "daily" else [200])
+    monkeypatch.setattr(cloud_budget, "_api", api)
+    start = dt.datetime(2026, 10, 1, tzinfo=UTC)
+    now = dt.datetime(2026, 10, 3, 18, 40, tzinfo=UTC)
+    assert cloud_budget.consumption_cu_seconds({"org_id": "org-x"}, start, now) == 1200
+    assert [c["granularity"] for c in calls] == ["daily", "hourly"]
+    assert calls[0]["from"] == "2026-10-01T00:00:00Z" and calls[0]["to"] == "2026-10-03T00:00:00Z"
+    assert calls[1]["from"] == "2026-10-03T00:00:00Z" and calls[1]["to"] == "2026-10-03T18:00:00Z"
+    assert all(c["org_id"] == "org-x" for c in calls)
+
+
 class _FakeNeon:
     """Підміна Neon API: проєкт із заданою витратою + ендпоінти з прапором disabled."""
     def __init__(self, cu_hours):
         self.cu_hours, self.eps, self.calls = cu_hours, [{"id": "ep-1", "disabled": False}], []
 
-    def __call__(self, method, path, body=None):
-        self.calls.append((method, path, body))
-        if path == "":
-            return {"project": {**_cu(self.cu_hours), "synthetic_storage_size": 0}}
+    def __call__(self, method, path, body=None, params=None):
+        self.calls.append((method, path, body, params))
+        if path == "":   # як на живому Launch-плані: поля проєкту нульові, org_id є
+            return {"project": {**PERIOD, "compute_time_seconds": 0, "cpu_used_sec": 0,
+                                "synthetic_storage_size": 0, "org_id": "org-test"}}
+        if path.startswith("/consumption_history"):
+            assert params["org_id"] == "org-test"
+            value = self.cu_hours * 3600 if params["granularity"] == "daily" else 0
+            return _consumption([value])
         if path == "/endpoints":
             return {"endpoints": [dict(e) for e in self.eps]}
         if method == "PATCH":
