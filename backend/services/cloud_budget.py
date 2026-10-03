@@ -17,7 +17,9 @@
   • пише стан у ~/.bms/cloud_budget.json (читає BMS_catalog/cloud/sync_to_cloud.py).
 
 Налаштування (.env / %LOCALAPPDATA%\\BMS\\secrets.env):
-  NEON_API_KEY      — Neon Console → Account settings → API keys (потрібен запис: вимикання ендпоінта)
+  NEON_API_KEY      — Neon Console → Settings → API keys → ORG-WIDE (проєктний ключ не бачить
+                      споживання: 403 «outside the project»); потрібен і для вимикання ендпоінта
+  NEON_ORG_ID       — необов'язково (береться з проєкту: org_id)
   NEON_PROJECT_ID   — id проєкту (plain-breeze-73014199)
   NEON_PLAN=launch  — launch (бюджет у $) | free (100 CU-год)
   NEON_BUDGET_USD=3, NEON_PRICE_CU_HOUR=0.106, NEON_PRICE_STORAGE_GB_MONTH=0.35
@@ -115,18 +117,22 @@ def permit_usd(period_start: str) -> float:
 
 
 def compute_status(project: Dict[str, Any], now: Optional[_dt.datetime] = None,
-                   extra_usd: float = 0.0) -> Dict[str, Any]:
-    """Відповідь Neon API (об'єкт project) → витрата й рівень. Чиста функція (тестується)."""
+                   extra_usd: float = 0.0, compute_unit_seconds: Optional[float] = None) -> Dict[str, Any]:
+    """Відповідь Neon API → витрата й рівень. Чиста функція (тестується).
+
+    compute_unit_seconds — з API споживання (`/consumption_history/v2/projects`).
+    ⚠️ На платних планах поля проєкту compute_time_seconds/cpu_used_sec = 0 (перевірено
+    03.10.2026 на живому Neon) — вони лише запасний варіант для Free."""
     warn, economy, stop = _f("NEON_BUDGET_WARN", 0.6), _f("NEON_BUDGET_ECONOMY", 0.75), _f("NEON_BUDGET_STOP", 0.9)
     now = now or _dt.datetime.now(_dt.timezone.utc)
     start, end = _period(project, now)
     elapsed = max((now - start).total_seconds(), 86400.0)   # прогноз — не раніше ніж за добу даних
     total = max((end - start).total_seconds(), elapsed)
 
-    # compute_time_seconds — CU-секунди (1 CU протягом 1 с = 1); /3600 = CU-години.
-    cu_sec = project.get("compute_time_seconds")
+    # CU-секунди (1 CU протягом 1 с = 1); /3600 = CU-години.
+    cu_sec = compute_unit_seconds
     if cu_sec is None:
-        cu_sec = project.get("cpu_used_sec") or 0
+        cu_sec = project.get("compute_time_seconds") or project.get("cpu_used_sec") or 0
     used_cu = float(cu_sec) / 3600.0
     projected_cu = used_cu * total / elapsed
 
@@ -166,13 +172,67 @@ def compute_status(project: Dict[str, Any], now: Optional[_dt.datetime] = None,
 
 # ───────────────────────── Neon API (control plane) ──────────────────────────
 
-def _api(method: str, path: str, body: Optional[dict] = None) -> Dict[str, Any]:
+def _api(method: str, path: str, body: Optional[dict] = None,
+         params: Optional[dict] = None) -> Dict[str, Any]:
+    """path з «/projects/…» або «/consumption_history/…» — від кореня API;
+    інакше — відносно поточного проєкту ("" — сам проєкт, "/endpoints" тощо)."""
     import requests
-    r = requests.request(method, f"{NEON_API}/projects/{os.environ['NEON_PROJECT_ID'].strip()}{path}",
+    if not path.startswith(("/projects", "/consumption_history")):
+        path = f"/projects/{os.environ['NEON_PROJECT_ID'].strip()}{path}"
+    r = requests.request(method, f"{NEON_API}{path}", params=params,
                          headers={"Authorization": f"Bearer {os.environ['NEON_API_KEY'].strip()}",
                                   "Accept": "application/json"}, json=body, timeout=15)
-    r.raise_for_status()
+    if r.status_code >= 400:
+        raise RuntimeError(f"Neon API {r.status_code}: {r.text[:200]}")
     return r.json() if r.content else {}
+
+
+def _metric_sum(payload: Any, name: str) -> float:
+    """Сума значень метрики в будь-якій вкладеності відповіді споживання
+    ({"metric_name": name, "value": N} або {name: N})."""
+    total = 0.0
+    if isinstance(payload, dict):
+        if payload.get("metric_name") == name and isinstance(payload.get("value"), (int, float)):
+            total += float(payload["value"])
+        elif isinstance(payload.get(name), (int, float)):
+            total += float(payload[name])
+        for v in payload.values():
+            if isinstance(v, (dict, list)):
+                total += _metric_sum(v, name)
+    elif isinstance(payload, list):
+        for v in payload:
+            total += _metric_sum(v, name)
+    return total
+
+
+def _iso(t: _dt.datetime) -> str:
+    return t.astimezone(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def consumption_cu_seconds(project: Dict[str, Any], start: _dt.datetime, now: _dt.datetime) -> float:
+    """CU-секунди з початку періоду: повні доби — daily, сьогодні — hourly.
+    Потрібен ключ рівня ОРГАНІЗАЦІЇ (Org-wide): проєктний ключ отримує 403."""
+    org = os.getenv("NEON_ORG_ID", "").strip() or project.get("org_id")
+    if not org:
+        raise RuntimeError("Невідомий org_id проєкту Neon (задайте NEON_ORG_ID)")
+    base = {"org_id": org, "project_ids": os.environ["NEON_PROJECT_ID"].strip(),
+            "metrics": "compute_unit_seconds"}
+    today = now.astimezone(_dt.timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    hour = now.astimezone(_dt.timezone.utc).replace(minute=0, second=0, microsecond=0)
+    total = 0.0
+    if today > start:
+        total += _metric_sum(_api("GET", "/consumption_history/v2/projects",
+                                  params={**base, "from": _iso(start), "to": _iso(today),
+                                          "granularity": "daily"}), "compute_unit_seconds")
+    since = max(today, start)
+    if hour > since:
+        try:
+            total += _metric_sum(_api("GET", "/consumption_history/v2/projects",
+                                      params={**base, "from": _iso(since), "to": _iso(hour),
+                                              "granularity": "hourly"}), "compute_unit_seconds")
+        except Exception as exc:  # noqa: BLE001 — сьогоднішні години дочитаємо наступного разу
+            logger.warning("cloud_budget: погодинне споживання недоступне: %s", exc)
+    return total
 
 
 def _set_endpoints_disabled(disabled: bool) -> List[str]:
@@ -215,8 +275,11 @@ def refresh() -> Dict[str, Any]:
     else:
         try:
             project = _api("GET", "").get("project") or {}
-            start, _ = _period(project, _dt.datetime.now(_dt.timezone.utc))
-            st = compute_status(project, extra_usd=permit_usd(start.isoformat()))
+            now = _dt.datetime.now(_dt.timezone.utc)
+            start, _ = _period(project, now)
+            cu = consumption_cu_seconds(project, start, now)
+            st = compute_status(project, now, extra_usd=permit_usd(start.isoformat()),
+                                compute_unit_seconds=cu)
             _enforce(st, prev)
         except Exception as exc:  # noqa: BLE001 — мережа/ключ: лишаємо останній відомий рівень
             logger.warning("cloud_budget: Neon API недоступний: %s", exc)
