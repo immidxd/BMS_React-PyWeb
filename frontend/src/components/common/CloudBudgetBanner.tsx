@@ -25,6 +25,7 @@ interface BudgetStatus {
   projected_cu_hours?: number;
   period_end?: string;
   capped?: boolean;
+  cap_error?: string;
   error?: string;
 }
 
@@ -131,6 +132,12 @@ const CloudBudgetBanner: React.FC = () => {
             {st.capped
               ? 'Хмарну БД вимкнено — каталог недоступний, поки ви не дозволите більше.'
               : 'BMS більше не будить хмару автоматично.'}
+            {st.cap_error && (
+              <>
+                <br />
+                <b>⚠ Не вдалося вимкнути базу через Neon API</b> (потрібен ключ із правом запису) — витрати можуть тривати.
+              </>
+            )}
             <br />
             <button
               onClick={permit}

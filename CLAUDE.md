@@ -57,3 +57,41 @@
 - `frontend/src/components/common/CloudBudgetBanner.tsx` — сповіщення й кнопка «Дозволити ще $1».
 - `backend/scripts/neon_budget_guard.py` + `deploy/com.bms.neon-budget-guard.plist` — той самий
   запобіжник кожні 15 хв через launchd, навіть коли BMS закритий.
+
+## Журнал етапів розробки
+
+### 2026-10 · Бюджет хмари: вересневе списання Neon і захист від повторення
+**Причина.** 01.10.2026 Neon списав 881.85 ₴ (≈$21) за вересень: агент друку BMS
+(гілка `feature/windows-autonomous-deploy`, `backend/services/print_agent.py`, `POLL_SEC=5`)
+опитував хмарний каталог кожні 5 с + пульс кожні 30 с → compute не засинав.
+Друга причина — синк каталогу після КОЖНОГО парсингу (тротл був 120 с).
+
+**Зроблено (BMS_React-PyWeb PR #1 — злитий; PR #2 — бюджет $3 і запобіжник):**
+- `services/cloud_budget.py` — витрата Neon у $ через API (control plane, базу не будить);
+  рівні warn/economy/stop; на stop вимикає compute-ендпоінти (`disabled=true`), вмикає лише
+  дозвіл власника (`/api/cloud-budget/permit`, кнопка «Дозволити ще $1») або новий місяць.
+- `services/catalog_sync_service.py` — синк після парсингу ≤ 1 раз на 20/30/60 хв (за рівнем),
+  з відкладеним запуском (остання зміна не губиться); тумблер публікації — одразу;
+  на stop — не будимо хмару; таймаут процесу синку 900 с.
+- `CloudBudgetBanner.tsx` — банер (ліворуч унизу) + тост при підвищенні рівня.
+- `scripts/neon_budget_guard.py` + `deploy/com.bms.neon-budget-guard.plist` — запобіжник
+  кожні 15 хв через launchd, навіть коли BMS закритий (дозвіл спільний: `~/.bms/cloud_budget_permit.json`).
+- Тести: `backend/tests/test_cloud_budget.py`.
+
+**Зроблено в BMS_catalog (PR #1 — злитий, PR #2 — правило):** див. `BMS_catalog/CLAUDE.md` →
+`backend/quiet_db.py` (опитування агента/складу — з пам'яті), відбиток у `cloud/sync_to_cloud.py`.
+
+**Чекає на власника (без цього захист не працює повністю):**
+1. Злити PR #2 в обох репо; переконатись, що каталог передеплоївся з `main` (Railway/Render).
+2. `NEON_API_KEY` (з ПРАВОМ ЗАПИСУ) + `NEON_PROJECT_ID=plain-breeze-73014199` у `.env`/`secrets.env`.
+3. На Mac: `git pull` в обох проєктах, перезапуск BMS, встановити launchd-сторож (команди — у plist).
+4. Після першого запуску перевірити `/tmp/bms_neon_guard.out` (рівень, `cost_usd`, без `cap_error`).
+
+**Пам'ятати надалі:**
+- Вимикання ендпоінта через Neon API покрите тестами з підміною API; на живому Neon ще не
+  перевірене — якщо банер показує «Не вдалося вимкнути базу», причина в ключі/правах.
+- Запобіжник працює лише на увімкненому Mac (BMS або launchd). Каталог 24/7 будить базу лише
+  відвідувачами — якщо їх стане багато, наступний крок: кеш публічних GET каталогу в пам'яті.
+- При злитті `feature/windows-autonomous-deploy` у `main` можливий конфлікт у
+  `routers/parsing.py` (`_trigger_catalog_cloud_sync`): лишати версію через `catalog_sync_service`.
+- Агента друку на Windows-гілці міняти не треба: його опитування обслуговує пам'ять каталогу.
