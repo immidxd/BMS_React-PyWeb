@@ -85,6 +85,10 @@ try:
     from routers import cloud_budget as cloud_budget_router  # лічильник безкоштовного ліміту Neon
 except Exception:
     cloud_budget_router = None
+try:
+    from routers import cloud_costs as cloud_costs_router  # Статистика → «Сервери й хмара»
+except Exception:
+    cloud_costs_router = None
 
 # НАЛАШТУВАННЯ ЛОГУВАННЯ
 # Використовуємо абсолютний шлях і гарантуємо наявність директорії,
@@ -259,6 +263,8 @@ if warehouse_router:
     app.include_router(warehouse_router.router)  # /api/warehouse/...
 if cloud_budget_router:
     app.include_router(cloud_budget_router.router, tags=["cloud-budget"])
+if cloud_costs_router:
+    app.include_router(cloud_costs_router.router, tags=["cloud-costs"])
 
 # Mount product images directory (local + Google Drive overlay; abstraction in services/product_images.py)
 try:
@@ -688,6 +694,11 @@ async def _neon_budget_watch():
     except ImportError:
         from backend.services import cloud_budget
 
+    try:
+        from services import cloud_costs
+    except ImportError:
+        from backend.services import cloud_costs
+
     async def _loop():
         await asyncio.sleep(10)
         while True:
@@ -695,6 +706,12 @@ async def _neon_budget_watch():
                 await asyncio.to_thread(cloud_budget.refresh)
             except Exception as e:
                 logger.warning(f"Neon budget refresh failed: {e}")
+            # Зведення витрат на всі сервіси (Статистика → «Сервери й хмара») — після
+            # Neon, щоб узяти свіжу цифру; білінгові API, базу не будять.
+            try:
+                await asyncio.to_thread(cloud_costs.refresh)
+            except Exception as e:
+                logger.warning(f"Cloud costs refresh failed: {e}")
             # поблизу межі — частіше (10 хв), щоб запобіжник вимкнув базу вчасно
             await asyncio.sleep(cloud_budget.next_refresh_sec())
 

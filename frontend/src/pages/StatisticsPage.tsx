@@ -4,6 +4,7 @@ import ProductDetailsModal from '../components/products/ProductDetailsModal';
 import ProductNumberLink from '../components/products/ProductNumberLink';
 import CollectionCollageDialog, { type CollectionPlatform } from '../components/products/CollectionCollageDialog';
 import CatalogAnalyticsPanel from '../components/publications/CatalogAnalyticsPanel';
+import CloudCostsPanel from '../components/statistics/CloudCostsPanel';
 import DeliveryCardModal from '../components/shipments/DeliveryCardModal';
 import Pagination from '../components/common/Pagination';
 import type { Shipment } from '../services/referenceService';
@@ -178,6 +179,7 @@ const STAT_TABS = [
   { key: 'products', label: 'Товари' },
   { key: 'channels', label: 'Канали продажу' },
   { key: 'ads', label: 'Реклама' },
+  { key: 'cloud', label: 'Сервери й хмара' },
 ] as const;
 
 type StatTab = typeof STAT_TABS[number]['key'];
@@ -1147,6 +1149,12 @@ const StatisticsPage: React.FC<StatisticsPageProps> = () => {
             ) : (
               <div className="h-40 flex items-center justify-center text-gray-400 text-sm">Немає даних</div>
             )}
+          </Section>
+        )}
+
+        {activeTab === 'cloud' && (
+          <Section title="Сервери й хмара — витрати на серверну частину">
+            <CloudCostsPanel />
           </Section>
         )}
 

@@ -60,6 +60,13 @@
 - `frontend/src/components/common/CloudBudgetBanner.tsx` — сповіщення й кнопка «Дозволити ще $1».
 - `backend/scripts/neon_budget_guard.py` + `deploy/com.bms.neon-budget-guard.plist` — той самий
   запобіжник кожні 15 хв через launchd, навіть коли BMS закритий.
+- **Статистика → «Сервери й хмара»** (`services/cloud_costs.py`, `routers/cloud_costs.py`,
+  `components/statistics/CloudCostsPanel.tsx`): витрати цього місяця по сервісах (Neon,
+  Railway, Cloudflare Workers/R2, AI-Gemini з `ai_budget`, ручні пункти) і по напрямах
+  Каталог / Склад / BMS + усього, у $ і ₴ (курс НБУ). Лише білінгові API провайдерів (базу
+  не будить), кеш оновлюється разом із лічильником Neon. Каталог і Склад ділять сервер і
+  базу — частку задає власник (`~/.bms/cloud_costs_config.json`, правка на сторінці).
+  Новий платний сервіс → додати провайдера в `PROVIDERS` (або ручним пунктом).
 
 ## Журнал етапів розробки
 
