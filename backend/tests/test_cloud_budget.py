@@ -15,7 +15,15 @@ def _cu(hours):
     return {**PERIOD, "compute_time_seconds": hours * 3600}
 
 
-def test_levels_by_used_share():
+import pytest
+
+
+@pytest.fixture
+def free_plan(monkeypatch):
+    monkeypatch.setenv("NEON_PLAN", "free")
+
+
+def test_levels_by_used_share(free_plan):
     assert cloud_budget.compute_status(_cu(10), NOW)["level"] == "ok"
     assert cloud_budget.compute_status(_cu(61), NOW)["level"] == "warn"
     assert cloud_budget.compute_status(_cu(76), NOW)["level"] == "economy"
@@ -23,22 +31,99 @@ def test_levels_by_used_share():
     assert st["level"] == "stop" and st["percent"] == 91.0 and st["used_cu_hours"] == 91.0
 
 
-def test_pace_towards_limit_warns_early():
+def test_pace_towards_limit_warns_early(free_plan):
     # 50 CU-год за пів місяця → прогноз ≈100 ≥ 90% ліміту → попередження вже зараз
     st = cloud_budget.compute_status(_cu(50), NOW)
     assert st["level"] == "warn" and st["projected_cu_hours"] > 90
 
 
-def test_september_incident_would_stop():
+def test_september_incident_would_stop(free_plan):
     # агент друку не давав заснути: 0.25 CU цілодобово → на 16-й день уже ~90 CU-год
     st = cloud_budget.compute_status(_cu(0.25 * 24 * 15), NOW)
     assert st["level"] == "stop"
+
+
+# ── План Launch: бюджет у доларах ($3 за замовчуванням) ────────────────────
+def _usd(cu_hours, storage_gb=0.0):
+    return {**_cu(cu_hours), "synthetic_storage_size": storage_gb * 1e9}
+
+
+def test_launch_budget_in_dollars(monkeypatch):
+    monkeypatch.delenv("NEON_PLAN", raising=False)
+    st = cloud_budget.compute_status(_usd(5, 0.3), NOW)        # 5×0.106 + 0.3×0.35 = 0.635 $
+    assert st["plan"] == "launch" and st["budget_usd"] == 3.0 and st["cost_usd"] == 0.64
+    assert st["level"] == "ok"
+    assert cloud_budget.compute_status(_usd(17), NOW)["level"] == "warn"      # 1.80 $ = 60%
+    assert cloud_budget.compute_status(_usd(26), NOW)["level"] == "stop"      # 2.76 $ ≥ 90%
+    # дозвіл власника +2 $ → межа 5 $, та сама витрата вже не «stop»
+    assert cloud_budget.compute_status(_usd(26), NOW, extra_usd=2)["level"] == "warn"
+
+
+def test_storage_counts_for_whole_month(monkeypatch):
+    monkeypatch.delenv("NEON_PLAN", raising=False)
+    st = cloud_budget.compute_status(_usd(0, 2.0), NOW)        # 2 ГБ × 0.35 = 0.70 $ навіть без compute
+    assert st["storage_usd"] == 0.7 and st["cost_usd"] == 0.7
+
+
+def test_september_incident_on_launch_caps_early(monkeypatch):
+    monkeypatch.delenv("NEON_PLAN", raising=False)
+    # 0.25 CU цілодобово: межу 2.70 $ досягнуто вже за ~4.2 доби (а не 21 $ за місяць)
+    early = dt.datetime(2026, 10, 5, 6, tzinfo=UTC)
+    assert cloud_budget.compute_status(_usd(0.25 * 24 * 4.25), early)["level"] == "stop"
+
+
+class _FakeNeon:
+    """Підміна Neon API: проєкт із заданою витратою + ендпоінти з прапором disabled."""
+    def __init__(self, cu_hours):
+        self.cu_hours, self.eps, self.calls = cu_hours, [{"id": "ep-1", "disabled": False}], []
+
+    def __call__(self, method, path, body=None):
+        self.calls.append((method, path, body))
+        if path == "":
+            return {"project": {**_cu(self.cu_hours), "synthetic_storage_size": 0}}
+        if path == "/endpoints":
+            return {"endpoints": [dict(e) for e in self.eps]}
+        if method == "PATCH":
+            self.eps[0]["disabled"] = body["endpoint"]["disabled"]
+            return {}
+        raise AssertionError(path)
+
+
+def test_hard_cap_disables_and_owner_permit_reenables(monkeypatch, tmp_path):
+    monkeypatch.delenv("NEON_PLAN", raising=False)
+    monkeypatch.setenv("CLOUD_BUDGET_STATE", str(tmp_path / "b.json"))
+    monkeypatch.setenv("NEON_API_KEY", "k"); monkeypatch.setenv("NEON_PROJECT_ID", "p")
+    monkeypatch.setattr(cloud_budget, "_state", {})
+    neon = _FakeNeon(cu_hours=0.5)
+    monkeypatch.setattr(cloud_budget, "_api", neon)
+    assert cloud_budget.refresh()["level"] == "ok" and not neon.eps[0]["disabled"]
+    neon.cu_hours = 26                                           # 2.76 $ ≥ 90% з 3 $
+    st = cloud_budget.refresh()
+    assert st["level"] == "stop" and st["capped"] and neon.eps[0]["disabled"]
+    assert not cloud_budget.cloud_wake_allowed()
+    st = cloud_budget.refresh()                                  # без дозволу — лишається вимкненою
+    assert st["capped"] and neon.eps[0]["disabled"]
+    st = cloud_budget.permit(2)                                  # власник: +2 $
+    assert st["level"] != "stop" and not st["capped"] and not neon.eps[0]["disabled"]
+    assert st["budget_usd"] == 5.0
+
+
+def test_cap_can_be_switched_to_notify_only(monkeypatch, tmp_path):
+    monkeypatch.delenv("NEON_PLAN", raising=False)
+    monkeypatch.setenv("NEON_HARD_CAP", "0")
+    monkeypatch.setenv("CLOUD_BUDGET_STATE", str(tmp_path / "b.json"))
+    monkeypatch.setenv("NEON_API_KEY", "k"); monkeypatch.setenv("NEON_PROJECT_ID", "p")
+    monkeypatch.setattr(cloud_budget, "_state", {})
+    neon = _FakeNeon(cu_hours=30)
+    monkeypatch.setattr(cloud_budget, "_api", neon)
+    assert cloud_budget.refresh()["level"] == "stop" and not neon.eps[0]["disabled"]
 
 
 def test_unconfigured_is_unknown(monkeypatch, tmp_path):
     monkeypatch.setenv("CLOUD_BUDGET_STATE", str(tmp_path / "b.json"))
     monkeypatch.delenv("NEON_API_KEY", raising=False)
     monkeypatch.delenv("NEON_PROJECT_ID", raising=False)
+    monkeypatch.setattr(cloud_budget, "_state", {})
     st = cloud_budget.refresh()
     assert st["level"] == "unknown" and not st["configured"]
     assert (tmp_path / "b.json").is_file()      # файл стану читає sync_to_cloud.py

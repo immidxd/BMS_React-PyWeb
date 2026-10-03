@@ -416,9 +416,10 @@ async def _journal_change_poller():
     asyncio.create_task(_loop())
 
 
-# ── Лічильник безкоштовного ліміту Neon (ЖОРСТКЕ ПРАВИЛО, CLAUDE.md) ──────────
-# Раз на NEON_BUDGET_REFRESH_SEC (30 хв) читає витрату через Neon API — це control
-# plane: сам запит НЕ будить хмарну БД. Рівень керує синком каталогу й банером.
+# ── Бюджет Neon + жорсткий запобіжник (ЖОРСТКЕ ПРАВИЛО, CLAUDE.md) ────────────
+# Раз на 30 хв (поблизу межі — 10 хв) читає витрату через Neon API — це control
+# plane: сам запит НЕ будить хмарну БД. Рівень керує синком каталогу й банером;
+# на «stop» compute вимикається, доки власник не дозволить більше (services/cloud_budget.py).
 @app.on_event("startup")
 async def _neon_budget_watch():
     import asyncio
@@ -426,7 +427,6 @@ async def _neon_budget_watch():
         from services import cloud_budget
     except ImportError:
         from backend.services import cloud_budget
-    period = max(int(os.getenv("NEON_BUDGET_REFRESH_SEC", "1800") or 1800), 300)
 
     async def _loop():
         await asyncio.sleep(10)
@@ -435,7 +435,8 @@ async def _neon_budget_watch():
                 await asyncio.to_thread(cloud_budget.refresh)
             except Exception as e:
                 logger.warning(f"Neon budget refresh failed: {e}")
-            await asyncio.sleep(period)
+            # поблизу межі — частіше (10 хв), щоб запобіжник вимкнув базу вчасно
+            await asyncio.sleep(cloud_budget.next_refresh_sec())
 
     asyncio.create_task(_loop())
 
