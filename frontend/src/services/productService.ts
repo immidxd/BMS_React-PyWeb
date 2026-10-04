@@ -228,6 +228,15 @@ export const productService = {
         return res.data;
     },
 
+    /** Перевʼязати фото до ІНШОГО товару (за номером). Позначка «сховано» їде разом із ним. */
+    async movePhotoToProduct(id: number, filename: string, target: string, to_kind?: 'official' | 'real' | 'defect',
+    ): Promise<{ moved: string; from: string; kind: string; target_id: number; target_number: string; hidden: boolean }> {
+        const res = await axios.post(`${API_URL}/${id}/photos/move-to-product`, { target, to_kind }, {
+            params: { filename },
+        });
+        return res.data;
+    },
+
     /** Замінити вміст одного фото (та сама позиція, новий файл). */
     async replaceProductPhoto(id: number, filename: string, file: File): Promise<{ replaced: string }> {
         const fd = new FormData();

@@ -112,3 +112,71 @@ def test_edit_refuses_foreign_file(monkeypatch, tmp_path):
     monkeypatch.setattr(pm, "MIRROR_ROOT", tmp_path)
     with pytest.raises(ValueError):
         pm.edit_photo("Ф9002", "Сумки", "Ф9999_01.webp", {"rotate": 90, "crop": None})
+
+
+# ── Перевʼязати фото до іншого товару ───────────────────────────────────────
+
+def _real(root, pnum, idx, color="red"):
+    p = root / "Сумки" / f"{pnum}_00{idx}.webp"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", (20, 20), color).save(p, "WEBP")
+    return p
+
+
+def test_move_photo_to_other_product_takes_next_index_and_cleans_source(monkeypatch, tmp_path):
+    monkeypatch.setattr(pm, "MIRROR_ROOT", tmp_path)
+    ops = []
+    monkeypatch.setattr(pm.r2_storage, "is_enabled", lambda: True)
+    monkeypatch.setattr(pm.r2_storage, "upload_file", lambda path, key, **k: ops.append(("up", key)))
+    monkeypatch.setattr(pm.r2_storage, "object_exists", lambda key: True)
+    monkeypatch.setattr(pm.r2_storage, "delete", lambda key: ops.append(("del", key)))
+    monkeypatch.setattr(pm, "_invalidate_r2_index", lambda: None)
+    src = _real(tmp_path, "Ф1", 2, "blue")
+    _real(tmp_path, "Ф2", 1)
+
+    res = pm.move_photo_to_product("#Ф1", "Сумки", src.name, "#Ф2", "Сумки")
+
+    assert res["moved"] == "Ф2_002.webp" and res["kind"] == "real"
+    assert not src.exists()
+    with Image.open(tmp_path / "Сумки" / "Ф2_002.webp") as m:
+        assert m.getpixel((5, 5))[2] > 150
+    # Спершу заливка нового, потім видалення старого — не навпаки.
+    assert ops == [("up", "Сумки/Ф2_002.webp"), ("del", "Сумки/Ф1_002.webp")]
+
+
+def test_move_photo_failure_of_upload_keeps_source(monkeypatch, tmp_path):
+    monkeypatch.setattr(pm, "MIRROR_ROOT", tmp_path)
+    monkeypatch.setattr(pm.r2_storage, "is_enabled", lambda: True)
+    def boom(*a, **k): raise RuntimeError("R2 down")
+    monkeypatch.setattr(pm.r2_storage, "upload_file", boom)
+    src = _real(tmp_path, "Ф1", 1)
+    with pytest.raises(RuntimeError):
+        pm.move_photo_to_product("Ф1", "Сумки", src.name, "Ф2", "Сумки")
+    assert src.exists() and not (tmp_path / "Сумки" / "Ф2_001.webp").exists()
+
+
+def test_move_photo_can_change_kind_and_refuses_nonsense(monkeypatch, tmp_path):
+    monkeypatch.setattr(pm, "MIRROR_ROOT", tmp_path)
+    monkeypatch.setattr(pm.r2_storage, "is_enabled", lambda: False)
+    src = _real(tmp_path, "Ф1", 1)
+    assert pm.move_photo_to_product("Ф1", "Сумки", src.name, "Ф3", "Взуття", "official")["moved"] == "Ф3_01.webp"
+    assert (tmp_path / "Взуття" / "Ф3_01.webp").exists()
+    other = _real(tmp_path, "Ф1", 2)
+    with pytest.raises(ValueError):
+        pm.move_photo_to_product("Ф1", "Сумки", other.name, "#Ф1", "Сумки")   # той самий товар
+    with pytest.raises(ValueError):
+        pm.move_photo_to_product("Ф9", "Сумки", other.name, "Ф3", "Сумки")   # чужий файл
+
+
+def test_destination_folder_comes_from_existing_photos_even_cloud_only(monkeypatch):
+    """Хмара основна: фото цілі можуть бути лише в R2 — теку беремо з їхніх адрес."""
+    from types import SimpleNamespace
+    from routers import products as pr
+    from services import product_images as pi
+    monkeypatch.setattr(pi, "list_images", lambda pnum, include_hidden=False: [
+        SimpleNamespace(url="/product-images-drive/abc"),
+        SimpleNamespace(url="/product-images/%D0%A1%D1%83%D0%BC%D0%BA%D0%B8/%D0%A42_01.webp?v=1"),
+    ])
+    assert pr._existing_photo_category("#Ф2") == "Сумки"
+    monkeypatch.setattr(pi, "list_images", lambda pnum, include_hidden=False: [])
+    assert pr._existing_photo_category("#Ф2") is None

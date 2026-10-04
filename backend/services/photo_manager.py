@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import uuid
 import logging
 import threading
@@ -492,3 +493,54 @@ def move_one_photo(pnum: str, category: str, filename: str, to_kind: str) -> dic
     _sync_one(category, cat_dir / target)
     _delete_r2(category, filename)
     return {"moved": target, "from": filename, "from_kind": cur_kind, "to_kind": to_kind}
+
+
+def move_photo_to_product(src_pnum: str, src_category: str, filename: str,
+                          dst_pnum: str, dst_category: str, to_kind: Optional[str] = None) -> dict:
+    """Перевʼязати ОДНЕ фото до іншого товару (знімок потрапив не в ту картку).
+
+    Фото отримує наступний вільний індекс у наборі цільового товару (той самий
+    набір, що й був, або `to_kind`). Порядок безпечний для «джерела правди» R2:
+    спершу копія під новим ключем і заливка, і лише ПОТІМ прибирається старе —
+    збій посередині лишає фото в обох місцях, а не в жодному.
+    Решта фото джерела не перенумеровується (як і при видаленні).
+    """
+    pn_src, pn_dst = _norm(src_pnum), _norm(dst_pnum)
+    if not pn_dst:
+        raise ValueError("Не вказано номер цільового товару")
+    if pn_src.lower() == pn_dst.lower():
+        raise ValueError("Це той самий товар")
+    stem = Path(filename).stem
+    cur_kind = next((k for k in PHOTO_KINDS if _kind_re(pn_src, k).match(stem)), None)
+    if cur_kind is None or Path(filename).name != filename:
+        raise ValueError("Файл не належить цьому товару")
+    kind = to_kind or cur_kind
+    if kind not in PHOTO_KINDS:
+        raise ValueError(f"Невідомий kind: {kind!r}")
+
+    src = MIRROR_ROOT / src_category / filename
+    (MIRROR_ROOT / dst_category).mkdir(parents=True, exist_ok=True)
+    target = _kind_filename(pn_dst, kind, _next_index(pn_dst, dst_category, kind))
+    dest = MIRROR_ROOT / dst_category / target
+    if dest.exists():
+        raise ValueError(f"У цільового товару вже є файл {target}")
+
+    with _lock_for(src):
+        if src.is_file():
+            shutil.copy2(src, dest)
+        else:
+            # Хмара — основна: локальної копії може не бути (див. photos-cloud-primary).
+            key = _r2_key(src_category, filename)
+            if not (r2_storage.is_enabled() and r2_storage.object_exists(key)):
+                raise FileNotFoundError(f"Файл {filename} не знайдено ні локально, ні в R2")
+            dest.write_bytes(r2_storage.download_bytes(key))
+        try:
+            _sync_one(dst_category, dest)
+        except Exception:
+            dest.unlink(missing_ok=True)
+            raise
+        if src.exists():
+            src.unlink()
+        _delete_r2(src_category, filename)
+    return {"moved": target, "from": filename, "kind": kind, "from_kind": cur_kind,
+            "category": dst_category, "target_pnum": pn_dst}

@@ -794,6 +794,93 @@ async def edit_product_photo(
     return {"edited": filename, "category": category, **result}
 
 
+def _existing_photo_category(pnum: str) -> Optional[str]:
+    """Категорія-тека, де вже є фото номера (локальний міор ∪ індекс R2), або None."""
+    from urllib.parse import unquote
+    try:
+        from services.product_images import list_images, URL_PREFIX
+        from services.photo_manager import VALID_CATEGORIES
+    except ImportError:
+        from backend.services.product_images import list_images, URL_PREFIX
+        from backend.services.photo_manager import VALID_CATEGORIES
+    try:
+        images = list_images(pnum, include_hidden=True)
+    except Exception:  # noqa: BLE001 — підказка теки, не умова переносу
+        return None
+    prefix = URL_PREFIX.rstrip("/") + "/"
+    for im in images:
+        path = unquote((getattr(im, "url", "") or "").split("?", 1)[0])
+        if path.startswith(prefix):
+            cat = path[len(prefix):].split("/", 1)[0]
+            if cat in VALID_CATEGORIES:
+                return cat
+    return None
+
+
+@router.post("/api/products/{product_id}/photos/move-to-product")
+def move_photo_to_other_product(
+    product_id: int = Path(..., ge=1),
+    filename: str = Query(..., description="фото, яке переносимо"),
+    target: str = Body(..., embed=True, description="номер цільового товару (з «#» чи без)"),
+    to_kind: Optional[str] = Body(None, embed=True, regex="^(official|real|defect)$"),
+    db: Session = Depends(get_db),
+):
+    """Перевʼязати фото до ІНШОГО товару, не виходячи з цієї картки.
+
+    Ціль — за номером (фото в BMS живуть за номером, не за id). Позначка
+    «сховано» переїжджає разом із файлом. Уже опубліковані оголошення, що
+    трималися за стару адресу, побачать биту картинку — як і після видалення.
+    """
+    try:
+        from services.photo_manager import move_photo_to_product
+        from services.product_images import invalidate_hidden_cache
+    except ImportError:
+        from backend.services.photo_manager import move_photo_to_product
+        from backend.services.product_images import invalidate_hidden_cache
+
+    raw = (target or "").strip()
+    if not raw.lstrip("#"):
+        raise HTTPException(status_code=400, detail="Не вказано номер товару")
+    cands = {raw, raw.lstrip("#"), "#" + raw.lstrip("#")}
+    dst = (db.query(models.Product)
+             .filter(models.Product.productnumber.in_(list(cands)))
+             .order_by(models.Product.id).first())
+    if dst is None:
+        raise HTTPException(status_code=404, detail=f"Товару {raw} немає в базі")
+
+    src_pnum, src_category = _photo_owner_and_category(product_id, filename, db)
+    dst_pnum, dst_category = _pnum_and_category(dst.id, db)
+    # Тека цілі: де вже лежать її фото (локально АБО в R2 — хмара основна, а
+    # resolve_category бачить лише локальний міор) → за видом → інакше тека
+    # джерела. Без цього фото до ще порожнього товару нового лоту падало в «Інше».
+    existing_cat = _existing_photo_category(dst_pnum)
+    if existing_cat:
+        dst_category = existing_cat
+    elif not getattr(dst, "typeid", None):
+        dst_category = src_category
+    try:
+        result = move_photo_to_product(src_pnum, src_category, filename,
+                                       dst_pnum, dst_category, to_kind)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    # «Сховано» тримається за (номер, файл) — переносимо разом із фото.
+    moved_hidden = db.execute(text("""
+        UPDATE product_photo_hidden SET productnumber = :np, filename = :nf
+        WHERE lower(productnumber COLLATE "und-x-icu") = lower(:op COLLATE "und-x-icu")
+          AND lower(filename COLLATE "und-x-icu") = lower(:of COLLATE "und-x-icu")
+    """), {"np": result["target_pnum"], "nf": result["moved"],
+           "op": src_pnum.strip().lstrip("#").strip(), "of": filename}).rowcount
+    db.commit()
+    if moved_hidden:
+        invalidate_hidden_cache()
+    _invalidate_photo_cache(src_pnum, dst_pnum, membership_changed=True)
+    return {**result, "target_id": dst.id, "target_number": dst.productnumber,
+            "hidden": bool(moved_hidden)}
+
+
 @router.put("/api/products/{product_id}/photos/reorder")
 def reorder_product_photos(
     product_id: int = Path(..., ge=1),

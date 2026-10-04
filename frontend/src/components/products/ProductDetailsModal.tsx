@@ -261,6 +261,9 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
   const [dragIdx, setDragIdx] = useState<number | null>(null);
   const [overIdx, setOverIdx] = useState<number | null>(null);  // плитка-ціль під час drag
   const [moveMenuFor, setMoveMenuFor] = useState<string | null>(null);  // filename з відкритим меню «перенести»
+  // «В інший товар»: які фото перевʼязуємо і куди (номер). Панель над сіткою.
+  const [relink, setRelink] = useState<{ files: string[] } | null>(null);
+  const [relinkTarget, setRelinkTarget] = useState('');
   const addPhotoInputRef = React.useRef<HTMLInputElement | null>(null);
   const replacePhotoInputRef = React.useRef<HTMLInputElement | null>(null);
   const replaceTargetRef = React.useRef<string | null>(null);
@@ -1623,6 +1626,8 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     }
   }, [product, productId, numDraft, loadProduct, onSaved]);
 
+  useEffect(() => { setRelink(null); }, [productId, editMode]);
+
   const handleCropExisting = React.useCallback(async (img: GalleryImage, edit: PhotoEdit | null) => {
     if (!productId || !edit) return;
     setPhotoBusy(true);
@@ -1681,6 +1686,45 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
   const selectAllPhotos = React.useCallback(() => {
     setSelectedPhotos(new Set(mgrOrder));
   }, [mgrOrder]);
+
+  // Перевʼязати фото до іншого товару. ПОСЛІДОВНО: кожне бере наступний вільний
+  // індекс у цільовому наборі, паралельні запити вибрали б один номер.
+  const handleRelinkPhotos = React.useCallback(async () => {
+    const files = relink?.files || [];
+    const target = relinkTarget.trim();
+    if (!productId || !files.length || !target) return;
+    setPhotoBusy(true);
+    const failed: string[] = [];
+    let targetNumber = target;
+    let lastError = '';
+    try {
+      for (const fn of files) {
+        try {
+          const r = await productService.movePhotoToProduct(productId, fn, target);
+          targetNumber = r.target_number || targetNumber;
+        } catch (e: any) {
+          failed.push(fn);
+          lastError = e?.response?.data?.detail || e?.message || '';
+        }
+      }
+      const moved = files.length - failed.length;
+      setRelink(null);
+      setRelinkTarget('');
+      clearPhotoSelection();
+      await loadImages(true);
+      setActiveIdx(0);
+      emitProductPhotosChanged(productId);
+      if (moved && !failed.length) {
+        notify.success({ message: `Перенесено ${moved} фото → ${targetNumber}`, duration: 4 });
+      } else if (moved) {
+        notify.warning({ message: `Перенесено ${moved} з ${files.length} → ${targetNumber}`, description: `Не вдалося: ${failed.join(', ')}. ${lastError}`, duration: 9 });
+      } else {
+        notify.error({ message: 'Фото не перенесено', description: lastError || 'Помилка', duration: 8 });
+      }
+    } finally {
+      setPhotoBusy(false);
+    }
+  }, [relink, relinkTarget, productId, clearPhotoSelection, loadImages]);
 
   // Пакетне видалення. Запити ПОСЛІДОВНІ: видалення не перенумеровує решту, але
   // послідовність дає передбачуваний звіт і не б'є по бекенду пачкою.
@@ -2283,6 +2327,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
       if (document.querySelector('.bms-dialog-host')) return;
       if (stagingOpen) return;        // модал «до розбору» зверху — клавіші його
       if (numEditing) return;         // поле номера саме обробляє Enter/Esc
+      if (relink) return;             // панель «в інший товар» — так само
       if (e.key === 'Escape') {
         if (previewVisible) return;   // antd-прев'ю саме обробляє свій Esc
         // Esc при відкритій картці = ЛИШЕ закрити картку. Гасимо подію, щоб вона не
@@ -2324,7 +2369,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     window.addEventListener('keydown', handleKey, true);
     return () => window.removeEventListener('keydown', handleKey, true);
   }, [open, onClose, images.length, previewVisible, navPrev, navNext, editMode,
-      selectedPhotos.size, clearPhotoSelection, stagingOpen, numEditing]);
+      selectedPhotos.size, clearPhotoSelection, stagingOpen, numEditing, relink]);
 
   const p = product;
   const effectiveJournalState = journalState
@@ -3695,6 +3740,12 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                                   );
                                 })()}
                                 <button type="button" disabled={photoBusy}
+                                  onClick={() => { setRelinkTarget(''); setRelink({ files: mgrOrder.filter((fn) => selectedPhotos.has(fn)) }); }}
+                                  className="px-2 py-1 rounded-md text-[11px] bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-600 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50 transition-colors whitespace-nowrap"
+                                  title="Перевʼязати виділені фото до іншого товару">
+                                  ↪ В інший товар
+                                </button>
+                                <button type="button" disabled={photoBusy}
                                   onClick={handleDeleteSelectedPhotos}
                                   className="px-2 py-1 rounded-md text-[11px] bg-red-600 hover:bg-red-700 !text-white disabled:opacity-50 transition-colors whitespace-nowrap"
                                   title="Видалити всі виділені фото">
@@ -3703,6 +3754,31 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                                 <button type="button" onClick={clearPhotoSelection}
                                   className="px-2 py-1 rounded-md text-[11px] text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-100 hover:bg-white/70 dark:hover:bg-gray-800 transition-colors whitespace-nowrap">
                                   Зняти
+                                </button>
+                              </div>
+                            )}
+
+                            {relink && (
+                              <div className="flex items-center flex-wrap gap-2 mb-2 px-2.5 py-1.5 rounded-lg bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600">
+                                <span className="text-[12px] text-gray-700 dark:text-gray-200 whitespace-nowrap">
+                                  ↪ {relink.files.length === 1 ? '1 фото' : `${relink.files.length} фото`} до товару
+                                </span>
+                                <input autoFocus value={relinkTarget} readOnly={photoBusy}
+                                  onChange={(e) => setRelinkTarget(e.target.value)}
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter') { e.preventDefault(); void handleRelinkPhotos(); }
+                                    if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); setRelink(null); }
+                                  }}
+                                  placeholder="Ф4400" autoCapitalize="none" autoCorrect="off" spellCheck={false}
+                                  className="w-28 text-[12px] font-mono px-2 py-1 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-gray-400" />
+                                <span className="flex-1" />
+                                <button type="button" disabled={photoBusy || !relinkTarget.trim()} onClick={() => void handleRelinkPhotos()}
+                                  className="px-2.5 py-1 rounded-md text-[11px] bg-gray-900 text-white hover:bg-black disabled:opacity-40 transition-colors whitespace-nowrap">
+                                  {photoBusy ? 'Переношу…' : 'Перенести'}
+                                </button>
+                                <button type="button" onClick={() => setRelink(null)}
+                                  className="px-2 py-1 rounded-md text-[11px] text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-100 transition-colors">
+                                  Скасувати
                                 </button>
                               </div>
                             )}
@@ -3772,6 +3848,12 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                                       ⇄
                                     </button>
                                     <button type="button" disabled={photoBusy}
+                                      onClick={() => { setMoveMenuFor(null); setRelinkTarget(''); setRelink({ files: [img.filename] }); }}
+                                      className="w-5 h-5 inline-flex items-center justify-center rounded bg-white/90 dark:bg-gray-900/90 text-gray-700 dark:text-gray-200 hover:bg-white shadow text-[11px] leading-none"
+                                      title="Перевʼязати до іншого товару">
+                                      ↪
+                                    </button>
+                                    <button type="button" disabled={photoBusy}
                                       onClick={() => { replaceTargetRef.current = img.filename; replacePhotoInputRef.current?.click(); }}
                                       className="w-5 h-5 inline-flex items-center justify-center rounded bg-white/90 dark:bg-gray-900/90 text-gray-700 dark:text-gray-200 hover:bg-white shadow"
                                       title="Замінити цей файл">
@@ -3812,7 +3894,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                               ); })}
                             </div>
                             <span className="block mt-2 text-[10px] text-gray-400 dark:text-gray-500">
-                              Перетягни, щоб змінити порядок (перше = головне) · ⇄ перенести (Офіційні/Реальні/Дефекти) · 🔄 замінити · ✕ видалити
+                              Перетягни, щоб змінити порядок (перше = головне) · ⇄ перенести (Офіційні/Реальні/Дефекти) · ↪ в інший товар · 🔄 замінити · ✕ видалити
                               <br />
                               Кілька фото: <b>⌘/Ctrl + клік</b> — по одному · <b>Shift + клік</b> — діапазон · <b>Esc</b> — зняти
                             </span>
