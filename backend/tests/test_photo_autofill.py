@@ -1158,3 +1158,47 @@ def test_new_lot_boots_with_proposed_type_lose_allseason(monkeypatch, tmp_path):
         "_usage": {"promptTokenCount": 1, "candidatesTokenCount": 1}})
     out = pa.extract_and_propose(_DB(spent=0.0), 7, [_photo(tmp_path)], api_key="k")
     assert ("season", "Зима", 0.85) in out["proposed"]
+
+
+# ── 04.10.2026: UK-розмір зі стікера → EU у картку ──────────────────────────
+
+@pytest.mark.parametrize("size, system, cm, eu", [
+    (11.5, "UK", 30.5, 46.5),     # #Ф4450 Ströber
+    (11.5, None, 30.5, 46.5),     # число < 15 без системи — це не EU
+    (9.5, "UK", 28.5, 44),        # #Ф4449
+    (4.5, "UK", 24, 37.5),        # #Ф4440
+    (15, "UK", 33, 50),           # #Ф4454 «15 (50)»
+    (10, "UK", 17, 28),           # дитячий UK — за устілкою
+    (27, None, 17, 27),           # дитячий EU лишається як є (Action Boy)
+    (43, "EU", 27.5, 43),
+    (10, "UK", None, None),       # без см не вгадуємо: 44½ чи 28
+    (11.5, "UK", 24, None),       # не сходиться з устілкою
+    (8, "US", 26, None),          # US не переводимо
+])
+def test_sticker_size_to_eu(size, system, cm, eu):
+    got, _note = pa.sticker_size_to_eu(size, system, cm)
+    assert got == eu
+
+
+def test_uk_sticker_size_lands_in_card_as_eu(monkeypatch, tmp_path):
+    seen = []
+    real = pa.field_proposals.propose
+    monkeypatch.setattr(pa.field_proposals, "propose",
+                        lambda db, pid, f, v, c, **k: seen.append((f, k.get("note"))) or real(db, pid, f, v, c, **k))
+    out = _run_sticker(monkeypatch, tmp_path, {
+        "sticker_text": "1900 11½ 30,5 ф4419", "sticker_number": "ф4419",
+        "sticker_size": 11.5, "sticker_size_system": "UK", "sticker_size_confidence": 0.9,
+        "sticker_cm": 30.5, "sticker_cm_confidence": 0.9})
+    got = {f: v for f, v, c in out["proposed"]}
+    assert got["sizeeu"] == "46.5" and got["measurementscm"] == "30.5"
+    assert "UK 11½ → EU 46.5" in dict(seen)["sizeeu"]
+
+
+def test_schema_asks_for_size_system():
+    class _R:
+        def __init__(self, rows): self.rows = rows
+        def fetchall(self): return self.rows
+    db = type("DB", (), {"execute": staticmethod(lambda stmt, params=None: _R([("x", 1)]))})()
+    props = pa.build_schema(db)["properties"]
+    assert props["sticker_size_system"]["enum"] == ["EU", "UK", "US", None]
+    assert "ДОСЛІВНО" in props["sticker_size"]["description"]

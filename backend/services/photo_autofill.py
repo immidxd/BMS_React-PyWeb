@@ -729,7 +729,15 @@ def build_schema(db: Session, type_id: Optional[int] = None,
         }
         conf_keys.append(STICKER_MEASUREMENTS_KEY)
     else:
-        props["sticker_size"] = {"type": ["number", "null"], "description": "розмір EU зі стікера, напр. 36 або 45.3"}
+        props["sticker_size"] = {"type": ["number", "null"], "description": (
+            "розмір ДОСЛІВНО як написано на стікері, числом (½ → .5): напр. 39, 45.3 або 11.5. "
+            "НЕ переводь в іншу систему — переведе програма. Якщо поруч у дужках стоїть EU "
+            "(«15 (50)»), пиши EU-число з дужок")}
+        props["sticker_size_system"] = {"type": ["string", "null"], "enum": ["EU", "UK", "US", None],
+            "description": ("система розміру на стікері: EU — числа 15–52 (дитячі EU теж: 20, 27, 33); "
+                            "UK — дрібні числа, часто з ½, на європейському взутті (Ströber, Waldläufer, "
+                            "Clarks: 4½, 9½, 11½) — так пишуть, коли на бирці виробника британський розмір; "
+                            "US — лише якщо явно підписано US")}
         props["sticker_cm"] = {"type": ["number", "null"], "description": "замір устілки в см зі стікера, напр. 23.5"}
         conf_keys += ["sticker_size", "sticker_cm"]
     for k in conf_keys:
@@ -1186,6 +1194,85 @@ def _number_matches(card_number: Optional[str], sticker_number: Optional[str]) -
     return (not cl or not sl) or cl == sl
 
 
+# ── Розмір не в EU (UK на європейському взутті) ─────────────────────────────
+# Власник, 04.10.2026 (#Ф4450, Ströber «11½ · 30.5»): «коли розмір вказано не
+# європейський — ШІ має обовʼязково записувати після переведення в
+# європейський. Не плутати з реальними маленькими дитячими розмірами».
+# Таблиця — німецьких виробників, що підписують UK (Ströber, Waldläufer,
+# Hartjes). Звірено з базою: 30.5 см → EU 46–47.6 (медіана 47) ↔ UK 11½ = 46½;
+# 28.5 см → 44 ↔ UK 9½ = 44; 24 см → 37 ↔ UK 4½ = 37½. «15 (50)» — зі стікера
+# самого власника (#Ф4454).
+UK_ADULT_TO_EU: Dict[float, float] = {
+    3: 35.5, 3.5: 36, 4: 37, 4.5: 37.5, 5: 38, 5.5: 38.5, 6: 39, 6.5: 40,
+    7: 40.5, 7.5: 41, 8: 42, 8.5: 42.5, 9: 43, 9.5: 44, 10: 44.5, 10.5: 45,
+    11: 46, 11.5: 46.5, 12: 47, 12.5: 48, 13: 48.5, 13.5: 49, 14: 49.5, 15: 50,
+}
+# Дитячі UK (0–13½) — ті самі числа, що й дорослі, тому відрізняє їх ЛИШЕ
+# довжина устілки (див. eu_from_insole_cm).
+UK_KIDS_TO_EU: Dict[float, float] = {
+    1: 17, 2: 18, 3: 19, 4: 20, 5: 21, 5.5: 22, 6: 23, 7: 24, 7.5: 25, 8: 26,
+    9: 27, 10: 28, 10.5: 29, 11: 29.5, 11.5: 30, 12: 30.5, 12.5: 31, 13: 32, 13.5: 33,
+}
+# Наскільки EU з таблиці може розійтися з EU, оціненим за см устілки.
+SIZE_CM_TOLERANCE = 1.5
+
+
+def eu_from_insole_cm(cm: float) -> float:
+    """Оцінка EU за довжиною устілки — апроксимація ВЛАСНОЇ бази (тисячі пар):
+    EU ≈ 1.5 × (см + 1). 17 → 27, 20 → 31.5, 24 → 37.5, 28.5 → 44.25, 30.5 → 47.25."""
+    return 1.5 * (float(cm) + 1.0)
+
+
+def _lookup(table: Dict[float, float], size: float) -> Optional[float]:
+    if size in table:
+        return table[size]
+    keys = sorted(table)
+    if not keys[0] <= size <= keys[-1]:
+        return None
+    lo = max(k for k in keys if k <= size)
+    hi = min(k for k in keys if k >= size)
+    return table[lo] if lo == hi else round((table[lo] + table[hi]) / 2 * 2) / 2
+
+
+def sticker_size_to_eu(size: Optional[float], system: Optional[str],
+                       cm: Optional[float]) -> Tuple[Optional[float], str]:
+    """Розмір зі стікера → EU. Повертає (EU або None, пояснення для примітки).
+
+    * EU (або число 15–52 без системи) — як є.
+    * UK (або число < 15 — у EU таких не буває): переводимо. Дорослий чи
+      дитячий — вирішує устілка: беремо варіант, ближчий до EU за см, і лише
+      якщо розбіжність ≤ SIZE_CM_TOLERANCE. Без см не вгадуємо: UK 10 — це і
+      44½ дорослого, і 28 дитячого.
+    * US — не переводимо (таблиці різні для чоловічого й жіночого).
+    """
+    if size is None:
+        return None, ""
+    try:
+        size = float(size)
+    except (TypeError, ValueError):
+        return None, ""
+    sys_ = (system or "").strip().upper()
+    if sys_ == "US":
+        return None, f"US {size:g} — не переводимо автоматично"
+    if sys_ != "UK" and 15 <= size <= 52:
+        return size, ""
+    if sys_ == "UK" and size > max(UK_ADULT_TO_EU):
+        # «UK 39» не буває — модель позначила EU-число як UK.
+        return (size, "") if size <= 52 else (None, "")
+    shown = f"{int(size)}½" if size % 1 == 0.5 else f"{size:g}"
+    if cm in (None, ""):
+        return None, f"UK {shown} без устілки в см — дорослий чи дитячий, не визначити"
+    est = eu_from_insole_cm(float(cm))
+    cands = [(v, label) for v, label in ((_lookup(UK_ADULT_TO_EU, size), "дорослий"),
+                                         (_lookup(UK_KIDS_TO_EU, size), "дитячий")) if v]
+    if not cands:
+        return None, f"UK {shown} поза таблицею"
+    eu, label = min(cands, key=lambda c: abs(c[0] - est))
+    if abs(eu - est) > SIZE_CM_TOLERANCE:
+        return None, f"UK {shown} → EU {eu:g} не сходиться з устілкою {float(cm):g} см (≈ EU {est:g})"
+    return eu, f"UK {shown} → EU {eu:g} ({label}, устілка {float(cm):g} см)"
+
+
 # Рукописна «Ф» на стікері модель часто читає як цифри: «904509» замість
 # «Ф4509» (#Ф4509, 04.10.2026). Такий хвіст із 1–2 «фоподібних» цифр перед
 # номером картки — це літера, а не інший товар.
@@ -1265,6 +1352,15 @@ def _sticker_proposals(db, product_id, pred, current, photo_names, model,
         conf = pred.get(f"{key}_confidence")
         if raw is None:
             continue
+        size_note = ""
+        if key == "sticker_size":
+            # У картку — ЗАВЖДИ EU. UK зі стікера переводимо (див. sticker_size_to_eu).
+            eu, size_note = sticker_size_to_eu(raw, pred.get("sticker_size_system"),
+                                               pred.get("sticker_cm"))
+            if eu is None:
+                below_threshold.append((upd_field, f"{raw} ({size_note})" if size_note else raw, conf))
+                continue
+            raw = eu
         try:
             val = float(raw)
         except (TypeError, ValueError):
@@ -1279,7 +1375,8 @@ def _sticker_proposals(db, product_id, pred, current, photo_names, model,
             already.append((upd_field, text_val)); continue
         if conf is not None and float(conf) >= threshold and field_proposals.propose(
                 db, product_id, upd_field, text_val, conf, model=model,
-                source_photos=photo_names, note=f"{warn}зі стікера: «{text_}»"[:200]):
+                source_photos=photo_names,
+                note=f"{warn}зі стікера: «{text_}»{' · ' + size_note if size_note else ''}"[:200]):
             proposed.append((upd_field, text_val, conf))
         else:
             below_threshold.append((upd_field, text_val, conf))
