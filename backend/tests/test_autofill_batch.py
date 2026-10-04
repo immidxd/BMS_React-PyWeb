@@ -197,3 +197,18 @@ def test_duplicate_ids_are_collapsed(monkeypatch):
     job = ab.start([5, 5, 7, 5], "Тест")
     _wait_done(job["id"])
     assert seen == [5, 7] and job["total"] == 2
+
+
+def test_sticker_with_foreign_number_is_reported(monkeypatch):
+    """#Ф4440 (04.10.2026): на фото стікер «Ф4442» — ціна не взята, а пакет мовчав."""
+    def run_one(db, pid, **kw):
+        if pid == 1:
+            return {"ok": True, "proposed": [("brand_name", "STRÖBER", 0.9)],
+                    "sticker": {"present": True, "matched": False, "sticker_number": "ф4442"}}
+        return {"ok": True, "proposed": [], "sticker": {"present": True, "matched": True}}
+
+    _stub(monkeypatch, run_one=run_one)
+    done = _wait_done(ab.start([1, 2], "Завіз тест")["id"])
+    assert done["sticker_mismatch"] == [{"product_id": 1, "number": None, "sticker_number": "ф4442"}]
+    assert done["results"][0]["sticker_number"] == "ф4442"
+    assert "sticker_number" not in done["results"][1]

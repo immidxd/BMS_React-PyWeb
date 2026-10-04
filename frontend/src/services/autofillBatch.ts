@@ -25,7 +25,9 @@ export interface BatchJob {
   current: string | null;
   stop_reason: string | null;
   cancel_requested?: boolean;
-  results: { product_id: number; number: string | null; fields: number; ok: boolean; reason?: string }[];
+  /** Стікер на знімках із чужим номером — ціна/розмір із нього не взяті. */
+  sticker_mismatch?: { product_id: number; number: string | null; sticker_number: string | null }[];
+  results: { product_id: number; number: string | null; fields: number; ok: boolean; reason?: string; sticker_number?: string | null }[];
 }
 
 export interface StartResult {
@@ -51,6 +53,14 @@ export function describe(job: BatchJob): string {
     if (job.nothing) parts.push(`без знахідок: ${job.nothing}`);
     if (job.errors) parts.push(`не вдалося: ${job.errors}`);
     if (job.skipped) parts.push(`не дійшли черги: ${job.skipped}`);
+    // Стікер із чужим номером — найчастіше фото не з тієї картки. Називаємо
+    // обидва номери: людина має одразу бачити, куди дивитись.
+    const mism = job.sticker_mismatch || [];
+    if (mism.length) {
+      parts.push(`стікер з іншим номером: ${mism
+        .map((m) => `${m.number || '#' + m.product_id} (на стікері ${m.sticker_number || '?'})`)
+        .join(', ')}`);
+    }
     const tail = job.stop_reason ? ` — ${job.stop_reason}` : '';
     return (parts.join(' · ') || 'нічого не змінилось') + tail;
   }

@@ -91,6 +91,37 @@ CLOSED_FIELDS: Dict[str, Tuple[str, str, str, str, str]] = {
                        "підвид", "subtype_name"),
 }
 
+# ── Вид і колір: питаємо ЛИШЕ коли в картці порожньо ────────────────────────
+# 04.10.2026, завіз «01.10.2026(NikolenkoOPT)»: 21 товар без виду й без
+# кольору, і пакетне розпізнавання не заповнило жодного — схема про них просто
+# не питала («модель не мовчить — її не питали»). Підвид тоді обирався з усіх
+# 133 значень без контексту виду, і модель клала в підвид назви ВИДІВ
+# («Ботинки», «Туфлі», «Шльопанці»).
+#
+# Чому лише для порожніх. Вид і колір вписує людина в Журнал, і там вони —
+# джерело правди. Колір до того ж входить у ключ тотожності товару
+# (номер+розмір+колір, див. uix_products_num_size_color): пропозиція ЗМІНИТИ
+# наявний колір — це ризик двійника в парсері, а не дрібна правка. Заповнення
+# порожнього безпечне: парсер порівнює порожнє як збіг (`_fields_match`).
+FILL_EMPTY_FIELDS: Dict[str, Tuple[str, str, str, str, str]] = {
+    "type":  ("types",  "typename",  "typeid",  "вид товару",                "type_name"),
+    "color": ("colors", "colorname", "colorid", "основний колір верху",      "color_name"),
+}
+# Мінімум товарів, щоб значення потрапило в перелік. У довідниках багато
+# одиничного шуму: вид «Челсі» (2) і «Ботильйони» (1) — це підвиди не в тій
+# колонці; 640 кольорів, з них сотні — разові описи («сірий з напиленням»).
+FILL_EMPTY_MIN_PRODUCTS: Dict[str, int] = {"type": 3, "color": 10}
+# Службові значення виду — не вид. «???» і «Невизначено» в картці = порожньо.
+PLACEHOLDER_TYPES = frozenset({"???", "невизначено"})
+# Пара вид↔підвид має траплятись у базі хоча б стільки разів, щоб підвид
+# пройшов для товару без виду. Одиничні пари — шум («Валіза» → «Туфлі»).
+SUBTYPE_PAIR_MIN = 2
+
+
+def is_placeholder_type(name: Optional[str]) -> bool:
+    return not (name or "").strip() or (name or "").strip().casefold() in PLACEHOLDER_TYPES
+
+
 # ── Сезон: багатозначний, ДОПОВНЮЄТЬСЯ, не замінюється ──────────────────────
 # У базі сезон — рядок через «, » з пʼяти канонічних значень у сталому порядку
 # (той самий, що в парсері: SEASON_CANONICAL_ORDER). Рішення власника
@@ -254,6 +285,28 @@ VALUE_HINTS: Dict[str, Dict[str, str]] = {
                       "НЕ країна бренда чи контролю якості: «Made in Bangladesh under quality "
                       "control of Caprice Germany» — це Бангладеш, а не Німеччина. "
                       "Немає напису «Made in» — null."),
+    },
+    # Вид — головна класифікація картки. Підвид уточнює його, а не заміняє:
+    # модель без поля «вид» клала «Ботинки» в підвид (04.10.2026).
+    "type": {
+        "__field__": ("головна категорія товару (те, що в Журналі в колонці «Вид»): "
+                      "кросівки, ботинки, туфлі, шльопанці, сумка… Уточнення на кшталт челсі, "
+                      "лоферів чи сабо сюди не пиши — для нього є окреме поле «підвид»"),
+    },
+    # Колір. Живі знімки зроблені при теплому світлі, тож білий здається
+    # молочним, а червоний замш — бордовим. Модель має обирати за матеріалом,
+    # а не за відблиском, і не дивитись на підошву (для неї окреме поле).
+    "color": {
+        "__field__": ("основний колір ВЕРХУ товару (матеріалу), як його назвав би продавець; НЕ колір "
+                      "підошви, шнурків, устілки чи підкладки. Два-три кольори приблизно порівну — "
+                      "«різнокольоровий». Тепле освітлення знімка не змінює кольору: білий лишається "
+                      "білим, якщо немає явного кремового відтінку"),
+        "бордовий":    "темно-червоний, винний",
+        "червоний":    "чистий яскравий червоний",
+        "малиновий":   "червоний із рожевим відтінком",
+        "темно-синій": "синій, близький до чорного (navy)",
+        "молочний":    "теплий білий із виразним кремовим відтінком",
+        "бежевий":     "світлий пісочно-коричневий",
     },
     # Підвиди взуття. Без визначень модель тяжіє до двох-трьох знайомих назв
     # і не користується рештою з 28 підвидів ботинок. Визначення — за силуетом
@@ -446,8 +499,37 @@ def closed_enum_values(db: Session, field: str, type_id: Optional[int] = None) -
             and canonicalize_shoe_attribute(field, n) == " ".join((n or "").split())]
 
 
+def fill_empty_enum_values(db: Session, field: str) -> List[str]:
+    """Перелік для виду/кольору: лише значення, за якими є щонайменше
+    FILL_EMPTY_MIN_PRODUCTS товарів, без службових і без складених кольорів.
+
+    Складений колір («білий/молочний», «чорний, білий») — це опис, а не вибір:
+    у картці основний колір один (див. `_writeback_cell_value` парсера — перший
+    елемент клітинки), тож моделі даємо лише прості.
+    """
+    table, col, fk, _label, _upd = FILL_EMPTY_FIELDS[field]
+    rows = db.execute(text(
+        f"SELECT l.{col}, count(p.id) FROM {table} l "
+        f"JOIN products p ON p.{fk} = l.id GROUP BY l.{col} ORDER BY count(p.id) DESC, l.{col}"
+    )).fetchall()
+    floor = FILL_EMPTY_MIN_PRODUCTS[field]
+    out: List[str] = []
+    for n, k in rows:
+        name = " ".join((n or "").split())
+        if not name or (k or 0) < floor:
+            continue
+        if field == "type" and is_placeholder_type(name):
+            continue
+        if field == "color" and ("/" in name or "," in name):
+            continue
+        if name not in out:
+            out.append(name)
+    return out
+
+
 def build_schema(db: Session, type_id: Optional[int] = None,
-                 category: str = "shoe", subcat: Optional[str] = None) -> Dict[str, Any]:
+                 category: str = "shoe", subcat: Optional[str] = None,
+                 ask_type: bool = False, ask_color: bool = False) -> Dict[str, Any]:
     """JSON Schema із ЗАКРИТИМИ переліками з живих довідників.
 
     У перелік потрапляють лише значення, за якими Є товари. Мертві
@@ -462,6 +544,28 @@ def build_schema(db: Session, type_id: Optional[int] = None,
     """
     pc = _product_category()
     props: Dict[str, Any] = {}
+    # Вид і колір — ПЕРШИМИ і лише для порожньої картки (див. FILL_EMPTY_FIELDS).
+    for field, ask in (("type", ask_type), ("color", ask_color)):
+        if not ask:
+            continue
+        values = fill_empty_enum_values(db, field)
+        if not values:
+            continue     # порожній enum у Gemini = «будь-який рядок»; не питаємо
+        label = FILL_EMPTY_FIELDS[field][3]
+        hints = VALUE_HINTS.get(field, {})
+        field_note = hints.get("__field__", "")
+        detail = "; ".join(f"«{v}» — {hints[v]}" for v in values if v in hints)
+        props[field] = {
+            "type": ["string", "null"],
+            "enum": values + [None],
+            "description": (f"{label}; null, якщо на знімках не видно однозначно"
+                            + (f". {field_note}" if field_note else "")
+                            + (f". Значення: {detail}" if detail else "")),
+        }
+        props[f"{field}_confidence"] = {
+            "type": "number", "minimum": 0, "maximum": 1,
+            "description": f"певність щодо «{label}» від 0 до 1",
+        }
     for field, (table, col, fk, label, _upd) in CLOSED_FIELDS.items():
         if category != "shoe" and field in SHOE_ONLY_CLOSED:
             continue
@@ -850,10 +954,12 @@ def _current_values(db: Session, product_id: int) -> Dict[str, Optional[str]]:
                      for n in ("pog", "pot", "pob", "length", "sleeve"))
     row = db.execute(text(
         f"SELECT {sel}, b.brandname AS brand_name, t.typename AS type_name, "
+        f"clr.colorname AS color_name, "
         f"p.marking, p.gtin, p.model, p.price, p.sizeeu, p.size_letter, p.measurementscm, p.extranote, "
         f"p.typeid, p.productnumber, p.season, {meas} "
         f"FROM products p {joins} LEFT JOIN brands b ON b.id = p.brandid "
         f"LEFT JOIN types t ON t.id = p.typeid "
+        f"LEFT JOIN colors clr ON clr.id = p.colorid "
         f"WHERE p.id = :pid"
     ), {"pid": product_id}).mappings().fetchone()
     return dict(row) if row else {}
@@ -1202,6 +1308,25 @@ def _record_run(db: Session, product_id: int, purpose: str, model: Optional[str]
         logger.warning("[autofill] run not recorded: %s", e)
 
 
+def _subtype_fits_type(db: Session, type_name: Optional[str], subtype_name: Optional[str]) -> bool:
+    """Чи трапляється пара вид↔підвид у базі щонайменше SUBTYPE_PAIR_MIN разів.
+
+    Підвид, що повторює вид («Ботинки»/«Ботинки»), — не підвид: його
+    `normalize_taxonomy_pair` однаково прибрав би при записі.
+    """
+    t, s = (type_name or "").strip(), (subtype_name or "").strip()
+    if not t or not s or t.casefold() == s.casefold():
+        return False
+    n = db.execute(text(
+        "SELECT count(*) FROM products p "
+        "JOIN types t ON t.id = p.typeid JOIN subtypes s ON s.id = p.subtypeid "
+        # Точний збіг: обидва значення — дослівно з наших переліків, а lower()
+        # у локалі C кирилицю не опускає (див. памʼять db-c-locale-lower).
+        "WHERE t.typename = :t AND s.subtypename = :s"
+    ), {"t": t, "s": s}).scalar()
+    return int(n or 0) >= SUBTYPE_PAIR_MIN
+
+
 def _same_as_current(current: Optional[str], proposed: Optional[str]) -> bool:
     """Порівняння без урахування регістру й країв — «HEY DUDE» = «Hey Dude»."""
     a = (current or "").strip().casefold()
@@ -1322,7 +1447,12 @@ def extract_and_propose(db: Session, product_id: int, photos: List[pathlib.Path]
         return _finish({"ok": False, "reason": verdict.reason, "budget_blocked": True,
                         "spent_usd": verdict.spent_usd})
 
-    schema = build_schema(db, type_id=current.get("typeid"), category=category, subcat=subcat)
+    # Вид і колір питаємо лише для ПОРОЖНЬОЇ картки (див. FILL_EMPTY_FIELDS).
+    type_empty = is_placeholder_type(current.get("type_name"))
+    ask_color = not (current.get("color_name") or "").strip()
+    schema = build_schema(db, type_id=None if type_empty else current.get("typeid"),
+                          category=category, subcat=subcat,
+                          ask_type=type_empty, ask_color=ask_color)
     prompt = PROMPT_CLOTHING if category == "clothing" else PROMPT
 
     # Перевантажена модель (503) — привід узяти сусідню, а не здатись: квота
@@ -1372,6 +1502,21 @@ def extract_and_propose(db: Session, product_id: int, photos: List[pathlib.Path]
 
     pred_box.update(pred)
     photo_names = ",".join(p.name for p in photos)
+    # Вид і колір — лише в порожню картку; схема їх інакше й не питала, а
+    # перевірка тут — другий рубіж на випадок, якщо модель поверне поле сама.
+    for field, ask in (("type", type_empty), ("color", ask_color)):
+        value, conf = pred.get(field), pred.get(f"{field}_confidence")
+        upd_field = FILL_EMPTY_FIELDS[field][4]
+        if not ask or not value:
+            continue
+        if field == "type" and is_placeholder_type(value):
+            continue
+        if field_proposals.propose(db, product_id, upd_field, value, conf,
+                                   model=model, source_photos=photo_names):
+            proposed.append((upd_field, value, conf))
+            made[upd_field] = (value, conf, None)
+        else:
+            below_threshold.append((upd_field, value, conf))
     for field, (_t, _c, _fk, _label, upd_field) in CLOSED_FIELDS.items():
         value = pred.get(field)
         conf = pred.get(f"{field}_confidence")
@@ -1379,6 +1524,14 @@ def extract_and_propose(db: Session, product_id: int, photos: List[pathlib.Path]
             continue
         # Відсутність ознаки в нас позначається порожнім полем, а не записом.
         if is_absence_value(upd_field, value):
+            continue
+        if field == "subtype" and type_empty and not _subtype_fits_type(
+                db, made.get("type_name", (None,))[0], value):
+            # Картка без виду: перелік підвидів був повний (133 значення), і
+            # без виду підвид неоднозначний — «Туфлі» трапляється підвидом у
+            # мокасинів, кросівок і босоніжок. Приймаємо лише пару, яку база
+            # знає, і лише разом із запропонованим видом.
+            below_threshold.append((upd_field, value, conf))
             continue
         if _same_as_current(current.get(upd_field), value):
             already.append((upd_field, value))

@@ -92,6 +92,10 @@ def start(product_ids: List[int], label: str, *, use_paid: bool = False) -> Dict
             "id": job_id, "label": label, "state": "running",
             "total": len(ids), "done": 0, "proposed_products": 0, "proposed_fields": 0,
             "nothing": 0, "errors": 0, "skipped": 0,
+            # Стікер на знімках із ЧУЖИМ номером: ціна/розмір із нього не беруться.
+            # Поодинокий запуск каже про це сповіщенням, а пакет мовчав —
+            # #Ф4440 (04.10.2026) мав на фото стікер «Ф4442» і просто «не отримав ціни».
+            "sticker_mismatch": [],
             "current": None, "started_at": _now(), "finished_at": None,
             "stop_reason": None, "cancel_requested": False,
             "results": [], "use_paid": bool(use_paid),
@@ -187,9 +191,15 @@ def _record(job: Dict[str, Any], pid: int, number: Optional[str], res: Dict[str,
     fields = len(res.get("proposed") or [])
     row = {"product_id": pid, "number": number, "fields": fields,
            "ok": bool(res.get("ok")), "reason": res.get("reason")}
+    st = res.get("sticker") or {}
+    if st.get("present") and st.get("matched") is False:
+        row["sticker_number"] = st.get("sticker_number") or None
     with _LOCK:
         job["done"] += 1
         job["results"].append(row)
+        if "sticker_number" in row:
+            job.setdefault("sticker_mismatch", []).append(
+                {"product_id": pid, "number": number, "sticker_number": row["sticker_number"]})
         if fields:
             job["proposed_products"] += 1
             job["proposed_fields"] += fields

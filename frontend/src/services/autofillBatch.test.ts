@@ -31,3 +31,11 @@ test('порожній результат не бреше, що щось зро�
   expect(ab.describe(job({ state: 'done', proposed_fields: 0, proposed_products: 0, nothing: 0 })))
     .toBe('нічого не змінилось');
 });
+
+test('стікер з чужим номером видно в підсумку пакета', () => {
+  const d = ab.describe(job({
+    state: 'done',
+    sticker_mismatch: [{ product_id: 1, number: '#Ф4440', sticker_number: 'ф4442' }],
+  }));
+  expect(d).toContain('стікер з іншим номером: #Ф4440 (на стікері ф4442)');
+});
