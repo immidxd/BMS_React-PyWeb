@@ -2989,8 +2989,9 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-3 mb-1 flex-wrap">
                   {numEditing ? (
-                    // readOnly, а не disabled: disabled знімає фокус, і після
-                    // помилки Esc/Enter уже не доходили б до поля.
+                    <span className="inline-flex items-center gap-2">
+                    {/* readOnly, а не disabled: disabled знімає фокус, і після
+                        помилки Esc/Enter уже не доходили б до поля. */}
                     <input autoFocus value={numDraft} readOnly={numSaving}
                       onChange={(e) => setNumDraft(e.target.value)}
                       onKeyDown={(e) => {
@@ -3003,6 +3004,16 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                       placeholder="Ф4400"
                       title="Enter — зберегти (і в журнал), Esc — скасувати"
                       className="w-28 text-xs font-mono px-2 py-0.5 rounded border border-gray-400 dark:border-gray-500 bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-gray-400" />
+                    {/* Зміна номера — кілька звернень до Google (журнал) + перенесення
+                        фото: буває кілька секунд, а при квоті Google — до півхвилини.
+                        Без індикатора не зрозуміло, чи щось відбувається (04.10.2026). */}
+                    {numSaving && (
+                      <span role="status" className="inline-flex items-center gap-1.5 text-[11px] text-gray-500 dark:text-gray-400">
+                        <LoadingOutlined spin style={{ fontSize: 12 }} />
+                        Змінюю в журналі й переношу фото…
+                      </span>
+                    )}
+                    </span>
                   ) : (
                     <span className="group/pnum inline-flex items-center gap-1 text-xs font-mono text-gray-400 dark:text-gray-500 px-2 py-0.5 rounded bg-gray-100 dark:bg-gray-800">
                       {pnumDisplay
