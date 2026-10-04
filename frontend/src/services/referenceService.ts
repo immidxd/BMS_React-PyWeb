@@ -524,6 +524,8 @@ export const reconcileDelivery = async (deliveryId: number): Promise<{
 // Точкова синхронізація вкладки завозу з аркушем (upsert + видалення орфанів). Для loading-on-open.
 export const syncDelivery = async (deliveryId: number): Promise<{
   shipment_id: number; added: number; updated: number; deleted: number;
+  /** рядки перенесли в іншу вкладку журналу — {вкладка: скільки товарів переїхало} */
+  moved_to?: Record<string, number>;
 }> => {
   const response = await axios.post(`/api/deliveries/${deliveryId}/sync`);
   return response.data;

@@ -7309,8 +7309,13 @@ def _numbers_from_value_ranges(value_ranges: list) -> set:
     return out
 
 
-def _journal_number_index(sh) -> tuple[set, dict]:
-    """Усі номери + кількість рядків кожного базового номера по журналу."""
+def _journal_number_index(sh, where: Optional[dict] = None) -> tuple[set, dict]:
+    """Усі номери + кількість рядків кожного базового номера по журналу.
+
+    `where` (необовʼязково) — заповнюється {канонічний номер: {вкладки}} з того ж
+    пакетного читання, без жодного додаткового запиту до Google: потрібен, щоб
+    синк картки завозу знав, КУДИ переїхали рядки (`_moved_rows_plan`).
+    """
     tabs = [ws.title for ws in sh.worksheets() if not is_skip_sheet(ws.title)]
     nums: set = set()
     counts: dict[str, int] = {}
@@ -7320,14 +7325,140 @@ def _journal_number_index(sh) -> tuple[set, dict]:
         res = sh.values_batch_get([f"'{t}'!A:A" for t in chunk])
         value_ranges = res.get("valueRanges", [])
         nums |= _numbers_from_value_ranges(value_ranges)
-        for vr in value_ranges:
+        for title, vr in zip(chunk, value_ranges):
             for row in (vr.get("values") or [])[1:]:
                 base = _product_search_base(row[0] if row else "")
                 if base:
                     counts[base] = counts.get(base, 0) + 1
+                if where is not None and row:
+                    c = _canon_sheet_num(row[0])
+                    if c:
+                        where.setdefault(c, set()).add(title)
     if not nums:
         raise RuntimeError("журнал повернув 0 номерів")
     return nums, counts
+
+
+MOVED_ROWS_MAX_AGE_DAYS = int(os.environ.get("MOVED_ROWS_MAX_AGE_DAYS", "120"))
+
+
+def _recent_tab(title: str, today: Optional[date] = None) -> bool:
+    """Вкладка свіжа (дата завозу в назві не старша за MOVED_ROWS_MAX_AGE_DAYS)."""
+    d = parse_date_from_sheet_title(title)
+    if not d:
+        return False
+    today = today or date.today()
+    return (today - d).days <= MOVED_ROWS_MAX_AGE_DAYS
+
+
+def _moved_rows_plan(products, sheet_nums: set, where: dict, own_title: str,
+                     allow_tab=None) -> dict:
+    """Куди переїхали рядки товарів цього завозу: {вкладка: {канонічні номери}}.
+
+    `products` — [(id, productnumber)] із deliveryid цього завозу. Беремо лише
+    номери, яких НЕМА у своїй вкладці (ні самих, ні базою без суфікса) і які
+    стоять рівно в ОДНІЙ іншій вкладці. Номер у кількох вкладках (повторно
+    використані старі номери) — неоднозначно, пропускаємо: його розставить
+    повний парс, як і раніше. Службові «???»/tmp — не чіпаємо.
+
+    `allow_tab(title)` — фільтр цільових вкладок (у синку — лише свіжі, див.
+    `_follow_moved_rows`).
+    """
+    plan: dict = {}
+    for _pid, pnum in products:
+        c = _canon_sheet_num(pnum)
+        if not c or _is_placeholder_num(c):
+            continue
+        base = _num_base(c)
+        if c in sheet_nums or base in sheet_nums:
+            continue
+        tabs = set(where.get(c) or where.get(base) or set()) - {own_title}
+        if len(tabs) != 1:
+            continue
+        if allow_tab is not None and not allow_tab(next(iter(tabs))):
+            continue
+        key = c if c in where else base
+        plan.setdefault(next(iter(tabs)), set()).add(key)
+    return plan
+
+
+def _follow_moved_rows(session: Session, sh, shipment_id: int, own_title: str,
+                       all_rows: list, where: dict, journal_nums: Optional[set],
+                       max_tabs: int = 3) -> dict:
+    """Рядки товарів цього завозу перенесли в ІНШУ вкладку — підтягуємо їх одразу.
+
+    Раніше синк картки бачив лише свою вкладку: перенесені рядки лишались у
+    старому завозі до повного парсу (≈1 хв, а з перезапусками BMS — довше), і
+    картка показувала «Оновлено з журналу» зі старими товарами. Тут з цільової
+    вкладки беруться ЛИШЕ рядки цих номерів і проходять тим самим
+    `_parse_products_sheet`, що й завжди (вкладка = завіз, товар їде за рядком).
+    Кожна вкладка — під SAVEPOINT: збій не зачіпає решту синку, а повний парс
+    усе одно розставить як слід. Повертає {вкладка: к-сть перенесених}.
+
+    ⚠️ Лише коли ОБИДВІ вкладки свіжі (MOVED_ROWS_MAX_AGE_DAYS). Симуляція на
+    живому журналі 04.10.2026 показала 66 давніх розбіжностей у завозах 2024 р.
+    (переважно продані товари, частина — двійники повторно використаних
+    номерів), яких «швидкий» повний парс не чіпає, бо ті вкладки не змінюються.
+    Відкриття старої картки не має тихо пересувати архів між поставками — це
+    змінило б статистику завозів. Для свіжих вкладок це рівно те, що повний
+    парс зробить за хвилину (перенос рядка змінює обидві вкладки).
+    """
+    if not _recent_tab(own_title):
+        return {}
+    sheet_nums = _sheet_numbers(all_rows)
+    prods = session.execute(
+        text("SELECT id, productnumber FROM products WHERE deliveryid = :d"),
+        {"d": shipment_id},
+    ).fetchall()
+    plan = _moved_rows_plan(prods, sheet_nums, where, own_title, allow_tab=_recent_tab)
+    moved: dict = {}
+    for title, numbers in list(plan.items())[:max_tabs]:
+        try:
+            ws2 = sh.worksheet(title)
+            rows2 = ws2.get_all_values()
+            if not rows2 or "Номер" not in rows2[0]:
+                continue
+            idx = rows2[0].index("Номер")
+            filtered = [rows2[0]] + [
+                r for r in rows2[1:]
+                if idx < len(r) and (_canon_sheet_num(r[idx]) in numbers
+                                     or _num_base(_canon_sheet_num(r[idx])) in numbers)
+            ]
+            if len(filtered) < 2:
+                continue
+            date2 = parse_date_from_sheet_title(title)
+            supplier2 = parse_supplier_from_sheet_title(title)
+            supplier2_id = _get_or_create_supplier(session, supplier2) if supplier2 else None
+            fin2 = _parse_delivery_financials(rows2)
+            nested = session.begin_nested()
+            try:
+                ship2 = _get_or_create_shipment(
+                    session, title, date2, supplier2_id,
+                    purchase_cost=fin2["purchase_cost"], delivery_cost=fin2["delivery_cost"],
+                    sheet_gid=ws2.id,
+                )
+                ids = _candidate_product_ids_for_rows(session, filtered)
+                snap = _snapshot_product_locks(session, ids)
+                _parse_products_sheet(ws2, session, date2, None, {}, supplier2_id, ship2,
+                                      prefetched_rows=filtered, commit=False,
+                                      journal_nums=journal_nums)
+                _restore_product_locks(session, snap, commit=False)
+                session.flush()
+                nested.commit()
+            except Exception:
+                nested.rollback()
+                raise
+            left = session.execute(
+                text("SELECT COUNT(*) FROM products WHERE deliveryid = :d AND id = ANY(:ids)"),
+                {"d": shipment_id, "ids": [p[0] for p in prods]},
+            ).scalar() or 0
+            moved[title] = max(0, len(prods) - int(left) - sum(moved.values()))
+            logger.info(f"[sync] '{own_title}': рядки {sorted(numbers)[:8]}… переїхали в "
+                        f"'{title}' — підтягнуто ({moved[title]})")
+        except Exception as e:  # noqa: BLE001 — підтягування необовʼязкове
+            logger.warning(f"[sync] '{own_title}': підтягнути вкладку '{title}' не вдалося ({e}) "
+                           f"— розставить повний парс")
+    return moved
 
 
 def _journal_all_numbers(sh) -> set:
@@ -7731,8 +7862,9 @@ def _sync_one_delivery_tab_locked(session: Session, deliveryname: str) -> dict:
     # Номери всього журналу читаємо ДО парсу: вони потрібні і реклейму
     # перейменованих номерів у самому парсі, і прибиранню орфанів після нього.
     scan_failed = None
+    where: dict = {}
     try:
-        journal_nums, journal_counts = _journal_number_index(sh)
+        journal_nums, journal_counts = _journal_number_index(sh, where)
     except Exception as e:  # noqa: BLE001
         journal_nums, journal_counts, scan_failed = None, {}, str(e)
         logger.warning(f"[sync] скан журналу не вдався ({e}) — прибирання орфанів пропущено")
@@ -7744,6 +7876,13 @@ def _sync_one_delivery_tab_locked(session: Session, deliveryname: str) -> dict:
                                 journal_nums=journal_nums)
     restored = _restore_product_locks(session, locked_snapshot, commit=False)
     session.flush()
+
+    # Рядки перенесли в іншу вкладку (інший завіз/постачальник) — підтягуємо
+    # їх зараз, а не після повного парсу. Лише коли весь журнал прочитано.
+    moved_to: dict = {}
+    if shipment_id and journal_nums is not None:
+        moved_to = _follow_moved_rows(session, sh, shipment_id, ws.title, all_rows,
+                                      where, journal_nums)
 
     # Прибирати орфанів можна ЛИШЕ знаючи весь журнал: товар цього завозу міг
     # переїхати рядком в іншу вкладку, а `deliveryid` лишитись старим — саме на
@@ -7795,6 +7934,8 @@ def _sync_one_delivery_tab_locked(session: Session, deliveryname: str) -> dict:
            "updated": res.get("updated", 0), "deleted": deleted,
            "restored_locks": restored, "restored_cross_sheet_aggregates": aggregate_restored,
            "queued_writebacks": repair.get("queued", 0)}
+    if moved_to:
+        out["moved_to"] = moved_to
     if scan_failed:
         out["orphan_scan_skipped"] = scan_failed
     return out

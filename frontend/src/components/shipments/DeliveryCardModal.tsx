@@ -199,8 +199,15 @@ const DeliveryCardModal: React.FC<Props> = ({ shipment, open, onClose }) => {
     setBgSyncing(true);            // 2) синк з журналом у фоні (не блокує перегляд/додавання)
     try {
       const r = await syncDelivery(shipment.id);
-      const changed = (r.added || 0) + (r.updated || 0) + (r.deleted || 0) > 0;
-      if (changed) { await loadProducts(); setSyncInfo('Оновлено з журналу'); }
+      const movedTo = Object.entries(r.moved_to || {}).filter(([, n]) => n > 0);
+      const moved = movedTo.reduce((s, [, n]) => s + n, 0);
+      const changed = (r.added || 0) + (r.updated || 0) + (r.deleted || 0) + moved > 0;
+      if (changed) {
+        await loadProducts();
+        setSyncInfo(moved
+          ? `Оновлено з журналу · ${moved} переїхали в ${movedTo.map(([t]) => `«${t}»`).join(', ')}`
+          : 'Оновлено з журналу');
+      }
     } catch {
       setSyncInfo('⚠ Журнал недоступний — показано дані з програми');
     } finally {
