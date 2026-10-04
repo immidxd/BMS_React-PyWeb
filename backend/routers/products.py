@@ -804,7 +804,7 @@ def _existing_photo_category(pnum: str) -> Optional[str]:
         from backend.services.product_images import list_images, URL_PREFIX
         from backend.services.photo_manager import VALID_CATEGORIES
     try:
-        images = list_images(pnum, include_hidden=True)
+        images = list_images(pnum)
     except Exception:  # noqa: BLE001 — підказка теки, не умова переносу
         return None
     prefix = URL_PREFIX.rstrip("/") + "/"
