@@ -35,6 +35,14 @@ interface Props {
 /** Знімок уже квадратний (з допуском на округлення камер/експорту). */
 export const isSquare = (w: number, h: number) => w > 0 && h > 0 && Math.abs(w / h - 1) < 0.01;
 
+/** Центральний квадрат знімка w×h (як «Решта по центру»); null — уже квадрат. */
+export const centerSquareEdit = (w: number, h: number): PhotoEdit | null => {
+  if (!(w > 0 && h > 0) || isSquare(w, h)) return null;
+  const s = Math.min(w, h);
+  const r = (n: number) => Math.round(n * 1e5) / 1e5;
+  return { rotate: 0, crop: { x: r((1 - s / w) / 2), y: r((1 - s / h) / 2), w: r(s / w), h: r(s / h) } };
+};
+
 /** Розміри знімка (з урахуванням EXIF — так, як його малює браузер). */
 export const loadImageSize = (src: string): Promise<{ w: number; h: number } | null> =>
   new Promise((resolve) => {

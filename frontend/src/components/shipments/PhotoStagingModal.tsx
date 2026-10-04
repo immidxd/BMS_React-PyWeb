@@ -1,7 +1,7 @@
 import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { notify } from '../../ui/feedback';
 import type { Product } from '../../types/product';
-import PhotoCropEditor, { CroppedPreview, isSquare, loadImageSize } from '../common/PhotoCropEditor';
+import PhotoCropEditor, { CroppedPreview, centerSquareEdit, isSquare, loadImageSize } from '../common/PhotoCropEditor';
 import type { CropItem, PhotoEdit } from '../common/PhotoCropEditor';
 import ProductNumberText from '../common/ProductNumberText';
 
@@ -210,6 +210,7 @@ const PhotoStagingModal: React.FC<Props> = ({ open, onClose, products, defaultCa
       setFiles(list);
       setSelected(new Set());
       setEdits({});
+      autoRef.current.clear();
       setFocused(sortFiles(list, sortRef.current)[0]?.name ?? null);
     } catch {
       notify.error('Не вдалося прочитати теку «до розбору»');
@@ -283,6 +284,47 @@ const PhotoStagingModal: React.FC<Props> = ({ open, onClose, products, defaultCa
   // без окремого запиту.
   const sizesRef = useRef<Map<string, { w: number; h: number }>>(new Map());
   const onSize = useCallback((name: string, w: number, h: number) => { sizesRef.current.set(name, { w, h }); }, []);
+
+  // ── Автокадр 1:1 ──
+  // Вибраний неквадратний знімок одразу отримує центральний квадрат — у
+  // превʼю видно результат, на плитці «1:1», і при «Прикріпити» редактор уже не
+  // вискакує. Підправити — кнопкою кадру; «Без кадру» — лишити оригінал.
+  // Автокадр знімається разом із вибором; ручний — лишається.
+  const autoRef = useRef<Set<string>>(new Set());
+  const editsRef = useRef(edits); editsRef.current = edits;
+  const selectedRef = useRef(selected); selectedRef.current = selected;
+  useEffect(() => {
+    const drop = Array.from(autoRef.current).filter((n) => !selected.has(n));
+    if (drop.length) {
+      drop.forEach((n) => autoRef.current.delete(n));
+      setEdits((c) => { const x = { ...c }; drop.forEach((n) => { delete x[n]; }); return x; });
+    }
+    const todo = Array.from(selected).filter((n) => !(n in editsRef.current));
+    if (!todo.length) return;
+    let cancelled = false;
+    void (async () => {
+      const add: Record<string, PhotoEdit> = {};
+      for (const n of todo) {
+        let sz = sizesRef.current.get(n);
+        const f = byName.get(n);
+        if (!sz && f) {
+          const got = await loadImageSize(imgUrl(category, f, GRID_W));
+          if (got) { sz = got; sizesRef.current.set(n, got); }
+        }
+        const e = sz ? centerSquareEdit(sz.w, sz.h) : null;
+        if (e) add[n] = e;
+      }
+      if (cancelled || !Object.keys(add).length) return;
+      setEdits((c) => {
+        const x = { ...c };
+        Object.entries(add).forEach(([n, e]) => {
+          if (!(n in x) && selectedRef.current.has(n)) { x[n] = e; autoRef.current.add(n); }
+        });
+        return x;
+      });
+    })();
+    return () => { cancelled = true; };
+  }, [selected, byName, category]);
 
   const order = useMemo(() => {
     const m = new Map<string, number>();
@@ -534,11 +576,14 @@ const PhotoStagingModal: React.FC<Props> = ({ open, onClose, products, defaultCa
                       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M6 2v14a2 2 0 0 0 2 2h14" /><path d="M18 22V8a2 2 0 0 0-2-2H2" /></svg>
                       Кадр 1:1
                     </button>
-                    {focusedEdit !== undefined && (
-                      <button type="button" onClick={() => setEdits((c) => { const n = { ...c }; delete n[focusedFile.name]; return n; })}
+                    {focusedEdit && (
+                      <button type="button" onClick={() => {
+                        autoRef.current.delete(focusedFile.name);
+                        setEdits((c) => ({ ...c, [focusedFile.name]: null }));
+                      }}
                         className="h-8 px-3 inline-flex items-center rounded-full text-[12px] hover:bg-white/20 active:scale-95 transition"
-                        title="Прибрати вибраний кадр">
-                        Скинути
+                        title="Прикріпити оригінал, без кадрування">
+                        Без кадру
                       </button>
                     )}
                   </div>
@@ -639,6 +684,7 @@ const PhotoStagingModal: React.FC<Props> = ({ open, onClose, products, defaultCa
           onDone={(res) => {
             const then = cropFor.then;
             setCropFor(null);
+            Object.keys(res).forEach((n) => autoRef.current.delete(n));   // тепер це рішення людини
             if (then) then(res);
             else setEdits((cur) => ({ ...cur, ...res }));
           }} />
