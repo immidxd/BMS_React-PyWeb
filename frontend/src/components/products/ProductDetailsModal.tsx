@@ -3826,7 +3826,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                                     }}
                                     aria-pressed={isPicked}
                                     title={isPicked ? 'Зняти виділення' : 'Виділити (⌘/Ctrl + клік · Shift — діапазон)'}
-                                    className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-[4px] border flex items-center justify-center text-[9px] leading-none transition-opacity ${
+                                    className={`absolute top-0.5 left-0.5 z-10 w-4 h-4 rounded-[4px] border flex items-center justify-center text-[9px] leading-none transition-opacity ${
                                       isPicked
                                         ? 'bg-primary-500 border-primary-500 text-white opacity-100'
                                         : 'bg-white/90 dark:bg-gray-900/90 border-gray-300 dark:border-gray-600 text-transparent opacity-0 group-hover/ph:opacity-100'
@@ -3837,8 +3837,11 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                                     <span className="absolute bottom-0 inset-x-0 text-center text-[9px] bg-primary-500/90 text-white py-0.5 pointer-events-none">головне</span>
                                   )}
                                   {/* Поодинокі дії ховаємо, поки триває групове виділення —
-                                      щоб випадковий клік по ✕ не видалив одне фото замість пачки. */}
-                                  <div className={`absolute top-0.5 right-0.5 flex gap-0.5 transition-opacity ${
+                                      щоб випадковий клік по ✕ не видалив одне фото замість пачки.
+                                      ⚠️ Рядок починається ПІСЛЯ галочки (left-5) і переноситься:
+                                      з шостою дією («↪ в інший товар») п'ять кнопок не влазили в
+                                      плитку й накривали галочку виділення (04.10.2026). */}
+                                  <div className={`absolute top-0.5 left-5 right-0.5 flex flex-wrap justify-end gap-0.5 transition-opacity ${
                                     selectedPhotos.size > 0 ? 'opacity-0 pointer-events-none' : 'opacity-0 group-hover/ph:opacity-100'
                                   }`}>
                                     <button type="button" disabled={photoBusy}
