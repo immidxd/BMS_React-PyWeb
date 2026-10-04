@@ -143,13 +143,27 @@ def _header_columns(ws) -> Dict[str, int]:
     return out
 
 
-def _backup_tab(ws, tag: str) -> str:
+def _backup_tab(ws, tag: str, values: Optional[list] = None) -> str:
+    """Бекап вкладки у JSON. `values` — уже прочитаний ws.get_all_values():
+    повторне читання цілої вкладки коштує ще один запит до квоти й секунду-дві."""
     os.makedirs(_BACKUP_DIR, exist_ok=True)
     path = os.path.join(_BACKUP_DIR, f"{_dt.now():%Y%m%d_%H%M%S}_{tag}_{ws.id}.json")
     with open(path, "w") as f:
-        json.dump({"title": ws.title, "gid": ws.id, "values": ws.get_all_values()},
+        json.dump({"title": ws.title, "gid": ws.id,
+                   "values": values if values is not None else ws.get_all_values()},
                   f, ensure_ascii=False)
     return path
+
+
+def _header_columns_from(all_vals: list) -> Dict[str, int]:
+    """Те саме, що _header_columns, але з уже прочитаних значень (без запиту)."""
+    out: Dict[str, int] = {}
+    row = all_vals[HEADER_ROW - 1] if len(all_vals) >= HEADER_ROW else []
+    for i, h in enumerate(row, 1):
+        h = (h or "").strip()
+        if h and h not in out:
+            out[h] = i
+    return out
 
 
 def _first_free_product_row(ws, num_col: int) -> int:
@@ -467,11 +481,15 @@ def rename_product_row(delivery_title: str, old_number: str, new_number: str,
     def _do() -> Dict[str, Any]:
         sh = _open_journal()
         ws = sh.worksheet(delivery_title)
-        headers = _header_columns(ws)
+        # Одне читання вкладки на все: заголовки, пошук рядка й бекап. Раніше
+        # тут було три окремі запити (row_values + get_all_values + ще один
+        # get_all_values у бекапі) — зміна номера помітно «думала» (04.10.2026)
+        # і швидше впиралась у хвилинну квоту Google.
+        all_vals = ws.get_all_values()
+        headers = _header_columns_from(all_vals)
         num_col = headers.get("Номер")
         if not num_col:
             raise RuntimeError(f"У вкладці '{delivery_title}' немає колонки «Номер»")
-        all_vals = ws.get_all_values()
         target = _canon(old_number)
         rows = [r_i for r_i, row in enumerate(all_vals[HEADER_ROW:], start=HEADER_ROW + 1)
                 if _canon(row[num_col - 1] if num_col - 1 < len(row) else "") == target]
@@ -489,7 +507,7 @@ def rename_product_row(delivery_title: str, old_number: str, new_number: str,
             return {"renamed": 0, "ambiguous": True, "rows": rows, "gid": ws.id}
         if dry_run:
             return {"renamed": 1, "row": rows[0], "gid": ws.id, "dry_run": True}
-        _backup_tab(ws, "rename")
+        _backup_tab(ws, "rename", values=all_vals)
         a1 = _gsu.rowcol_to_a1(rows[0], num_col)
         ws.batch_update([{"range": a1, "values": [[new_number]]}], value_input_option="USER_ENTERED")
         return {"renamed": 1, "row": rows[0], "gid": ws.id}

@@ -1637,8 +1637,18 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
       const r = await renameDeliveryProductNumber(pr.deliveryid, productId, next);
       setNumEditing(false);
       if (r.renamed) {
-        notify.success({ message: `Номер змінено: ${r.old} → ${r.productnumber}`, description: 'Записано і в журнал.', duration: 4 });
+        const ph = r.photos;
+        const photoLine = !ph ? '' : ph.skipped ? ` Фото не переносились: ${ph.skipped}.`
+          : ph.moved ? ` Фото перенесено: ${ph.moved}.` : '';
+        notify.success({ message: `Номер змінено: ${r.old} → ${r.productnumber}`, description: `Записано і в журнал.${photoLine}`, duration: 5 });
+        if (ph?.errors?.length) {
+          notify.warning({ message: 'Не всі фото перенеслись під новий номер',
+            description: ph.errors.join('; '), duration: 10 });
+        }
         await loadProduct(false);
+        // Фото живуть за номером — список треба перечитати під НОВИМ номером.
+        await loadImages(true);
+        emitProductPhotosChanged(productId);
         emitProductNumberChanged();
         emitDeliveryChanged(pr.deliveryid);
         onSaved?.(productId);
@@ -1649,7 +1659,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     } finally {
       setNumSaving(false);
     }
-  }, [product, productId, numDraft, loadProduct, onSaved]);
+  }, [product, productId, numDraft, loadProduct, loadImages, onSaved]);
 
   useEffect(() => { setRelink(null); }, [productId, editMode]);
 

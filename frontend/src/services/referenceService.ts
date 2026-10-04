@@ -534,7 +534,9 @@ export const syncDelivery = async (deliveryId: number): Promise<{
 // Перейменувати номер товару зі списку завозу (дедуп-перевірка на бекенді → 409 при дублі).
 export const renameDeliveryProductNumber = async (
   deliveryId: number, productId: number, productnumber: string
-): Promise<{ renamed: boolean; productnumber: string; old?: string; note?: string }> => {
+): Promise<{ renamed: boolean; productnumber: string; old?: string; note?: string;
+  /** Фото, перенесені під новий номер (фото живуть за номером у назві файлу). */
+  photos?: { moved: number; errors?: string[]; skipped?: string } }> => {
   const response = await axios.put(
     `/api/deliveries/${deliveryId}/products/${productId}/number`, { productnumber }
   );

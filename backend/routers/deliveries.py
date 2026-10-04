@@ -589,7 +589,20 @@ def rename_product_number(
             raise HTTPException(status_code=409,
                                 detail=f"Ростовка: кілька рядків з номером «{old}» — уточніть вручну в журналі")
     db.commit()
-    return {"renamed": True, "productnumber": new_norm, "old": old}
+    # Фото живуть за номером у назві файлу — переносимо їх слідом (інакше картка
+    # з новим номером лишалась без фото, #Ф4503 → #Ф4510, 04.10.2026). Збій тут
+    # номер не відкочує: журнал і база вже узгоджені, фото можна добрати вручну.
+    try:
+        from services.photo_number_rename import move_photos_to_new_number
+    except ImportError:
+        from backend.services.photo_number_rename import move_photos_to_new_number
+    try:
+        photos = move_photos_to_new_number(db, old, new_norm)
+    except Exception as e:  # noqa: BLE001
+        logger.exception("move photos after rename failed")
+        db.rollback()
+        photos = {"moved": 0, "errors": [str(e)[:200]]}
+    return {"renamed": True, "productnumber": new_norm, "old": old, "photos": photos}
 
 
 @router.get("/api/deliveries/{delivery_id}/reconcile")

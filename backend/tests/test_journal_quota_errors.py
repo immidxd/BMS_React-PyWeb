@@ -79,3 +79,31 @@ def test_exhausted_quota_says_so_plainly(monkeypatch):
     assert "хвилинна квота" in str(ei.value)
     from backend.routers.deliveries import _journal_err_detail
     assert "Зачекайте хвилину" in _journal_err_detail(ei.value, "01.10.2026(Андрій)")
+
+
+def test_rename_reads_the_tab_once(monkeypatch, tmp_path):
+    """Зміна номера: одне читання вкладки на заголовки, пошук і бекап."""
+    calls = {"get_all_values": 0, "row_values": 0, "batch": []}
+    vals = [["Бренд", "Номер", "Розмір"], ["STRÖBER", "#Ф4503", "39"], ["X", "#Ф4504", "40"]]
+
+    class _WS:
+        id, title = 7, "01.10.2026(Андрій)"
+        def get_all_values(self, **k):
+            calls["get_all_values"] += 1
+            return vals
+        def row_values(self, n):
+            calls["row_values"] += 1
+            return vals[0]
+        def batch_update(self, data, **k):
+            calls["batch"].append(data)
+
+    sh = types.SimpleNamespace(worksheet=lambda t: _WS())
+    monkeypatch.setattr(jw, "_open_journal", lambda: sh)
+    monkeypatch.setattr(jw, "_guard", lambda: None)
+    monkeypatch.setattr(jw, "_BACKUP_DIR", str(tmp_path))
+    monkeypatch.setattr(jw, "_locked", lambda fn: fn)
+    res = jw.rename_product_row("01.10.2026(Андрій)", "#Ф4503", "#Ф4510")
+    assert res["renamed"] == 1 and res["row"] == 2
+    assert calls["get_all_values"] == 1 and calls["row_values"] == 0
+    assert calls["batch"] == [[{"range": "B2", "values": [["#Ф4510"]]}]]
+    assert len(list(tmp_path.iterdir())) == 1          # бекап зроблено з того ж читання
