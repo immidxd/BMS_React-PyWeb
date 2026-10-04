@@ -1104,3 +1104,57 @@ def test_one_digit_off_is_proposed_with_a_warning(monkeypatch, tmp_path):
 ])
 def test_one_digit_off_rule(card, sticker, ok):
     assert pa._one_digit_off(card, sticker) is ok
+
+
+# ── 04.10.2026: «Всесезон» — не для ботинок ─────────────────────────────────
+
+@pytest.mark.parametrize("current, seen, expected", [
+    ("Всесезон", ["Демі"], "Демі"),                       # заглушка парсера прибирається
+    ("Зима, Всесезон", ["Зима"], "Зима"),
+    ("Всесезон", ["Демі", "Всесезон"], "Демі"),           # і від моделі не приймається
+    ("Демі", ["Всесезон"], None),                          # нічого справжнього — не чіпаємо
+    ("Всесезон", [], None),
+    ("Єврозима", ["Демі"], "Єврозима, Демі"),             # решта правил — як були
+])
+def test_allseason_is_dropped_for_boots(current, seen, expected):
+    assert pa.merge_seasons(current, seen, no_allseason=True) == expected
+
+
+def test_allseason_is_kept_for_sneakers():
+    """Для кросівок «Всесезон» коректний (власник) — поведінка не змінилась."""
+    assert pa.merge_seasons("Всесезон", ["Демі"]) == "Демі, Всесезон"
+
+
+@pytest.mark.parametrize("names, forbidden", [
+    (("Ботинки", "Ботильйони"), True), (("Ботинки", None), True),
+    ((None, "Напівботинки"), True), (("Чоботи",), True), (("Уггі",), True),
+    (("Кросівки", "Кеди"), False), (("Туфлі", "Лофери"), False), ((None, None), False),
+])
+def test_allseason_forbidden_types(names, forbidden):
+    assert pa.allseason_forbidden(*names) is forbidden
+
+
+def test_boots_proposal_removes_allseason(monkeypatch, tmp_path):
+    """#Ф4489: картка «Всесезон» (заглушка), модель бачить «Демі» → «Демі»."""
+    monkeypatch.setattr(pa.barcode_reader, "read_photos", lambda ps: [])
+    monkeypatch.setattr(pa.model_profile, "profile_for", lambda *a, **k: {"records": 0, "fields": {}})
+    monkeypatch.setattr(pa, "_current_values",
+                        lambda db, pid: {"season": "Всесезон", "type_name": "Ботинки", "typeid": 5})
+    monkeypatch.setattr(pa, "call_gemini", lambda *a, **k: {
+        "season": ["Демі"], "season_confidence": 0.85,
+        "_usage": {"promptTokenCount": 1, "candidatesTokenCount": 1}})
+    out = pa.extract_and_propose(_DB(spent=0.0), 7, [_photo(tmp_path)], api_key="k")
+    assert ("season", "Демі", 0.85) in out["proposed"]
+
+
+def test_new_lot_boots_with_proposed_type_lose_allseason(monkeypatch, tmp_path):
+    """Новий лот: виду ще нема, модель пропонує «Ботинки» тим самим прогоном."""
+    monkeypatch.setattr(pa.barcode_reader, "read_photos", lambda ps: [])
+    monkeypatch.setattr(pa.model_profile, "profile_for", lambda *a, **k: {"records": 0, "fields": {}})
+    monkeypatch.setattr(pa, "_current_values", lambda db, pid: {"season": "Всесезон"})
+    monkeypatch.setattr(pa, "call_gemini", lambda *a, **k: {
+        "type": "Ботинки", "type_confidence": 0.95,
+        "season": ["Зима", "Всесезон"], "season_confidence": 0.85,
+        "_usage": {"promptTokenCount": 1, "candidatesTokenCount": 1}})
+    out = pa.extract_and_propose(_DB(spent=0.0), 7, [_photo(tmp_path)], api_key="k")
+    assert ("season", "Зима", 0.85) in out["proposed"]

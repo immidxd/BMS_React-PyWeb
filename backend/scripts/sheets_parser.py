@@ -1952,7 +1952,12 @@ def _classify_season(type_val: str, subtype_val: str, style_val: str,
         detected.add('Єврозима')
 
     if not detected:
-        return 'Всесезон'
+        # ⚠️ Без виду сезон невідомий — краще порожньо, ніж вигадане «Всесезон».
+        # Нові лоти приходять у журнал лише з номером/брендом/ціною: такий рядок
+        # отримував «Всесезон», потім ШІ додавало «Демі», і ботинки ставали
+        # «Демі, Всесезон» (#Ф4489, 04.10.2026). Порожнє поле парсер дозаповнить,
+        # щойно в журналі з'явиться вид (оновлення наявних — лише коли season NULL).
+        return 'Всесезон' if (type_l or subtype or style) else ''
 
     ordered = [s for s in SEASON_CANONICAL_ORDER if s in detected]
     return ', '.join(ordered)

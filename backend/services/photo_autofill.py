@@ -134,20 +134,52 @@ SEASON_HINTS: Dict[str, str] = {
     "Єврозима": "утеплене на мʼяку зиму: тонке хутро чи фліс, невисока халява",
     "Демі":     "без утеплення, закрите — на весну й осінь",
     "Літо":     "відкрите чи легке дихаюче: босоніжки, сандалі, сітчасті кросівки",
-    "Всесезон": "нейтральне, без явних ознак сезону",
+    # Рішення власника 04.10.2026: «Всесезон коректний для кросівок, які можна
+    # носити будь-коли (наприклад у залі), але ніяк не для ботинок».
+    "Всесезон": ("ЛИШЕ взуття, яке носять у будь-яку пору року: кросівки для залу, кеди, "
+                 "сліпони, домашнє. НІКОЛИ не для ботинок, чобіт, ботильйонів, напівсапог "
+                 "чи іншого взуття під конкретний сезон"),
 }
 
+# Види, яким «Всесезон» не буває (власник, 04.10.2026). Основи слів — як у
+# парсері (`_EUROWINTER_TYPE_KW`): «Ботинки», «Напівботинки», «Чоботи»…
+NO_ALLSEASON_TYPE_STEMS: Tuple[str, ...] = (
+    "ботинк", "ботінк", "напівсапог", "напівботинк", "сапог", "напівчоб",
+    "черевик", "напівчеревик", "ботильйон", "чобот", "уггі", "дутик", "снігоход",
+)
 
-def merge_seasons(current: Optional[str], seen: List[str]) -> Optional[str]:
+
+def allseason_forbidden(*type_names: Optional[str]) -> bool:
+    """Чи «Всесезон» неможливий для цього виду/підвиду."""
+    text_ = " ".join((t or "").casefold() for t in type_names)
+    return any(stem in text_ for stem in NO_ALLSEASON_TYPE_STEMS)
+
+
+def merge_seasons(current: Optional[str], seen: List[str],
+                  no_allseason: bool = False) -> Optional[str]:
     """Обʼєднати наявні сезони з побаченими у канонічному порядку.
 
-    Повертає None, якщо додавати нічого (усе побачене вже стоїть).
+    Повертає None, якщо змінювати нічого (усе побачене вже стоїть).
+
+    ⚠️ Єдиний виняток із «нічого не прибираємо» — «Всесезон» для видів, яким
+    його не буває (`no_allseason`, ботинки тощо). Там він майже завжди —
+    заглушка парсера для рядка без «Виду» й «Сезону» (`_classify_season`), і
+    «Демі» від моделі давало «Демі, Всесезон» (#Ф4489, 04.10.2026). Для таких
+    видів «Всесезон» і не додається, і прибирається, щойно видно справжній сезон.
     """
     cur = {t.strip() for t in (current or "").split(",") if t.strip()}
     new = {t.strip() for t in seen if t and t.strip() in SEASONS}
-    if not new or new <= cur:
+    if no_allseason:
+        new.discard("Всесезон")
+        if new:
+            cur.discard("Всесезон")
+    if not new:
         return None
-    return ", ".join(t for t in SEASONS if t in cur | new)
+    merged = cur | new
+    before = {t.strip() for t in (current or "").split(",") if t.strip()}
+    if merged == before:
+        return None
+    return ", ".join(t for t in SEASONS if t in merged)
 
 
 # ── Матеріали з піктограм ЄС на бирці ──────────────────────────────────────
@@ -1607,13 +1639,24 @@ def extract_and_propose(db: Session, product_id: int, photos: List[pathlib.Path]
     # Сезон — обʼєднання наявного з побаченим; порожня різниця = уже правильно.
     seen_seasons = [t for t in (pred.get("season") or []) if isinstance(t, str)]
     if seen_seasons:
-        merged = merge_seasons(current.get("season"), seen_seasons)
+        # Вид — з картки або щойно запропонований моделлю (у новому лоті вид
+        # зазвичай порожній і приходить тим самим прогоном).
+        no_allseason = allseason_forbidden(
+            current.get("type_name"), current.get("subtype_name"),
+            (made.get("type_name") or (None,))[0], (made.get("subtype_name") or (None,))[0])
+        merged = merge_seasons(current.get("season"), seen_seasons, no_allseason=no_allseason)
         conf = pred.get("season_confidence")
+        before = {t.strip() for t in (current.get("season") or "").split(",") if t.strip()}
+        after = {t.strip() for t in (merged or "").split(",") if t.strip()}
+        season_note = " · ".join(x for x in (
+            ("додано: " + ", ".join(t for t in SEASONS if t in after - before)) if after - before else "",
+            ("прибрано: " + ", ".join(t for t in SEASONS if t in before - after)
+             + " (не для цього виду)") if merged and before - after else "",
+        ) if x)
         if merged is None:
             already.append(("season", current.get("season") or ""))
         elif field_proposals.propose(db, product_id, "season", merged, conf, model=model,
-                                     source_photos=photo_names,
-                                     note=f"додано: {', '.join(t for t in SEASONS if t in set(seen_seasons) - set((current.get('season') or '').split(', ')))}"):
+                                     source_photos=photo_names, note=season_note):
             proposed.append(("season", merged, conf))
             made["season"] = (merged, conf, None)
         else:
