@@ -300,6 +300,12 @@ export const statisticsService = {
     const res = await axios.get(`/api/statistics/advertising?${q}`);
     return res.data;
   },
+
+  /** Дочитати свіжі списання з виписки банку — у фоні, кілька хвилин. */
+  async syncAdvertising(): Promise<{ started: boolean; reason?: string }> {
+    const res = await axios.post('/api/statistics/advertising/sync');
+    return res.data;
+  },
 };
 
 
@@ -342,5 +348,11 @@ export interface AdvertisingStatsResponse {
     meta_from: string | null;
     meta_to: string | null;
     waiting_air: number;
+  };
+  /** Свіжість даних: коли BMS востаннє дивився у виписку monobank. */
+  sync?: {
+    last_run_at: string | null;
+    checked_until: string | null;
+    errors: string | null;
   };
 }

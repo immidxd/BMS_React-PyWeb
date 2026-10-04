@@ -5,6 +5,7 @@ import ProductNumberLink from '../components/products/ProductNumberLink';
 import CollectionCollageDialog, { type CollectionPlatform } from '../components/products/CollectionCollageDialog';
 import CatalogAnalyticsPanel from '../components/publications/CatalogAnalyticsPanel';
 import CloudCostsPanel from '../components/statistics/CloudCostsPanel';
+import AdsSyncBar from '../components/statistics/AdsSyncBar';
 import DeliveryCardModal from '../components/shipments/DeliveryCardModal';
 import Pagination from '../components/common/Pagination';
 import type { Shipment } from '../services/referenceService';
@@ -1173,6 +1174,7 @@ const StatisticsPage: React.FC<StatisticsPageProps> = () => {
               <div className="h-80 flex items-center justify-center text-gray-400">Завантаження...</div>
             ) : adsData ? (
               <div className="space-y-6">
+                <AdsSyncBar sync={adsData.sync} />
                 {/* Плитки: скільки всього, з чого складається, чого це варте */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
                   <KpiCard label="Уся реклама ефіру" value={`${fmtPrice(adsData.totals.total_all)}`}
@@ -1188,7 +1190,7 @@ const StatisticsPage: React.FC<StatisticsPageProps> = () => {
                             value={adsData.totals.meta_from
                               ? `${adsData.totals.meta_from} — ${adsData.totals.meta_to}` : '—'}
                             sub={adsData.totals.waiting_air > 0
-                              ? `${adsData.totals.waiting_air} чекають ефіру`
+                              ? `${adsData.totals.waiting_air} ще без ефіру — на графіку за датою списання`
                               : 'усі розподілені по ефірах'}
                             color="text-gray-700" />
                 </div>

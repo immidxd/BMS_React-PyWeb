@@ -1088,6 +1088,49 @@ async def _auto_startup_publications_refresh():
     asyncio.create_task(_prom_periodic())
 
 
+# ── Списання Meta з виписки monobank (Статистика → «Реклама») ────────────────
+# До 04.10.2026 збирач запускався лише вручну й ішов тільки НАЗАД в історію, тож
+# статистика застигла на 30.08.2026. Тепер BMS сам дочитує свіжі списання раз на
+# MONO_AD_SYNC_SEC (типово 6 год). Monobank Personal API безкоштовний; ліміт —
+# 1 запит/60 с, прохід — кілька запитів. Хмарну БД не чіпає (лише локальна).
+# ⚠️ Тестовий сервер (:8011) запускати з MONO_AD_SYNC_SEC=0: токен спільний.
+@app.on_event("startup")
+async def _mono_ad_sync_loop():
+    import asyncio
+    import os
+
+    period_sec = int(os.getenv("MONO_AD_SYNC_SEC", str(6 * 3600)))
+    if period_sec <= 0:
+        return
+    period_sec = max(1800, period_sec)
+
+    def _cycle():
+        try:
+            from models.database import SessionLocal
+            from services import mono_ad_sync
+        except ImportError:
+            from backend.models.database import SessionLocal
+            from backend.services import mono_ad_sync
+        db = SessionLocal()
+        try:
+            res = mono_ad_sync.sync_recent(db)
+            if res.get("found"):
+                logger.info(f"[mono-ads] нових списань Meta: {res['found']}")
+        finally:
+            db.close()
+
+    async def _loop():
+        await asyncio.sleep(180)   # не заважати старту й першому парсу
+        while True:
+            try:
+                await asyncio.to_thread(_cycle)
+            except Exception as e:
+                logger.warning(f"[mono-ads] перевірка виписки не вдалась: {e}")
+            await asyncio.sleep(period_sec)
+
+    asyncio.create_task(_loop())
+
+
 @app.on_event("startup")
 async def _auto_collection_draft_scheduler():
     """Periodic local safety net for enabled weekly review drafts.

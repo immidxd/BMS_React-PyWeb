@@ -1328,18 +1328,22 @@ def advertising_stats(
     помилка даних, а чесний сигнал: у комірку ще не дописали свіже списання
     Meta. Тому не обрізаємо в нуль — інакше розбіжність стала б невидимою.
     """
+    # Списання, ще не розподілене по ефіру (air_date ставиться лише при записі
+    # в аркуш), показуємо за датою списання. Раніше такі рядки випадали з
+    # графіка зовсім — свіжа Meta була невидима, доки хтось не запустить запис.
+    air = "COALESCE(c.air_date, c.charge_date)"
     if period == "month":
         total_expr = "TO_CHAR(e.expense_date, 'YYYY-MM')"
-        meta_expr = "TO_CHAR(c.air_date, 'YYYY-MM')"
+        meta_expr = f"TO_CHAR({air}, 'YYYY-MM')"
     elif period == "quarter":
         total_expr = "TO_CHAR(e.expense_date, 'YYYY') || '-Q' || EXTRACT(QUARTER FROM e.expense_date)::int"
-        meta_expr = "TO_CHAR(c.air_date, 'YYYY') || '-Q' || EXTRACT(QUARTER FROM c.air_date)::int"
+        meta_expr = f"TO_CHAR({air}, 'YYYY') || '-Q' || EXTRACT(QUARTER FROM {air})::int"
     else:
         total_expr = "TO_CHAR(e.expense_date, 'YYYY')"
-        meta_expr = "TO_CHAR(c.air_date, 'YYYY')"
+        meta_expr = f"TO_CHAR({air}, 'YYYY')"
 
     year_filter_e = "AND EXTRACT(YEAR FROM e.expense_date) = :year" if year else ""
-    year_filter_c = "AND EXTRACT(YEAR FROM c.air_date) = :year" if year else ""
+    year_filter_c = f"AND EXTRACT(YEAR FROM {air}) = :year" if year else ""
     params: Dict[str, Any] = {"year": year} if year else {}
 
     total_rows = db.execute(text(f"""
@@ -1357,7 +1361,7 @@ def advertising_stats(
                COALESCE(SUM(c.amount_uah), 0)::float AS meta_cost,
                COUNT(*)::int AS meta_charges
         FROM meta_ad_charges c
-        WHERE c.air_date IS NOT NULL {year_filter_c}
+        WHERE TRUE {year_filter_c}
         GROUP BY 1 ORDER BY 1
     """), params).mappings().all()
 
@@ -1404,7 +1408,7 @@ def advertising_stats(
                RIGHT(COALESCE(s.masked_pan, ''), 4) AS card
         FROM meta_ad_charges c
         LEFT JOIN mono_sync_state s ON s.account_id = c.bank_account_id
-        WHERE TRUE {year_filter_c.replace('c.air_date', 'COALESCE(c.air_date, c.charge_date)')}
+        WHERE TRUE {year_filter_c}
         ORDER BY c.charge_date DESC
         LIMIT 300
     """), params).mappings().all()
@@ -1420,9 +1424,48 @@ def advertising_stats(
           (SELECT COUNT(*)::int FROM meta_ad_charges WHERE air_date IS NULL) AS waiting_air
     """)).mappings().first()
 
+    try:
+        from services import mono_ad_sync
+    except ImportError:
+        from backend.services import mono_ad_sync
+    try:
+        sync = mono_ad_sync.sync_status(db)
+    except Exception:  # noqa: BLE001 — статус свіжості не має валити статистику
+        db.rollback()
+        sync = {}
+
     return {
         "period_type": period,
         "data": data,
         "charges": [dict(r) for r in charges],
         "totals": dict(totals) if totals else {},
+        # Коли востаннє дивились у виписку: застиглі дані мають бути ВИДНІ.
+        "sync": sync,
     }
+
+
+@router.post("/api/statistics/advertising/sync")
+def advertising_sync_now() -> Dict[str, Any]:
+    """«Перевірити виписку зараз» — у фоні: прохід займає кілька хвилин
+    (ліміт банку — 1 запит на 60 с), тримати запит відкритим не можна."""
+    import threading
+    try:
+        from models.database import SessionLocal
+        from services import mono_ad_sync
+    except ImportError:
+        from backend.models.database import SessionLocal
+        from backend.services import mono_ad_sync
+    if mono_ad_sync._RECENT_LOCK.locked():
+        return {"started": False, "reason": "перевірка виписки вже йде"}
+
+    def _run():
+        db = SessionLocal()
+        try:
+            mono_ad_sync.sync_recent(db)
+        except Exception:  # noqa: BLE001
+            logger.exception("[mono-ads] ручна перевірка виписки не вдалась")
+        finally:
+            db.close()
+
+    threading.Thread(target=_run, daemon=True).start()
+    return {"started": True}

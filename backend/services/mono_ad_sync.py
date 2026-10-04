@@ -27,6 +27,8 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
+import time
 from datetime import date, datetime, time as dtime, timedelta, timezone
 from decimal import Decimal
 from typing import Callable, Dict, List, Optional
@@ -215,3 +217,117 @@ def sync_all(db: Session, *, max_windows_per_account: Optional[int] = None,
             logger.warning("mono sync %s: %s", account.get("id"), exc)
             out.append({"account_id": account.get("id"), "error": str(exc)})
     return out
+
+
+# ── Свіжі списання: ВПЕРЕД від останньої перевірки ──────────────────────────
+# ⚠️ Діра, через яку Статистика → «Реклама» застигла на серпні 2026: прохід
+# вище йде лише НАЗАД (шукає початок історії) і, дійшовши до нього, ставить
+# `exhausted=True` — після чого рахунок пропускався НАЗАВЖДИ. Свіжі списання
+# не дочитувались ніколи: `newest_fetched` застиг на 02.09.2026 з першого
+# прогону. Тепер окремий прохід доганяє від `newest_fetched` до сьогодні, а
+# фоновий цикл BMS (app/main.py) кличе його кілька разів на добу.
+
+# Перекриття з уже прочитаним: операція «в холді» може лягти у виписку
+# заднім числом. Дублікатів не буде — _store_charge робить ON CONFLICT DO NOTHING.
+RECENT_OVERLAP_DAYS = 3
+# Нова картка (без стану) за один фоновий прохід іде назад не більше ніж на
+# стільки вікон — решту історії дочитають наступні проходи.
+NEW_ACCOUNT_WINDOWS_PER_RUN = 2
+
+_RECENT_LOCK = threading.Lock()
+
+
+def sync_recent(db: Session, *, sleeper: Optional[Callable[[float], None]] = None,
+                now: Optional[datetime] = None) -> dict:
+    """Дочитати нові операції всіх рахунків — від останньої перевірки до сьогодні.
+
+    Ліміт банку (1 запит на 60 с) спільний на токен, тож пауза стоїть між
+    УСІМА запитами прогону, а не лише в межах рахунку. Звичайний прохід —
+    по одному вікну на рахунок, тобто кілька хвилин сну й кілька запитів.
+    Два прогони одночасно (цикл + кнопка) не йдуть: другий одразу повертається.
+    """
+    if not _RECENT_LOCK.acquire(blocking=False):
+        return {"ok": False, "busy": True, "reason": "перевірка виписки вже йде"}
+    try:
+        return _sync_recent_locked(db, sleeper=sleeper, now=now)
+    finally:
+        _RECENT_LOCK.release()
+
+
+def _sync_recent_locked(db: Session, *, sleeper, now) -> dict:
+    mono = _mono()
+    sleeper = sleeper or time.sleep
+    now = now or datetime.now(timezone.utc)
+    requests_made = 0
+
+    def _pause():
+        nonlocal requests_made
+        if requests_made:
+            sleeper(mono.SLEEP_BETWEEN_SEC)
+        requests_made += 1
+
+    _pause()   # client-info теж рахується в ліміт
+    accounts = mono.accounts()
+    results: List[dict] = []
+    found_total = 0
+    for account in accounts:
+        account_id = account["id"]
+        pan = ", ".join(str(p) for p in account.get("masked_pan") or []) or "—"
+        state = _state(db, account_id)
+        try:
+            if not state.get("newest_fetched"):
+                # Нова картка: спершу її власна історія назад — потроху.
+                sleeper(mono.SLEEP_BETWEEN_SEC)
+                res = sync_account(db, account, max_windows=NEW_ACCOUNT_WINDOWS_PER_RUN,
+                                   sleeper=sleeper)
+                requests_made += int(res.get("windows") or 0)
+                found_total += int(res.get("found") or 0)
+                results.append({**res, "mode": "history"})
+                continue
+
+            cursor = datetime.combine(state["newest_fetched"] - timedelta(days=RECENT_OVERLAP_DAYS),
+                                      dtime.min, tzinfo=timezone.utc)
+            found = windows = 0
+            while cursor < now:
+                end = min(cursor + timedelta(days=mono.CHUNK_DAYS), now)
+                _pause()
+                items = mono.statement_chunk(account_id, cursor, end)
+                windows += 1
+                by_id = {str(i.get("id")): i for i in items}
+                for charge in mono.meta_charges_from(items):
+                    if _store_charge(db, account_id, charge,
+                                     by_id.get(charge["bank_transaction_id"], {})):
+                        found += 1
+                # Межу пишемо після КОЖНОГО вікна: перерваний прохід продовжить звідси.
+                _save_state(db, account_id, masked_pan=pan, newest_fetched=end.date(),
+                            last_error=None)
+                cursor = end
+            found_total += found
+            results.append({"account_id": account_id, "masked_pan": pan, "mode": "recent",
+                            "windows": windows, "found": found})
+        except Exception as exc:  # noqa: BLE001 — збій однієї картки не спиняє інші
+            try:
+                db.rollback()
+            except Exception:  # noqa: BLE001
+                pass
+            logger.warning("mono recent sync %s: %s", account_id, exc)
+            _save_state(db, account_id, masked_pan=pan, last_error=str(exc)[:500])
+            results.append({"account_id": account_id, "masked_pan": pan, "error": str(exc)[:300]})
+    return {"ok": not any("error" in r for r in results), "found": found_total,
+            "requests": requests_made, "accounts": results}
+
+
+def sync_status(db: Session) -> dict:
+    """Для Статистики: коли востаннє дивились у виписку і чи без помилок.
+
+    `checked_until` — НАЙСТАРІША з меж рахунків, з яких Meta колись списувала:
+    саме вона каже, до якого дня дані про рекламу точно повні.
+    """
+    row = db.execute(text("""
+        SELECT MAX(last_run_at) AS last_run_at,
+               MIN(newest_fetched) FILTER (WHERE charges_found > 0 OR account_id IN
+                   (SELECT DISTINCT bank_account_id FROM meta_ad_charges)) AS checked_until,
+               string_agg(DISTINCT last_error, ' · ') FILTER (WHERE last_error IS NOT NULL) AS errors
+        FROM mono_sync_state
+    """)).mappings().first()
+    return dict(row) if row else {}
