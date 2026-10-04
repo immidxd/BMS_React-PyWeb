@@ -452,4 +452,169 @@ export const CroppedPreview: React.FC<{ src: string; edit: PhotoEdit; className?
   );
 };
 
+/**
+ * Швидке кадрування ПРЯМО в превʼю (без відкриття редактора): квадратна рамка
+ * = весь блок, тягни — зсув, щипок/⌘+колесо — масштаб, колесо — зсув,
+ * подвійний клік — 2× / назад. Та сама геометрія, що й у PhotoCropEditor,
+ * тож результат однаковий. Поворот — у повному редакторі (спін береться з кадру).
+ * `onChange` кличеться, коли рух закінчився (не на кожен кадр анімації).
+ */
+export const InlineCropper: React.FC<{
+  src: string;
+  placeholder?: string;
+  edit?: PhotoEdit | null;
+  onChange: (edit: PhotoEdit | null) => void;
+  className?: string;
+}> = ({ src, placeholder, edit, onChange, className }) => {
+  const boxRef = useRef<HTMLDivElement>(null);
+  const [S, setS] = useState(0);
+  const [nat, setNat] = useState<{ w: number; h: number } | null>(null);
+  const [view, setViewState] = useState<View>(FRESH);
+  const [active, setActive] = useState(false);
+  const [full, setFull] = useState(false);
+  const viewRef = useRef(view); viewRef.current = view;
+  const busy = useRef(false);
+  const drag = useRef<{ id: number; x: number; y: number; px: number; py: number } | null>(null);
+  const idle = useRef<number | undefined>(undefined);
+  const onChangeRef = useRef(onChange); onChangeRef.current = onChange;
+  // Вид на початку руху: клік без зсуву нічого не фіксує.
+  const startRef = useRef<View | null>(null);
+  const begin = () => { if (!busy.current) startRef.current = viewRef.current; busy.current = true; setActive(true); };
+
+  useLayoutEffect(() => {
+    const el = boxRef.current;
+    if (!el) return;
+    const measure = () => setS(Math.floor(el.getBoundingClientRect().width));
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  // Новий знімок — нові розміри (із самої картинки: частки від неї не залежать).
+  useEffect(() => { setNat(null); setFull(false); }, [src]);
+  useEffect(() => {
+    if (!nat || busy.current) return;
+    setViewState(edit ? editToView(nat.w, nat.h, edit) : FRESH);
+  }, [nat, edit]);
+
+  const setView = useCallback((fn: (v: View) => View) => {
+    if (!nat || !S) return;
+    setViewState((v) => clampView(nat.w, nat.h, S, fn(v)));
+  }, [nat, S]);
+
+  const commit = useCallback(() => {
+    busy.current = false;
+    setActive(false);
+    const start = startRef.current;
+    startRef.current = null;
+    const v = viewRef.current;
+    if (!nat || !start) return;
+    const same = Math.abs(start.zoom - v.zoom) < 1e-4 && Math.abs(start.px - v.px) < 1e-4 && Math.abs(start.py - v.py) < 1e-4;
+    if (!same) onChangeRef.current(viewToEdit(nat.w, nat.h, v));
+  }, [nat]);
+  // Колесо/щипок — «рух» без явного кінця: фіксуємо, коли стихло.
+  const settle = useCallback(() => {
+    begin();
+    window.clearTimeout(idle.current);
+    idle.current = window.setTimeout(commit, 220);
+  }, [commit]);
+  useEffect(() => () => window.clearTimeout(idle.current), []);
+
+  const zoomAt = useCallback((factor: number, clientX?: number, clientY?: number) => {
+    if (!nat || !S || !boxRef.current) return;
+    const r = boxRef.current.getBoundingClientRect();
+    const cx = clientX === undefined ? 0 : clientX - (r.left + r.width / 2);
+    const cy = clientY === undefined ? 0 : clientY - (r.top + r.height / 2);
+    setView((v) => {
+      const g0 = geometry(nat.w, nat.h, S, v);
+      const z1 = Math.min(MAX_ZOOM, Math.max(g0.minZoom, v.zoom * factor));
+      const k = z1 / g0.zoom;
+      return { ...v, zoom: z1, px: (cx - (cx - g0.px) * k) / S, py: (cy - (cy - g0.py) * k) / S };
+    });
+  }, [nat, S, setView]);
+
+  useEffect(() => {
+    const el = boxRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      settle();
+      if (e.ctrlKey || e.metaKey) zoomAt(Math.exp(-e.deltaY * 0.01), e.clientX, e.clientY);
+      else if (S) setView((v) => ({ ...v, px: v.px - e.deltaX / S, py: v.py - e.deltaY / S }));
+    };
+    let last = 1;
+    const gs = (e: any) => { e.preventDefault(); last = 1; };
+    const gc = (e: any) => { e.preventDefault(); settle(); zoomAt(e.scale / last, e.clientX, e.clientY); last = e.scale; };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    el.addEventListener('gesturestart', gs as any, { passive: false } as any);
+    el.addEventListener('gesturechange', gc as any, { passive: false } as any);
+    return () => {
+      el.removeEventListener('wheel', onWheel);
+      el.removeEventListener('gesturestart', gs as any);
+      el.removeEventListener('gesturechange', gc as any);
+    };
+  }, [settle, zoomAt, setView, S]);
+
+  const g = nat && S ? geometry(nat.w, nat.h, S, view) : null;
+  const ease = active ? 'none' : 'transform 200ms cubic-bezier(.2,.8,.2,1), width 200ms cubic-bezier(.2,.8,.2,1), height 200ms cubic-bezier(.2,.8,.2,1)';
+  const imgStyle = (z: number): React.CSSProperties => (g ? {
+    width: view.rotate % 180 ? g.dh : g.dw,
+    height: view.rotate % 180 ? g.dw : g.dh,
+    transform: `translate(-50%,-50%) rotate(${view.spin}deg)`,
+    transition: ease, zIndex: z,
+  } : {});
+
+  return (
+    <div ref={boxRef}
+      className={`relative overflow-hidden bg-white select-none touch-none cursor-grab active:cursor-grabbing ${className || ''}`}
+      onPointerDown={(e) => {
+        if (e.button !== 0 || !g) return;
+        (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+        drag.current = { id: e.pointerId, x: e.clientX, y: e.clientY, px: view.px, py: view.py };
+        begin();
+      }}
+      onPointerMove={(e) => {
+        const d = drag.current;
+        if (!d || d.id !== e.pointerId || !S) return;
+        setView((v) => ({ ...v, px: d.px + (e.clientX - d.x) / S, py: d.py + (e.clientY - d.y) / S }));
+      }}
+      onPointerUp={(e) => { if (drag.current?.id === e.pointerId) { drag.current = null; commit(); } }}
+      onPointerCancel={() => { drag.current = null; commit(); }}
+      onDoubleClick={(e) => {
+        if (!g) return;
+        settle();
+        if (g.zoom > 1.01) setView((v) => ({ ...FRESH, rotate: v.rotate, spin: v.spin }));
+        else zoomAt(2, e.clientX, e.clientY);
+      }}>
+      {/* Розміри беремо з першої картинки, що відкрилась (мініатюра — миттєво). */}
+      {g ? (
+        <div className="absolute left-1/2 top-1/2 will-change-transform"
+          style={{ width: g.dw, height: g.dh, transition: ease,
+            transform: `translate(calc(-50% + ${g.px}px), calc(-50% + ${g.py}px))` }}>
+          {placeholder && !full && (
+            <img src={placeholder} alt="" draggable={false}
+              className="absolute left-1/2 top-1/2 max-w-none pointer-events-none" style={imgStyle(1)} />
+          )}
+          <img src={src} alt="" draggable={false} onLoad={() => setFull(true)}
+            className="absolute left-1/2 top-1/2 max-w-none pointer-events-none transition-opacity duration-150"
+            style={{ ...imgStyle(2), opacity: full ? 1 : 0 }} />
+        </div>
+      ) : null}
+      {/* Невидимий «вимірювач» розмірів до першого кадру. */}
+      {!nat && (
+        <img src={placeholder || src} alt="" aria-hidden className="absolute opacity-0 pointer-events-none"
+          onLoad={(e) => { const im = e.currentTarget; setNat({ w: im.naturalWidth, h: im.naturalHeight }); }} />
+      )}
+      {/* Сітка третин — лише поки рухають. */}
+      <div className="absolute inset-0 pointer-events-none transition-opacity duration-200 z-10" style={{ opacity: active ? 1 : 0 }}>
+        <div className="absolute inset-y-0 left-1/3 w-px bg-white/70 mix-blend-difference" />
+        <div className="absolute inset-y-0 left-2/3 w-px bg-white/70 mix-blend-difference" />
+        <div className="absolute inset-x-0 top-1/3 h-px bg-white/70 mix-blend-difference" />
+        <div className="absolute inset-x-0 top-2/3 h-px bg-white/70 mix-blend-difference" />
+      </div>
+    </div>
+  );
+};
+
 export default PhotoCropEditor;

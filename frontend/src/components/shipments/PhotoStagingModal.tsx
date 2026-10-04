@@ -1,7 +1,7 @@
 import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { notify } from '../../ui/feedback';
 import type { Product } from '../../types/product';
-import PhotoCropEditor, { CroppedPreview, centerSquareEdit, isSquare, loadImageSize } from '../common/PhotoCropEditor';
+import PhotoCropEditor, { InlineCropper, centerSquareEdit, isSquare, loadImageSize } from '../common/PhotoCropEditor';
 import type { CropItem, PhotoEdit } from '../common/PhotoCropEditor';
 import ProductNumberText from '../common/ProductNumberText';
 
@@ -548,23 +548,29 @@ const PhotoStagingModal: React.FC<Props> = ({ open, onClose, products, defaultCa
           {/* Ліва: велике превʼю + номер + чіпи */}
           <div className="border-r border-gray-200 dark:border-gray-700 flex flex-col min-h-0">
             <div className="p-4 flex-1 min-h-0 flex flex-col gap-3">
-              {/* Превʼю — щоб читати цінник, не відкриваючи файл. Підкладка —
-                  уже завантажена мініатюра (миттєво), поверх — 1200 px. */}
-              <div className="relative flex-1 min-h-0 rounded-xl bg-gray-100 dark:bg-gray-800 flex items-center justify-center overflow-hidden group/pv"
-                style={{ containerType: 'size' } as React.CSSProperties}>
+              {/* Превʼю = квадрат, рівно те, що ляже в картку (без сірих полів).
+                  Кадр правиться прямо тут: тягни — зсув, щипок/⌘+колесо —
+                  масштаб, подвійний клік — 2×. Повний редактор — кнопкою. */}
+              <div className="relative shrink-0 self-center aspect-square rounded-xl bg-gray-100 dark:bg-gray-800 flex items-center justify-center overflow-hidden group/pv"
+                style={{ width: 'min(100%, 56vh)' }}>
                 {focusedFile ? (
-                  focusedEdit ? (
-                    // Квадрат, що вписується в панель будь-яких пропорцій.
-                    <CroppedPreview src={imgUrl(category, focusedFile, PREVIEW_W)} edit={focusedEdit}
-                      className="shadow-sm" style={{ width: 'min(100cqw, 100cqh)', height: 'min(100cqw, 100cqh)' }} />
+                  focusedEdit === null ? (
+                    // «Без кадру» — показуємо оригінал цілим, як він і ляже.
+                    <img key={focusedFile.name} src={imgUrl(category, focusedFile, PREVIEW_W)} alt={focusedFile.name}
+                      className="absolute inset-0 w-full h-full object-contain bg-white" />
                   ) : (
-                    <div key={focusedFile.name} className="relative w-full h-full">
-                      <img src={imgUrl(category, focusedFile, GRID_W)} alt="" aria-hidden
-                        className="absolute inset-0 w-full h-full object-contain blur-[1px]" />
-                      <img src={imgUrl(category, focusedFile, PREVIEW_W)} alt={focusedFile.name} decoding="async"
-                        className="absolute inset-0 w-full h-full object-contain opacity-0 transition-opacity duration-150"
-                        onLoad={(e) => { e.currentTarget.style.opacity = '1'; }} />
-                    </div>
+                    <InlineCropper key={focusedFile.name} className="absolute inset-0 w-full h-full"
+                      src={imgUrl(category, focusedFile, PREVIEW_W)} placeholder={imgUrl(category, focusedFile, GRID_W)}
+                      edit={focusedEdit}
+                      onChange={(e) => {
+                        const name = focusedFile.name;
+                        const before = editsRef.current[name];
+                        // Нічого не зрушили — не перетворюємо автокадр на «ручний».
+                        if (JSON.stringify(before ?? null) === JSON.stringify(e)) return;
+                        if (before === undefined && e === null) return;
+                        autoRef.current.delete(name);
+                        setEdits((c) => ({ ...c, [name]: e ?? { rotate: 0, crop: { x: 0, y: 0, w: 1, h: 1 } } }));
+                      }} />
                   )
                 ) : <span className="text-gray-400 text-sm">Наведи на знімок</span>}
                 {focusedFile && (
@@ -576,7 +582,15 @@ const PhotoStagingModal: React.FC<Props> = ({ open, onClose, products, defaultCa
                       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M6 2v14a2 2 0 0 0 2 2h14" /><path d="M18 22V8a2 2 0 0 0-2-2H2" /></svg>
                       Кадр 1:1
                     </button>
-                    {focusedEdit && (
+                    {focusedEdit === null ? (
+                      <button type="button" onClick={() => {
+                        setEdits((c) => { const n = { ...c }; delete n[focusedFile.name]; return n; });
+                      }}
+                        className="h-8 px-3 inline-flex items-center rounded-full text-[12px] hover:bg-white/20 active:scale-95 transition"
+                        title="Повернути квадратний кадр по центру">
+                        Квадрат
+                      </button>
+                    ) : (
                       <button type="button" onClick={() => {
                         autoRef.current.delete(focusedFile.name);
                         setEdits((c) => ({ ...c, [focusedFile.name]: null }));
@@ -625,7 +639,7 @@ const PhotoStagingModal: React.FC<Props> = ({ open, onClose, products, defaultCa
                   у картці ВЖЕ Є (реальні + офіційні); залитий чіп = фото є,
                   контурний = ще без фото. «+N» — прикріплено за цю сесію. */}
               {!locked && chips.length > 0 && (
-                <div className="min-h-0 overflow-y-auto">
+                <div className="flex-1 min-h-0 overflow-y-auto">
                   <div className="text-[11px] uppercase tracking-wide text-gray-400 mb-1.5 flex items-center gap-2">
                     <span>Товари цього завозу</span>
                     <span className="normal-case tracking-normal text-gray-400">
