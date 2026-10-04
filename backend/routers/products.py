@@ -554,6 +554,18 @@ def _invalidate_photo_cache(*productnumbers: str, membership_changed: bool = Fal
             pass
 
 
+def _defect_condition(db: Session, product_id: int, kind: Optional[str]) -> Optional[Dict[str, Any]]:
+    """Фото лягло в «Дефекти» → стан «Пошкоджений», якщо людина стан не правила.
+    Див. services/defect_condition.py. Ніколи не валить саму операцію з фото."""
+    if kind != "defect":
+        return None
+    try:
+        from services import defect_condition
+    except ImportError:
+        from backend.services import defect_condition
+    return defect_condition.apply_for_defect_photo(db, product_id)
+
+
 @router.post("/api/products/{product_id}/photos")
 async def add_product_photos(
     product_id: int = Path(..., ge=1),
@@ -620,7 +632,9 @@ async def add_product_photos(
             detail=f"Не вдалося додати фото ({len(errors)}): {reasons}")
     if added:
         _invalidate_photo_cache(pnum, membership_changed=True)
-    return {"added": added, "category": category, "kind": kind, "errors": errors}
+    condition_auto = (await run_in_threadpool(_defect_condition, db, product_id, kind)) if added else None
+    return {"added": added, "category": category, "kind": kind, "errors": errors,
+            "condition_auto": condition_auto}
 
 
 @router.post("/api/products/{product_id}/photos/move-kind")
@@ -642,7 +656,9 @@ def move_product_photos_kind(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     _invalidate_photo_cache(pnum)
-    return {**result, "from_kind": from_kind, "to_kind": to_kind, "category": category}
+    condition_auto = _defect_condition(db, product_id, to_kind) if result.get("moved") else None
+    return {**result, "from_kind": from_kind, "to_kind": to_kind, "category": category,
+            "condition_auto": condition_auto}
 
 
 @router.post("/api/products/{product_id}/photos/move-one")
@@ -664,7 +680,8 @@ def move_one_product_photo(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     _invalidate_photo_cache(pnum)
-    return {**result, "category": category}
+    return {**result, "category": category,
+            "condition_auto": _defect_condition(db, product_id, to_kind)}
 
 
 @router.put("/api/products/{product_id}/photos/replace")
@@ -877,8 +894,10 @@ def move_photo_to_other_product(
     if moved_hidden:
         invalidate_hidden_cache()
     _invalidate_photo_cache(src_pnum, dst_pnum, membership_changed=True)
+    # Фото-дефект переїхало до іншого товару — правило діє для ЦІЛІ.
+    condition_auto = _defect_condition(db, dst.id, result.get("kind"))
     return {**result, "target_id": dst.id, "target_number": dst.productnumber,
-            "hidden": bool(moved_hidden)}
+            "hidden": bool(moved_hidden), "condition_auto": condition_auto}
 
 
 @router.put("/api/products/{product_id}/photos/reorder")

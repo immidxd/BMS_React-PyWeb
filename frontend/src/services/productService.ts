@@ -61,6 +61,9 @@ export type ProductJournalPullResult = {
 /**
  * Сервіс для роботи з API товарів
  */
+/** Автоправило «фото в Дефектах → стан Пошкоджений» (services/defect_condition.py). */
+export type ConditionAuto = { applied: boolean; from: string | null; to: string };
+
 export const productService = {
     /**
      * Отримати список товарів з пагінацією та фільтрацією
@@ -187,7 +190,7 @@ export const productService = {
         id: number, files: File[], kind: 'official' | 'real' | 'defect' = 'official',
         /** кадри 1:1 у порядку `files` (null — як є); ріже бекенд з оригіналу */
         edits?: (PhotoEdit | null)[],
-    ): Promise<{ added: number; category: string; kind: string; errors?: { file: string; reason: string }[] }> {
+    ): Promise<{ added: number; category: string; kind: string; errors?: { file: string; reason: string }[]; condition_auto?: ConditionAuto | null }> {
         const fd = new FormData();
         files.forEach((f) => fd.append('files', f));
         if (edits && edits.some(Boolean)) fd.append('edits', JSON.stringify(edits));
@@ -221,7 +224,7 @@ export const productService = {
     },
 
     /** Перенести ОДНЕ фото в інший набір (official/real/defect). */
-    async movePhotoOne(id: number, filename: string, to_kind: 'official' | 'real' | 'defect'): Promise<{ moved: string; from: string }> {
+    async movePhotoOne(id: number, filename: string, to_kind: 'official' | 'real' | 'defect'): Promise<{ moved: string; from: string; condition_auto?: ConditionAuto | null }> {
         const res = await axios.post(`${API_URL}/${id}/photos/move-one`, null, {
             params: { filename, to_kind },
         });

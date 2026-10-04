@@ -1130,6 +1130,23 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     }
   }, [productId]);
 
+  // Фото лягло в «Дефекти» → сервер міг перевести «Поточний стан» у
+  // «Пошкоджений» (services/defect_condition.py: лише з «Новий»/порожнього і
+  // лише якщо людина стан не правила). Перечитуємо картку й освіжаємо чернетку
+  // стану — інакше «Зберегти все» в режимі редагування записало б старий
+  // «Новий» назад і мовчки скасувало правило.
+  const applyConditionAuto = React.useCallback(async (pid: number, auto: any) => {
+    if (!auto?.applied || curPidRef.current !== pid) return;
+    const fresh = await loadProduct(false);
+    syncDraftsAfterAccept({ current_condition_name: auto.to }, fresh);
+    notifyParentSaved(pid);
+    notify.info({
+      message: `Стан → «${auto.to}»`,
+      description: 'У товару є фото в «Дефектах». Якщо це не так — змініть стан вручну, і ваш вибір лишиться.',
+      duration: 6,
+    });
+  }, [loadProduct, syncDraftsAfterAccept, notifyParentSaved]);
+
   const retryJournalSync = React.useCallback(async () => {
     if (!productId || journalRetrying) return;
     const pid = productId;
@@ -1555,6 +1572,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
       silentSuccess: true,
       onSuccess: (res) => {
         emitProductPhotosChanged(pid);
+        void applyConditionAuto(pid, res.condition_auto);
         const errs = res.errors || [];
         if (errs.length === 0) {
           notify.success({ message: '✓ Готово', description: `Завантажено ${res.added} фото`, duration: 4 });
@@ -1570,7 +1588,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
       .then(() => { if (curPidRef.current === pid) loadImages(true); })
       .catch(() => { /* помилку показав taskManager */ })
       .finally(() => { if (curPidRef.current === pid) setPhotoBusy(false); });
-  }, [loadImages]);
+  }, [loadImages, applyConditionAuto]);
 
   // «Додати»: стандарт картки — квадрат. Неквадратні знімки спершу проходять
   // кадр 1:1 (як «Обрізати» на iPhone), квадратні — одразу в заливку. Ріже
@@ -1773,10 +1791,12 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     if (!productId || names.length === 0) return;
     setPhotoBusy(true);
     const failed: string[] = [];
+    let conditionAuto: any = null;
     try {
       for (const fn of names) {
         try {
-          await productService.movePhotoOne(productId, fn, toKind);
+          const r = await productService.movePhotoOne(productId, fn, toKind);
+          if (r.condition_auto?.applied) conditionAuto = r.condition_auto;
         } catch (e) {
           console.error('move photo failed', fn, e);
           failed.push(fn);
@@ -1785,6 +1805,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
       clearPhotoSelection();
       await loadImages(true);
       emitProductPhotosChanged(productId);
+      await applyConditionAuto(productId, conditionAuto);
       const label = toKind === 'official' ? 'Офіційні' : toKind === 'real' ? 'Реальні' : 'Дефекти';
       if (failed.length === 0) {
         notify.success({ message: `Перенесено ${names.length} фото → ${label}`, duration: 3 });
@@ -1795,7 +1816,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
         });
       }
     } finally { setPhotoBusy(false); }
-  }, [productId, mgrOrder, selectedPhotos, loadImages, clearPhotoSelection]);
+  }, [productId, mgrOrder, selectedPhotos, loadImages, clearPhotoSelection, applyConditionAuto]);
 
   const handleDeletePhoto = React.useCallback(async (filename: string) => {
     if (!productId) return;
@@ -1889,11 +1910,12 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     if (!productId) return;
     setPhotoBusy(true);
     try {
-      await productService.movePhotoOne(productId, filename, toKind);
+      const r = await productService.movePhotoOne(productId, filename, toKind);
       await loadImages(true);
+      await applyConditionAuto(productId, r.condition_auto);
     } catch (e) { console.error('move photo kind failed', e); }
     finally { setPhotoBusy(false); }
-  }, [productId, loadImages]);
+  }, [productId, loadImages, applyConditionAuto]);
 
   const handleReorderPhotos = React.useCallback(async (order: string[]) => {
     if (!productId || order.length === 0) return;
