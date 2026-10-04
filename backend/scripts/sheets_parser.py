@@ -590,8 +590,15 @@ def _writeback_fields_to_journal_locked(sheet_title: str, productnumber: str,
     sh = gc.open_by_key(JOURNAL_ID)
     try:
         ws = sh.worksheet(sheet_title)
-    except Exception:
+    except _gspread.exceptions.WorksheetNotFound:
         return _all(f"worksheet '{sheet_title}' not found")
+    # ⚠️ Лише WorksheetNotFound — справжнє «вкладки нема». Раніше тут стояв
+    # голий `except Exception`, і 429 «Quota exceeded for Read requests» теж
+    # ставав «not found» — перманентною причиною в черзі (_PERMANENT_MARKERS):
+    # задача йшла в 'skipped' без повтору, правка мовчки не доходила до аркуша
+    # (04.10.2026: 5 змін завозів 01.10, хоча обидві вкладки на місці й того ж
+    # дня прийняли понад 1100 записів). Інші винятки летять далі — черга
+    # повторить їх як тимчасові.
 
     all_values = ws.get_all_values()
     if not all_values:

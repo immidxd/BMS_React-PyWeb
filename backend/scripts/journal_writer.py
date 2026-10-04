@@ -41,6 +41,14 @@ def _is_transient(exc: Exception) -> bool:
     return any(m in s for m in _TRANSIENT_MARKERS)
 
 
+QUOTA_BASE_DELAY_S = 4.0
+
+
+def _is_quota(exc: Exception) -> bool:
+    s = f"{exc}".lower()
+    return "429" in s or "quota exceeded" in s or "rate limit" in s
+
+
 def _with_retry(fn: Callable, *, attempts: int = 4, base_delay: float = 0.8, what: str = "журнал"):
     """Виконати мережеву операцію з ретраями на транзієнтних збоях (експон. backoff).
     Перманентні помилки (нема вкладки, нема колонки тощо) НЕ ретраяться — кидаються одразу."""
@@ -54,9 +62,18 @@ def _with_retry(fn: Callable, *, attempts: int = 4, base_delay: float = 0.8, wha
                 raise
             if i < attempts - 1:
                 delay = base_delay * (2 ** i)
+                if _is_quota(e):
+                    # Квота Google — ХВИЛИННА: 0.8+1.6+3.2 с не дочікуються її
+                    # скидання, і зміна номера падала, поки триває фоновий запис
+                    # (04.10.2026). Чекаємо помітно довше: 4, 8, 16 с.
+                    delay = QUOTA_BASE_DELAY_S * (2 ** i)
                 logger.warning("[add] транзієнтний збій (%s), спроба %d/%d, чекаю %.1fс: %s",
                                what, i + 1, attempts, delay, e)
                 time.sleep(delay)
+    if last is not None and _is_quota(last):
+        raise JournalTransientError(
+            f"Google Sheets тимчасово обмежив кількість запитів (хвилинна квота) після {attempts} спроб "
+            f"({what}). Зачекайте хвилину й спробуйте ще раз. Деталі: {last}")
     raise JournalTransientError(
         f"Не вдалося зв'язатися з Google Sheets після {attempts} спроб ({what}). "
         f"Це тимчасова проблема мережі/з'єднання — спробуйте ще раз. Деталі: {last}"

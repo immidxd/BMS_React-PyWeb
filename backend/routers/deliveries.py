@@ -659,6 +659,9 @@ def sync_delivery(delivery_id: int = Path(..., ge=1), db: Session = Depends(get_
 def _journal_err_detail(e: Exception, deliveryname: str) -> str:
     """Дружнє повідомлення для попапа (як у add-товару)."""
     msg = str(e); low = msg.lower()
+    if "хвилинна квота" in low or "429" in msg or "quota exceeded" in low:
+        return ("⚠️ Google Sheets тимчасово обмежив кількість запитів (хвилинна квота — "
+                "зазвичай під час масової синхронізації з журналом). Зачекайте хвилину й спробуйте ще раз.")
     if "після" in msg and "спроб" in msg:
         return "⚠️ Тимчасова проблема зв'язку з Google Sheets — спробуйте ще раз за кілька секунд."
     if any(m in low for m in ("ssl", "certificate", "connection", "max retries", "timed out", "handshake")):
