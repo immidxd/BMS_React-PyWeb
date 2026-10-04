@@ -4,6 +4,7 @@ import ProductDetailsModal from '../products/ProductDetailsModal';
 import { productService } from '../../services/productService';
 import { confirmDialog } from '../../ui/feedback';
 import LoadingSpinner from '../common/LoadingSpinner';
+import ProductNumberText from '../common/ProductNumberText';
 
 interface Props {
   orderId: number | null;
@@ -218,9 +219,9 @@ const OrderDetailsModal: React.FC<Props> = ({ orderId, open, onClose, filterOpti
                             title="Відкрити картку товару"
                             onClick={(e) => { e.stopPropagation(); setCardProductId(it.product_id); }}
                           >
-                            {it.product_number || it.product_id}
+                            {it.product_number ? <ProductNumberText value={it.product_number} /> : it.product_id}
                           </span>
-                        ) : (it.product_number || '—')}
+                        ) : (it.product_number ? <ProductNumberText value={it.product_number} /> : '—')}
                         {it.has_queue && (
                           <span
                             title="На цей товар є черга в цій вкладці замовлень"
@@ -271,7 +272,7 @@ const OrderDetailsModal: React.FC<Props> = ({ orderId, open, onClose, filterOpti
                               <li key={p.id}
                                   onMouseDown={(e) => { e.preventDefault(); pickSuggestion(p); }}
                                   className="px-3 py-1.5 cursor-pointer hover:bg-blue-50 dark:hover:bg-blue-900/30 flex justify-between gap-3">
-                                <span className="font-mono">{p.productnumber}</span>
+                                <ProductNumberText value={p.productnumber} className="font-mono" />
                                 <span className="text-gray-500 truncate flex-1">{[(p as any).brand_name, p.model].filter(Boolean).join(' ')}</span>
                                 {p.price != null && p.price > 0 && <span className="text-gray-400 shrink-0">{Number(p.price).toFixed(0)}₴</span>}
                               </li>

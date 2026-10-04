@@ -2956,6 +2956,34 @@ def _next_suffix_pnum(session: Session, base_pnum: str) -> str:
         n += 1
 
 
+def _blank_row_foreign_targets(existing_base, shipment_id, brand, size_val, letter_val) -> list:
+    """Рядок «лише номер» не сміє забрати заповнений товар з ІНШОГО завозу.
+
+    04.10.2026: новий лот 4440–4509 записали спершу без «Ф». Рядки були порожні
+    (тільки номер), а `_fields_match` вважає порожнє поле збігом із будь-чим —
+    тож рядок «4501» став «повним збігом» для старого проданого #4501 з
+    18.02.2023, і той переїхав у новий завоз (а «Стара ціна» обнулилась).
+    Прибирання орфанів його потім не чіпало: номер живий у старій вкладці.
+
+    Повертає записи, які рядок ЗАХОПИВ би, — тоді рядок треба пропустити (не
+    створювати й порожнього двійника: його б теж ніхто не прибрав, бо номер є
+    в журналі). Порожній список — звичайна логіка. Пропуск лише коли:
+      • у рядку немає ні бренду, ні розміру (числового чи буквеного);
+      • УСІ кандидати з цим номером належать іншому завозу;
+      • у кожного з них бренд або розмір уже заповнені.
+    Повторний парс того ж лоту, перенесення рядка з даними між вкладками й
+    перенесення ще порожнього рядка поводяться як раніше.
+    """
+    if not shipment_id or not existing_base or brand or size_val or letter_val:
+        return []
+    for p in existing_base:
+        if not p.deliveryid or p.deliveryid == shipment_id:
+            return []
+        if not (p.brandid or (p.sizeeu or "").strip() or (p.size_letter or "").strip()):
+            return []
+    return list(existing_base)
+
+
 def _number_affinity(db_pnum: str, sheet_pnum: str) -> tuple:
     """Ключ сортування: наскільки номер запису «свій» для рядка аркуша.
 
@@ -3660,6 +3688,18 @@ def _parse_products_sheet(
         # рядок аркуша не чіплявся до фантома замість власного запису. Див.
         # _number_affinity: без цього #В51 віддавав оновлення фантому #В51-2.
         existing_base.sort(key=lambda p: _number_affinity(p.productnumber, pnum))
+
+        _foreign = _blank_row_foreign_targets(
+            existing_base, shipment_id, brand_val or brand_id, size_val, letter_val)
+        if _foreign:
+            logger.warning(
+                f"[blank-row-guard] '{ws.title}' рядок {i + 1} '{pnum}': лише номер, а "
+                f"цей номер мають товари інших завозів "
+                f"{[(p.id, p.deliveryid) for p in _foreign[:5]]} — рядок пропущено, доки "
+                f"в ньому не з'явиться бренд або розмір"
+            )
+            skipped += 1
+            continue
 
         # ── Decision logic ─────────────────────────────────────────────────
         full_match = next((p for p in existing_base if id_match(p)), None)

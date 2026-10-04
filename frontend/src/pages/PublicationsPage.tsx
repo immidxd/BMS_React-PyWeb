@@ -20,6 +20,7 @@ import { confirmDialog, alertDialog, notify } from '../ui/feedback';
 import LoadingSpinner from '../components/common/LoadingSpinner';
 import { taskManager } from '../services/taskManager';
 import { formatTelegramBatchResult } from '../services/telegramBatchResult';
+import ProductNumberText from '../components/common/ProductNumberText';
 
 /* ── Types ─────────────────────────────────────────────────────────── */
 
@@ -1915,9 +1916,9 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
                             title="Відкрити картку товару"
                             onClick={(e) => { e.stopPropagation(); setCardProductId(item.product_id as number); }}
                           >
-                            {item.productnumber}
+                            <ProductNumberText value={item.productnumber} />
                           </span>
-                        ) : item.productnumber}
+                        ) : <ProductNumberText value={item.productnumber} />}
                       </td>
                       )}
                       {isPubColVisible('brand_name') && (

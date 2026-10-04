@@ -12,7 +12,10 @@ import PhotoCropEditor, { isSquare, loadImageSize } from '../common/PhotoCropEdi
 import type { CropItem, PhotoEdit } from '../common/PhotoCropEditor';
 import LabelPrintDialog from '../labels/LabelPrintDialog';
 import { warehouseService, type WhLocation } from '../../services/warehouseService';
-import { taskManager, emitProductPhotosChanged } from '../../services/taskManager';
+import { taskManager, emitProductPhotosChanged, emitDeliveryChanged } from '../../services/taskManager';
+import { renameDeliveryProductNumber } from '../../services/referenceService';
+import { emitProductNumberChanged } from '../../services/duplicateNumbers';
+import ProductNumberText from '../common/ProductNumberText';
 import {
   markPromImportAccepted, refreshPromLimitWatch, watchPromLimitStatus,
 } from '../../services/promLimitMonitor';
@@ -307,6 +310,12 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
   // «З теки до розбору» — той самий модал, що й у картці завозу, лише з
   // фіксованим номером цього товару.
   const [stagingOpen, setStagingOpen] = useState(false);
+  // Зміна номера з картки — той самий захищений шлях, що й у картці завозу
+  // (PUT /api/deliveries/{d}/products/{id}/number): дедуп, заборона для проданих,
+  // спершу рядок у журналі, лише потім БД. Інакше парсер народив би двійника.
+  const [numEditing, setNumEditing] = useState(false);
+  const [numDraft, setNumDraft] = useState('');
+  const [numSaving, setNumSaving] = useState(false);
   // Кадр 1:1: або черга нових файлів перед заливкою, або одне фото, що вже в картці.
   const [cropUpload, setCropUpload] = useState<{ pid: number; kind: GalleryKind; files: File[]; urls: string[]; items: CropItem[] } | null>(null);
   const [cropExisting, setCropExisting] = useState<GalleryImage | null>(null);
@@ -1583,6 +1592,37 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     setCropUpload({ pid, kind, files: arr, urls, items });
   }, [productId, activeKind, uploadPhotos]);
 
+  useEffect(() => { setNumEditing(false); setNumSaving(false); }, [productId, editMode]);
+
+  const saveNumber = React.useCallback(async () => {
+    const pr: any = product;
+    if (!pr || !productId) return;
+    const next = numDraft.trim().replace(/^#/, '');
+    const cur = (pr.productnumber || '').replace(/^#/, '');
+    if (!next || next === cur) { setNumEditing(false); return; }
+    if (!pr.deliveryid) {
+      notify.warning({ message: 'Номер не змінено', description: 'Товар не прив’язаний до завозу — номер правиться в журналі.' });
+      return;
+    }
+    setNumSaving(true);
+    try {
+      const r = await renameDeliveryProductNumber(pr.deliveryid, productId, next);
+      setNumEditing(false);
+      if (r.renamed) {
+        notify.success({ message: `Номер змінено: ${r.old} → ${r.productnumber}`, description: 'Записано і в журнал.', duration: 4 });
+        await loadProduct(false);
+        emitProductNumberChanged();
+        emitDeliveryChanged(pr.deliveryid);
+        onSaved?.(productId);
+      }
+    } catch (e: any) {
+      const st = e?.response?.status; const d = e?.response?.data?.detail;
+      notify.error({ message: st === 409 ? 'Конфлікт номера' : 'Не вдалося змінити номер', description: d || 'Помилка', duration: 8 });
+    } finally {
+      setNumSaving(false);
+    }
+  }, [product, productId, numDraft, loadProduct, onSaved]);
+
   const handleCropExisting = React.useCallback(async (img: GalleryImage, edit: PhotoEdit | null) => {
     if (!productId || !edit) return;
     setPhotoBusy(true);
@@ -2242,6 +2282,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
       // клавіші сам — картка позаду не реагує (Esc не закриє її «наскрізь»).
       if (document.querySelector('.bms-dialog-host')) return;
       if (stagingOpen) return;        // модал «до розбору» зверху — клавіші його
+      if (numEditing) return;         // поле номера саме обробляє Enter/Esc
       if (e.key === 'Escape') {
         if (previewVisible) return;   // antd-прев'ю саме обробляє свій Esc
         // Esc при відкритій картці = ЛИШЕ закрити картку. Гасимо подію, щоб вона не
@@ -2283,7 +2324,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     window.addEventListener('keydown', handleKey, true);
     return () => window.removeEventListener('keydown', handleKey, true);
   }, [open, onClose, images.length, previewVisible, navPrev, navNext, editMode,
-      selectedPhotos.size, clearPhotoSelection, stagingOpen]);
+      selectedPhotos.size, clearPhotoSelection, stagingOpen, numEditing]);
 
   const p = product;
   const effectiveJournalState = journalState
@@ -2863,9 +2904,39 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
             <div className="flex items-start justify-between px-6 pt-5 pb-4 border-b border-gray-100 dark:border-gray-800">
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-3 mb-1 flex-wrap">
-                  <span className="text-xs font-mono text-gray-400 dark:text-gray-500 px-2 py-0.5 rounded bg-gray-100 dark:bg-gray-800">
-                    {pnumDisplay ? <CopyOnClick value={pnumDisplay} /> : '—'}
-                  </span>
+                  {numEditing ? (
+                    // readOnly, а не disabled: disabled знімає фокус, і після
+                    // помилки Esc/Enter уже не доходили б до поля.
+                    <input autoFocus value={numDraft} readOnly={numSaving}
+                      onChange={(e) => setNumDraft(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') { e.preventDefault(); void saveNumber(); }
+                        if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); setNumEditing(false); }
+                      }}
+                      onBlur={() => { if (!numSaving) setNumEditing(false); }}
+                      aria-busy={numSaving}
+                      autoCapitalize="none" autoCorrect="off" spellCheck={false}
+                      placeholder="Ф4400"
+                      title="Enter — зберегти (і в журнал), Esc — скасувати"
+                      className="w-28 text-xs font-mono px-2 py-0.5 rounded border border-gray-400 dark:border-gray-500 bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-gray-400" />
+                  ) : (
+                    <span className="group/pnum inline-flex items-center gap-1 text-xs font-mono text-gray-400 dark:text-gray-500 px-2 py-0.5 rounded bg-gray-100 dark:bg-gray-800">
+                      {pnumDisplay
+                        ? <CopyOnClick value={pnumDisplay} display={<ProductNumberText value={pnumEff.isClone ? null : p.productnumber}>{pnumDisplay}</ProductNumberText>} />
+                        : '—'}
+                      {editMode && !pnumEff.isClone && (
+                        <button type="button"
+                          onClick={(e) => { e.stopPropagation(); setNumDraft((p.productnumber || '').replace(/^#/, '')); setNumEditing(true); }}
+                          disabled={!(p as any).deliveryid}
+                          title={(p as any).deliveryid
+                            ? 'Змінити номер (зміниться і в журналі)'
+                            : 'Товар не прив’язаний до завозу — номер правиться в журналі'}
+                          className="text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 disabled:opacity-40 transition-colors">
+                          <EditOutlined style={{ fontSize: 11 }} />
+                        </button>
+                      )}
+                    </span>
+                  )}
                   {pnumEff.isClone && (
                     <span
                       title="Реального номера ще нема — показано перший клон-номер"

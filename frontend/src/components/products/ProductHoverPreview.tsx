@@ -9,6 +9,7 @@ import {
     getProductDisplayStatus,
     formatBrandName,
 } from '../common/displayHelpers';
+import ProductNumberText from '../common/ProductNumberText';
 
 // ── Швидкий перегляд картки товару при наведенні на рядок ────────────────────
 // Лаконічна плаваюча картка: фото + найважливіше (номер, бренд/модель,
@@ -161,7 +162,7 @@ export default function ProductHoverPreview({ record, x, y }: { record: Product;
             {/* Інфо */}
             <div className="p-2.5 space-y-1.5">
                 <div className="flex items-center justify-between gap-2">
-                    <span className="font-bold text-sm text-gray-900 dark:text-gray-100 truncate">{numLabel}</span>
+                    <ProductNumberText value={record.productnumber} className="font-bold text-sm text-gray-900 dark:text-gray-100 truncate">{numLabel}</ProductNumberText>
                     <span className={`shrink-0 px-1.5 py-0.5 rounded text-[10px] font-semibold ${pill}`}>{status.text}</span>
                 </div>
 

@@ -1,4 +1,5 @@
 import React from 'react';
+import ProductNumberText from '../common/ProductNumberText';
 
 interface Props {
   productNumber: string;
@@ -34,7 +35,7 @@ const ProductNumberLink: React.FC<Props> = ({ productNumber, onOpen, className }
       title="Відкрити картку товару"
       onClick={handleClick}
     >
-      {productNumber}
+      <ProductNumberText value={productNumber} />
     </span>
   );
 };

@@ -1000,6 +1000,18 @@ def sync_product_from_journal(
                             detail=f"Не вдалося оновити картку з журналу: {e}")
 
 
+@router.get("/api/product-numbers/duplicates")
+def product_number_duplicates(db: Session = Depends(get_db)):
+    """Номери, що дублюються (різні завози або суперечливі записи в одному) —
+    фронт фарбує їх червоним. Окремий префікс, бо `/api/products/{product_id}`
+    перехопив би `/api/products/duplicates` і повернув 422."""
+    try:
+        from services.duplicate_numbers import load_duplicates
+    except ImportError:
+        from backend.services.duplicate_numbers import load_duplicates
+    return {"numbers": load_duplicates(db)}
+
+
 @router.get("/api/products/{product_id}")
 def get_product(
     product_id: int = Path(..., ge=1, description="ID товару"),

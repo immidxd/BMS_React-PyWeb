@@ -21,6 +21,8 @@ import {
 import { alertDialog, confirmDialog, notify } from '../../ui/feedback';
 import * as autofillBatch from '../../services/autofillBatch';
 import LoadingSpinner from '../common/LoadingSpinner';
+import ProductNumberText from '../common/ProductNumberText';
+import { emitProductNumberChanged } from '../../services/duplicateNumbers';
 
 // Числовий ключ сортування номера (як бекенд _pn_sort_key): (prefix, base, suffix).
 // Бекенд get_products НЕ підтримує sort_by=productnumber → сортуємо тут, у картці.
@@ -296,7 +298,7 @@ const DeliveryCardModal: React.FC<Props> = ({ shipment, open, onClose }) => {
     setSavingNum(true);
     try {
       const r = await renameDeliveryProductNumber(sid, p.id, v);
-      if (r.renamed) notify.success({ message: `Номер змінено: ${r.old} → ${r.productnumber}` });
+      if (r.renamed) { notify.success({ message: `Номер змінено: ${r.old} → ${r.productnumber}` }); emitProductNumberChanged(); }
       cancelNumEdit();
       await loadProducts();
     } catch (e: any) {
@@ -670,7 +672,7 @@ const DeliveryCardModal: React.FC<Props> = ({ shipment, open, onClose }) => {
                               className="w-24 rounded border border-gray-400 dark:border-gray-500 bg-white dark:bg-gray-800 px-1.5 py-0.5 text-sm focus:outline-none focus:ring-2 focus:ring-gray-400" />
                           ) : (
                             <span className="group/num inline-flex items-center gap-1">
-                              {p.productnumber}
+                              <ProductNumberText value={p.productnumber} />
                               <button title="Редагувати номер"
                                 onClick={e => { e.stopPropagation(); startNumEdit(p); }}
                                 className="opacity-0 group-hover/num:opacity-100 text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition-opacity"><EditOutlined style={{ fontSize: 11 }} /></button>

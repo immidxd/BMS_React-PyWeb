@@ -31,6 +31,7 @@ import {
 import { isDesktopShell, saveBlob } from '../services/imageTransfer';
 import { confirmDialog, notify } from '../ui/feedback';
 import { useIsActivePage } from '../contexts/ActivePageContext';
+import ProductNumberText from '../components/common/ProductNumberText';
 
 const money = (v: number | null | undefined) => (v == null ? '' : `${Math.round(v).toLocaleString('uk-UA')} ₴`);
 const when = (iso: string) => {
@@ -428,7 +429,7 @@ const HistoryTab: React.FC<{
                     {e.undone && <span className={`${CHIP_WARN} ml-1.5`} title={e.undone_actor ? `Скасував ${actorName(e.undone_actor)}` : ''}>скасовано</span>}
                   </td>
                   <td className="px-2 py-1.5 whitespace-nowrap">
-                    {e.product_id ? <button className="font-semibold hover:underline" onClick={() => onOpenProduct(e.product_id!)}>{(e.productnumber || '').replace(/^#/, '') || `#${e.product_id}`}</button> : ''}
+                    {e.product_id ? <button className="font-semibold hover:underline" onClick={() => onOpenProduct(e.product_id!)}>{e.productnumber ? <ProductNumberText value={e.productnumber}>{e.productnumber.replace(/^#/, '')}</ProductNumberText> : `#${e.product_id}`}</button> : ''}
                   </td>
                   <td className="px-2 py-1.5 whitespace-nowrap">
                     {e.box_code ? <button className={CHIP_DARK} onClick={() => onOpenBox(e.box_code!)}>{e.box_code}</button> : ''}

@@ -3,6 +3,7 @@ import { notify } from '../../ui/feedback';
 import type { Product } from '../../types/product';
 import PhotoCropEditor, { CroppedPreview, isSquare, loadImageSize } from '../common/PhotoCropEditor';
 import type { CropItem, PhotoEdit } from '../common/PhotoCropEditor';
+import ProductNumberText from '../common/ProductNumberText';
 
 /**
  * «Розкласти фото» — з теки «до розбору» по картках товарів.
@@ -577,7 +578,7 @@ const PhotoStagingModal: React.FC<Props> = ({ open, onClose, products, defaultCa
                           className={`px-2 py-1 rounded-md text-xs border ${cls}`}
                           title={`${p.brand_name || ''} ${p.model || ''}`.trim()
                             + (e ? ` — реальних ${e.real}, офіційних ${e.official}` : '')}>
-                          {n}{have ? <span className="ml-1 opacity-70">·{have}</span> : null}
+                          <ProductNumberText value={n} onDark={!!have} />{have ? <span className="ml-1 opacity-70">·{have}</span> : null}
                           {g ? <span className="ml-1 opacity-70">+{g}</span> : null}
                         </button>
                       );

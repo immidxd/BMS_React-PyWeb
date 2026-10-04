@@ -31,6 +31,7 @@ import { CopyOnClick, UnknownIf, isUnknownValue, BrandName, getProductDisplaySta
 import { notify } from '../../ui/feedback';
 import * as autofillBatch from '../../services/autofillBatch';
 import LoadingSpinner from '../common/LoadingSpinner';
+import ProductNumberText from '../common/ProductNumberText';
 // Pagination is rendered at page level
 
 // Column configuration type
@@ -506,9 +507,9 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
                                     className="text-xs font-medium cursor-pointer text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300"
                                     title={googleTitle}
                                     onClick={(e) => { e.stopPropagation(); }}
-                                >{label}</a>
+                                ><ProductNumberText value={eff.isClone ? null : text}>{label}</ProductNumberText></a>
                             ) : (
-                                <span className="text-xs font-medium text-gray-800 dark:text-gray-200">{label}</span>
+                                <ProductNumberText value={eff.isClone ? null : text} className="text-xs font-medium text-gray-800 dark:text-gray-200">{label}</ProductNumberText>
                             )
                         }
                     />
