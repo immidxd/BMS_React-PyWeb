@@ -3005,7 +3005,10 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                           title={(p as any).deliveryid
                             ? 'Змінити номер (зміниться і в журналі)'
                             : 'Товар не прив’язаний до завозу — номер правиться в журналі'}
-                          className="text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 disabled:opacity-40 transition-colors">
+                          // ml-4: значок «Скопіювати» в CopyOnClick спливає absolute
+                          // праворуч від номера (left-full + ml-1, 14 px) — без відступу
+                          // олівець опинявся рівно під ним і перекривався (04.10.2026).
+                          className="ml-4 text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 disabled:opacity-40 transition-colors">
                           <EditOutlined style={{ fontSize: 11 }} />
                         </button>
                       )}
