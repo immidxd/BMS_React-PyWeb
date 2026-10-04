@@ -97,15 +97,19 @@ interface TileProps {
   onPick: (name: string, shift: boolean) => void;
   onHover: (name: string) => void;
   onRemove: (name: string) => void;
+  onCrop: (name: string) => void;
   onSize: (name: string, w: number, h: number) => void;
 }
 
-const Tile = memo(function Tile({ file, src, order, edited, busy, onPick, onHover, onRemove, onSize }: TileProps) {
+const Tile = memo(function Tile({ file, src, order, edited, busy, onPick, onHover, onRemove, onCrop, onSize }: TileProps) {
   const isSel = order > 0;
   return (
     <div className="relative group" style={{ contentVisibility: 'auto', containIntrinsicSize: `auto ${TILE}px` } as React.CSSProperties}>
       <button type="button"
-        onClick={(e) => onPick(file.name, e.shiftKey)} onMouseEnter={() => onHover(file.name)}
+        onClick={(e) => onPick(file.name, e.shiftKey)}
+        // Кожен рух скидає таймер превʼю: воно перемикається лише там, де курсор
+        // ЗУПИНИВСЯ, а не на кожній плитці, через яку його провели.
+        onMouseEnter={() => onHover(file.name)} onMouseMove={() => onHover(file.name)}
         className={`relative w-full aspect-square rounded-lg overflow-hidden border-2 bg-gray-100 dark:bg-gray-800 transition-[border-color,box-shadow] duration-100 ${
           isSel ? 'border-gray-900 dark:border-gray-100 ring-2 ring-gray-900/30' : 'border-transparent'}`}>
         <img src={src} alt="" loading="lazy" decoding="async" draggable={false}
@@ -120,6 +124,13 @@ const Tile = memo(function Tile({ file, src, order, edited, busy, onPick, onHove
           <span className="absolute bottom-1.5 left-1.5 px-1.5 h-5 rounded-full bg-white/90 text-gray-900 text-[10px] font-semibold flex items-center shadow-sm"
             title="Кадр 1:1 вибрано">1:1</span>
         )}
+      </button>
+      {/* Кадр 1:1 саме цього знімка — щоб не вести курсор до превʼю через сусідні плитки. */}
+      <button type="button" onClick={(e) => { e.stopPropagation(); onCrop(file.name); }} disabled={busy}
+        title="Кадр 1:1"
+        className="absolute top-1.5 right-9 w-6 h-6 rounded-full bg-black/55 text-white flex items-center justify-center
+          opacity-0 group-hover:opacity-100 focus:opacity-100 hover:bg-black/80 transition-opacity">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M6 2v14a2 2 0 0 0 2 2h14" /><path d="M18 22V8a2 2 0 0 0-2-2H2" /></svg>
       </button>
       {/* × — видалити САМЕ цей кадр; зʼявляється при наведенні, щоб сітка лишалась чистою. */}
       <button type="button" onClick={(e) => { e.stopPropagation(); onRemove(file.name); }} disabled={busy}
@@ -227,7 +238,9 @@ const PhotoStagingModal: React.FC<Props> = ({ open, onClose, products, defaultCa
   // Стабільні обробники для memo-плиток: читають свіжий стан через ref.
   const sortedRef = useRef(sorted); sortedRef.current = sorted;
   const lastPickRef = useRef<string | null>(null);
+  const hoverTimer = useRef<number | undefined>(undefined);
   const onPick = useCallback((name: string, shift: boolean) => {
+    window.clearTimeout(hoverTimer.current);   // клік важливіший за відкладене наведення
     const last = lastPickRef.current;
     if (shift && last && last !== name) {
       // Shift + клік — діапазон від попереднього кліку в тому порядку, який
@@ -256,11 +269,14 @@ const PhotoStagingModal: React.FC<Props> = ({ open, onClose, products, defaultCa
     setFocused(name);
   }, []);
 
-  const hoverTimer = useRef<number | undefined>(undefined);
+  // Hover-intent: превʼю міняється, коли курсор ЗУПИНИВСЯ на плитці (~150 мс без
+  // руху). Шлях від вибраного знімка до кнопок превʼю веде через сусідні
+  // плитки — раніше превʼю перескакувало на них, і кадрувати доводилось не те.
   const onHover = useCallback((name: string) => {
     window.clearTimeout(hoverTimer.current);
-    hoverTimer.current = window.setTimeout(() => setFocused(name), 90);
+    hoverTimer.current = window.setTimeout(() => setFocused(name), 150);
   }, []);
+  const cancelHover = useCallback(() => { window.clearTimeout(hoverTimer.current); }, []);
   useEffect(() => () => window.clearTimeout(hoverTimer.current), []);
 
   // Пропорції з уже завантажених мініатюр — щоб знати, кому потрібен кадр 1:1,
@@ -284,6 +300,13 @@ const PhotoStagingModal: React.FC<Props> = ({ open, onClose, products, defaultCa
     const items = cropItems(names);
     if (items.length) setCropFor({ items });
   }, [cropItems]);
+  // Стабільний обробник для memo-плиток (openCrop міняється разом зі списком).
+  const openCropRef = useRef(openCrop); openCropRef.current = openCrop;
+  const onCropTile = useCallback((name: string) => {
+    window.clearTimeout(hoverTimer.current);
+    setFocused(name);
+    openCropRef.current([name]);
+  }, []);
 
   // Неквадратні серед вибраних, яким кадр ще не вирішено.
   const needsCrop = useCallback(async (names: string[]) => {
@@ -590,7 +613,7 @@ const PhotoStagingModal: React.FC<Props> = ({ open, onClose, products, defaultCa
           </div>
 
           {/* Права: сітка */}
-          <div ref={gridRef} className="min-h-0 overflow-y-auto p-3">
+          <div ref={gridRef} className="min-h-0 overflow-y-auto p-3" onMouseLeave={cancelHover}>
             {files.length === 0 && !loading && (
               <div className="h-full flex items-center justify-center text-gray-400 text-sm">
                 У теці «{category}» нічого до розбору
@@ -600,7 +623,7 @@ const PhotoStagingModal: React.FC<Props> = ({ open, onClose, products, defaultCa
               {visible.map((f) => (
                 <Tile key={f.name} file={f} src={imgUrl(category, f, GRID_W)}
                   order={order.get(f.name) || 0} edited={!!edits[f.name]} busy={busy}
-                  onPick={onPick} onHover={onHover} onRemove={onRemove} onSize={onSize} />
+                  onPick={onPick} onHover={onHover} onRemove={onRemove} onCrop={onCropTile} onSize={onSize} />
               ))}
             </div>
             {visible.length < sorted.length && <div ref={sentinelRef} className="h-px" />}
