@@ -437,6 +437,24 @@ body {
   background: rgba(120, 120, 120, 0.12) !important;
 }
 
+/* Ті самі стани рядка в картці поставки (звичайна <table>, не antd) — правило
+   спільне: components/products/productRowState.ts. */
+.bms-delivery-table > tbody > tr.bms-conflict-row > td {
+  background: var(--bms-warning-bg);
+}
+.bms-delivery-table > tbody > tr.bms-conflict-row > td:first-child {
+  box-shadow: inset 3px 0 0 0 var(--bms-warning-amber);
+}
+.bms-delivery-table > tbody > tr.bms-conflict-row:hover > td {
+  background: var(--bms-warning-bg-hi);
+}
+.bms-delivery-table > tbody > tr.bms-row-reserved > td {
+  background: rgba(120, 120, 120, 0.07);
+}
+.bms-delivery-table > tbody > tr.bms-row-reserved:hover > td {
+  background: rgba(120, 120, 120, 0.12);
+}
+
 /* ── MUI overrides → монохром (Dialog, Buttons, Progress) ── */
 .MuiButton-contained,
 .MuiButton-containedPrimary {

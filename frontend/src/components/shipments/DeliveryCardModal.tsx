@@ -22,6 +22,7 @@ import { alertDialog, confirmDialog, notify } from '../../ui/feedback';
 import * as autofillBatch from '../../services/autofillBatch';
 import LoadingSpinner from '../common/LoadingSpinner';
 import ProductNumberText from '../common/ProductNumberText';
+import { productRowState } from '../products/productRowState';
 import { emitProductNumberChanged } from '../../services/duplicateNumbers';
 
 // Числовий ключ сортування номера (як бекенд _pn_sort_key): (prefix, base, suffix).
@@ -636,7 +637,7 @@ const DeliveryCardModal: React.FC<Props> = ({ shipment, open, onClose }) => {
                 <div className="py-16 text-center text-gray-400">У цьому завозі ще немає товарів</div>
               )}
               {!error && products.length > 0 && (
-                <table className="w-full text-sm">
+                <table className="bms-delivery-table w-full text-sm">
                   <thead className="text-gray-500 dark:text-gray-400 border-b border-gray-100 dark:border-gray-800">
                     <tr>
                       <th className="px-2 py-2 text-left font-semibold">Номер</th>
@@ -653,13 +654,16 @@ const DeliveryCardModal: React.FC<Props> = ({ shipment, open, onClose }) => {
                   <tbody>
                     {products.map(p => {
                       const st = statusOf(p);
+                      const rowInfo = productRowState(p);
                       return (
                       <tr key={p.id} onClick={() => { if (editNumId !== p.id) { cancelHover(); setDetailId(p.id); } }}
                         onContextMenu={e => { e.preventDefault(); cancelHover(); setCtx({ x: e.clientX, y: e.clientY, p }); }}
                         onMouseEnter={e => scheduleHover(p, e)}
                         onMouseMove={moveHover}
                         onMouseLeave={cancelHover}
-                        className="border-b last:border-b-0 border-gray-50 dark:border-gray-800/50 hover:bg-gray-50 dark:hover:bg-gray-800/40 cursor-pointer">
+                        title={rowInfo.title}
+                        className={`border-b last:border-b-0 border-gray-50 dark:border-gray-800/50 cursor-pointer ${
+                          rowInfo.className || 'hover:bg-gray-50 dark:hover:bg-gray-800/40'}`}>
                         <td className="px-2 py-2 font-medium tabular-nums">
                           {editNumId === p.id ? (
                             <input autoFocus value={editNumVal}

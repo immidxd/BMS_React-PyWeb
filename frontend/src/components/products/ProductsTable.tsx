@@ -32,6 +32,7 @@ import { notify } from '../../ui/feedback';
 import * as autofillBatch from '../../services/autofillBatch';
 import LoadingSpinner from '../common/LoadingSpinner';
 import ProductNumberText from '../common/ProductNumberText';
+import { productRowState } from './productRowState';
 // Pagination is rendered at page level
 
 // Column configuration type
@@ -943,32 +944,11 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
                     pagination={false}
                     loading={false}
                     onRow={(record: Product) => {
-                        const issues: string[] = [];
-                        const noNum = !record.productnumber || record.productnumber === '???'
-                            || record.productnumber.startsWith('__tmp_rename_')
-                            || record.productnumber.startsWith('???_');
-                        if (noNum) {
-                            const clones = (record as any).clonednumbers;
-                            if (clones && String(clones).trim()) {
-                                issues.push(`Тільки номер-клон: ${String(clones).slice(0, 60)}`);
-                            } else {
-                                issues.push('Товар не має номера');
-                            }
-                        }
-                        if (!record.type_name) issues.push('Не вказано тип');
-                        if (!record.price) issues.push('Ціна = 0 або не вказана');
-                        if (!record.supplier_name) issues.push('Не вказано постачальника');
-                        const sold = record.sold_count ?? 0;
-                        const qty = record.quantity ?? 0;
-                        if (sold > qty) issues.push(`Перепродано: ${sold} продано з ${qty} наявних`);
-                        if ((record.pnum_dup_brands ?? 0) > 1) issues.push('Номер товару дублюється (різні бренди)');
-                        const hasIssue = issues.length > 0;
-                        const conflictTitle = issues.join(' • ');
-                        // «Бронь» (Підтверджено без Оплачено) — subtle gray. Конфлікт (amber)
-                        // має пріоритет над бронею.
-                        const rowState = hasIssue ? 'bms-conflict-row' : (record.is_reserved ? 'bms-row-reserved' : 'bms-row-hover');
+                        // Правило спільне з карткою поставки — див. productRowState.
+                        const rowInfo = productRowState(record);
+                        const rowState = rowInfo.className || 'bms-row-hover';
                         return {
-                            title: hasIssue ? `⚠ ${conflictTitle}` : (record.is_reserved ? '🔒 Заброньовано (Підтверджено, без оплати)' : undefined),
+                            title: rowInfo.title,
                             className: `cursor-pointer ${rowState}`,
                             onDoubleClick: () => { cancelHover(); setDetailsId(record.id); setDetailsOpen(true); },
                             onContextMenu: (e: React.MouseEvent) => { cancelHover(); handleRowContextMenu(e, record); },
