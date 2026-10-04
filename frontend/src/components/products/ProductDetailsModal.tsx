@@ -1470,6 +1470,13 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
       if (st.present && st.matched === false) {
         notify.warning({ message: 'Стікер не збігся з карткою',
           description: `${st.reason || 'Номер на стікері інший'}. Прочитано: «${st.text || '—'}».`, duration: 8 });
+      } else if (st.near_miss) {
+        // Номер на стікері відрізняється ОДНІЄЮ цифрою: найчастіше рукописна
+        // цифра прочитана хибно (#Ф4508: «ф4408»), але буває й справді чужий
+        // стікер. Пропозиції створено — людина звіряє зі знімком.
+        notify.warning({ message: 'Номер на стікері прочитано неточно',
+          description: `Прочитано «${st.sticker_number || '—'}» — одна цифра відрізняється від картки. `
+            + 'Ціну й розмір запропоновано; звір зі знімком перед прийняттям.', duration: 9 });
       } else if (weak.length) {
         notify.info({ message: 'Зі стікера прочитано непевно',
           description: weak.map((x: any[]) => `${LABEL[x[0]]} ${x[1]}${x[2] != null ? ` (${Math.round(x[2] * 100)}%)` : ''}`).join(' · ')

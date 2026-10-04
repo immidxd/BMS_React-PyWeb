@@ -1154,6 +1154,43 @@ def _number_matches(card_number: Optional[str], sticker_number: Optional[str]) -
     return (not cl or not sl) or cl == sl
 
 
+# Рукописна «Ф» на стікері модель часто читає як цифри: «904509» замість
+# «Ф4509» (#Ф4509, 04.10.2026). Такий хвіст із 1–2 «фоподібних» цифр перед
+# номером картки — це літера, а не інший товар.
+_PHI_LOOKALIKE_DIGITS = set("9068")
+
+
+def _phi_read_as_digits(card_number: Optional[str], sticker_number: Optional[str]) -> bool:
+    """Чи «зайві» цифри попереду стікера — це прочитана як цифри літера «Ф»."""
+    card = (card_number or "").strip().lstrip("#")
+    if not any(ch.isalpha() for ch in card):
+        return False                    # у картки без літери нема чого так читати
+    cd = "".join(ch for ch in card if ch.isdigit())
+    sd = "".join(ch for ch in (sticker_number or "") if ch.isdigit())
+    if len(cd) < 3 or any(ch.isalpha() for ch in (sticker_number or "")):
+        return False                    # модель прочитала літеру — тоді це не той випадок
+    extra = len(sd) - len(cd)
+    return 1 <= extra <= 2 and sd.endswith(cd) and set(sd[:extra]) <= _PHI_LOOKALIKE_DIGITS
+
+
+def _one_digit_off(card_number: Optional[str], sticker_number: Optional[str]) -> bool:
+    """Номер на стікері відрізняється від картки рівно ОДНІЄЮ цифрою.
+
+    #Ф4508 (04.10.2026): модель прочитала рукописну «5» як «4» — «ф4408». Але
+    так само виглядає й справді чужий стікер (#Ф4440 мав на фото «Ф4442»), тож
+    такий збіг НЕ мовчазний: пропозиція йде з попередженням, і вирішує людина.
+    """
+    def parts(v):
+        v = (v or "").strip().lstrip("#")
+        return ("".join(ch for ch in v if ch.isdigit()),
+                "".join(ch for ch in v if ch.isalpha()).upper().replace("F", "Ф"))
+    cd, cl = parts(card_number)
+    sd, sl = parts(sticker_number)
+    if len(cd) < 3 or len(sd) != len(cd) or (cl and sl and cl != sl):
+        return False
+    return sum(a != b for a, b in zip(cd, sd)) == 1
+
+
 def _sticker_proposals(db, product_id, pred, current, photo_names, model,
                        proposed, below_threshold, already) -> Dict[str, Any]:
     """Ціна, розмір і замір зі стікера — лише коли номер на ньому наш."""
@@ -1170,6 +1207,12 @@ def _sticker_proposals(db, product_id, pred, current, photo_names, model,
         card_digits = "".join(ch for ch in card if ch.isdigit())
         tokens = ["".join(ch for ch in t if ch.isdigit()) for t in re.split(r"[\s/,;|]+", text_)]
         matched = bool(card_digits) and card_digits in tokens
+    if not matched and (_phi_read_as_digits(card, number)
+                        or any(_phi_read_as_digits(card, t) for t in re.split(r"[\s/,;|]+", text_))):
+        matched = True
+    near_miss = False
+    if not matched and _one_digit_off(card, number):
+        matched = near_miss = True
     if not matched:
         # Чужий або неправильно прочитаний стікер — усе з нього відкидаємо,
         # але кажемо, ЩО прочитали: інакше людина бачить «не розпізнало» і
@@ -1178,6 +1221,10 @@ def _sticker_proposals(db, product_id, pred, current, photo_names, model,
                 "reason": f"номер на стікері «{number or '—'}» не збігся з карткою {card}"}
 
     out = {"present": True, "matched": True, "text": text_}
+    warn = ""
+    if near_miss:
+        out.update({"near_miss": True, "sticker_number": number})
+        warn = f"⚠ номер на стікері прочитано як «{number}», а картка {card} — звір зі знімком · "
     _clothing_sticker_proposals(db, product_id, pred, current, photo_names, model,
                                 proposed, below_threshold, already)
     for key, (upd_field, lo, hi) in STICKER_FIELDS.items():
@@ -1200,7 +1247,7 @@ def _sticker_proposals(db, product_id, pred, current, photo_names, model,
             already.append((upd_field, text_val)); continue
         if conf is not None and float(conf) >= threshold and field_proposals.propose(
                 db, product_id, upd_field, text_val, conf, model=model,
-                source_photos=photo_names, note=f"зі стікера: «{text_}»"[:200]):
+                source_photos=photo_names, note=f"{warn}зі стікера: «{text_}»"[:200]):
             proposed.append((upd_field, text_val, conf))
         else:
             below_threshold.append((upd_field, text_val, conf))

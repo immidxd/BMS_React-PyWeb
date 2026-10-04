@@ -1053,3 +1053,54 @@ def test_square_toe_is_decided_by_shape_not_by_kind_of_shoe():
     assert "порядок рішення" in h["__field__"]
     assert h["__field__"].index("квадратний") < h["__field__"].index("заокруглена")
     assert "ЛИШЕ на кроці (3)" in h["__field__"]
+
+
+# ── 04.10.2026: номер на стікері прочитано з помилкою ───────────────────────
+
+def test_phi_read_as_digits_still_matches(monkeypatch, tmp_path):
+    """#Ф4509: рукописну «Ф» модель прочитала як «90» — «904509»."""
+    out = _run_sticker(monkeypatch, tmp_path, {
+        "sticker_text": "650\n27 17\n904419", "sticker_number": "904419",
+        "sticker_price": 650, "sticker_price_confidence": 0.95,
+        "sticker_size": 27, "sticker_size_confidence": 0.95})
+    got = {f: v for f, v, c in out["proposed"]}
+    assert got == {"price": "650", "sizeeu": "27"}
+    assert out["sticker"]["matched"] is True and not out["sticker"].get("near_miss")
+
+
+@pytest.mark.parametrize("card, sticker, ok", [
+    ("#Ф4509", "904509", True),
+    ("#Ф4509", "94509", True),
+    ("#Ф4509", "14509", False),     # «1» не схожа на «Ф» — це інший номер
+    ("#Ф4509", "ф904509", False),   # літеру прочитано — цифри попереду справжні
+    ("#4509", "904509", False),     # у картки нема літери
+    ("#Ф509", "4509", False),       # «4» — не літера, а інший товар
+])
+def test_phi_lookalike_rule(card, sticker, ok):
+    assert pa._phi_read_as_digits(card, sticker) is ok
+
+
+def test_one_digit_off_is_proposed_with_a_warning(monkeypatch, tmp_path):
+    """#Ф4508: «ф4408» — одна цифра. Пропонуємо, але людина бачить попередження."""
+    seen = []
+    real = pa.field_proposals.propose
+    monkeypatch.setattr(pa.field_proposals, "propose",
+                        lambda db, pid, f, v, c, **k: seen.append((f, k.get("note"))) or real(db, pid, f, v, c, **k))
+    out = _run_sticker(monkeypatch, tmp_path, {
+        "sticker_text": "650 27 17 ф4418", "sticker_number": "ф4418",
+        "sticker_price": 650, "sticker_price_confidence": 1.0})
+    assert ("price", "650", 1.0) in out["proposed"]
+    assert out["sticker"]["near_miss"] is True
+    note = dict(seen)["price"]
+    assert note.startswith("⚠") and "ф4418" in note and "#Ф4419" in note
+
+
+@pytest.mark.parametrize("card, sticker, ok", [
+    ("#Ф4508", "ф4408", True),
+    ("#Ф4440", "Ф4442", True),      # теж одна цифра — тому й попередження, а не мовчки
+    ("#Ф4419", "ф4400", False),     # дві цифри — чужий, як і раніше
+    ("#Ф4419", "Т4418", False),     # інша літера
+    ("#Ф4419", "ф441", False),
+])
+def test_one_digit_off_rule(card, sticker, ok):
+    assert pa._one_digit_off(card, sticker) is ok
