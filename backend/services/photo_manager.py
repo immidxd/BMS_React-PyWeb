@@ -169,12 +169,14 @@ def _r2_key(category: str, filename: str) -> str:
     return f"{category}/{filename}"
 
 
-def _invalidate_r2_index():
+def _invalidate_r2_index(added=(), removed=()):
+    """Повідомити індекс R2 про зміну. Ключі відомі — точкова латка без
+    очікування повного лістингу (інакше наступна картка чекала б секунди)."""
     try:
-        from services.product_images import invalidate_r2_index
+        from services.product_images import r2_index_patch
     except ImportError:  # pragma: no cover
-        from backend.services.product_images import invalidate_r2_index
-    invalidate_r2_index()
+        from backend.services.product_images import r2_index_patch
+    r2_index_patch(added=added, removed=removed)
 
 
 def _sync_one(category: str, path: Path):
@@ -182,7 +184,7 @@ def _sync_one(category: str, path: Path):
     після кожної заливки індекс скидається."""
     if r2_storage.is_enabled():
         r2_storage.upload_file(str(path), _r2_key(category, path.name))
-        _invalidate_r2_index()
+        _invalidate_r2_index(added=[_r2_key(category, path.name)])
 
 
 _UPLOAD_WORKERS = 4
@@ -203,7 +205,7 @@ def _upload_many(category: str, paths: List[Path]) -> None:
     with ThreadPoolExecutor(max_workers=min(_UPLOAD_WORKERS, len(paths))) as pool:
         futures = [pool.submit(r2_storage.upload_file, str(p), _r2_key(category, p.name)) for p in paths]
         errors = [f.exception() for f in futures if f.exception() is not None]
-    _invalidate_r2_index()
+    _invalidate_r2_index(added=[_r2_key(category, p.name) for p in paths])
     if errors:
         raise errors[0]
 
@@ -241,7 +243,7 @@ def _delete_r2(category: str, filename: str):
         try:
             if r2_storage.object_exists(key):
                 r2_storage.delete(key)
-            _invalidate_r2_index()
+            _invalidate_r2_index(removed=[key])
         except Exception as e:  # noqa: BLE001
             logger.warning(f"R2 delete fail {key}: {e}")
 

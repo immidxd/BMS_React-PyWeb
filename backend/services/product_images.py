@@ -322,6 +322,12 @@ _R2_INDEX_TTL = float(os.getenv("PHOTO_R2_INDEX_TTL", "600"))
 _PRODUCT_CATEGORIES = ("Взуття", "Сумки", "Одяг", "Аксесуари", "Інше")
 _R2_INDEX: dict = {"at": 0.0, "by_pnum": {}}
 _R2_INDEX_LOCK = threading.Lock()
+# Стан фонового оновлення (окремо від _R2_INDEX, який тести підміняють цілим):
+#   loaded   — індекс хоч раз побудовано (тоді застарілий віддаємо одразу);
+#   gen      — лічильник точкових змін (r2_index_patch);
+#   patches  — зміни, яких ще може не бути в лістингу, що зараз іде;
+#   must_sync — зміна невідома (invalidate_r2_index) → наступне читання чекає.
+_R2_STATE: dict = {"loaded": False, "gen": 0, "patches": [], "refreshing": False, "must_sync": False}
 
 
 def _r2():
@@ -332,42 +338,123 @@ def _r2():
     return r2_storage
 
 
+def _list_r2_keys():
+    """(by_pnum, rows) з повного лістингу бакета; None — R2 недоступний."""
+    r2 = _r2()
+    by: dict = {}
+    rows: list = []
+    if not r2.is_enabled():
+        return by, rows
+    try:
+        for key, etag in r2.list_keys_with_etag(""):
+            tok = _index_token(key)
+            if tok:
+                by.setdefault(tok, []).append(key)
+                rows.append((key, etag))
+    except Exception as exc:  # noqa: BLE001
+        # ⚠️ Збій R2 не має «обнулити» фото: лишаємо попередній індекс.
+        logger.warning("R2 index: не вдалось прочитати список ключів: %s", exc)
+        return None
+    return by, rows
+
+
+def _index_token(key: str) -> Optional[str]:
+    """Номер товару (нижній регістр) для ключа R2, або None, якщо ключ не фото товару."""
+    if "/" not in key or key.split("/", 1)[0] not in _PRODUCT_CATEGORIES:
+        return None
+    fname = os.path.basename(key)
+    if os.path.splitext(fname)[1].lower() not in IMAGE_EXTENSIONS:
+        return None
+    tok = _pnum_token_from_filename(fname)
+    return tok.lower() if tok else None
+
+
+def _apply_patch(by: dict, added, removed) -> dict:
+    """Нова копія індексу з доданими/прибраними ключами (copy-on-write)."""
+    out = dict(by)
+    for key in added:
+        tok = _index_token(key)
+        if tok and key not in out.get(tok, []):
+            out[tok] = list(out.get(tok, [])) + [key]
+    for key in removed:
+        tok = _index_token(key)
+        if tok and key in out.get(tok, []):
+            out[tok] = [k for k in out[tok] if k != key]
+    return out
+
+
+def _rebuild_r2_index() -> dict:
+    """Повний лістинг R2 → індекс. Зміни, що сталися ПІД ЧАС лістингу (кілька
+    секунд), накладаються зверху — інакше щойно видалене фото «воскресло» б."""
+    with _R2_INDEX_LOCK:
+        gen0 = _R2_STATE["gen"]
+    res = _list_r2_keys()
+    if res is None:
+        with _R2_INDEX_LOCK:
+            return _R2_INDEX["by_pnum"]
+    by, rows = res
+    with _R2_INDEX_LOCK:
+        for g, added, removed in _R2_STATE["patches"]:
+            if g > gen0:
+                by = _apply_patch(by, added, removed)
+        _R2_STATE["patches"] = [p for p in _R2_STATE["patches"] if p[0] > gen0]
+        _R2_INDEX["at"] = time.monotonic()
+        _R2_INDEX["by_pnum"] = by
+        _R2_STATE["loaded"] = True
+        _R2_STATE["must_sync"] = False
+    _publish_index_to_db(rows)
+    return by
+
+
+def _refresh_in_background() -> None:
+    """Одне фонове оновлення за раз (виклик — під _R2_INDEX_LOCK)."""
+    if _R2_STATE["refreshing"]:
+        return
+    _R2_STATE["refreshing"] = True
+
+    def run():
+        try:
+            _rebuild_r2_index()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("R2 index: фонове оновлення не вдалося: %s", exc)
+        finally:
+            with _R2_INDEX_LOCK:
+                _R2_STATE["refreshing"] = False
+
+    threading.Thread(target=run, name="r2-index-refresh", daemon=True).start()
+
+
 def _r2_index(force: bool = False) -> dict:
     """{нормалізований номер у нижньому регістрі: [relpath, …]} з R2.
 
     relpath = «<категорія>/<файл>.webp» — той самий шлях, що й у локальному
     міорі та в URL /product-images/<relpath>, тож R2-записи мають ТІ САМІ
     адреси, і жоден споживач не відрізняє їх від локальних.
+
+    Повний лістинг бакета — секунди (тисячі ключів). Раніше його чекав запит,
+    що першим приходив після TTL або після БУДЬ-якої зміни фото, — і картка
+    товару відкривалась із порожньою галереєю на 4+ с. Тепер застарілий індекс
+    віддається одразу, а оновлюється у фоні (stale-while-revalidate); зміни з
+    photo_manager латаються точково (r2_index_patch). Чекаємо лише найперше
+    завантаження, `force` або невідому зміну (invalidate_r2_index).
     """
     now = time.monotonic()
     with _R2_INDEX_LOCK:
-        if not force and now - _R2_INDEX["at"] < _R2_INDEX_TTL:
-            return _R2_INDEX["by_pnum"]
-    r2 = _r2()
-    by: dict = {}
-    rows: list = []
-    if r2.is_enabled():
-        try:
-            for key, etag in r2.list_keys_with_etag(""):
-                if key.split("/", 1)[0] not in _PRODUCT_CATEGORIES or "/" not in key:
-                    continue
-                fname = os.path.basename(key)
-                if os.path.splitext(fname)[1].lower() not in IMAGE_EXTENSIONS:
-                    continue
-                tok = _pnum_token_from_filename(fname)
-                if tok:
-                    by.setdefault(tok.lower(), []).append(key)
-                    rows.append((key, etag))
-        except Exception as exc:  # noqa: BLE001
-            # ⚠️ Збій R2 не має «обнулити» фото: лишаємо попередній індекс.
-            logger.warning("R2 index: не вдалось прочитати список ключів: %s", exc)
-            with _R2_INDEX_LOCK:
+        if not force and not _R2_STATE["must_sync"]:
+            if now - _R2_INDEX["at"] < _R2_INDEX_TTL:
                 return _R2_INDEX["by_pnum"]
+            if _R2_STATE["loaded"]:
+                _refresh_in_background()
+                return _R2_INDEX["by_pnum"]
+    return _rebuild_r2_index()
+
+
+def prewarm_r2_index() -> None:
+    """Побудувати індекс у фоні при старті — щоб і перша картка не чекала."""
     with _R2_INDEX_LOCK:
-        _R2_INDEX["at"] = now
-        _R2_INDEX["by_pnum"] = by
-    _publish_index_to_db(rows)
-    return by
+        if _R2_STATE["loaded"]:
+            return
+        _refresh_in_background()
 
 
 def _publish_index_to_db(rows: list) -> None:
@@ -399,9 +486,27 @@ def _publish_index_to_db(rows: list) -> None:
 
 
 def invalidate_r2_index() -> None:
-    """Скинути індекс R2 — після upload/delete/rename у photo_manager."""
+    """Невідома зміна в R2 → наступне читання чекає повного лістингу.
+    Для змін із відомими ключами — r2_index_patch (без очікування)."""
     with _R2_INDEX_LOCK:
         _R2_INDEX["at"] = 0.0
+        _R2_STATE["must_sync"] = True
+
+
+def r2_index_patch(added=(), removed=()) -> None:
+    """Точково оновити індекс після upload/delete (ключі відомі) і освіжити його
+    у фоні. Картка одразу бачить додане й не бачить видаленого."""
+    added, removed = tuple(added), tuple(removed)
+    if not added and not removed:
+        return
+    with _R2_INDEX_LOCK:
+        _R2_STATE["gen"] += 1
+        _R2_STATE["patches"].append((_R2_STATE["gen"], added, removed))
+        _R2_INDEX["by_pnum"] = _apply_patch(_R2_INDEX["by_pnum"], added, removed)
+        if _R2_STATE["loaded"]:
+            _refresh_in_background()   # заодно оновить etag-и для каталогу
+        else:
+            _R2_INDEX["at"] = 0.0
 
 
 def _list_r2_only(target: str) -> List[ImageEntry]:

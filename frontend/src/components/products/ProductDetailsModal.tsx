@@ -195,9 +195,29 @@ const measurementsFromProduct = (p: any): Record<string, string> => {
   return out;
 };
 
-// Скільки чекати фото з Drive, перш ніж прибрати спінер галереї (картку показуємо
-// одразу — фото вантажаться окремо й «доїжджають» у фоні навіть після таймауту).
-const IMAGE_SOFT_TIMEOUT_MS = 3500;
+// Після скількох мс очікування списку фото підказати, що це довше, ніж зазвичай.
+// Спінер НЕ ховаємо за таймером: раніше через 3.5 с картка казала «Фото відсутнє»,
+// а фото потім «доїжджали» — і не було ясно, чи чекати.
+const IMAGE_SLOW_HINT_MS = 5000;
+
+/** Спінер галереї; якщо довго — чесна підказка, що фото ще йдуть. */
+const GalleryLoading: React.FC = () => {
+  const [slow, setSlow] = useState(false);
+  useEffect(() => {
+    const t = setTimeout(() => setSlow(true), IMAGE_SLOW_HINT_MS);
+    return () => clearTimeout(t);
+  }, []);
+  return (
+    <div className="flex flex-col items-center justify-center">
+      <LoadingSpinner variant="section" text="Завантаження фото…" />
+      {slow && (
+        <span className="text-[11px] text-gray-400 dark:text-gray-500 -mt-2">
+          Довше, ніж зазвичай — фото ще йдуть, зачекайте
+        </span>
+      )}
+    </div>
+  );
+};
 
 // Ширина колодки — літера або літера+число (G, W, D, H, F 1/2, EE), ніколи речення.
 // Дзеркало backend/services/width_normalization.py: бекенд усе одно перевіряє сам,
@@ -223,7 +243,9 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
   // фото лише коли gallery.pid збігається з відкритим товаром. Самих guard'ів у
   // запитах мало — при швидкому гортанні відповідь може прийти будь-коли.
   const [gallery, setGallery] = useState<{ pid: number | null; images: GalleryImage[] }>({ pid: null, images: [] });
-  const [imagesLoading, setImagesLoading] = useState(false);
+  // Товар, для якого список фото НЕ завантажився (мережа/сервер) — замість
+  // вічного спінера показуємо «Не вдалося · Повторити».
+  const [galleryErrorPid, setGalleryErrorPid] = useState<number | null>(null);
   const [showDefects, setShowDefects] = useState(false);
   const [activeKind, setActiveKind] = useState<'official' | 'real' | 'defect'>('official');
   const [activeIdx, setActiveIdx] = useState(0);
@@ -1038,9 +1060,11 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
   // Фото показуємо ЛИШЕ якщо вони належать товару, ЯКИЙ ЗАРАЗ НАМАЛЬОВАНО (product),
   // а не тому, на який ми щойно перемкнулись (productId). Інакше фото випереджають
   // дані: під час навігації стара картка ще видима, а нові фото вже приїхали.
+  // Список фото саме цього товару вже приїхав (навіть якщо порожній).
+  const galleryReady = gallery.pid !== null && gallery.pid === product?.id;
   const allImages = useMemo<GalleryImage[]>(
-    () => (gallery.pid !== null && gallery.pid === product?.id ? gallery.images : []),
-    [gallery, product?.id],
+    () => (galleryReady ? gallery.images : []),
+    [galleryReady, gallery],
   );
 
   // Лічильники вкладок рахують ВИДИМЕ: вони керують перемикачем «Офіційні /
@@ -1324,18 +1348,15 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     }
   }, [product?.id]);
 
-  // Фото вантажимо ОКРЕМО від товару. Спінер галереї тримаємо лише до soft-таймауту:
-  // якщо Drive відповідає довго — показуємо плейсхолдер, але запит триває й фото
-  // зʼявляться коли доїдуть. Картку це ніколи не блокує.
+  // Фото вантажимо ОКРЕМО від товару — картку це ніколи не блокує. Поки список
+  // фото САМЕ ЦЬОГО товару не приїхав (galleryReady), галерея показує спінер, а
+  // «Фото відсутнє» — лише коли список прийшов і він порожній.
   const loadImages = React.useCallback(async (silent = false) => {
     const pid = productId;
     if (!pid) return;
-    if (!silent) setImagesLoading(true);
-    let settled = false;
-    const timer = silent ? null : setTimeout(() => { if (!settled) setImagesLoading(false); }, IMAGE_SOFT_TIMEOUT_MS);
+    if (!silent) setGalleryErrorPid((cur) => (cur === pid ? null : cur));
     try {
-      const res = await productService.getProductImages(pid);
-      if (!settled) settled = true;
+      const res = await productService.getProductImages(pid, { throwOnError: true });
       // Відповідь могла прийти вже після переходу на інший товар — тоді вона нікому
       // не потрібна (а показувати її не можна: gallery.pid відсіче, але й писати шкода).
       if (curPidRef.current !== pid) return;
@@ -1349,10 +1370,9 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
       }
     } catch (e) {
       console.error('Failed to load images', e);
-    } finally {
-      settled = true;
-      if (timer) clearTimeout(timer);
-      if (!silent) setImagesLoading(false);
+      // Тихе перечитування (після дій) лишає те, що вже видно; первинне —
+      // показує помилку з «Повторити», а не вічний спінер.
+      if (!silent && curPidRef.current === pid) setGalleryErrorPid(pid);
     }
   }, [productId]);
 
@@ -3654,8 +3674,17 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                             </>
                           )}
                         </>
-                      ) : imagesLoading ? (
-                        <LoadingSpinner variant="section" text="Завантаження фото…" />
+                      ) : galleryErrorPid !== null && galleryErrorPid === product?.id && !galleryReady ? (
+                        <div className="flex flex-col items-center justify-center text-gray-400 dark:text-gray-500 px-6 text-center">
+                          <PictureOutlined style={{ fontSize: 40 }} />
+                          <span className="text-sm mt-3">Не вдалося завантажити фото</span>
+                          <button type="button" onClick={() => void loadImages(false)}
+                            className="mt-3 px-3 py-1 rounded-full text-[12px] border border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800">
+                            Повторити
+                          </button>
+                        </div>
+                      ) : !galleryReady ? (
+                        <GalleryLoading />
                       ) : (
                         <div className="flex flex-col items-center justify-center text-gray-300 dark:text-gray-600 px-6 w-full text-center">
                           <PictureOutlined style={{ fontSize: 56 }} />

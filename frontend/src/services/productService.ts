@@ -169,7 +169,9 @@ export const productService = {
      * Отримати фото товару (з локальної папки/cloud — за productnumber).
      * Повертає список з url для відображення в галереї картки.
      */
-    async getProductImages(id: number): Promise<{
+    /** Фото товару. Типово збій → порожній список (прев'ю в таблиці). Картка
+     *  передає `throwOnError`: їй треба відрізнити «фото нема» від «не завантажилось». */
+    async getProductImages(id: number, opts?: { throwOnError?: boolean }): Promise<{
         productnumber: string;
         count: number;
         // kind: 'official' — студійні (пріоритет для прев'ю), 'real' — мої фото, 'defect' — дефекти
@@ -180,6 +182,7 @@ export const productService = {
             return response.data;
         } catch (error) {
             console.error(`Error fetching product images ${id}:`, error);
+            if (opts?.throwOnError) throw error;
             return { productnumber: '', count: 0, images: [] };
         }
     },

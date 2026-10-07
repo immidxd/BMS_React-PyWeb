@@ -37,6 +37,7 @@ def cloud(tmp_path, monkeypatch):
     monkeypatch.setattr(pi, "_list_drive_only", lambda t: [])
     monkeypatch.setattr(pi, "_publish_index_to_db", lambda rows: None)
     monkeypatch.setattr(pi, "_R2_INDEX", {"at": 0.0, "by_pnum": {}})
+    monkeypatch.setattr(pi, "_R2_STATE", {"loaded": False, "gen": 0, "patches": [], "refreshing": False, "must_sync": False})
     r2 = _R2(keys=["Взуття/Ф4400_01.webp", "Взуття/Ф4400_02.webp",
                    "derived/Ф4400_prom.webp", "social/Ф4400_story.webp", "studio/Ф4400_x.webp"],
              blobs={"Взуття/Ф4400_02.webp": b"RIFF-webp-bytes"})

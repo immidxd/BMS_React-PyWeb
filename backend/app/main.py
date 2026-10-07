@@ -448,6 +448,17 @@ if thumb_for_local is not None:
             logger.info("Drive image index prewarm triggered (background)")
         except Exception as e:
             logger.warning(f"Drive index prewarm failed: {e}")
+        # Індекс R2 (перелік фото) — так само у фоні: повний лістинг бакета
+        # займає секунди, і без прогріву їх чекала б перша відкрита картка.
+        try:
+            try:
+                from services.product_images import prewarm_r2_index
+            except ImportError:
+                from backend.services.product_images import prewarm_r2_index
+            prewarm_r2_index()
+            logger.info("R2 image index prewarm triggered (background)")
+        except Exception as e:
+            logger.warning(f"R2 index prewarm failed: {e}")
 
 # Mount static files from frontend build if available
 frontend_build_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../frontend/build"))

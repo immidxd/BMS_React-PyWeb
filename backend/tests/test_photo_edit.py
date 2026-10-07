@@ -75,7 +75,7 @@ def test_add_photos_stores_cropped_square_master(monkeypatch, tmp_path):
     uploaded = []
     monkeypatch.setattr(pm.r2_storage, "is_enabled", lambda: True)
     monkeypatch.setattr(pm.r2_storage, "upload_file", lambda path, key, **k: uploaded.append(key))
-    monkeypatch.setattr(pm, "_invalidate_r2_index", lambda: None)
+    monkeypatch.setattr(pm, "_invalidate_r2_index", lambda *a, **k: None)
     src = tmp_path / "wide.jpg"
     _two_tone(2000, 1000).save(src, quality=95)
     plain = tmp_path / "plain.jpg"
@@ -130,7 +130,7 @@ def test_move_photo_to_other_product_takes_next_index_and_cleans_source(monkeypa
     monkeypatch.setattr(pm.r2_storage, "upload_file", lambda path, key, **k: ops.append(("up", key)))
     monkeypatch.setattr(pm.r2_storage, "object_exists", lambda key: True)
     monkeypatch.setattr(pm.r2_storage, "delete", lambda key: ops.append(("del", key)))
-    monkeypatch.setattr(pm, "_invalidate_r2_index", lambda: None)
+    monkeypatch.setattr(pm, "_invalidate_r2_index", lambda *a, **k: None)
     src = _real(tmp_path, "Ф1", 2, "blue")
     _real(tmp_path, "Ф2", 1)
 

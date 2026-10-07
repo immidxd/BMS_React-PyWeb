@@ -34,7 +34,7 @@ def mirror(tmp_path, monkeypatch):
     monkeypatch.setattr(pm.r2_storage, "upload_file", fake_upload)
     monkeypatch.setattr(pm.r2_storage, "object_exists", lambda key: True)
     monkeypatch.setattr(pm.r2_storage, "delete", lambda key: None)
-    monkeypatch.setattr(pm, "_invalidate_r2_index", lambda: None)
+    monkeypatch.setattr(pm, "_invalidate_r2_index", lambda *a, **k: None)
     return tmp_path / CAT, uploaded
 
 
