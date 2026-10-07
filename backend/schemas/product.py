@@ -615,6 +615,9 @@ class ProductFilter(BaseModel):
     # після пакетного дозаповнення їх сотні.
     only_with_proposals: Optional[bool] = None
     shipment_id: Optional[int] = None
+    # «Дії → Показати вибране»: рівно ці товари (id з буфера виділення).
+    # None = фільтра нема; [] = нічого не показувати (порожнє виділення).
+    ids: Optional[List[int]] = None
 
 # Модель для опцій фільтрів
 class FilterOptions(BaseModel):

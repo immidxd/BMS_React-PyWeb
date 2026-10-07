@@ -427,6 +427,12 @@ def _build_product_where(filters: Optional["schemas.ProductFilter"]) -> tuple:
             )
             params['conditionid'] = filters.conditionid
 
+        # «Показати вибране»: саме `is not None`, бо порожній список — це
+        # «нічого», а не «без фільтра».
+        if getattr(filters, "ids", None) is not None:
+            where_conditions.append("p.id = ANY(:ids)")
+            params['ids'] = list(filters.ids)
+
         if getattr(filters, "styleid", None) and not getattr(filters, "styleids", None):
             where_conditions.append("p.styleid = :styleid")
             params['styleid'] = filters.styleid

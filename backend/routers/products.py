@@ -30,6 +30,22 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+MAX_IDS_FILTER = 5000
+
+
+def _parse_id_list(raw: Optional[str]) -> Optional[List[int]]:
+    """'1,2,3' → [1, 2, 3]; None → None (фільтра нема); '' → [] (нічого)."""
+    if raw is None:
+        return None
+    parts = [x.strip() for x in raw.split(",") if x.strip()]
+    try:
+        out = [int(x) for x in parts]
+    except ValueError:
+        raise HTTPException(status_code=422, detail="ids: очікуються числа через кому")
+    if len(out) > MAX_IDS_FILTER:
+        raise HTTPException(status_code=422, detail=f"ids: не більше {MAX_IDS_FILTER}")
+    return out
+
 @router.get("/api/products", response_model=schemas.ProductListResponse)
 def get_products(
     page: int = Query(1, ge=1, description="Current page (starts from 1)"),
@@ -83,11 +99,14 @@ def get_products(
     only_with_proposals: Optional[bool] = Query(None,
         description="Лише товари з невирішеними пропозиціями автозаповнення"),
     shipment_id: Optional[int] = Query(None),
+    ids: Optional[str] = Query(None, description="«Показати вибране»: id через кому (1,2,3) — "
+        "один рядок замість ids=…&ids=…, щоб сотні id влазили в URL"),
     sort_by: str = Query("delivery_date", description="Sort mode: delivery_date(=за датою завозу, дефолт), delivery_date_asc, created_at(=найновіші в базі), created_at_asc, last_sold, price_desc, price_asc, id"),
     sort_dir: str = Query("desc", description="Sort direction: asc|desc"),
     db: Session = Depends(get_db)
 ):
     """Повертає список товарів з пагінацією та базовими фільтрами."""
+    id_list = _parse_id_list(ids)
     try:
         # Обчислюємо skip/limit
         if skip is None or limit is None:
@@ -143,6 +162,7 @@ def get_products(
             only_with_photo=only_with_photo,
             only_with_proposals=only_with_proposals,
             shipment_id=shipment_id,
+            ids=id_list,
         )
 
         result = product_service.get_products(

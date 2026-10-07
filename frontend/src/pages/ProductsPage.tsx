@@ -10,7 +10,7 @@ import { Button, Dropdown, Tooltip } from 'antd';
 import { toast } from 'react-toastify';
 import Pagination from '../components/common/Pagination';
 import AddProductModal from '../components/shipments/AddProductModal';
-import { PlusOutlined, SendOutlined, CheckSquareOutlined, DownOutlined, TagOutlined, ScanOutlined } from '@ant-design/icons';
+import { PlusOutlined, SendOutlined, CheckSquareOutlined, DownOutlined, TagOutlined, ScanOutlined, FilterOutlined, CloseOutlined } from '@ant-design/icons';
 import LabelPrintDialog from '../components/labels/LabelPrintDialog';
 import { labelQueue, useLabelQueueCount, type LabelSource } from '../services/labelService';
 import { warehouseService, type WhLocation } from '../services/warehouseService';
@@ -55,6 +55,9 @@ import * as autofillBatch from '../services/autofillBatch';
 interface ProductsPageProps {
   currentSearchTerm: string;
 }
+
+// «Показати вибране»: стеля, щоб рядок запиту з id не перерости ліміт сервера (~16 КБ).
+const SHOW_SELECTED_MAX = 1000;
 
 const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
   // Чи ця вкладка зараз на екрані. При keep-alive сторінка лишається змонтованою
@@ -161,6 +164,31 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selection.ids]);
   const [selectionMode, setSelectionMode] = useState<boolean>(false);
+  // «Дії → Показати вибране»: ЗНІМОК id на момент натискання (а не живе виділення),
+  // тож зняту галочку видно в таблиці — її можна поставити назад, рядок не зникає.
+  // Фільтри/пошук у цьому режимі не діють (показуємо все виділене), але й не
+  // скидаються: «До всіх товарів» повертає той самий список і ту саму сторінку.
+  const [showSelectedIds, setShowSelectedIds] = useState<number[] | null>(null);
+  const showSelectedRef = useRef<number[] | null>(null);
+  showSelectedRef.current = showSelectedIds;
+  const pageBeforeSelectedRef = useRef<number>(1);
+  const showSelectedOnly = () => {
+    const ids = selection.ids.slice();
+    if (!ids.length) return;
+    // id їдуть у рядку запиту; понад ~1000 він стає завеликим для сервера.
+    if (ids.length > SHOW_SELECTED_MAX) {
+      notify.warning({ message: `Показати можна до ${SHOW_SELECTED_MAX} вибраних`, description: `Зараз виділено ${ids.length}.`, duration: 5 });
+      return;
+    }
+    if (!showSelectedRef.current) pageBeforeSelectedRef.current = page;
+    setShowSelectedIds(ids);
+    setPage(1);
+  };
+  const exitShowSelected = (restorePage: boolean) => {
+    if (!showSelectedRef.current) return;
+    setShowSelectedIds(null);
+    if (restorePage) setPage(pageBeforeSelectedRef.current);
+  };
   const abortRef = useRef<AbortController | null>(null);
   const fetchIdRef = useRef(0);
   // Динамічні фасети (розміри + кольори), наявні в поточному відфільтрованому
@@ -198,6 +226,24 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
 
     setLoading(true);
     try {
+      if (showSelectedIds) {
+        // Рядком через кому (не ids=…&ids=…): так сотні id влазять в URL.
+        const res = await productService.getProducts({
+          page, per_page: perPage, sort_by: sortBy, sort_dir: sortDir, ids: showSelectedIds.join(','),
+        }, controller.signal);
+        if (myFetchId !== fetchIdRef.current) return;
+        // Старий бекенд (до перезапуску BMS) не знає `ids` і мовчки віддає ВСІ
+        // товари — не видаємо їх за «вибране».
+        const wanted = new Set(showSelectedIds);
+        if ((res.items || []).some((p: any) => !wanted.has(p.id))) {
+          notify.warning({ message: 'Показ вибраного ще недоступний', description: 'Перезапустіть BMS, щоб підхопити оновлення.', duration: 6 });
+          exitShowSelected(true);
+          return;
+        }
+        setProducts(res);
+        void warehouseService.locations((res.items || []).map((p: any) => p.id)).then(setBoxLocations);
+        return;
+      }
       const params: Record<string, any> = {
         page,
         per_page: perPage,
@@ -1092,7 +1138,19 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
     setPage(1);
   };
     
-    useEffect(() => { fetchProducts(); }, [page, perPage, currentSearchTerm, selectedFilters, onlyUnsold, onlyProblematic, onlyRostovka, onlyWithPhoto, onlyWithProposals, selectedShipmentId, visibleOnly, sortBy, sortDir]);
+    useEffect(() => { fetchProducts(); }, [page, perPage, currentSearchTerm, selectedFilters, onlyUnsold, onlyProblematic, onlyRostovka, onlyWithPhoto, onlyWithProposals, selectedShipmentId, visibleOnly, sortBy, sortDir, showSelectedIds]);
+
+    // «Показати вибране» закривається сам: коли виділення скинули (Esc, «Зняти
+    // виділення», після відправки) — повертаємо список і сторінку як були;
+    // коли змінили пошук чи фільтр — людина вже дивиться на інший список.
+    useEffect(() => {
+      if (selection.size === 0) exitShowSelected(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [selection.size]);
+    useEffect(() => {
+      exitShowSelected(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [currentSearchTerm, selectedFilters, onlyUnsold, onlyProblematic, onlyRostovka, onlyWithPhoto, onlyWithProposals, selectedShipmentId, visibleOnly]);
 
     // Динамічний фасет розмірів — оновлюємо при зміні будь-якого «звужуючого»
     // фільтра/пошуку (без page/sort: вони не впливають на наявні розміри).
@@ -1297,6 +1355,11 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
                 trigger={['click']}
                 menu={{
                   items: [
+                    ...(!showSelectedIds || selection.ids.some((id) => !showSelectedIds.includes(id))
+                      ? [{ key: 'show-selected', icon: <FilterOutlined />, label: `Показати вибране (${selection.size})` }]
+                      : []),
+                    ...(showSelectedIds ? [{ key: 'show-all', icon: <CloseOutlined />, label: 'Показати всі товари' }] : []),
+                    { type: 'divider' as const },
                     { key: 'prom', icon: <SendOutlined />, label: 'Відправити на PROM' },
                     { key: 'shafa', icon: <span className="inline-flex h-4 w-4 items-center justify-center rounded bg-black text-[9px] leading-none text-white font-black">S</span>, label: 'Відправити на Shafa' },
                     { key: 'olx', icon: <span className="inline-flex h-4 items-center justify-center rounded bg-[#002f34] px-1 text-[8px] leading-none text-[#a9e000] font-black">OLX</span>, label: 'Відправити на OLX' },
@@ -1324,7 +1387,9 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
                     { key: 'clear', label: 'Зняти виділення' },
                   ],
                   onClick: ({ key }) => {
-                    if (key === 'labels') setLabelSource({ product_ids: Array.from(selection.ids) });
+                    if (key === 'show-selected') showSelectedOnly();
+                    else if (key === 'show-all') exitShowSelected(true);
+                    else if (key === 'labels') setLabelSource({ product_ids: Array.from(selection.ids) });
                     else if (key === 'autofill') void runAutofillOnSelection();
                     else if (key === 'prom') sendSelectedToProm();
                     else if (key === 'shafa') void sendSelectedToShafa();
@@ -1341,6 +1406,17 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
               >
                 <Button>Дії ({selection.size}) <DownOutlined /></Button>
               </Dropdown>
+            )}
+            {showSelectedIds && (
+              <Button
+                type="primary"
+                ghost
+                icon={<CloseOutlined />}
+                onClick={() => exitShowSelected(true)}
+                title="Зараз у таблиці лише вибрані товари (фільтри не діють). Натисніть, щоб повернутись до всього списку — виділення лишиться"
+              >
+                Лише вибране ({showSelectedIds.length}) · до всіх
+              </Button>
             )}
             {/* Черга стікерів: кожен доданий товар потрапляє сюди сам (бекенд), друкується
                 пакетом на аркуш 100×100. Кнопка зʼявляється лише коли є що друкувати. */}
