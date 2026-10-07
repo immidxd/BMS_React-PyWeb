@@ -1,6 +1,7 @@
 from typing import List, Optional, Dict, Any, Tuple
 from fastapi import APIRouter, Depends, HTTPException, Query, Body, Path, status, UploadFile, File, Form
 from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 import logging
@@ -382,16 +383,25 @@ def get_product_images(
     }
 
 
-def _build_photos_zip(product_id: int, kind: str, db: Session):
+def _photo_export():
+    try:
+        from services import photo_export
+    except ImportError:
+        from backend.services import photo_export
+    return photo_export
+
+
+def _build_photos_zip(product_id: int, kind: str, db: Session, fmt: str = "png"):
     """(байти zip, ім'я архіву, скільки фото запаковано) — спільне для двох шляхів:
-    віддачі архіву потоком у браузер і запису на диск у десктоп-режимі."""
+    віддачі архіву потоком у браузер і запису на диск у десктоп-режимі.
+    fmt='png' (типово) — фото конвертуються в PNG; 'original' — як лежать (WebP)."""
     import io
-    import zipfile
 
     try:
         from services.product_images import read_image_bytes
     except ImportError:
         from backend.services.product_images import read_image_bytes
+    pe = _photo_export()
 
     productnumber, _borrowed, images = _product_gallery(product_id, db)
     if kind != "all":
@@ -400,28 +410,17 @@ def _build_photos_zip(product_id: int, kind: str, db: Session):
         raise HTTPException(status_code=404, detail="У товару немає фото для завантаження")
 
     buf = io.BytesIO()
-    used: set = set()
-    packed = 0
-    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=1) as zf:
-        for img in images:
-            data = read_image_bytes(img)
-            if data is None:
-                logger.warning(f"Skipping unreadable photo in zip: {img.filename}")
-                continue
-            name = img.filename
-            # Колізія імен (напр. власне фото і фото донора) — додаємо суфікс.
-            if name.lower() in used:
-                stem, ext = os.path.splitext(name)
-                name = f"{stem}_{img.index}{ext}"
-            used.add(name.lower())
-            zf.writestr(name, data)
-            packed += 1
+    items = [(pe.export_name(img.filename, fmt), img) for img in images]
+    packed, failed = pe.write_zip(buf, items, read_image_bytes, fmt)
+    for name in failed:
+        logger.warning(f"Skipping unreadable photo in zip: {name}")
 
     if packed == 0:
         raise HTTPException(status_code=404, detail="Фото недоступні (файли не читаються)")
 
     stem = (productnumber or f"product-{product_id}").lstrip("#").strip() or f"product-{product_id}"
-    return buf.getvalue(), f"{stem}_фото.zip", packed
+    suffix = {"official": "_офіційні", "real": "_реальні", "defect": "_дефекти"}.get(kind, "")
+    return buf.getvalue(), f"{stem}_фото{suffix}.zip", packed
 
 
 @router.get("/api/products/{product_id}/photos/download")
@@ -429,6 +428,7 @@ def download_product_photos(
     product_id: int = Path(..., ge=1, description="ID товару"),
     kind: str = Query("all", regex="^(all|official|real|defect)$",
                       description="що класти в архів: all (за замовчуванням) або один набір"),
+    fmt: str = Query("png", alias="format", regex="^(png|original)$", description="png (типово) або original (WebP як є)"),
     db: Session = Depends(get_db),
 ):
     """Пакетне викачування: усі фото товару одним .zip (у теку завантажень браузера).
@@ -442,7 +442,7 @@ def download_product_photos(
     import io
     from urllib.parse import quote as _urlquote
 
-    data, zip_name, packed = _build_photos_zip(product_id, kind, db)
+    data, zip_name, packed = _build_photos_zip(product_id, kind, db, fmt)
     # ASCII-фолбек + RFC 5987 для кирилиці в імені файлу.
     ascii_name = re.sub(r"[^A-Za-z0-9._-]", "_", zip_name) or "photos.zip"
     return StreamingResponse(
@@ -477,9 +477,10 @@ def _saver():
 def save_product_photo_to_disk(
     product_id: int = Path(..., ge=1, description="ID товару"),
     filename: str = Query(..., description="ім'я фото з галереї картки"),
+    fmt: str = Query("png", alias="format", regex="^(png|original)$", description="png (типово) або original (WebP як є)"),
     db: Session = Depends(get_db),
 ):
-    """Зберегти ОДНЕ фото товару в теку «Завантаження». Повертає шлях."""
+    """Зберегти ОДНЕ фото товару в теку «Завантаження» (типово — PNG). Повертає шлях."""
     try:
         from services.product_images import read_image_bytes
     except ImportError:
@@ -494,9 +495,11 @@ def save_product_photo_to_disk(
     data = read_image_bytes(img)
     if data is None:
         raise HTTPException(status_code=404, detail=f"Файл {filename} не читається")
+    pe = _photo_export()
+    data = pe.export_bytes(data, fmt)
 
     try:
-        path, saved_name = _saver()(data, img.filename, fallback_name="photo.webp")
+        path, saved_name = _saver()(data, pe.export_name(img.filename, fmt), fallback_name="photo.png")
     except OSError as e:
         raise HTTPException(status_code=500, detail=f"Не вдалося зберегти файл: {e}")
     return {"saved": True, "path": path, "filename": saved_name, "bytes": len(data)}
@@ -506,15 +509,141 @@ def save_product_photo_to_disk(
 def save_product_photos_zip_to_disk(
     product_id: int = Path(..., ge=1, description="ID товару"),
     kind: str = Query("all", regex="^(all|official|real|defect)$"),
+    fmt: str = Query("png", alias="format", regex="^(png|original)$", description="png (типово) або original (WebP як є)"),
     db: Session = Depends(get_db),
 ):
     """Зберегти ВСІ фото товару одним .zip у теку «Завантаження». Повертає шлях."""
-    data, zip_name, packed = _build_photos_zip(product_id, kind, db)
+    data, zip_name, packed = _build_photos_zip(product_id, kind, db, fmt)
     try:
         path, saved_name = _saver()(data, zip_name, fallback_name="photos.zip")
     except OSError as e:
         raise HTTPException(status_code=500, detail=f"Не вдалося зберегти архів: {e}")
     return {"saved": True, "path": path, "filename": saved_name, "count": packed, "bytes": len(data)}
+
+
+@router.get("/api/products/{product_id}/photos/export-one")
+def export_product_photo(
+    product_id: int = Path(..., ge=1, description="ID товару"),
+    filename: str = Query(..., description="ім'я фото з галереї картки"),
+    fmt: str = Query("png", alias="format", regex="^(png|original)$"),
+    db: Session = Depends(get_db),
+):
+    """Одне фото файлом (типово PNG) — браузерний шлях; у десктопі — save-one."""
+    from urllib.parse import quote as _urlquote
+    from fastapi.responses import Response as _Response
+    try:
+        from services.product_images import read_image_bytes
+    except ImportError:
+        from backend.services.product_images import read_image_bytes
+
+    _pnum, _borrowed, images = _product_gallery(product_id, db)
+    img = next((i for i in images if i.filename == filename), None)
+    if img is None:
+        raise HTTPException(status_code=404, detail=f"Фото {filename} не знайдено в картці товару")
+    data = read_image_bytes(img)
+    if data is None:
+        raise HTTPException(status_code=404, detail=f"Файл {filename} не читається")
+    pe = _photo_export()
+    name = pe.export_name(img.filename, fmt)
+    ascii_name = re.sub(r"[^A-Za-z0-9._-]", "_", name) or "photo.png"
+    return _Response(
+        content=pe.export_bytes(data, fmt),
+        media_type="image/png" if fmt == "png" else "image/webp",
+        headers={"Content-Disposition": (
+            f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{_urlquote(name)}")},
+    )
+
+
+class PhotoBatchRequest(BaseModel):
+    product_ids: List[int] = Field(..., min_length=1, max_length=500)
+    kind: str = Field("all", pattern="^(all|official|real)$")
+    format: str = Field("png", pattern="^(png|original)$")
+    # True — записати в «Завантаження» (десктоп-вебв'ю не вміє зберігати
+    # відповідь як файл); False — віддати архів у відповіді (браузер).
+    save: bool = False
+
+
+BATCH_MAX_PHOTOS = 3000
+
+
+@router.post("/api/product-photos/zip")
+def photos_batch_zip(req: PhotoBatchRequest, db: Session = Depends(get_db)):
+    """«Дії → Завантажити фото»: фото кількох товарів одним архівом.
+
+    Усередині — тека на товар (`Ф4509/Ф4509_001.png`), порядок як у галереї.
+    kind: official / real / all (= офіційні + реальні). Приховані й дефекти не
+    йдуть (див. photo_export.pick). Архів пишеться у файл, не в пам'ять.
+    """
+    import tempfile
+    from datetime import datetime as _dt
+    from urllib.parse import quote as _urlquote
+    from fastapi.responses import FileResponse
+    from starlette.background import BackgroundTask
+    try:
+        from services.product_images import read_image_bytes
+        from services import file_saver
+    except ImportError:
+        from backend.services.product_images import read_image_bytes
+        from backend.services import file_saver
+    pe = _photo_export()
+
+    items, with_photos, without = [], 0, []
+    for pid in dict.fromkeys(req.product_ids):
+        try:
+            pnum, _borrowed, images = _product_gallery(pid, db)
+        except HTTPException:
+            without.append(f"id {pid}")
+            continue
+        chosen = pe.pick(images, req.kind)
+        if not chosen:
+            without.append(pnum or f"id {pid}")
+            continue
+        folder = pe.folder_name(pnum, pid)
+        items.extend((f"{folder}/{pe.export_name(img.filename, req.format)}", img) for img in chosen)
+        with_photos += 1
+    label = {"official": "офіційні", "real": "реальні", "all": "усі"}[req.kind]
+    if not items:
+        raise HTTPException(status_code=404, detail=f"У вибраних товарів немає фото («{label}»)")
+    if len(items) > BATCH_MAX_PHOTOS:
+        raise HTTPException(status_code=422, detail=(
+            f"Забагато фото для одного архіву ({len(items)} > {BATCH_MAX_PHOTOS}) — виділіть менше товарів"))
+
+    zip_name = f"BMS_фото_{label}_{with_photos}_тов_{_dt.now():%Y-%m-%d_%H%M}.zip"
+    meta = {"count": 0, "products": with_photos, "without_photos": without}
+
+    if req.save:
+        final = file_saver.reserve_path(zip_name, "photos.zip")
+        part = final.with_name(final.name + ".part")
+        try:
+            with open(part, "wb") as fh:
+                packed, failed = pe.write_zip(fh, items, read_image_bytes, req.format)
+            if packed == 0:
+                raise HTTPException(status_code=404, detail="Фото недоступні (файли не читаються)")
+            os.replace(part, final)
+        finally:
+            if part.exists():
+                part.unlink()
+        logger.info(f"[photos-batch] {packed} фото з {with_photos} товарів → {final}")
+        return {**meta, "saved": True, "path": str(final), "filename": final.name,
+                "count": packed, "failed": failed}
+
+    fd, tmp = tempfile.mkstemp(suffix=".zip", prefix="bms_photos_")
+    with os.fdopen(fd, "wb") as fh:
+        packed, failed = pe.write_zip(fh, items, read_image_bytes, req.format)
+    if packed == 0:
+        os.unlink(tmp)
+        raise HTTPException(status_code=404, detail="Фото недоступні (файли не читаються)")
+    ascii_name = re.sub(r"[^A-Za-z0-9._-]", "_", zip_name) or "photos.zip"
+    return FileResponse(
+        tmp, media_type="application/zip",
+        background=BackgroundTask(os.unlink, tmp),
+        headers={
+            "Content-Disposition": f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{_urlquote(zip_name)}",
+            "X-Photo-Count": str(packed),
+            "X-Product-Count": str(with_photos),
+            "X-Without-Photos": str(len(without)),
+        },
+    )
 
 
 def _pnum_and_category(product_id: int, db: Session):

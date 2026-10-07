@@ -78,10 +78,19 @@ export async function saveProductPhoto(
     );
     return { path: d.path ?? null, filename: d.filename || filename };
   }
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  saveBlob(await res.blob(), filename);
-  return { path: null, filename };
+  // Браузер: бекенд віддає вже PNG (майстри лежать у WebP — назовні незручно).
+  void url;
+  const res = await fetch(
+    `/api/products/${productId}/photos/export-one?filename=${encodeURIComponent(filename)}`,
+  );
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err?.detail || `HTTP ${res.status}`);
+  }
+  const name = filenameFromDisposition(res.headers.get('content-disposition'))
+    || filename.replace(/\.[^.]+$/, '.png');
+  saveBlob(await res.blob(), name);
+  return { path: null, filename: name };
 }
 
 /** Зберегти ВСІ фото товару одним .zip. */
@@ -102,6 +111,45 @@ export async function saveProductPhotosZip(
   const count = Number(res.headers.get('x-photo-count')) || 0;
   saveBlob(await res.blob(), name);
   return { path: null, filename: name, count };
+}
+
+/** Тека зі шляху збереження — у сповіщенні корисніший каталог, ніж повний шлях. */
+export function folderOf(fullPath: string): string {
+  const parts = fullPath.split(/[\\/]/);
+  parts.pop();
+  const dir = parts.join('/');
+  // Скорочуємо домашню теку до ~, щоб рядок не переповнював сповіщення.
+  return dir.replace(/^\/Users\/[^/]+/, '~').replace(/^C:\\Users\\[^\\]+/i, '~');
+}
+
+/**
+ * «Дії → Завантажити фото»: фото кількох товарів одним архівом (PNG, тека на
+ * товар). kind: official / real / all (= офіційні + реальні; без схованих і
+ * дефектів). У десктопі архів пише бекенд у «Завантаження».
+ */
+export async function saveProductsPhotosZip(
+  productIds: number[], kind: 'all' | 'official' | 'real',
+): Promise<SavedFile & { count: number; products: number; withoutPhotos: number }> {
+  const desktop = await isDesktopShell();
+  const res = await fetch('/api/product-photos/zip', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ product_ids: productIds, kind, format: 'png', save: desktop }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err?.detail || `HTTP ${res.status}`);
+  }
+  if (desktop) {
+    const d = await res.json();
+    return { path: d.path ?? null, filename: d.filename, count: d.count ?? 0,
+      products: d.products ?? 0, withoutPhotos: (d.without_photos || []).length };
+  }
+  const name = filenameFromDisposition(res.headers.get('content-disposition')) || 'BMS_photos.zip';
+  saveBlob(await res.blob(), name);
+  return { path: null, filename: name, count: Number(res.headers.get('x-photo-count')) || 0,
+    products: Number(res.headers.get('x-product-count')) || 0,
+    withoutPhotos: Number(res.headers.get('x-without-photos')) || 0 };
 }
 
 /**

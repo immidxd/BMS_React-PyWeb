@@ -10,7 +10,8 @@ import { Button, Dropdown, Tooltip } from 'antd';
 import { toast } from 'react-toastify';
 import Pagination from '../components/common/Pagination';
 import AddProductModal from '../components/shipments/AddProductModal';
-import { PlusOutlined, SendOutlined, CheckSquareOutlined, DownOutlined, TagOutlined, ScanOutlined, FilterOutlined, CloseOutlined, FolderAddOutlined, FolderOutlined } from '@ant-design/icons';
+import { PlusOutlined, SendOutlined, CheckSquareOutlined, DownOutlined, TagOutlined, ScanOutlined, FilterOutlined, CloseOutlined, FolderAddOutlined, FolderOutlined, DownloadOutlined } from '@ant-design/icons';
+import { folderOf, saveProductsPhotosZip } from '../services/imageTransfer';
 import { ProductFoldersButton, NewFolderModal } from '../components/products/ProductFoldersButton';
 import { productFolderService, useProductFolders } from '../services/productFolderService';
 import LabelPrintDialog from '../components/labels/LabelPrintDialog';
@@ -209,6 +210,25 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
       if (folderId === id) void fetchProducts();
     } catch (e: any) {
       notify.error({ message: `Не вдалося додати в «${name}»`, description: e.message });
+    }
+  };
+  // «Дії → Завантажити фото»: один архів PNG, тека на товар. Довге (фото з R2) —
+  // тому через taskManager: видно в Центрі сповіщень, сторінкою можна працювати.
+  const downloadSelectedPhotos = async (kind: 'all' | 'official' | 'real') => {
+    const ids = selection.ids.slice();
+    if (!ids.length) return;
+    const label = { all: 'усі', official: 'офіційні', real: 'реальні' }[kind];
+    try {
+      const r = await taskManager.run(`Фото (${label}) з ${ids.length} товарів → архів`,
+        () => saveProductsPhotosZip(ids, kind), { silentSuccess: true });
+      notify.success({
+        message: `✓ Архів збережено: ${r.count} фото з ${r.products} товарів (PNG)`,
+        description: [r.path ? `${r.filename} → ${folderOf(r.path)}` : `${r.filename} — у теці завантажень`,
+          r.withoutPhotos ? `без фото «${label}»: ${r.withoutPhotos}` : ''].filter(Boolean).join(' · '),
+        duration: 8,
+      });
+    } catch (e: any) {
+      notify.error({ message: 'Не вдалося зберегти фото', description: e?.message || String(e), duration: 8 });
     }
   };
   const removeSelectedFromFolder = async () => {
@@ -1437,13 +1457,24 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
                       },
                     ] : []),
                     { type: 'divider' as const },
+                    {
+                      key: 'photos',
+                      icon: <DownloadOutlined />,
+                      label: `Завантажити фото (${selection.size})`,
+                      children: [
+                        { key: 'photos:real', label: 'Реальні' },
+                        { key: 'photos:official', label: 'Офіційні' },
+                        { key: 'photos:all', label: 'Усі (офіційні + реальні)' },
+                      ],
+                    },
                     { key: 'labels', icon: <TagOutlined />, label: `Стікери з QR (${selection.size})…` },
                     { key: 'autofill', icon: <ScanOutlined />, label: `Розпізнати ШІ (${selection.size})` },
                     { type: 'divider' as const },
                     { key: 'clear', label: 'Зняти виділення' },
                   ],
                   onClick: ({ key }) => {
-                    if (key === 'folder:new') setNewFolderOpen(true);
+                    if (key.startsWith('photos:')) void downloadSelectedPhotos(key.slice(7) as 'all' | 'official' | 'real');
+                    else if (key === 'folder:new') setNewFolderOpen(true);
                     else if (key.startsWith('folder:')) void addSelectedToFolder(Number(key.slice(7)));
                     else if (key === 'folder-remove') void removeSelectedFromFolder();
                     else if (key === 'show-selected') showSelectedOnly();

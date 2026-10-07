@@ -1,9 +1,9 @@
 import React, { useEffect, useState, useMemo, useRef } from 'react';
 import { productService, type JournalSyncState } from '../../services/productService';
 import type { Product, ProductFilters } from '../../types/product';
-import { Tag, Image, Tooltip } from 'antd';
+import { Tag, Image, Tooltip, Dropdown } from 'antd';
 import { CloseOutlined, PictureOutlined, LeftOutlined, RightOutlined, WarningOutlined, EditOutlined, CheckOutlined, PlusOutlined, SyncOutlined, EyeOutlined, EyeInvisibleOutlined, StarFilled, ShoppingOutlined, TableOutlined, InboxOutlined, TagOutlined, QrcodeOutlined, DownloadOutlined, CopyOutlined, LoadingOutlined, RotateLeftOutlined, RotateRightOutlined, SwapOutlined } from '@ant-design/icons';
-import { copyImageToClipboard, saveProductPhoto, saveProductPhotosZip } from '../../services/imageTransfer';
+import { copyImageToClipboard, folderOf, saveProductPhoto, saveProductPhotosZip } from '../../services/imageTransfer';
 import { CopyOnClick, formatBrandName, getProductDisplayStatus, getProductStock, getConditionColor, effectiveProductNumber, visibleGalleryPhotos } from '../common/displayHelpers';
 import { hiddenFieldsForType, clothingMeasurementsForType } from './productCategory';
 import AiLimitsBadge, { emitAiLimitsChanged } from './AiLimitsBadge';
@@ -50,15 +50,6 @@ interface Props {
 
 type GalleryKind = 'official' | 'real' | 'defect';
 type PhotoTransform = 'rotate_left' | 'rotate_180' | 'rotate_right' | 'flip_horizontal';
-
-/** Тека зі шляху збереження — у сповіщенні корисніший каталог, ніж повний шлях. */
-function folderOf(fullPath: string): string {
-  const parts = fullPath.split(/[\\/]/);
-  parts.pop();
-  const dir = parts.join('/');
-  // Скорочуємо домашню теку до ~, щоб рядок не переповнював сповіщення.
-  return dir.replace(/^\/Users\/[^/]+/, '~').replace(/^C:\\Users\\[^\\]+/i, '~');
-}
 
 interface GalleryImage {
   filename: string;
@@ -2055,14 +2046,14 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     }
   }, []);
 
-  // Пакетно: усі фото товару одним .zip у теку завантажень.
-  const handleDownloadAllPhotos = React.useCallback(async () => {
+  // Пакетно: фото товару одним .zip (PNG) у теку завантажень — усі або один набір.
+  const handleDownloadAllPhotos = React.useCallback(async (kind: 'all' | 'official' | 'real' | 'defect' = 'all') => {
     if (!productId || zipBusy) return;
     setZipBusy(true);
     try {
-      const saved = await saveProductPhotosZip(productId, 'all');
+      const saved = await saveProductPhotosZip(productId, kind);
       notify.success({
-        message: `✓ Збережено архів (${saved.count} фото)`,
+        message: `✓ Збережено архів (${saved.count} фото, PNG)`,
         description: saved.path
           ? `${saved.filename} → ${folderOf(saved.path)}`
           : `${saved.filename} — у теці завантажень`,
@@ -3701,14 +3692,27 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                         ) : <span />}
 
                         {allImages.length > 0 && (
-                          <button type="button"
-                            onClick={handleDownloadAllPhotos}
+                          <Dropdown
+                            trigger={['click']}
                             disabled={zipBusy}
-                            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-100 dark:hover:bg-gray-800/60 transition-all duration-200 disabled:opacity-60"
-                            title={`Завантажити всі фото товару (${allImages.length}) одним архівом`}>
-                            {zipBusy ? <LoadingOutlined style={{ fontSize: 12 }} /> : <DownloadOutlined style={{ fontSize: 12 }} />}
-                            <span>{zipBusy ? 'Пакування…' : `Всі фото (${allImages.length})`}</span>
-                          </button>
+                            menu={{
+                              items: [
+                                { key: 'all', label: `Усі фото (${allImages.length})` },
+                                ...(officialCount > 0 ? [{ key: 'official', label: `Офіційні (${officialCount})` }] : []),
+                                ...(realCount > 0 ? [{ key: 'real', label: `Реальні (${realCount})` }] : []),
+                                ...(defectCount > 0 ? [{ key: 'defect', label: `Дефекти (${defectCount})` }] : []),
+                              ],
+                              onClick: ({ key }) => { void handleDownloadAllPhotos(key as 'all' | 'official' | 'real' | 'defect'); },
+                            }}
+                          >
+                            <button type="button"
+                              disabled={zipBusy}
+                              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-100 dark:hover:bg-gray-800/60 transition-all duration-200 disabled:opacity-60"
+                              title="Завантажити фото товару одним архівом (PNG) — усі або один набір">
+                              {zipBusy ? <LoadingOutlined style={{ fontSize: 12 }} /> : <DownloadOutlined style={{ fontSize: 12 }} />}
+                              <span>{zipBusy ? 'Пакування…' : 'Завантажити'}</span>
+                            </button>
+                          </Dropdown>
                         )}
                       </div>
                     )}

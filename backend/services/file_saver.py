@@ -86,6 +86,12 @@ def _unique_path(directory: Path, filename: str) -> Path:
     return target
 
 
+def reserve_path(filename: str, fallback_name: str = "file") -> Path:
+    """Вільний шлях у «Завантаженнях» для файлу, який пишуть потоком (великий
+    архів): писати в `<шлях>.part` і в кінці `os.replace` — як save_bytes."""
+    return _unique_path(downloads_dir(), safe_filename(filename, fallback_name))
+
+
 def save_bytes(data: bytes, filename: str, fallback_name: str = "file") -> Tuple[str, str]:
     """Записати байти у «Завантаження». Повертає (повний шлях, підсумкове ім'я)."""
     directory = downloads_dir()
