@@ -185,6 +185,29 @@ def _sync_one(category: str, path: Path):
         _invalidate_r2_index()
 
 
+_UPLOAD_WORKERS = 4
+
+
+def _upload_many(category: str, paths: List[Path]) -> None:
+    """Залити кілька файлів у R2 паралельно (boto3-клієнт потокобезпечний).
+
+    Чекає ВСІ заливки й лише тоді кидає першу помилку — як і послідовний
+    `_sync_one`, виклик не повертається, доки R2 не має того, що й диск.
+    """
+    if not paths or not r2_storage.is_enabled():
+        return
+    if len(paths) == 1:
+        _sync_one(category, paths[0])
+        return
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=min(_UPLOAD_WORKERS, len(paths))) as pool:
+        futures = [pool.submit(r2_storage.upload_file, str(p), _r2_key(category, p.name)) for p in paths]
+        errors = [f.exception() for f in futures if f.exception() is not None]
+    _invalidate_r2_index()
+    if errors:
+        raise errors[0]
+
+
 def _commit_replacement(category: str, dest: Path, staged: Path) -> None:
     """Коміт готової заміни в R2 + локальний мірор без проміжного битого файла.
 
@@ -420,12 +443,18 @@ def reorder_photos(pnum: str, category: str, ordered_filenames: List[str], kind:
         tmp = cat_dir / f"__tmp_{uuid.uuid4().hex}.webp"
         (cat_dir / old_name).rename(tmp)
         tmp_map.append((tmp, target))
-    # Фаза 2: тимчасові → фінальні + залив усіх фінальних у R2
+    # Фаза 2: тимчасові → фінальні + залив у R2 ЛИШЕ тих, що змінили місце.
+    # Фото, що лишилось на своїй позиції (старе ім'я == нове), має в R2 той самий
+    # ключ із тим самим вмістом — переливати його марно (саме це робило кожне
+    # перетягування довгим: N заливок замість 2). Змінені — паралельно.
     result = []
-    for tmp, target in tmp_map:
+    changed: List[Path] = []
+    for (tmp, target), old_name in zip(tmp_map, ordered):
         tmp.rename(cat_dir / target)
         result.append(target)
-        _sync_one(category, cat_dir / target)
+        if old_name != target:
+            changed.append(cat_dir / target)
+    _upload_many(category, changed)
     # Прибрати з R2 лише СПРАВЖНІХ сиріт (старі імена, яких нема серед нових —
     # напр. коли закрили прогалину _01,_03 → _01,_02). У чистій перестановці
     # old==new, тож нічого не видаляється (інакше затерли б щойно залите).

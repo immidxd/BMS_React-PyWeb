@@ -1934,14 +1934,75 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     finally { setPhotoBusy(false); }
   }, [productId, loadImages, applyConditionAuto]);
 
+  // Перестановка фото — у ФОНІ, без блокування. Сервер перейменовує файли й
+  // переливає змінені в R2 (секунди), а людина за цей час уже тягне наступне.
+  // Тому: порядок у картці міняємо одразу (і в менеджері, і в галереї), а на
+  // сервер шлемо чергою — лише ОСТАННІЙ бажаний порядок, по одному запиту.
+  // Після кожного запиту файли мають нові імена (_01.._0N за позицією), тож
+  // `rename` перекладає імена, які бачить UI (з останнього завантаження), на
+  // поточні серверні. Галерею перечитуємо, коли черга спорожніла.
+  const [reorderSaving, setReorderSaving] = useState(false);
+  // Решта дій з фото (поворот, видалення, перенос) працює за іменами файлів, а
+  // вони міняються з кожним збереженим порядком — тож чекають черги. Тягати —
+  // можна (draggable дивиться лише на photoBusy).
+  const photoLocked = photoBusy || reorderSaving;
+  const reorderQ = React.useRef<{
+    running: boolean;
+    pending: { pid: number; kind: 'official' | 'real' | 'defect'; order: string[] } | null;
+    rename: Map<string, string>;
+  }>({ running: false, pending: null, rename: new Map() });
+
   const handleReorderPhotos = React.useCallback(async (order: string[]) => {
     if (!productId || order.length === 0) return;
-    setPhotoBusy(true);
+    const kind = activeKind;
+    // Головне фото й стрічка в картці — одразу в новому порядку.
+    setGallery((g) => {
+      if (g.pid !== productId) return g;
+      const pos = new Map(order.map((fn, i) => [fn, i]));
+      const ofKind = g.images.filter((i) => (i.kind ?? 'official') === kind && pos.has(i.filename))
+        .sort((a, b) => (pos.get(a.filename)! - pos.get(b.filename)!));
+      let k = 0;
+      return { ...g, images: g.images.map((i) => ((i.kind ?? 'official') === kind && pos.has(i.filename) ? ofKind[k++] : i)) };
+    });
+    const q = reorderQ.current;
+    q.pending = { pid: productId, kind, order };
+    if (q.running) return;
+    q.running = true;
+    setReorderSaving(true);
+    let failed = false;
+    let lastPid = productId;
     try {
-      await productService.reorderProductPhotos(productId, order, activeKind);
-      await loadImages(true);  // тихо — порядок уже правильний візуально
-    } catch (e) { console.error('reorder photos failed', e); }
-    finally { setPhotoBusy(false); }
+      while (q.pending) {
+        const job = q.pending;
+        q.pending = null;
+        lastPid = job.pid;
+        const toServer = job.order.map((fn) => q.rename.get(fn) ?? fn);
+        try {
+          const r = await productService.reorderProductPhotos(job.pid, toServer, job.kind);
+          const step = new Map(toServer.map((fn, i) => [fn, r.order[i] ?? fn]));
+          job.order.forEach((ui) => {
+            const cur = q.rename.get(ui) ?? ui;
+            q.rename.set(ui, step.get(cur) ?? cur);
+          });
+        } catch (e: any) {
+          failed = true;
+          q.pending = null;
+          console.error('reorder photos failed', e);
+          notify.error({
+            message: 'Порядок фото не збережено',
+            description: e?.response?.data?.detail || e?.message || String(e),
+            duration: 8,
+          });
+        }
+      }
+    } finally {
+      q.rename = new Map();
+      q.running = false;
+      setReorderSaving(false);
+      // Серверна правда: нові імена й версії; при збої — повертаємо як є насправді.
+      if (curPidRef.current === lastPid) await loadImages(true);
+      if (!failed) emitProductPhotosChanged(lastPid);
+    }
   }, [productId, loadImages, activeKind]);
 
   // ── Викачати / скопіювати фото ──────────────────────────────────────────────
@@ -3545,32 +3606,32 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                               title="Зміни зберігаються в BMS і Cloudflare"
                               onClick={(e) => e.stopPropagation()}
                             >
-                              <button type="button" disabled={photoBusy}
+                              <button type="button" disabled={photoLocked}
                                 onClick={(e) => { e.stopPropagation(); handleTransformPhoto(activeImage, 'rotate_left'); }}
                                 className="w-8 h-8 inline-flex items-center justify-center rounded-full hover:bg-white/20 active:scale-95 transition disabled:opacity-45"
                                 title="Повернути вліво та зберегти" aria-label="Повернути фото вліво">
                                 <RotateLeftOutlined style={{ fontSize: 15 }} />
                               </button>
-                              <button type="button" disabled={photoBusy}
+                              <button type="button" disabled={photoLocked}
                                 onClick={(e) => { e.stopPropagation(); handleTransformPhoto(activeImage, 'rotate_180'); }}
                                 className="w-8 h-8 inline-flex items-center justify-center rounded-full text-[11px] font-semibold hover:bg-white/20 active:scale-95 transition disabled:opacity-45"
                                 title="Повернути на 180° та зберегти" aria-label="Повернути фото на 180 градусів">
                                 {photoBusy ? <LoadingOutlined /> : '180°'}
                               </button>
-                              <button type="button" disabled={photoBusy}
+                              <button type="button" disabled={photoLocked}
                                 onClick={(e) => { e.stopPropagation(); handleTransformPhoto(activeImage, 'rotate_right'); }}
                                 className="w-8 h-8 inline-flex items-center justify-center rounded-full hover:bg-white/20 active:scale-95 transition disabled:opacity-45"
                                 title="Повернути вправо та зберегти" aria-label="Повернути фото вправо">
                                 <RotateRightOutlined style={{ fontSize: 15 }} />
                               </button>
                               <span className="h-5 w-px bg-white/20 mx-0.5" aria-hidden="true" />
-                              <button type="button" disabled={photoBusy}
+                              <button type="button" disabled={photoLocked}
                                 onClick={(e) => { e.stopPropagation(); setCropExisting(activeImage); }}
                                 className="w-8 h-8 inline-flex items-center justify-center rounded-full hover:bg-white/20 active:scale-95 transition disabled:opacity-45"
                                 title="Кадрувати 1:1 та зберегти" aria-label="Кадрувати фото 1:1">
                                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M6 2v14a2 2 0 0 0 2 2h14" /><path d="M18 22V8a2 2 0 0 0-2-2H2" /></svg>
                               </button>
-                              <button type="button" disabled={photoBusy}
+                              <button type="button" disabled={photoLocked}
                                 onClick={(e) => { e.stopPropagation(); handleTransformPhoto(activeImage, 'flip_horizontal'); }}
                                 className="w-8 h-8 inline-flex items-center justify-center rounded-full hover:bg-white/20 active:scale-95 transition disabled:opacity-45"
                                 title="Віддзеркалити горизонтально та зберегти" aria-label="Віддзеркалити фото">
@@ -3708,23 +3769,23 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
 
                         <div className="flex items-center justify-between mb-2.5 gap-2">
                           <span className="text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500 font-medium whitespace-nowrap">
-                            Фото товару {photoBusy && <LoadingSpinner variant="inline" size="small" text={null} className="ml-1" />}
+                            Фото товару {photoLocked && <LoadingSpinner variant="inline" size="small" text={null} className="ml-1" />}
                           </span>
                           {/* Перемикач куди завантажувати/чим керувати: офіційні (_NN) vs реальні (_00N) */}
                           <div className="inline-flex rounded-md border border-gray-300 dark:border-gray-600 overflow-hidden text-[11px]">
-                            <button type="button" disabled={photoBusy}
+                            <button type="button" disabled={photoLocked}
                               onClick={() => setActiveKind('official')}
                               title="Студійні/каталожні фото (нумерація _01.._0N)"
                               className={`px-2 py-1 transition-colors ${activeKind === 'official' ? 'bg-gray-900 text-white' : 'bg-white dark:bg-gray-800 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700'}`}>
                               Офіційні
                             </button>
-                            <button type="button" disabled={photoBusy}
+                            <button type="button" disabled={photoLocked}
                               onClick={() => setActiveKind('real')}
                               title="Реальні/власні фото (нумерація _001.._00N)"
                               className={`px-2 py-1 transition-colors border-l border-gray-300 dark:border-gray-600 ${activeKind === 'real' ? 'bg-gray-900 text-white' : 'bg-white dark:bg-gray-800 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700'}`}>
                               Реальні
                             </button>
-                            <button type="button" disabled={photoBusy}
+                            <button type="button" disabled={photoLocked}
                               onClick={() => setActiveKind('defect')}
                               title="Фото дефектів (нумерація _def1.._defN)"
                               className={`px-2 py-1 transition-colors border-l border-gray-300 dark:border-gray-600 ${activeKind === 'defect' ? 'bg-amber-500 text-white' : 'bg-white dark:bg-gray-800 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700'}`}>
@@ -3732,7 +3793,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                             </button>
                           </div>
                           <div className="flex items-center gap-1.5">
-                            <button type="button" disabled={photoBusy || activeKind === 'defect'}
+                            <button type="button" disabled={photoLocked || activeKind === 'defect'}
                               onClick={() => setStagingOpen(true)}
                               title={activeKind === 'defect'
                                 ? 'З теки «до розбору» кладуться реальні або офіційні знімки — перемкни вкладку'
@@ -3740,7 +3801,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                               className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[12px] border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-50 transition-colors whitespace-nowrap">
                               <InboxOutlined style={{ fontSize: 11 }} /> З теки
                             </button>
-                            <button type="button" disabled={photoBusy}
+                            <button type="button" disabled={photoLocked}
                               onClick={() => addPhotoInputRef.current?.click()}
                               className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[12px] bg-gray-900 text-white hover:bg-black disabled:opacity-50 transition-colors whitespace-nowrap">
                               <PlusOutlined style={{ fontSize: 11 }} /> Додати
@@ -3769,7 +3830,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                                   { key: 'real' as const, label: 'Реальні' },
                                   { key: 'defect' as const, label: 'Дефекти' },
                                 ]).filter((k) => k.key !== activeKind).map((k) => (
-                                  <button key={k.key} type="button" disabled={photoBusy}
+                                  <button key={k.key} type="button" disabled={photoLocked}
                                     onClick={() => handleMoveSelectedPhotos(k.key)}
                                     className="px-2 py-1 rounded-md text-[11px] bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-600 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50 transition-colors whitespace-nowrap"
                                     title={`Перенести виділені фото в набір «${k.label}»`}>
@@ -3782,7 +3843,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                                   const allHidden = picked.length > 0 && picked.every(
                                     (fn) => allImages.find((im) => im.filename === fn)?.hidden);
                                   return (
-                                    <button type="button" disabled={photoBusy}
+                                    <button type="button" disabled={photoLocked}
                                       onClick={() => handleHideSelectedPhotos(!allHidden)}
                                       className="px-2 py-1 rounded-md text-[11px] bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-600 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50 transition-colors whitespace-nowrap"
                                       title={allHidden
@@ -3792,13 +3853,13 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                                     </button>
                                   );
                                 })()}
-                                <button type="button" disabled={photoBusy}
+                                <button type="button" disabled={photoLocked}
                                   onClick={() => { setRelinkTarget(''); setRelink({ files: mgrOrder.filter((fn) => selectedPhotos.has(fn)) }); }}
                                   className="px-2 py-1 rounded-md text-[11px] bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-600 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50 transition-colors whitespace-nowrap"
                                   title="Перевʼязати виділені фото до іншого товару">
                                   ↪ В інший товар
                                 </button>
-                                <button type="button" disabled={photoBusy}
+                                <button type="button" disabled={photoLocked}
                                   onClick={handleDeleteSelectedPhotos}
                                   className="px-2 py-1 rounded-md text-[11px] bg-red-600 hover:bg-red-700 !text-white disabled:opacity-50 transition-colors whitespace-nowrap"
                                   title="Видалити всі виділені фото">
@@ -3816,7 +3877,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                                 <span className="text-[12px] text-gray-700 dark:text-gray-200 whitespace-nowrap">
                                   ↪ {relink.files.length === 1 ? '1 фото' : `${relink.files.length} фото`} до товару
                                 </span>
-                                <input autoFocus value={relinkTarget} readOnly={photoBusy}
+                                <input autoFocus value={relinkTarget} readOnly={photoLocked}
                                   onChange={(e) => setRelinkTarget(e.target.value)}
                                   onKeyDown={(e) => {
                                     if (e.key === 'Enter') { e.preventDefault(); void handleRelinkPhotos(); }
@@ -3825,7 +3886,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                                   placeholder="Ф4400" autoCapitalize="none" autoCorrect="off" spellCheck={false}
                                   className="w-28 text-[12px] font-mono px-2 py-1 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-gray-400" />
                                 <span className="flex-1" />
-                                <button type="button" disabled={photoBusy || !relinkTarget.trim()} onClick={() => void handleRelinkPhotos()}
+                                <button type="button" disabled={photoLocked || !relinkTarget.trim()} onClick={() => void handleRelinkPhotos()}
                                   className="px-2.5 py-1 rounded-md text-[11px] bg-gray-900 text-white hover:bg-black disabled:opacity-40 transition-colors whitespace-nowrap">
                                   {photoBusy ? 'Переношу…' : 'Перенести'}
                                 </button>
@@ -3837,7 +3898,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                             )}
 
                             <div className="flex items-center gap-2 mb-1.5">
-                              <button type="button" disabled={photoBusy || mgrOrder.length === 0}
+                              <button type="button" disabled={photoLocked || mgrOrder.length === 0}
                                 onClick={selectedPhotos.size === mgrOrder.length ? clearPhotoSelection : selectAllPhotos}
                                 className="text-[11px] text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 underline-offset-2 hover:underline disabled:opacity-50">
                                 {selectedPhotos.size === mgrOrder.length ? 'Зняти виділення' : `Виділити всі (${mgrOrder.length})`}
@@ -3870,7 +3931,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                                   )}
                                   {/* Позначка виділення. Клікабельна сама по собі —
                                       щоб виділяти можна було й без клавіатури. */}
-                                  <button type="button" disabled={photoBusy}
+                                  <button type="button" disabled={photoLocked}
                                     onClick={(e) => {
                                       e.stopPropagation();
                                       // Клік по галочці = завжди перемикання цієї плитки,
@@ -3897,25 +3958,25 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                                   <div className={`absolute top-0.5 left-5 right-0.5 flex flex-wrap justify-end gap-0.5 transition-opacity ${
                                     selectedPhotos.size > 0 ? 'opacity-0 pointer-events-none' : 'opacity-0 group-hover/ph:opacity-100'
                                   }`}>
-                                    <button type="button" disabled={photoBusy}
+                                    <button type="button" disabled={photoLocked}
                                       onClick={() => setMoveMenuFor((cur) => (cur === img.filename ? null : img.filename))}
                                       className="w-5 h-5 inline-flex items-center justify-center rounded bg-white/90 dark:bg-gray-900/90 text-gray-700 dark:text-gray-200 hover:bg-white shadow text-[11px] leading-none"
                                       title="Перенести в інший набір (Офіційні / Реальні / Дефекти)">
                                       ⇄
                                     </button>
-                                    <button type="button" disabled={photoBusy}
+                                    <button type="button" disabled={photoLocked}
                                       onClick={() => { setMoveMenuFor(null); setRelinkTarget(''); setRelink({ files: [img.filename] }); }}
                                       className="w-5 h-5 inline-flex items-center justify-center rounded bg-white/90 dark:bg-gray-900/90 text-gray-700 dark:text-gray-200 hover:bg-white shadow text-[11px] leading-none"
                                       title="Перевʼязати до іншого товару">
                                       ↪
                                     </button>
-                                    <button type="button" disabled={photoBusy}
+                                    <button type="button" disabled={photoLocked}
                                       onClick={() => { replaceTargetRef.current = img.filename; replacePhotoInputRef.current?.click(); }}
                                       className="w-5 h-5 inline-flex items-center justify-center rounded bg-white/90 dark:bg-gray-900/90 text-gray-700 dark:text-gray-200 hover:bg-white shadow"
                                       title="Замінити цей файл">
                                       <SyncOutlined style={{ fontSize: 10 }} />
                                     </button>
-                                    <button type="button" disabled={photoBusy}
+                                    <button type="button" disabled={photoLocked}
                                       onClick={() => handleTogglePhotoHidden(img.filename, !img.hidden)}
                                       className="w-5 h-5 inline-flex items-center justify-center rounded bg-white/90 dark:bg-gray-900/90 text-gray-700 dark:text-gray-200 hover:bg-white shadow text-[10px] leading-none"
                                       title={img.hidden
@@ -3923,7 +3984,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                                         : 'Сховати від публіки — каталог, маркетплейси й пости цього фото не побачать'}>
                                       {img.hidden ? '👁' : '🚫'}
                                     </button>
-                                    <button type="button" disabled={photoBusy}
+                                    <button type="button" disabled={photoLocked}
                                       onClick={async () => { if ((await confirmDialog(`Видалити фото ${img.filename}?`))) handleDeletePhoto(img.filename); }}
                                       className="w-5 h-5 inline-flex items-center justify-center rounded bg-white/90 dark:bg-gray-900/90 text-red-600 hover:bg-white shadow"
                                       title="Видалити">
@@ -3938,7 +3999,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                                         { key: 'real' as const, label: 'Реальні' },
                                         { key: 'defect' as const, label: 'Дефекти' },
                                       ]).filter((k) => k.key !== activeKind).map((k) => (
-                                        <button key={k.key} type="button" disabled={photoBusy}
+                                        <button key={k.key} type="button" disabled={photoLocked}
                                           onClick={() => { setMoveMenuFor(null); handleMovePhotoKind(img.filename, k.key); }}
                                           className="px-2.5 py-1 text-[11px] text-left whitespace-nowrap text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700">
                                           → {k.label}
