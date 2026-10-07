@@ -10,7 +10,9 @@ import { Button, Dropdown, Tooltip } from 'antd';
 import { toast } from 'react-toastify';
 import Pagination from '../components/common/Pagination';
 import AddProductModal from '../components/shipments/AddProductModal';
-import { PlusOutlined, SendOutlined, CheckSquareOutlined, DownOutlined, TagOutlined, ScanOutlined, FilterOutlined, CloseOutlined } from '@ant-design/icons';
+import { PlusOutlined, SendOutlined, CheckSquareOutlined, DownOutlined, TagOutlined, ScanOutlined, FilterOutlined, CloseOutlined, FolderAddOutlined, FolderOutlined } from '@ant-design/icons';
+import { ProductFoldersButton, NewFolderModal } from '../components/products/ProductFoldersButton';
+import { productFolderService, useProductFolders } from '../services/productFolderService';
 import LabelPrintDialog from '../components/labels/LabelPrintDialog';
 import { labelQueue, useLabelQueueCount, type LabelSource } from '../services/labelService';
 import { warehouseService, type WhLocation } from '../services/warehouseService';
@@ -138,6 +140,11 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [profilePending, bulkBusy, loadProfilePending]);
   const [selectedShipmentId, setSelectedShipmentId] = useState<number | undefined>(undefined);
+  // Відкрита папка («📁 Папки») — ще один фільтр; решта фільтрів діє всередині неї.
+  const [folderId, setFolderId] = useState<number | undefined>(undefined);
+  const folders = useProductFolders();
+  const activeFolder = folders.find((f) => f.id === folderId);
+  const [newFolderOpen, setNewFolderOpen] = useState(false);
   const [visibleOnly, setVisibleOnly] = useState<boolean>(false);
   const [sortBy, setSortBy] = useState<string>('delivery_date');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
@@ -188,6 +195,33 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
     if (!showSelectedRef.current) return;
     setShowSelectedIds(null);
     if (restorePage) setPage(pageBeforeSelectedRef.current);
+  };
+  // «Дії → У папку»: виділення лишається — той самий набір можна покласти ще
+  // в одну папку. Повторне додавання не дублює (бекенд рахує «вже були»).
+  const addSelectedToFolder = async (id: number, knownName?: string) => {
+    const ids = selection.ids.slice();
+    if (!ids.length) return;
+    const name = knownName || folders.find((f) => f.id === id)?.name || 'папку';
+    try {
+      const r = await productFolderService.addItems(id, ids);
+      const extra = [r.already ? `уже були: ${r.already}` : '', r.missing ? `не знайдено: ${r.missing}` : ''].filter(Boolean).join(' · ');
+      notify.success({ message: r.added ? `У «${name}» додано ${r.added}` : `Усі вже в «${name}»`, description: extra || `У папці ${r.count}`, duration: 3 });
+      if (folderId === id) void fetchProducts();
+    } catch (e: any) {
+      notify.error({ message: `Не вдалося додати в «${name}»`, description: e.message });
+    }
+  };
+  const removeSelectedFromFolder = async () => {
+    if (!activeFolder) return;
+    const ids = selection.ids.slice();
+    if (!ids.length) return;
+    try {
+      const r = await productFolderService.removeItems(activeFolder.id, ids);
+      notify.success({ message: `З «${activeFolder.name}» прибрано ${r.removed}`, description: `У папці лишилось ${r.count}. Самі товари не змінено.`, duration: 3 });
+      void fetchProducts();
+    } catch (e: any) {
+      notify.error({ message: 'Не вдалося прибрати з папки', description: e.message });
+    }
   };
   const abortRef = useRef<AbortController | null>(null);
   const fetchIdRef = useRef(0);
@@ -256,6 +290,7 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
         only_with_photo: onlyWithPhoto || undefined,
         only_with_proposals: onlyWithProposals || undefined,
         shipment_id: selectedShipmentId,
+        folder_id: folderId,
         is_visible: visibleOnly ? true : (selectedFilters.is_visible || undefined),
         min_price: selectedFilters.min_price,
         max_price: selectedFilters.max_price,
@@ -321,6 +356,7 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
       only_with_photo: onlyWithPhoto || undefined,
       only_with_proposals: onlyWithProposals || undefined,
       shipment_id: selectedShipmentId,
+      folder_id: folderId,
       is_visible: visibleOnly ? true : (selectedFilters.is_visible || undefined),
       min_price: selectedFilters.min_price,
       max_price: selectedFilters.max_price,
@@ -1138,7 +1174,7 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
     setPage(1);
   };
     
-    useEffect(() => { fetchProducts(); }, [page, perPage, currentSearchTerm, selectedFilters, onlyUnsold, onlyProblematic, onlyRostovka, onlyWithPhoto, onlyWithProposals, selectedShipmentId, visibleOnly, sortBy, sortDir, showSelectedIds]);
+    useEffect(() => { fetchProducts(); }, [page, perPage, currentSearchTerm, selectedFilters, onlyUnsold, onlyProblematic, onlyRostovka, onlyWithPhoto, onlyWithProposals, selectedShipmentId, folderId, visibleOnly, sortBy, sortDir, showSelectedIds]);
 
     // «Показати вибране» закривається сам: коли виділення скинули (Esc, «Зняти
     // виділення», після відправки) — повертаємо список і сторінку як були;
@@ -1150,12 +1186,12 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
     useEffect(() => {
       exitShowSelected(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [currentSearchTerm, selectedFilters, onlyUnsold, onlyProblematic, onlyRostovka, onlyWithPhoto, onlyWithProposals, selectedShipmentId, visibleOnly]);
+    }, [currentSearchTerm, selectedFilters, onlyUnsold, onlyProblematic, onlyRostovka, onlyWithPhoto, onlyWithProposals, selectedShipmentId, folderId, visibleOnly]);
 
     // Динамічний фасет розмірів — оновлюємо при зміні будь-якого «звужуючого»
     // фільтра/пошуку (без page/sort: вони не впливають на наявні розміри).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    useEffect(() => { fetchAvailableFacets(); }, [currentSearchTerm, selectedFilters, onlyUnsold, onlyProblematic, onlyRostovka, onlyWithPhoto, onlyWithProposals, selectedShipmentId, visibleOnly]);
+    useEffect(() => { fetchAvailableFacets(); }, [currentSearchTerm, selectedFilters, onlyUnsold, onlyProblematic, onlyRostovka, onlyWithPhoto, onlyWithProposals, selectedShipmentId, folderId, visibleOnly]);
 
     useEffect(() => () => {
       abortRef.current?.abort();
@@ -1244,6 +1280,7 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
       const owp = params.get('only_with_photo') === 'true';
       const owpr = params.get('only_with_proposals') === 'true';
       const sh = params.get('shipment_id') ? Number(params.get('shipment_id')) : undefined;
+      const fo = Number(params.get('folder')) || undefined;
       const vo = params.get('visible_only') === 'true';
       setPage(pn);
       setPerPage(ps);
@@ -1255,6 +1292,7 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
       setOnlyWithPhoto(owp);
       setOnlyWithProposals(owpr);
       setSelectedShipmentId(sh);
+      setFolderId(fo);
       setVisibleOnly(vo);
       // basic selected filters
       const nf: ProductFilterType = {};
@@ -1284,12 +1322,13 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
       if (onlyWithPhoto) params.set('only_with_photo', 'true');
       if (onlyWithProposals) params.set('only_with_proposals', 'true');
       if (selectedShipmentId) params.set('shipment_id', String(selectedShipmentId));
+      if (folderId) params.set('folder', String(folderId));
       if (visibleOnly) params.set('visible_only', 'true');
       Object.entries(selectedFilters).forEach(([k, v]) => {
         if (v !== undefined && v !== null && typeof v !== 'object') params.set(k, String(v));
       });
       navigate({ pathname: location.pathname, search: params.toString() }, { replace: true });
-    }, [page, perPage, sortBy, sortDir, onlyUnsold, onlyProblematic, onlyRostovka, onlyWithPhoto, onlyWithProposals, selectedShipmentId, visibleOnly, selectedFilters, navigate, location.pathname]);
+    }, [page, perPage, sortBy, sortDir, onlyUnsold, onlyProblematic, onlyRostovka, onlyWithPhoto, onlyWithProposals, selectedShipmentId, folderId, visibleOnly, selectedFilters, navigate, location.pathname]);
 
     return (
     <MainLayout
@@ -1320,6 +1359,11 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
             )}
           </div>
           <div className="flex items-center gap-2">
+            <ProductFoldersButton
+              activeId={folderId}
+              shown={activeFolder && !showSelectedIds ? products?.total : undefined}
+              onOpen={(id) => { setFolderId(id); setPage(1); }}
+            />
             <select
               value={selectedShipmentId ?? ''}
               onChange={(e) => { setSelectedShipmentId(e.target.value ? Number(e.target.value) : undefined); setPage(1); }}
@@ -1360,6 +1404,18 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
                       : []),
                     ...(showSelectedIds ? [{ key: 'show-all', icon: <CloseOutlined />, label: 'Показати всі товари' }] : []),
                     { type: 'divider' as const },
+                    {
+                      key: 'folder',
+                      icon: <FolderAddOutlined />,
+                      label: `У папку (${selection.size})`,
+                      children: [
+                        ...folders.map((f) => ({ key: `folder:${f.id}`, label: `${f.name} · ${f.count}` })),
+                        ...(folders.length ? [{ type: 'divider' as const }] : []),
+                        { key: 'folder:new', icon: <PlusOutlined />, label: 'Нова папка…' },
+                      ],
+                    },
+                    ...(activeFolder ? [{ key: 'folder-remove', icon: <FolderOutlined />, label: `Прибрати з «${activeFolder.name}»` }] : []),
+                    { type: 'divider' as const },
                     { key: 'prom', icon: <SendOutlined />, label: 'Відправити на PROM' },
                     { key: 'shafa', icon: <span className="inline-flex h-4 w-4 items-center justify-center rounded bg-black text-[9px] leading-none text-white font-black">S</span>, label: 'Відправити на Shafa' },
                     { key: 'olx', icon: <span className="inline-flex h-4 items-center justify-center rounded bg-[#002f34] px-1 text-[8px] leading-none text-[#a9e000] font-black">OLX</span>, label: 'Відправити на OLX' },
@@ -1387,7 +1443,10 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
                     { key: 'clear', label: 'Зняти виділення' },
                   ],
                   onClick: ({ key }) => {
-                    if (key === 'show-selected') showSelectedOnly();
+                    if (key === 'folder:new') setNewFolderOpen(true);
+                    else if (key.startsWith('folder:')) void addSelectedToFolder(Number(key.slice(7)));
+                    else if (key === 'folder-remove') void removeSelectedFromFolder();
+                    else if (key === 'show-selected') showSelectedOnly();
                     else if (key === 'show-all') exitShowSelected(true);
                     else if (key === 'labels') setLabelSource({ product_ids: Array.from(selection.ids) });
                     else if (key === 'autofill') void runAutofillOnSelection();
@@ -1429,6 +1488,20 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
                 До друку: {labelQueueCount}
               </Button>
             )}
+            <NewFolderModal
+              open={newFolderOpen}
+              count={selection.size}
+              onCancel={() => setNewFolderOpen(false)}
+              onCreate={async (name) => {
+                try {
+                  const f = await productFolderService.create(name);
+                  setNewFolderOpen(false);
+                  await addSelectedToFolder(f.id, f.name);
+                } catch (e: any) {
+                  notify.error({ message: e.message });
+                }
+              }}
+            />
             <LabelPrintDialog
               open={!!labelSource}
               source={labelSource}

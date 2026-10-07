@@ -99,6 +99,7 @@ def get_products(
     only_with_proposals: Optional[bool] = Query(None,
         description="Лише товари з невирішеними пропозиціями автозаповнення"),
     shipment_id: Optional[int] = Query(None),
+    folder_id: Optional[int] = Query(None, description="Папка товарів (product_folders.id)"),
     ids: Optional[str] = Query(None, description="«Показати вибране»: id через кому (1,2,3) — "
         "один рядок замість ids=…&ids=…, щоб сотні id влазили в URL"),
     sort_by: str = Query("delivery_date", description="Sort mode: delivery_date(=за датою завозу, дефолт), delivery_date_asc, created_at(=найновіші в базі), created_at_asc, last_sold, price_desc, price_asc, id"),
@@ -162,6 +163,7 @@ def get_products(
             only_with_photo=only_with_photo,
             only_with_proposals=only_with_proposals,
             shipment_id=shipment_id,
+            folder_id=folder_id,
             ids=id_list,
         )
 
@@ -244,6 +246,7 @@ def get_available_facets(
     only_with_proposals: Optional[bool] = Query(None,
         description="Лише товари з невирішеними пропозиціями автозаповнення"),
     shipment_id: Optional[int] = Query(None),
+    folder_id: Optional[int] = Query(None),
     db: Session = Depends(get_db),
 ):
     """Динамічні фасети: EU-розміри ТА кольорові групи, наявні в поточному
@@ -270,6 +273,7 @@ def get_available_facets(
             only_rostovka=only_rostovka, only_with_photo=only_with_photo,
             only_with_proposals=only_with_proposals,
             shipment_id=shipment_id,
+            folder_id=folder_id,
         )
         return {
             "eu": product_service.get_available_sizes(db, filters),

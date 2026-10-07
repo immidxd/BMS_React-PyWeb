@@ -618,6 +618,9 @@ class ProductFilter(BaseModel):
     # «Дії → Показати вибране»: рівно ці товари (id з буфера виділення).
     # None = фільтра нема; [] = нічого не показувати (порожнє виділення).
     ids: Optional[List[int]] = None
+    # Відкрита папка («📁 Папки»): товари з product_folder_items; решта фільтрів
+    # діє всередині неї.
+    folder_id: Optional[int] = None
 
 # Модель для опцій фільтрів
 class FilterOptions(BaseModel):

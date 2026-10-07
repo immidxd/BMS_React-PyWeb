@@ -40,6 +40,11 @@ try:
     from routers import labels as labels_router
 except Exception:  # noqa: BLE001  # pragma: no cover
     labels_router = None
+# Папки товарів (робочі набори в «Товарах»). Опційний з тієї ж причини.
+try:
+    from routers import product_folders as product_folders_router
+except Exception:  # noqa: BLE001  # pragma: no cover
+    product_folders_router = None
 # Склад: проксі до хмарного API коробок (BMS_catalog/Railway) + етикетки коробок.
 try:
     from routers import warehouse as warehouse_router
@@ -264,6 +269,8 @@ if photo_staging_router:
     app.include_router(photo_staging_router.router, tags=["photo-staging"])
 if labels_router:
     app.include_router(labels_router.router)  # /api/labels/...
+if product_folders_router:
+    app.include_router(product_folders_router.router)  # /api/product-folders/...
 if warehouse_router:
     app.include_router(warehouse_router.router)  # /api/warehouse/...
 if cloud_budget_router:

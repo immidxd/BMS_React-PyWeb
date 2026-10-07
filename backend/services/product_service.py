@@ -433,6 +433,14 @@ def _build_product_where(filters: Optional["schemas.ProductFilter"]) -> tuple:
             where_conditions.append("p.id = ANY(:ids)")
             params['ids'] = list(filters.ids)
 
+        if getattr(filters, "folder_id", None):
+            # Відкрита папка («📁 Папки»): EXISTS, щоб не розмножувати рядки.
+            where_conditions.append("""EXISTS (
+                SELECT 1 FROM product_folder_items fi
+                WHERE fi.product_id = p.id AND fi.folder_id = :folder_id
+            )""")
+            params['folder_id'] = filters.folder_id
+
         if getattr(filters, "styleid", None) and not getattr(filters, "styleids", None):
             where_conditions.append("p.styleid = :styleid")
             params['styleid'] = filters.styleid
