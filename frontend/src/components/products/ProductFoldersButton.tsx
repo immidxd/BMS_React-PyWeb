@@ -7,11 +7,11 @@
  * продані при ввімкненому «непродані»), — щоб вони не зникали непомітно.
  */
 import React, { useEffect, useRef, useState } from 'react';
-import { Button, Input, Modal, Popover, Tooltip } from 'antd';
+import { Button, Input, Modal, Popover, Tooltip, notification } from 'antd';
 import type { InputRef } from 'antd';
 import { CloseOutlined, DeleteOutlined, EditOutlined, FolderOpenOutlined, FolderOutlined, PlusOutlined } from '@ant-design/icons';
 import { productFolderService, useProductFolders } from '../../services/productFolderService';
-import { confirmDialog, notify } from '../../ui/feedback';
+import { notify } from '../../ui/feedback';
 
 interface Props {
   activeId?: number;
@@ -27,6 +27,7 @@ export const ProductFoldersButton: React.FC<Props> = ({ activeId, shown, onOpen 
   const [editId, setEditId] = useState<number | null>(null);
   const [editName, setEditName] = useState('');
   const [busy, setBusy] = useState(false);
+  const clickTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const active = folders.find((f) => f.id === activeId);
 
   const create = async () => {
@@ -56,22 +57,35 @@ export const ProductFoldersButton: React.FC<Props> = ({ activeId, shown, onOpen 
     } finally { setBusy(false); }
   };
 
+  // Папки здебільшого тимчасові — видаляємо одним кліком, без «Ви впевнені?».
+  // Страховка — «Повернути» в сповіщенні: та сама назва й ті самі товари.
   const remove = async (id: number) => {
     const f = folders.find((x) => x.id === id);
     if (!f) return;
-    setOpen(false);
-    const ok = await confirmDialog({
-      kind: 'delete',
-      title: `Видалити папку «${f.name}»?`,
-      body: f.count
-        ? `Товари (${f.count}) лишаться в програмі — зникне лише сама папка.`
-        : 'Папка порожня.',
-      okText: 'Видалити папку',
-    });
-    if (!ok) return;
+    const wasActive = activeId === id;
     try {
-      await productFolderService.remove(id);
-      if (activeId === id) onOpen(undefined);
+      const gone = await productFolderService.remove(id);
+      if (wasActive) onOpen(undefined);
+      const key = `folder-undo-${id}`;
+      notify.info({
+        key,
+        message: `Папку «${gone.name}» видалено`,
+        description: gone.product_ids.length ? `Товари (${gone.product_ids.length}) лишились у програмі.` : undefined,
+        duration: 8,
+        actions: (
+          <Button size="small" onClick={async () => {
+            notification.destroy(key);
+            try {
+              const back = await productFolderService.restore(gone.name, gone.product_ids);
+              if (wasActive) onOpen(back.id);
+            } catch (e: any) {
+              notify.error({ message: 'Не вдалося повернути папку', description: e.message });
+            }
+          }}>
+            Повернути
+          </Button>
+        ),
+      });
     } catch (e: any) {
       notify.error({ message: e.message });
     }
@@ -120,21 +134,30 @@ export const ProductFoldersButton: React.FC<Props> = ({ activeId, shown, onOpen 
                   <button
                     type="button"
                     className="flex-1 min-w-0 flex items-center gap-2 text-left"
-                    onClick={() => { onOpen(f.id === activeId ? undefined : f.id); setOpen(false); }}
-                    title={f.id === activeId ? 'Закрити папку' : 'Відкрити папку'}
+                    onClick={(e) => {
+                      // Подвійний клік — перейменування; перший клік не має встигнути закрити список.
+                      if (e.detail > 1) return;
+                      const target = f.id === activeId ? undefined : f.id;
+                      clickTimer.current = setTimeout(() => { onOpen(target); setOpen(false); }, 220);
+                    }}
+                    onDoubleClick={() => {
+                      if (clickTimer.current) clearTimeout(clickTimer.current);
+                      setEditId(f.id); setEditName(f.name);
+                    }}
+                    title={`${f.id === activeId ? 'Закрити папку' : 'Відкрити папку'} · подвійний клік — перейменувати`}
                   >
                     {f.id === activeId ? <FolderOpenOutlined /> : <FolderOutlined className="text-gray-400" />}
                     <span className="truncate">{f.name}</span>
                   </button>
                   <span className={`tabular-nums text-[12px] ${f.id === activeId ? 'opacity-80' : 'text-gray-400'}`}>{f.count}</span>
-                  <span className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                  <span className={`flex items-center gap-1 transition-opacity ${f.id === activeId ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}>
                     <Tooltip title="Перейменувати">
                       <button type="button" className="px-0.5 opacity-70 hover:opacity-100"
                         onClick={() => { setEditId(f.id); setEditName(f.name); }}>
                         <EditOutlined />
                       </button>
                     </Tooltip>
-                    <Tooltip title="Видалити папку (товари лишаться)">
+                    <Tooltip title="Видалити папку одразу (товари лишаться; можна повернути)">
                       <button type="button" className="px-0.5 opacity-70 hover:opacity-100" onClick={() => void remove(f.id)}>
                         <DeleteOutlined />
                       </button>

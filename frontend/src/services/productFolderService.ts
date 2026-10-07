@@ -51,11 +51,19 @@ export const productFolderService = {
       await this.refresh();
     } catch (e) { throw new Error(errText(e)); }
   },
-  async remove(id: number): Promise<void> {
+  /** Видалити папку. Повертає назву й товари — для «Повернути» в сповіщенні. */
+  async remove(id: number): Promise<{ name: string; product_ids: number[] }> {
     try {
-      await axios.delete(`${API}/${id}`);
+      const r = await axios.delete(`${API}/${id}`);
       await this.refresh();
+      return r.data;
     } catch (e) { throw new Error(errText(e)); }
+  },
+  /** «Повернути» щойно видалену папку: та сама назва й ті самі товари. */
+  async restore(name: string, productIds: number[]): Promise<ProductFolder> {
+    const f = await this.create(name);
+    if (productIds.length) await this.addItems(f.id, productIds);
+    return f;
   },
   async addItems(id: number, productIds: number[]): Promise<{ added: number; already: number; missing: number; count: number }> {
     try {

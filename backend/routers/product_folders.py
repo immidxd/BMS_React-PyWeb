@@ -78,7 +78,8 @@ def list_folders(db: Session = Depends(get_db)):
         FROM product_folders f
         LEFT JOIN product_folder_items i ON i.folder_id = f.id
         GROUP BY f.id
-        ORDER BY f.sort_order, f.created_at, f.id
+        -- Нові згори: папки здебільшого тимчасові, свіжа — та, з якою працюють.
+        ORDER BY f.created_at DESC, f.id DESC
     """)).fetchall()
     return {"folders": [
         {"id": r.id, "name": r.name, "sort_order": r.sort_order, "count": int(r.cnt)} for r in rows
@@ -121,13 +122,20 @@ def rename_folder(folder_id: int, body: FolderName, db: Session = Depends(get_db
 
 @router.delete("/{folder_id}")
 def delete_folder(folder_id: int, db: Session = Depends(get_db)):
-    """Видаляє лише папку й зв'язки; самі товари не чіпаються."""
+    """Видаляє лише папку й зв'язки; самі товари не чіпаються.
+
+    Видалення — без підтвердження в UI, тому відповідь несе назву й товари:
+    кнопка «Повернути» в сповіщенні відтворює папку з них.
+    """
     row = _folder_or_404(db, folder_id)
-    n = _count(db, folder_id)
+    ids = [r[0] for r in db.execute(
+        text("SELECT product_id FROM product_folder_items WHERE folder_id = :id ORDER BY added_at"),
+        {"id": folder_id},
+    ).fetchall()]
     db.execute(text("DELETE FROM product_folders WHERE id = :id"), {"id": folder_id})
     db.commit()
-    logger.info("[folders] видалено папку %s «%s» (%d товарів у ній)", folder_id, row.name, n)
-    return {"ok": True, "id": folder_id, "had": n}
+    logger.info("[folders] видалено папку %s «%s» (%d товарів у ній)", folder_id, row.name, len(ids))
+    return {"ok": True, "id": folder_id, "name": row.name, "had": len(ids), "product_ids": ids}
 
 
 @router.post("/{folder_id}/items")
