@@ -29,7 +29,7 @@ import {
 import {
   BarChart, Bar, LineChart, Line, AreaChart, Area,
   XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
-  ComposedChart,
+  ComposedChart, ReferenceLine,
 } from 'recharts';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -1201,10 +1201,14 @@ const StatisticsPage: React.FC<StatisticsPageProps> = () => {
                     Структура витрат на рекламу
                   </h3>
                   <ResponsiveContainer width="100%" height={300}>
-                    <ComposedChart data={adsData.data} margin={{ top: 5, right: 20, bottom: 5, left: 10 }}>
+                    {/* stackOffset="sign": від'ємна «інша» (комірку ще не дописали) йде ВНИЗ
+                        від нуля. Без цього recharts клав її поверх червоного стовпчика Meta
+                        і перекривав його — у вересні/жовтні 2026 Meta зникала з графіка. */}
+                    <ComposedChart data={adsData.data} stackOffset="sign" margin={{ top: 5, right: 20, bottom: 5, left: 10 }}>
                       <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
                       <XAxis dataKey="period" tick={{ fontSize: 11 }} />
                       <YAxis tick={{ fontSize: 11 }} tickFormatter={fmtShort} />
+                      <ReferenceLine y={0} stroke="#9ca3af" />
                       <Tooltip content={<CustomTooltip />} />
                       <Legend wrapperStyle={{ fontSize: 12 }} />
                       <Bar dataKey="meta_cost" name="Meta (з банку)" stackId="ads"
@@ -1218,8 +1222,9 @@ const StatisticsPage: React.FC<StatisticsPageProps> = () => {
                     </ComposedChart>
                   </ResponsiveContainer>
                   <p className="text-[11px] text-gray-400 mt-1">
-                    Від'ємна «інша реклама» означає, що в комірку ще не дописали свіже
-                    списання Meta — це видима розбіжність, а не помилка даних.
+                    Від'ємна «інша реклама» (фіолетове під нулем) означає, що в комірку
+                    «Витрати на рекламу» ще не дописали свіже списання Meta — це видима
+                    розбіжність, а не помилка даних. Червоне — завжди повна сума Meta з банку.
                   </p>
                 </div>
 
