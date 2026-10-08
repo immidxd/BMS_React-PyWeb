@@ -1178,7 +1178,7 @@ const StatisticsPage: React.FC<StatisticsPageProps> = () => {
                 {/* Плитки: скільки всього, з чого складається, чого це варте */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
                   <KpiCard label="Уся реклама ефіру" value={`${fmtPrice(adsData.totals.total_all)}`}
-                            sub="з комірок «Витрати на рекламу»" color="text-orange-700" />
+                            sub="комірки «Витрати на рекламу» + Meta з банку (з 01.09.2026)" color="text-orange-700" />
                   <KpiCard label="З них Meta" value={`${fmtPrice(adsData.totals.meta_all)}`}
                             sub={`${adsData.totals.meta_count} списань із виписки банку`}
                             color="text-blue-700" />
@@ -1222,9 +1222,9 @@ const StatisticsPage: React.FC<StatisticsPageProps> = () => {
                     </ComposedChart>
                   </ResponsiveContainer>
                   <p className="text-[11px] text-gray-400 mt-1">
-                    Від'ємна «інша реклама» (фіолетове під нулем) означає, що в комірку
-                    «Витрати на рекламу» ще не дописали свіже списання Meta — це видима
-                    розбіжність, а не помилка даних. Червоне — завжди повна сума Meta з банку.
+                    З 01.09.2026 у комірці «Витрати на рекламу» — лише інша реклама, а Meta
+                    додається з банку. Фіолетове під нулем буває лише в старих ефірах: там
+                    Meta сиділа в комірці, але вписана не повністю. Червоне — завжди повна сума Meta з банку.
                   </p>
                 </div>
 

@@ -58,6 +58,7 @@ UNREADABLE = "unreadable"    # у комірці текст, який ми не 
 NO_BLOCK = "no_block"
 NO_AIR = "no_air"
 WRITTEN = "written"
+BANK_ONLY = "bank_only"      # ефір після AD_CELL_OTHER_ONLY_FROM: Meta лише з банку, у комірку НЕ пишемо
 
 
 def load_config(db: Session) -> dict:
@@ -117,9 +118,9 @@ def build_plan(db: Session, sh, *, only_air: Optional[List[date]] = None,
     списань — десятки, тож повне вичитування було б і повільним, і марним.
     """
     try:
-        from services.meta_ads import group_by_air
+        from services.meta_ads import group_by_air, AD_CELL_OTHER_ONLY_FROM
     except ImportError:
-        from backend.services.meta_ads import group_by_air
+        from backend.services.meta_ads import group_by_air, AD_CELL_OTHER_ONLY_FROM
     sp = _sp()
     reader = reader or (lambda ws: ws.get_all_values())
 
@@ -135,8 +136,16 @@ def build_plan(db: Session, sh, *, only_air: Optional[List[date]] = None,
     if additive_from is None:
         additive_from = load_config(db).get("additive_from")
 
-    targets, skipped, blocked, unreadable = [], [], [], []
+    targets, skipped, blocked, unreadable, bank_only = [], [], [], [], []
     for air in sorted(grouped):
+        if air >= AD_CELL_OTHER_ONLY_FROM:
+            # Рішення власника 08.10.2026: з цієї дати в комірці лише ІНША реклама,
+            # Meta статистика бере з банку. Записати її в комірку = порахувати двічі.
+            total = sum((Decimal(str(c["amount_uah"])) for c in grouped[air]), Decimal("0"))
+            bank_only.append({"air_date": air, "title": by_date[air]["title"],
+                              "charges": grouped[air], "status": BANK_ONLY,
+                              "total_uah": total.quantize(Decimal("0.01"))})
+            continue
         sheet = by_date[air]
         rows = reader(sheet["ws"])
         found = sp._extract_advertising_expense(rows)
@@ -180,6 +189,7 @@ def build_plan(db: Session, sh, *, only_air: Optional[List[date]] = None,
         "skipped_manual": skipped,
         "no_block": blocked,
         "unreadable": unreadable,
+        "bank_only": bank_only,
         "no_air": orphans,
     }
 
@@ -219,6 +229,12 @@ def format_plan(plan: dict) -> str:
         lines.append(f"── НЕЧИТАБЕЛЬНА КОМІРКА (не чіпаю): {len(plan['unreadable'])}")
         for e in plan["unreadable"]:
             lines.append(f"   {e['title']:16} там {e['raw']!r}, наша частка {e['total_uah']} ₴")
+        lines.append("")
+    if plan.get("bank_only"):
+        lines.append(f"── ЛИШЕ З БАНКУ (з {plan['bank_only'][0]['air_date']:%d.%m.%Y} комірка — "
+                     f"тільки інша реклама, Meta туди не пишемо): {len(plan['bank_only'])}")
+        for e in plan["bank_only"]:
+            lines.append(f"   {e['title']:16} Meta {e['total_uah']} ₴ — у статистиці з виписки")
         lines.append("")
     if plan["no_block"]:
         lines.append(f"── НЕМАЄ БЛОКУ «Витрати на рекламу»: {len(plan['no_block'])}")

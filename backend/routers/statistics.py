@@ -32,6 +32,31 @@ def _catalog_period_sql(days: int, column: str = "received_at") -> str:
     return "TRUE" if days == 0 else f"{column} >= now() - (:catalog_days || ' days')::interval"
 
 
+
+def _ad_costs_sql() -> str:
+    """Уся реклама ефіру як одна «таблиця» (expense_date, amount, sales_channel).
+
+    Рішення власника 08.10.2026 (`meta_ads.AD_CELL_OTHER_ONLY_FROM`, 01.09.2026):
+      • ефіри ДО дати — комірка «Витрати на рекламу» = вся реклама (Meta всередині);
+      • з дати — комірка = лише ІНША реклама, Meta додається з виписки банку
+        (за ефіром, а якщо ще не розподілена — за датою списання).
+    Одне джерело для всіх розрахунків, інакше прибуток і сторінка «Реклама»
+    розійшлися б.
+    """
+    try:
+        from services.meta_ads import AD_CELL_OTHER_ONLY_FROM
+    except ImportError:
+        from backend.services.meta_ads import AD_CELL_OTHER_ONLY_FROM
+    cutover = AD_CELL_OTHER_ONLY_FROM.isoformat()   # date → безпечний літерал
+    return f"""(
+        SELECT expense_date, amount::float AS amount, sales_channel FROM advertising_expenses
+        UNION ALL
+        SELECT COALESCE(c.air_date, c.charge_date) AS expense_date,
+               c.amount_uah::float AS amount, 'Ефір' AS sales_channel
+        FROM meta_ad_charges c
+        WHERE COALESCE(c.air_date, c.charge_date) >= DATE '{cutover}'
+    )"""
+
 @router.get("/api/statistics/catalog")
 def get_catalog_stats(
     days: int = Query(30),
@@ -424,7 +449,7 @@ def get_sales_stats(
         advertising_rows = db.execute(text(f"""
             SELECT {expense_group_expr} AS period_label,
                    COALESCE(SUM(e.amount), 0)::float AS advertising_cost
-            FROM advertising_expenses e
+            FROM {_ad_costs_sql()} e
             WHERE {' AND '.join(expense_where)}
             GROUP BY {expense_group_expr}
             ORDER BY {expense_group_expr}
@@ -729,7 +754,7 @@ def get_summary_stats(db: Session = Depends(get_db)) -> Dict[str, Any]:
              WHERE {PAID_REVENUE}) AS total_delivery_cost,
 
             (SELECT COALESCE(SUM(e.amount), 0)::float
-             FROM advertising_expenses e
+             FROM {_ad_costs_sql()} e
              WHERE e.sales_channel = 'Ефір') AS total_advertising_cost,
 
             (SELECT COALESCE(SUM(p.price), 0)::float FROM products p
@@ -1264,10 +1289,10 @@ def get_products_stats(
         ORDER BY orders_count DESC
     """)).mappings().all()
 
-    total_advertising_cost = db.execute(text("""
-        SELECT COALESCE(SUM(amount), 0)::float
-        FROM advertising_expenses
-        WHERE sales_channel = 'Ефір'
+    total_advertising_cost = db.execute(text(f"""
+        SELECT COALESCE(SUM(e.amount), 0)::float
+        FROM {_ad_costs_sql()} e
+        WHERE e.sales_channel = 'Ефір'
     """)).scalar() or 0
     channel_dist = []
     for row in channel_rows:
@@ -1318,15 +1343,16 @@ def advertising_stats(
 
     Два джерела, і вони НЕ дублюються, а доповнюють одне одного:
 
-    * `advertising_expenses` — УСЯ реклама ефіру. Дзеркало комірки «Витрати на
-      рекламу» в аркуші «Замовлення»; там сидить і Meta, і все інше
-      (Telegram, блогери), про що знає лише власник.
+    * `advertising_expenses` — дзеркало комірки «Витрати на рекламу» в аркуші
+      ефіру. До 01.09.2026 там уся реклама (Meta всередині), з 01.09.2026 —
+      лише ІНША (рішення власника 08.10.2026, `_ad_costs_sql`).
     * `meta_ad_charges` — списання Meta з картки, точні до копійки з виписки
-      банку.
+      банку; з 01.09.2026 додаються до комірки, а не сидять у ній.
 
-    Звідси «інша реклама» = всього − Meta. Вона може вийти відʼємною, і це не
-    помилка даних, а чесний сигнал: у комірку ще не дописали свіже списання
-    Meta. Тому не обрізаємо в нуль — інакше розбіжність стала б невидимою.
+    «Інша реклама» = всього − Meta. З 01.09 вона дорівнює комірці; відʼємною
+    може бути лише в старих ефірах, де вписана в комірку сума менша за
+    списання Meta (Meta туди потрапила не повністю) — не обрізаємо в нуль,
+    щоб розбіжність лишалась видимою.
     """
     # Списання, ще не розподілене по ефіру (air_date ставиться лише при записі
     # в аркуш), показуємо за датою списання. Раніше такі рядки випадали з
@@ -1349,7 +1375,7 @@ def advertising_stats(
     total_rows = db.execute(text(f"""
         SELECT {total_expr} AS period_label,
                COALESCE(SUM(e.amount), 0)::float AS total_cost
-        FROM advertising_expenses e
+        FROM {_ad_costs_sql()} e
         WHERE e.sales_channel = 'Ефір' AND e.expense_date IS NOT NULL {year_filter_e}
         GROUP BY 1 ORDER BY 1
     """), params).mappings().all()
@@ -1413,10 +1439,10 @@ def advertising_stats(
         LIMIT 300
     """), params).mappings().all()
 
-    totals = db.execute(text("""
+    totals = db.execute(text(f"""
         SELECT
-          (SELECT COALESCE(SUM(amount), 0)::float FROM advertising_expenses
-            WHERE sales_channel = 'Ефір') AS total_all,
+          (SELECT COALESCE(SUM(e.amount), 0)::float FROM {_ad_costs_sql()} e
+            WHERE e.sales_channel = 'Ефір') AS total_all,
           (SELECT COALESCE(SUM(amount_uah), 0)::float FROM meta_ad_charges) AS meta_all,
           (SELECT COUNT(*)::int FROM meta_ad_charges) AS meta_count,
           (SELECT MIN(charge_date) FROM meta_ad_charges) AS meta_from,

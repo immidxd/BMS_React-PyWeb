@@ -44,6 +44,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from bisect import bisect_left
 from datetime import date
 from decimal import Decimal
@@ -120,6 +121,17 @@ def total_uah(charges: Iterable[dict]) -> Decimal:
 def unpriced(charges: Iterable[dict]) -> List[dict]:
     """Витрати, для яких не вдалося порахувати гривню (немає курсу НБУ)."""
     return [s for s in charges if s.get("amount_uah") is None]
+
+
+# ── Що означає комірка «Витрати на рекламу» ─────────────────────────────────
+# Рішення власника 08.10.2026: ДО цієї дати комірка ефіру = ВСЯ реклама (Meta
+# всередині — він вписував її сам або програма 01.09 за серпень). З цієї дати
+# комірка = лише ІНША реклама (Telegram, блогери…), а Meta береться окремо з
+# виписки банку і НЕ пишеться в комірку. Уся реклама = Meta з банку + комірка.
+# Одне джерело для статистики (routers/statistics.py) і запису в аркуш
+# (services/meta_ads_writeback.py) — інакше Meta порахувалась би двічі.
+AD_CELL_OTHER_ONLY_FROM = date.fromisoformat(
+    os.environ.get("AD_CELL_OTHER_ONLY_FROM", "2026-09-01"))
 
 
 # ── Налаштування ────────────────────────────────────────────────────────────

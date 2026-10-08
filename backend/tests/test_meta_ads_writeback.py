@@ -190,7 +190,24 @@ def test_the_report_shows_both_what_goes_and_what_is_left_alone():
 
 
 # ── Спільна комірка: програма ДОДАЄ свою частку, а не заміняє ───────────────
+# Механізм лишився для ефірів ДО дати переходу (AD_CELL_OTHER_ONLY_FROM); тут
+# перехід відсунуто далеко, щоб тести й далі перевіряли саме додавання.
 ADDITIVE = date(2026, 9, 1)
+
+
+@pytest.fixture(autouse=True)
+def _far_cutover(request, monkeypatch):
+    if "bank_only" in request.node.name:
+        return
+    import importlib
+    # services.X і backend.services.X — різні об'єкти модуля (dual-import):
+    # підміняємо в обох, інакше build_plan побачив би справжню дату.
+    for name in ("backend.services.meta_ads", "services.meta_ads"):
+        try:
+            mod = importlib.import_module(name)
+        except ImportError:
+            continue
+        monkeypatch.setattr(mod, "AD_CELL_OTHER_ONLY_FROM", date(2099, 1, 1))
 
 
 def test_from_the_shared_date_our_share_is_added_to_what_is_there():
@@ -292,3 +309,27 @@ def test_settled_past_sheets_leave_the_queue_but_broken_ones_stay():
     assert result["settled"] == 1
     assert [m["status"] for m in db.marks] == ["skipped_manual"]
     assert db.marks[0]["ids"] == [1]          # аркуш без блоку не позначено
+
+
+
+# ── З 01.09.2026 комірка = лише ІНША реклама (рішення власника 08.10.2026) ───
+def test_bank_only_meta_after_cutover_is_never_written_into_the_cell():
+    """Уся реклама = Meta з банку + комірка. Записати Meta ще й у комірку =
+    порахувати її двічі. Ні порожню, ні заповнену комірку не чіпаємо."""
+    from backend.services import meta_ads
+    assert meta_ads.AD_CELL_OTHER_ONLY_FROM == date(2026, 9, 1)
+    sh = _SH([_sheet("05.09.2026", 1, existing="150"), _sheet("20.09.2026", 2)])
+    db = _DB([_charge(1, date(2026, 9, 5), "3897.67"), _charge(2, date(2026, 9, 20), "1665.92")],
+             additive_from=ADDITIVE)
+    plan = wb.build_plan(db, sh)
+    assert plan["planned"] == []
+    assert [e["status"] for e in plan["bank_only"]] == [wb.BANK_ONLY, wb.BANK_ONLY]
+    assert "ЛИШЕ З БАНКУ" in wb.format_plan(plan)
+
+
+def test_bank_only_rule_keeps_august_history_as_before():
+    """Ефіри до переходу — як і були (порожня комірка ще отримує Meta)."""
+    sh = _SH([_sheet("30.08.2026", 1)])
+    db = _DB([_charge(1, date(2026, 8, 30), "3897.67")], additive_from=ADDITIVE)
+    plan = wb.build_plan(db, sh)
+    assert plan["planned"][0]["status"] == wb.PLANNED and plan["bank_only"] == []
