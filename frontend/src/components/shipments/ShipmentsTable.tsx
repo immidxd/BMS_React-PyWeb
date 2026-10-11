@@ -10,6 +10,7 @@ import BmsEmpty from '../common/BmsEmpty';
 import DeliveryCardModal from './DeliveryCardModal';
 import * as autofillBatch from '../../services/autofillBatch';
 import { ScanOutlined, FileTextOutlined } from '@ant-design/icons';
+import { useIsActivePage } from '../../contexts/ActivePageContext';
 
 type SortCol = 'id' | 'shipment_date' | 'supplier_name' | 'items_count' | 'total_cost' | 'created_at';
 
@@ -71,12 +72,14 @@ const ShipmentsTable: React.FC<ShipmentsTableProps> = ({
     return () => window.removeEventListener('bms:deliveries-open-card', openPending);
   }, []);
 
-  const loadData = useCallback(async () => {
+  // silent — тихе перечитування (після парсингу / повернення на вкладку): без
+  // спінера, таблиця лишається на місці й просто оновлюється.
+  const loadData = useCallback(async (silent = false) => {
     listAbortRef.current?.abort();
     const controller = new AbortController();
     listAbortRef.current = controller;
     const requestId = ++listRequestRef.current;
-    setLoading(true);
+    if (!silent) setLoading(true);
     setError(null);
     try {
       const data: ShipmentList = await fetchShipments(
@@ -108,6 +111,46 @@ const ShipmentsTable: React.FC<ShipmentsTableProps> = ({
   useEffect(() => { setPage(1); }, [searchTerm]);
   useEffect(() => () => listAbortRef.current?.abort(), []);
   useEffect(() => { loadGroups(); }, [loadGroups]);
+
+  // Список має жити разом із даними. Вкладки keep-alive: «Поставки», відкриті
+  // раз, лишались змонтованими й показували список із першого відкриття —
+  // нова поставка з парсингу (10.10.2026) була в базі годинами, а тут її не
+  // було, і здавалося, що парсинг не працює. Тепер тихо перечитуємо: після
+  // парсингу, після змін поставок, при поверненні на вкладку й у вікно BMS.
+  const isActivePage = useIsActivePage();
+  const refreshRef = useRef<() => void>(() => {});
+  refreshRef.current = () => { void loadData(true); void loadGroups(); };
+  const wasActiveRef = useRef(isActivePage);
+  useEffect(() => {
+    if (isActivePage && !wasActiveRef.current) refreshRef.current();
+    wasActiveRef.current = isActivePage;
+  }, [isActivePage]);
+  const activeRef = useRef(isActivePage);
+  activeRef.current = isActivePage;
+  useEffect(() => {
+    let t: ReturnType<typeof setTimeout> | undefined;
+    let lastFocus = 0;
+    // Неактивна вкладка не перечитує: повернення на неї саме оновить список.
+    const soon = () => { if (!activeRef.current) return; clearTimeout(t); t = setTimeout(() => refreshRef.current(), 400); };
+    const onFocus = () => {
+      if (!activeRef.current || document.hidden) return;
+      const now = Date.now();
+      if (now - lastFocus < 5000) return;   // не частіше раза на 5 с
+      lastFocus = now;
+      refreshRef.current();
+    };
+    window.addEventListener('parsing-complete', soon);
+    window.addEventListener('bms:delivery-changed', soon);
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onFocus);
+    return () => {
+      clearTimeout(t);
+      window.removeEventListener('parsing-complete', soon);
+      window.removeEventListener('bms:delivery-changed', soon);
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onFocus);
+    };
+  }, []);
 
   useEffect(() => {
     const params = new URLSearchParams();
