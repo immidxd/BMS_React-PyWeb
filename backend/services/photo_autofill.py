@@ -1000,7 +1000,7 @@ def _current_values(db: Session, product_id: int) -> Dict[str, Optional[str]]:
     row = db.execute(text(
         f"SELECT {sel}, b.brandname AS brand_name, t.typename AS type_name, "
         f"clr.colorname AS color_name, "
-        f"p.marking, p.gtin, p.model, p.price, p.sizeeu, p.size_letter, p.measurementscm, p.extranote, "
+        f"p.marking, p.gtin, p.model, p.price, p.sizeeu, p.size_letter, p.measurementscm, p.dimensions, p.extranote, "
         f"p.typeid, p.productnumber, p.season, {meas} "
         f"FROM products p {joins} LEFT JOIN brands b ON b.id = p.brandid "
         f"LEFT JOIN types t ON t.id = p.typeid "
@@ -1346,6 +1346,8 @@ def _sticker_proposals(db, product_id, pred, current, photo_names, model,
         warn = f"⚠ номер на стікері прочитано як «{number}», а картка {card} — звір зі знімком · "
     _clothing_sticker_proposals(db, product_id, pred, current, photo_names, model,
                                 proposed, below_threshold, already)
+    _dimensions_proposal(db, product_id, pred, current, photo_names, model,
+                         proposed, below_threshold, already)
     for key, (upd_field, lo, hi) in STICKER_FIELDS.items():
         threshold = field_proposals.threshold_for(upd_field)
         raw = pred.get(key)
@@ -1385,6 +1387,72 @@ def _sticker_proposals(db, product_id, pred, current, photo_names, model,
 
 def _fmt_num(val: float) -> str:
     return str(int(val)) if val == int(val) else f"{val:g}"
+
+
+# Габарити сумки/валізи/ременя зі стікера: «33x18g9.5», «33х18 г 9,5», «42*24*6.5»,
+# «98х2». Третє число (глибину) на стікері часто пишуть через «г»/«g» замість «х».
+# Читаємо з ДОСЛІВНОГО тексту стікера (`sticker_text`), який модель і так віддає:
+# #Ф4540 — модель прочитала «1300 33x18g9.5 ф4540», але поля для габаритів у
+# схемі не було, і в картку не потрапило нічого.
+_DIM_NUM = r"(\d{1,3}(?:[.,]\d{1,2})?)"
+_DIM_SEP = r"\s*[xх×*]\s*"
+_DIM_DEPTH_SEP = r"\s*(?:[xх×*]|гл?\.?|g)\s*"
+_DIMENSIONS_RE = re.compile(_DIM_NUM + _DIM_SEP + _DIM_NUM + r"(?:" + _DIM_DEPTH_SEP + _DIM_NUM + r")?",
+                            re.IGNORECASE)
+DIMENSIONS_BOUNDS = (1.0, 200.0)   # см; ремінь до ~130, валіза до ~80
+# Категорії, де «AхB(хC)» на стікері — габарити. На взутті/одязі такого запису нема,
+# і там цих пропозицій не робимо взагалі.
+DIMENSIONS_CATEGORIES = {"bag", "suitcase", "accessory"}
+DIMENSIONS_CONFIDENCE = 0.85
+
+
+def parse_sticker_dimensions(text_: Optional[str]) -> Optional[str]:
+    """«33x18g9.5» → «33х18х9.5» (формат бази: кирилична «х», крапка). None — нема."""
+    if not text_:
+        return None
+    m = _DIMENSIONS_RE.search(text_)
+    if not m:
+        return None
+    vals = []
+    for g in m.groups():
+        if g is None:
+            continue
+        v = float(g.replace(",", "."))
+        if not (DIMENSIONS_BOUNDS[0] <= v <= DIMENSIONS_BOUNDS[1]):
+            return None
+        vals.append(_fmt_num(v))
+    return "х".join(vals)
+
+
+def _norm_dimensions(v: Optional[str]) -> str:
+    return re.sub(r"\s+", "", (v or "").lower()).replace("x", "х").replace("×", "х").replace("*", "х").replace(",", ".")
+
+
+def _dimensions_proposal(db, product_id, pred, current, photo_names, model,
+                         proposed, below_threshold, already) -> None:
+    """Габарити зі стікера — лише для сумок/валіз/аксесуарів.
+
+    Категорію беремо з поточного типу картки АБО з типу, який модель щойно
+    розпізнала: у нову картку тип ще порожній (тоді запит іде як для взуття),
+    а сумку модель упізнає з фото.
+    """
+    pc = _product_category()
+    cats = {pc.category_of(current.get("type_name")), pc.category_of(pred.get("type"))} \
+        if current.get("type_name") else {pc.category_of(pred.get("type"))}
+    if not (cats & DIMENSIONS_CATEGORIES):
+        return
+    text_ = (pred.get("sticker_text") or "").strip()
+    dims = parse_sticker_dimensions(text_)
+    if not dims:
+        return
+    if _norm_dimensions(current.get("dimensions")) == _norm_dimensions(dims):
+        already.append(("dimensions", dims)); return
+    if field_proposals.propose(db, product_id, "dimensions", dims, DIMENSIONS_CONFIDENCE,
+                               model=model, source_photos=photo_names,
+                               note=f"зі стікера: «{text_}»"[:200]):
+        proposed.append(("dimensions", dims, DIMENSIONS_CONFIDENCE))
+    else:
+        below_threshold.append(("dimensions", dims, DIMENSIONS_CONFIDENCE))
 
 
 def _clothing_sticker_proposals(db, product_id, pred, current, photo_names, model,

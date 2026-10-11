@@ -1476,7 +1476,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
       // Стікер — окрема історія: людина бачить його на знімку й чекає ціни та
       // розміру. Мовчазне «не розпізнало» тут найгірше — кажемо, ЩО сталось.
       const st = d.sticker || {};
-      const LABEL: Record<string, string> = { price: 'ціна', sizeeu: 'розмір', measurementscm: 'замір' };
+      const LABEL: Record<string, string> = { price: 'ціна', sizeeu: 'розмір', measurementscm: 'замір', dimensions: 'габарити' };
       const weak = (d.below_threshold || []).filter((x: any[]) => LABEL[x[0]]);
       if (st.present && st.matched === false) {
         notify.warning({ message: 'Стікер не збігся з карткою',
@@ -4183,7 +4183,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                   {/* Sizes — ховаємо коли розміру нема (напр. сумки), показуємо в edit-режимі
                       АБО коли на розмір/замір є пропозиція зі стікера: інакше чіпи
                       всередині блоку ніколи не побачити. */}
-                  {(editMode || hasAnySize || hasClothingMeas || !!proposals['sizeeu'] || !!proposals['measurementscm'] || !!proposals['size_letter'] || clothingMeasProposals.length > 0) && (
+                  {(editMode || hasAnySize || hasClothingMeas || !!proposals['sizeeu'] || !!proposals['measurementscm'] || !!proposals['size_letter'] || !!proposals['dimensions'] || clothingMeasProposals.length > 0) && (
                   <div className="mb-3">
                     {(editMode || hasRealSize || hasClothingMeas || proposals['sizeeu'] || proposals['measurementscm'] || proposals['size_letter'] || clothingMeasProposals.length > 0) && (
                       <div className="text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500 mb-2 font-medium">Розмір</div>
@@ -4202,7 +4202,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                           <div key={field} className="flex flex-col gap-1">
                             <span className="text-[10px] text-gray-400 dark:text-gray-500 font-medium flex items-center gap-1">{label}<LockDot field={field} /></span>
                             <input value={drafts[field] ?? ''} onChange={(e) => setDraft(field, e.target.value)} className={inputCls + ' !py-1 text-center'} />
-                            {field === 'size_letter' && <ProposalChip field="size_letter" />}
+                            {(field === 'size_letter' || field === 'dimensions') && <ProposalChip field={field} />}
                           </div>
                         ))}
                         {/* Заміри одягу — ТУТ, поруч із буквеним розміром, а не в згорнутому
@@ -4274,6 +4274,10 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                             <span className="text-[10px] text-gray-400 dark:text-gray-500 font-medium">Габарити</span>
                             <span className="text-sm font-semibold text-gray-800 dark:text-gray-100">{p.dimensions}</span>
                           </div>
+                        )}
+                        {/* Габарити сумки зі стікера («33x18g9.5» → 33х18х9.5) — чіп поруч */}
+                        {proposals['dimensions'] && (
+                          <div className="flex flex-col justify-center"><span className="text-[10px] text-gray-400 font-medium">Габарити</span><ProposalChip field="dimensions" /></div>
                         )}
                         {(p as any).geometric_shape && (
                           <div className="flex flex-col items-center px-3 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50 min-w-[58px]">

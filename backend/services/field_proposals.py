@@ -48,6 +48,9 @@ CONFIDENCE_THRESHOLD: Dict[str, float] = {
     "price":               0.75,
     "sizeeu":              0.75,
     "measurementscm":      0.70,
+    # Габарити сумки зі стікера — розбір дослівного тексту (photo_autofill.
+    # parse_sticker_dimensions), а не окреме читання моделі; межі 1–200 см.
+    "dimensions":          0.80,
     # Одяг: буквений розмір зі стікера/бирки — закритий перелік, помилитись
     # важко; заміри — див. threshold_for (префікс meas:).
     "size_letter":         0.75,
