@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { fetchShipments, type Shipment } from '../../services/referenceService';
 import QuickAddProductForm from './QuickAddProductForm';
 import CreateDeliveryModal from './CreateDeliveryModal';
+import { useEscapeLayer } from '../../ui/escapeLayers';
 
 interface Props {
   open: boolean;
@@ -29,6 +30,8 @@ const AddProductModal: React.FC<Props> = ({ open, onClose, onAdded }) => {
     loadDeliveries();
   }, [open]);
 
+  // Esc — те саме, що клік повз вікно (ui/escapeLayers): гаситься, програма не «зменшується».
+  useEscapeLayer(open, onClose);
   if (!open) return null;
 
   const selected = deliveries.find(d => d.id === deliveryId);

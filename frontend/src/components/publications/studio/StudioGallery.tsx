@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as api from './api';
 import type { StudioAsset, StudioCollection } from './types';
+import { useEscapeLayer } from '../../../ui/escapeLayers';
 
 /**
  * Галерея майстерні: фони, накладки, логотипи.
@@ -114,6 +115,8 @@ export const AssetPicker: React.FC<{
     void api.fetchAssets().then(result => setAssets(result.items)).catch(() => setAssets([]));
   }, [open]);
 
+  // Esc — те саме, що клік повз вікно (ui/escapeLayers): гаситься, програма не «зменшується».
+  useEscapeLayer(open, onClose);
   if (!open) return null;
 
   const upload = async (files: FileList | null) => {

@@ -76,6 +76,8 @@ const AutoCompleteInput: React.FC<Props> = ({ value, onChange, options, placehol
           } else if (e.key === 'Enter') {
             if (open && hi >= 0 && filtered[hi]) { e.preventDefault(); choose(filtered[hi]); }
           } else if (e.key === 'Escape') {
+            // Відкриті підказки — Esc закриває лише їх, вікно навколо лишається.
+            if (open && filtered.length > 0) e.stopPropagation();
             setOpen(false); setHi(-1);
           }
         }}

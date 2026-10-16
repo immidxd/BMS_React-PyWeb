@@ -62,6 +62,29 @@ interface ProductsPageProps {
 // «Показати вибране»: стеля, щоб рядок запиту з id не перерости ліміт сервера (~16 КБ).
 const SHOW_SELECTED_MAX = 1000;
 
+/** Вигляд списку «Товарів» — окремий для кожної папки й для «Усіх товарів». */
+interface ProductsView {
+  search: string;
+  filters: ProductFilterType;
+  onlyUnsold: boolean;
+  onlyProblematic: boolean;
+  onlyRostovka: boolean;
+  onlyWithPhoto: boolean;
+  onlyWithProposals: boolean;
+  shipmentId?: number;
+  visibleOnly: boolean;
+  sortBy: string;
+  sortDir: 'asc' | 'desc';
+  page: number;
+}
+// Перший вхід у папку — типовий вигляд: фільтри, увімкнені поза нею, не ховають її товарів.
+const DEFAULT_VIEW: ProductsView = {
+  search: '', filters: {}, onlyUnsold: true, onlyProblematic: false, onlyRostovka: false,
+  onlyWithPhoto: false, onlyWithProposals: false, shipmentId: undefined, visibleOnly: false,
+  sortBy: 'delivery_date', sortDir: 'desc', page: 1,
+};
+const viewKey = (folder?: number) => (folder == null ? 'all' : `folder:${folder}`);
+
 const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
   // Чи ця вкладка зараз на екрані. При keep-alive сторінка лишається змонтованою
   // й на інших вкладках — глобальні гарячі клавіші мусять це враховувати.
@@ -145,6 +168,13 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
   const [folderId, setFolderId] = useState<number | undefined>(undefined);
   const folders = useProductFolders();
   const activeFolder = folders.find((f) => f.id === folderId);
+  // Кожна папка й «Усі товари» пам'ятають СВІЙ вигляд (пошук, фільтри, сортування,
+  // сторінку): вийти з папки → шукати як завжди → повернутись (⌥0) — і в папці все
+  // як було. Пам'ять — на сесію програми.
+  const viewsRef = useRef(new Map<string, ProductsView>());
+  // Папка, з якої вийшли останньою, — куди веде «↩» і ⌥0 з «Усіх товарів».
+  const [lastFolderId, setLastFolderId] = useState<number | undefined>(undefined);
+  const skipSearchPageResetRef = useRef(false);
   const [newFolderOpen, setNewFolderOpen] = useState(false);
   const [visibleOnly, setVisibleOnly] = useState<boolean>(false);
   const [sortBy, setSortBy] = useState<string>('delivery_date');
@@ -269,7 +299,11 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
   // Пошук по списку запускає основний effect нижче. Окреме preview живе
   // у SearchBar; раніше тут дублювався той самий важкий global-search із limit=0,
   // який backend коректно відхиляв (limit має бути >=1).
-  useEffect(() => { setPage(1); }, [currentSearchTerm]);
+  useEffect(() => {
+    // Перехід між папками відновлює і пошук, і сторінку — тоді сторінку не скидаємо.
+    if (skipSearchPageResetRef.current) { skipSearchPageResetRef.current = false; return; }
+    setPage(1);
+  }, [currentSearchTerm]);
 
   const fetchProducts = async () => {
     // Cancel any in-flight request to prevent stale responses from overwriting fresh ones
@@ -1179,11 +1213,42 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
   useEffect(() => {
     if (!isActivePage) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && selection.size > 0) selection.clear();
+      // preventDefault: Esc «витрачено» — вікно програми не виходить з повного екрана.
+      if (e.key === 'Escape' && selection.size > 0) { e.preventDefault(); selection.clear(); }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [isActivePage, selection.size, selection.clear]);
+
+  // Перейти в папку / до «Усіх товарів»: поточний вигляд запам'ятовуємо за цим
+  // місцем, цільовий — відновлюємо (пошук теж: він живе в шапці програми, тож App
+  // отримує його подією). Усе — в одному оновленні, тож список вантажиться раз.
+  const switchFolder = (target?: number) => {
+    if (target === folderId) return;
+    viewsRef.current.set(viewKey(folderId), {
+      search: currentSearchTerm || '', filters: selectedFilters, onlyUnsold, onlyProblematic,
+      onlyRostovka, onlyWithPhoto, onlyWithProposals, shipmentId: selectedShipmentId,
+      visibleOnly, sortBy, sortDir, page,
+    });
+    if (folderId != null) setLastFolderId(folderId);
+    const v = viewsRef.current.get(viewKey(target)) ?? DEFAULT_VIEW;
+    if (v.search !== (currentSearchTerm || '')) {
+      skipSearchPageResetRef.current = true;
+      window.dispatchEvent(new CustomEvent('bms:set-search', { detail: { tab: 'products', term: v.search } }));
+    }
+    setSelectedFilters(v.filters);
+    setOnlyUnsold(v.onlyUnsold);
+    setOnlyProblematic(v.onlyProblematic);
+    setOnlyRostovka(v.onlyRostovka);
+    setOnlyWithPhoto(v.onlyWithPhoto);
+    setOnlyWithProposals(v.onlyWithProposals);
+    setSelectedShipmentId(v.shipmentId);
+    setVisibleOnly(v.visibleOnly);
+    setSortBy(v.sortBy);
+    setSortDir(v.sortDir);
+    setPage(v.page);
+    setFolderId(target);
+  };
 
   const handleResetFilters = () => {
     setSelectedFilters({});
@@ -1385,8 +1450,9 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
           <div className="flex items-center gap-2">
             <ProductFoldersButton
               activeId={folderId}
+              backId={lastFolderId}
               shown={activeFolder && !showSelectedIds ? products?.total : undefined}
-              onOpen={(id) => { setFolderId(id); setPage(1); }}
+              onOpen={switchFolder}
             />
             <select
               value={selectedShipmentId ?? ''}

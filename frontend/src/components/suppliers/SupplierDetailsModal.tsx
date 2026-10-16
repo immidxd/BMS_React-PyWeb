@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { updateSupplier, type Supplier } from '../../services/referenceService';
 import LoadingSpinner from '../common/LoadingSpinner';
+import { useEscapeLayer } from '../../ui/escapeLayers';
 
 interface Props {
   supplierId: number | null;
@@ -29,6 +30,8 @@ const SupplierDetailsModal: React.FC<Props> = ({ supplierId, open, onClose, onSa
       .finally(() => setLoading(false));
   }, [open, supplierId]);
 
+  // Esc — те саме, що клік повз вікно (ui/escapeLayers): гаситься, програма не «зменшується».
+  useEscapeLayer(open, onClose);
   if (!open) return null;
 
   return (

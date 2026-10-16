@@ -32,6 +32,7 @@ import { isDesktopShell, saveBlob } from '../services/imageTransfer';
 import { confirmDialog, notify } from '../ui/feedback';
 import { useIsActivePage } from '../contexts/ActivePageContext';
 import ProductNumberText from '../components/common/ProductNumberText';
+import { useEscapeLayer } from '../ui/escapeLayers';
 
 const money = (v: number | null | undefined) => (v == null ? '' : `${Math.round(v).toLocaleString('uk-UA')} ₴`);
 const when = (iso: string) => {
@@ -739,6 +740,9 @@ const NewBoxDialog: React.FC<{ onClose: () => void; onCreated: (b: WhBox) => Pro
   const [loc, setLoc] = useState('');
   const [busy, setBusy] = useState(false);
   useEffect(() => { ws.nextCode(cat).then(setCode).catch(() => {}); }, [cat]);
+  // Esc — те саме, що клік повз вікно (ui/escapeLayers): гаситься, програма не «зменшується».
+  useEscapeLayer(true, busy ? undefined : onClose);
+
   return (
     <div className="bms-dialog-host fixed inset-0 z-[100] flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/45 backdrop-blur-[2px]" onClick={busy ? undefined : onClose} />
@@ -811,6 +815,9 @@ const BoxLabelDialog: React.FC<{ box: WhBox; onClose: () => void }> = ({ box, on
   };
   const sel = cfg?.printers.find(p => p.name === printer);
   const canPrint = !!cfg?.desktop && !!printer && (sel?.kind === 'network' ? !!sel.reachable : !!cfg?.can_print);
+  // Esc — те саме, що клік повз вікно (ui/escapeLayers): гаситься, програма не «зменшується».
+  useEscapeLayer(true, busy ? undefined : onClose);
+
   return (
     <div className="bms-dialog-host fixed inset-0 z-[100] flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/45 backdrop-blur-[2px]" onClick={busy ? undefined : onClose} />
@@ -886,6 +893,9 @@ const StaffDialog: React.FC<{ onClose: () => void }> = ({ onClose }) => {
     blocked: { label: 'заблоковано', cls: 'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-200' },
   };
   const fmt = (iso: string | null) => (iso ? new Date(iso).toLocaleString('uk-UA', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '—');
+  // Esc — те саме, що клік повз вікно (ui/escapeLayers): гаситься, програма не «зменшується».
+  useEscapeLayer(true, busy ? undefined : onClose);
+
   return (
     <div className="bms-dialog-host fixed inset-0 z-[100] flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/45 backdrop-blur-[2px]" onClick={busy ? undefined : onClose} />

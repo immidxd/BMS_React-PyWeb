@@ -10,6 +10,7 @@ import ViberPublishDialog, {
   ViberLivePublishConfirmation,
   type ViberCollageSpec, type ViberPreview, type ViberPublishPayload,
 } from './ViberPublishDialog';
+import { useEscapeLayer } from '../../ui/escapeLayers';
 
 interface BatchPreviewItem {
   product_id: number;
@@ -256,6 +257,10 @@ const ViberBatchPublishDialog: React.FC<Props> = ({ productIds, busy, onCancel, 
       setLiveConfirmOpen(true);
     }
   };
+
+  // Esc — те саме, що клік повз вікно (ui/escapeLayers): гаситься, програма не «зменшується».
+  // Поки відкрита картка-чернетка, Esc її (у ViberPublishDialog — свій шар).
+  useEscapeLayer(!editing, busy ? undefined : onCancel);
 
   if (editing) {
     return (

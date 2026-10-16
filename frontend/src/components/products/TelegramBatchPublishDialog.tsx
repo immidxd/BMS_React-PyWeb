@@ -14,6 +14,7 @@ import TelegramPublishDialog, {
   TelegramConditionPublishConfirmation,
   type TelegramPreview, type TelegramPublishPayload,
 } from './TelegramPublishDialog';
+import { useEscapeLayer } from '../../ui/escapeLayers';
 
 interface BatchPreviewItem {
   product_id: number;
@@ -687,6 +688,9 @@ const TelegramBatchPublishDialog: React.FC<Props> = ({ productIds, busy, onCance
       )}
     </div>
   );
+
+  // Esc — те саме, що клік повз вікно (ui/escapeLayers): гаситься, програма не «зменшується».
+  useEscapeLayer(!minimized && !editing, minimize);
 
   // Портал у body: розгорнути згорнуте вікно можна з будь-якої вкладки, а
   // keep-alive ховає неактивну сторінку разом з усім, що в ній змонтовано.

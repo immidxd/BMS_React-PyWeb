@@ -9,6 +9,7 @@ import {
   type InstagramDraftPayload, type InstagramPreview,
 } from './InstagramPublishDialog';
 import DailyCapacityNote, { type DailyCapacity } from './DailyCapacityNote';
+import { useEscapeLayer } from '../../ui/escapeLayers';
 
 interface Props {
   productIds: number[];
@@ -213,6 +214,9 @@ const InstagramBatchDraftDialog: React.FC<Props> = ({ productIds, busy = false, 
       setValidating(false);
     }
   };
+
+  // Esc — те саме, що клік повз вікно (ui/escapeLayers): гаситься, програма не «зменшується».
+  useEscapeLayer(true, loading || validating ? undefined : onCancel);
 
   return (
     <div className="fixed inset-0 z-[120] flex items-center justify-center p-3 sm:p-5">

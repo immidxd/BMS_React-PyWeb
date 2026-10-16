@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { createDelivery, fetchSuppliers, type Supplier } from '../../services/referenceService';
+import { useEscapeLayer } from '../../ui/escapeLayers';
 
 interface Props {
   open: boolean;
@@ -41,6 +42,8 @@ const CreateDeliveryModal: React.FC<Props> = ({ open, onClose, onCreated }) => {
     return supplier.trim() ? `${d}(${supplier.trim()})` : d;
   }, [date, supplier, nameOverride]);
 
+  // Esc — те саме, що клік повз вікно (ui/escapeLayers): гаситься, програма не «зменшується».
+  useEscapeLayer(open, submitting ? undefined : onClose);
   if (!open) return null;
 
   const submit = async () => {

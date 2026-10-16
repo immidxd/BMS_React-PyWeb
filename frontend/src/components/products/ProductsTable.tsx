@@ -33,6 +33,7 @@ import * as autofillBatch from '../../services/autofillBatch';
 import LoadingSpinner from '../common/LoadingSpinner';
 import ProductNumberText from '../common/ProductNumberText';
 import { productRowState } from './productRowState';
+import { useEscapeLayer } from '../../ui/escapeLayers';
 // Pagination is rendered at page level
 
 // Column configuration type
@@ -399,6 +400,9 @@ const ProductsTable: React.FC<ProductsTableProps> = ({
         document.addEventListener('mousedown', onDocClick);
         return () => document.removeEventListener('mousedown', onDocClick);
     }, []);
+    // Esc закриває контекстні меню — як клік повз них (ui/escapeLayers).
+    useEscapeLayer(menuOpen, () => setMenuOpen(false), { menu: true });
+    useEscapeLayer(rowMenuOpen, () => setRowMenuOpen(false), { menu: true });
     // ПКМ на шапці таблиці → меню видимості колонок
     const handleHeaderContextMenu: React.MouseEventHandler<HTMLElement> = (e) => {
         e.preventDefault();

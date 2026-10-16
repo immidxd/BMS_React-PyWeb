@@ -22,6 +22,7 @@ import LoadingSpinner from '../components/common/LoadingSpinner';
 import { taskManager } from '../services/taskManager';
 import { formatChannelNote, formatTelegramBatchResult } from '../services/telegramBatchResult';
 import ProductNumberText from '../components/common/ProductNumberText';
+import { useEscapeLayer } from '../ui/escapeLayers';
 
 /* ── Types ─────────────────────────────────────────────────────────── */
 
@@ -350,6 +351,8 @@ const SyncModal: React.FC<{
   const [result, setResult] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
 
+  // Esc — те саме, що клік повз вікно (ui/escapeLayers): гаситься, програма не «зменшується».
+  useEscapeLayer(open, syncing ? undefined : onClose);
   if (!open) return null;
 
   const runSync = async () => {
@@ -545,6 +548,8 @@ const DetailModal: React.FC<{
     }
   };
 
+  // Esc — те саме, що клік повз вікно (ui/escapeLayers): гаситься, програма не «зменшується».
+  useEscapeLayer(productId !== null, onClose);
   if (productId === null) return null;
 
   return (
@@ -1670,6 +1675,11 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
       setSelectedIds(new Set(selectableIds));
     }
   };
+
+  // Esc закриває меню колонок і вікна сторінки — як клік повз них (ui/escapeLayers).
+  useEscapeLayer(colMenuOpen, () => setColMenuOpen(false), { menu: true });
+  useEscapeLayer(integrationsOpen, () => setIntegrationsOpen(false));
+  useEscapeLayer(promOrders !== null, () => setPromOrders(null));
 
   return (
     <MainLayout

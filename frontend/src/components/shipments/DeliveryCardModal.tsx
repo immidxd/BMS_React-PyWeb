@@ -19,6 +19,7 @@ import {
   DollarOutlined, LoadingOutlined,
 } from '@ant-design/icons';
 import { alertDialog, confirmDialog, notify } from '../../ui/feedback';
+import { useEscapeLayer } from '../../ui/escapeLayers';
 import * as autofillBatch from '../../services/autofillBatch';
 import LoadingSpinner from '../common/LoadingSpinner';
 import ProductNumberText from '../common/ProductNumberText';
@@ -269,6 +270,10 @@ const DeliveryCardModal: React.FC<Props> = ({ shipment, open, onClose }) => {
     return () => window.removeEventListener('scroll', onScroll, true);
   }, [open]);
 
+  // Esc — те саме, що клік повз вікно (ui/escapeLayers): гаситься, програма не «зменшується».
+  // Контекстне меню рядка — окремий шар зверху: Esc спершу закриває його.
+  useEscapeLayer(open && !!shipment, onClose);
+  useEscapeLayer(open && !!ctx, () => setCtx(null));
   if (!open || !shipment) return null;
   const sid = shipment.id;
   const batchRunning = !!batch && (batch.state === 'running' || batch.state === 'waiting');
@@ -676,7 +681,7 @@ const DeliveryCardModal: React.FC<Props> = ({ shipment, open, onClose }) => {
                             <input autoFocus value={editNumVal}
                               onClick={e => e.stopPropagation()}
                               onChange={e => setEditNumVal(e.target.value)}
-                              onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); saveNumEdit(p); } if (e.key === 'Escape') cancelNumEdit(); }}
+                              onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); saveNumEdit(p); } if (e.key === 'Escape') { e.stopPropagation(); cancelNumEdit(); } }}
                               onBlur={() => saveNumEdit(p)}
                               disabled={savingNum}
                               autoCapitalize="none" autoCorrect="off" spellCheck={false}

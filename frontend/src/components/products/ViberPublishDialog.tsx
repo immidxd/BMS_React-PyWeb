@@ -7,6 +7,7 @@ import SmartImage from '../common/SmartImage';
 import TextFormattingToolbar from '../common/TextFormattingToolbar';
 import { productService } from '../../services/productService';
 import { emitProductPhotosChanged, taskManager } from '../../services/taskManager';
+import { useEscapeLayer } from '../../ui/escapeLayers';
 
 export interface ViberCollageFrame {
   image_idx: number;
@@ -195,6 +196,9 @@ export const ViberConditionPublishConfirmation: React.FC<{
   onCancel: () => void;
   onConfirm: () => void;
 }> = ({ items, busy = false, onCancel, onConfirm }) => {
+  // Esc — те саме, що клік повз вікно (ui/escapeLayers): гаситься, програма не «зменшується».
+  useEscapeLayer(true, busy ? undefined : onCancel);
+
   if (!items.length) return null;
   return (
     <div className="fixed inset-0 z-[150] flex items-center justify-center p-4">
@@ -235,6 +239,9 @@ export const ViberLivePublishConfirmation: React.FC<{
 }> = ({ count, channelTitle, publishAt, scheduledCount = publishAt ? 1 : 0, busy = false, onCancel, onConfirm }) => {
   const scheduled = publishAt ? new Date(publishAt) : null;
   const validSchedule = scheduled && !Number.isNaN(scheduled.getTime()) ? scheduled : null;
+  // Esc — те саме, що клік повз вікно (ui/escapeLayers): гаситься, програма не «зменшується».
+  useEscapeLayer(true, busy ? undefined : onCancel);
+
   return (
     <div className="fixed inset-0 z-[155] flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/55 backdrop-blur-[2px]" onClick={busy ? undefined : onCancel} />
@@ -566,6 +573,9 @@ const ViberPublishDialog: React.FC<Props> = ({
   const zoomControlLabel = editingMany
     ? `Масштаб разом · ${groupAdjust.zoom === 0 ? 'без змін' : `${groupAdjust.zoom > 0 ? '+' : ''}${Math.round(groupAdjust.zoom * 100)}%`}`
     : `Масштаб · ${Math.round((activeFrame?.zoom ?? 1) * 100)}%`;
+
+  // Esc — те саме, що клік повз вікно (ui/escapeLayers): гаситься, програма не «зменшується».
+  useEscapeLayer(true, dialogBusy ? undefined : onCancel);
 
   return (
     <div className="bms-dialog-host fixed inset-0 z-[110] flex items-center justify-center p-4">

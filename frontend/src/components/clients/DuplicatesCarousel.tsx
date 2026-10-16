@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { confirmDialog } from '../../ui/feedback';
 import LoadingSpinner from '../common/LoadingSpinner';
+import { useEscapeLayer } from '../../ui/escapeLayers';
 
 interface RecentOrder {
   id: number;
@@ -112,6 +113,8 @@ const DuplicatesCarousel: React.FC<Props> = ({ open, onClose, onMerged }) => {
     if (cur) setSelectedMaster(cur.suggested_master_id);
   }, [idx, cur]);
 
+  // Esc — те саме, що клік повз вікно (ui/escapeLayers): гаситься, програма не «зменшується».
+  useEscapeLayer(open, onClose);
   if (!open) return null;
 
   const total = groups.length;

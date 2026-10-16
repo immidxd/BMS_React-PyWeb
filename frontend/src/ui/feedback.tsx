@@ -14,6 +14,7 @@
 import React, { useEffect, useRef } from 'react';
 import { createRoot } from 'react-dom/client';
 import { notification } from 'antd';
+import { useEscapeLayer } from './escapeLayers';
 import type { ArgsProps } from 'antd/es/notification/interface';
 import {
   CloseOutlined, QuestionCircleOutlined, ExclamationCircleOutlined,
@@ -62,16 +63,17 @@ const DialogCard: React.FC<{ opts: DialogOpts; alertOnly: boolean; onDone: (ok: 
   const kind = opts.kind || (opts.danger ? 'delete' : alertOnly ? 'alert' : 'confirm');
   const ic = ICONS[kind] || ICONS.confirm;
   const okRef = useRef<HTMLButtonElement>(null);
+  // Esc — «Скасувати» через спільний стек (гаситься, вікно програми не «зменшується»).
+  const isTop = useEscapeLayer(true, () => onDone(false));
 
   useEffect(() => {
     okRef.current?.focus();
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') { e.stopPropagation(); onDone(false); }
-      if (e.key === 'Enter')  { e.stopPropagation(); onDone(true); }
+      if (e.key === 'Enter' && isTop()) { e.stopPropagation(); onDone(true); }
     };
     window.addEventListener('keydown', onKey, true);
     return () => window.removeEventListener('keydown', onKey, true);
-  }, [onDone]);
+  }, [onDone, isTop]);
 
   return (
     // .bms-dialog-host — маркер для гардів Escape у модалках позаду

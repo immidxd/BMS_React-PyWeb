@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import { CloseOutlined, ShoppingOutlined, WarningOutlined, PlusOutlined, DeleteOutlined, LockOutlined } from '@ant-design/icons';
+import { useEscapeLayer } from '../../ui/escapeLayers';
 
 /*
  * Діалог публікації товару на Prom — замість системного window.confirm.
@@ -66,6 +67,9 @@ const PromPublishDialog: React.FC<Props> = ({ data, busy, onCancel, onConfirm })
       adapt_main_image_for_shafa: canAdaptMainImage && adaptMainImage,
     });
   };
+
+  // Esc — те саме, що клік повз вікно (ui/escapeLayers): гаситься, програма не «зменшується».
+  useEscapeLayer(true, busy ? undefined : onCancel);
 
   return (
     <div className="bms-dialog-host fixed inset-0 z-[100] flex items-center justify-center p-4">

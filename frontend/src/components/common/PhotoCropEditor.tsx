@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { PhotoCrop, PhotoEdit } from '../../types/photoEdit';
+import { useEscapeLayer } from '../../ui/escapeLayers';
 
 /**
  * Кадрування 1:1 — як «Обрізати» в галереї iPhone.
@@ -279,9 +280,12 @@ const PhotoCropEditor: React.FC<Props> = ({ items, initial, title, confirmLabel,
   }, [item, size, view, commit]);
 
   // Клавіші — у фазі перехоплення, щоб «Розкласти фото» і картка позаду їх не
-  // бачили (Enter там = прикріпити, Esc = закрити).
+  // бачили (Enter там = прикріпити, Esc = закрити). У спільному стеку Esc —
+  // 'own': редактор обробляє його сам, але лише коли він згори.
+  const isTop = useEscapeLayer(true, 'own');
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (!isTop()) return;
       const k = e.key;
       const handled = () => { e.preventDefault(); e.stopPropagation(); };
       if (k === 'Escape') { handled(); onCancel(); return; }
@@ -301,7 +305,7 @@ const PhotoCropEditor: React.FC<Props> = ({ items, initial, title, confirmLabel,
     };
     window.addEventListener('keydown', onKey, true);
     return () => window.removeEventListener('keydown', onKey, true);
-  }, [onCancel, confirm, rotate, reset, zoomAt, setView, S]);
+  }, [onCancel, confirm, rotate, reset, zoomAt, setView, S, isTop]);
 
   const g = size && S ? geometry(size.w, size.h, S, view) : null;
   const pending = useMemo(() => items.filter((it) => results[it.key] === undefined).length, [items, results]);

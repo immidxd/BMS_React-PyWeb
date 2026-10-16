@@ -21,6 +21,7 @@ import {
 } from '../../services/labelService';
 import { isDesktopShell, saveBlob } from '../../services/imageTransfer';
 import { notify, confirmDialog } from '../../ui/feedback';
+import { useEscapeLayer } from '../../ui/escapeLayers';
 
 interface Props {
   open: boolean;
@@ -115,13 +116,8 @@ const LabelPrintDialog: React.FC<Props> = ({ open, source, title, subtitle, onCl
     return () => clearTimeout(t);
   }, [open, loading, config, printable, layout, showPrice, cutMarks]);
 
-  // Esc закриває (поки нічого не друкується).
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && !busy) onClose(); };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [open, busy, onClose]);
+  // Esc закриває (поки нічого не друкується) — як клік повз вікно.
+  useEscapeLayer(open, busy ? undefined : onClose);
 
   const pickLayout = (k: string) => { setLayout(k); lsSet(LS_LAYOUT, k); };
   const togglePrice = () => setShowPrice(v => { lsSet(LS_PRICE, v ? '0' : '1'); return !v; });

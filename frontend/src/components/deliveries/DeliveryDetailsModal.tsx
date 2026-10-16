@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import LoadingSpinner from '../common/LoadingSpinner';
+import { useEscapeLayer } from '../../ui/escapeLayers';
 
 interface DeliveryDetails {
   id: number;
@@ -32,6 +33,8 @@ const DeliveryDetailsModal: React.FC<Props> = ({ deliveryId, open, onClose, onSa
       .finally(() => setLoading(false));
   }, [open, deliveryId]);
 
+  // Esc — те саме, що клік повз вікно (ui/escapeLayers): гаситься, програма не «зменшується».
+  useEscapeLayer(open, onClose);
   if (!open) return null;
 
   const Row: React.FC<{ label: string; value?: React.ReactNode }> = ({ label, value }) => (

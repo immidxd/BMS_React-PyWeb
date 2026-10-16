@@ -8,6 +8,7 @@ import SmartImage from '../common/SmartImage';
 import TextFormattingToolbar from '../common/TextFormattingToolbar';
 import { productService } from '../../services/productService';
 import { emitProductPhotosChanged, taskManager } from '../../services/taskManager';
+import { useEscapeLayer } from '../../ui/escapeLayers';
 
 /*
  * Діалог створення поста в Telegram — дзеркало PromPublishDialog за структурою
@@ -118,6 +119,9 @@ export const TelegramConditionPublishConfirmation: React.FC<{
   onCancel: () => void;
   onConfirm: () => void;
 }> = ({ items, busy = false, onCancel, onConfirm }) => {
+  // Esc — те саме, що клік повз вікно (ui/escapeLayers): гаситься, програма не «зменшується».
+  useEscapeLayer(true, busy ? undefined : onCancel);
+
   if (!items.length) return null;
   const many = items.length > 1;
   return (
@@ -444,6 +448,9 @@ const TelegramPublishDialog: React.FC<Props> = ({
     }
     onCancel();
   };
+
+  // Esc — те саме, що клік повз вікно (ui/escapeLayers): гаситься, програма не «зменшується».
+  useEscapeLayer(!minimized, onMinimize ?? (dialogBusy ? undefined : closeDialog));
 
   return (
     // Згорнуте вікно не носить .bms-dialog-host: за цим класом інші модалки

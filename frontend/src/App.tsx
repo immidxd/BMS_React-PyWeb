@@ -131,6 +131,20 @@ const AppContent: React.FC = () => {
   // Пошук — ПЕР-ВКЛАДКОВИЙ (інакше при keep-alive термін Товарів фільтрував би й
   // Замовлення, бо обидві змонтовані). Кожна вкладка отримує свій термін.
   const [searchByTab, setSearchByTab] = useState<Record<string, string>>({});
+  // Сторінка може сама поставити свій пошук — папки «Товарів» пам'ятають кожна свій:
+  // подія bms:set-search {tab, term}. Версія перемонтовує рядок пошуку з новим
+  // значенням (SearchBar бере initialValue лише при монтуванні).
+  const [searchBarVersion, setSearchBarVersion] = useState(0);
+  useEffect(() => {
+    const onSet = (e: Event) => {
+      const { tab, term } = ((e as CustomEvent).detail || {}) as { tab?: string; term?: string };
+      if (!tab) return;
+      setSearchByTab(prev => ({ ...prev, [tab]: term || '' }));
+      setSearchBarVersion(v => v + 1);
+    };
+    window.addEventListener('bms:set-search', onSet);
+    return () => window.removeEventListener('bms:set-search', onSet);
+  }, []);
 
   // Пер-вкладковий скрол: зберігаємо scrollTop <main> при скролі активної вкладки
   // й відновлюємо при поверненні (без реструктуризації layout — [[feedback_layout_double_scroll]]).
@@ -326,7 +340,7 @@ const AppContent: React.FC = () => {
 
           <div className="flex-grow min-w-0">
             <SearchBar
-              key={activeTab}
+              key={`${activeTab}:${searchBarVersion}`}
               initialValue={searchByTab[activeTab] || ''}
               onSearch={handleGlobalSearch}
               placeholder={SEARCHABLE_TABS.has(activeTab)

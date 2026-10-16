@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { searchService, GlobalSearchResponse } from '../../services/searchService';
 import SearchResultsPreview from '../search/SearchResultsPreview';
 import SearchInsights from '../search/SearchInsights';
+import { useEscapeLayer } from '../../ui/escapeLayers';
 
 interface SearchBarProps {
   onSearch: (searchTerm: string) => void;
@@ -42,6 +43,8 @@ const SearchBar: React.FC<SearchBarProps> = ({
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
+  // Esc закриває випадний список результатів (ui/escapeLayers).
+  useEscapeLayer(showDropdown, () => setShowDropdown(false), { menu: true });
 
   // Очищення debounce при розмонтуванні
   useEffect(() => {

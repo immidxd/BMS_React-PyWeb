@@ -5,6 +5,7 @@ import {
 } from '@ant-design/icons';
 import SmartImage from '../common/SmartImage';
 import CrosspostToggle, { useMirrorStatus } from './CrosspostToggle';
+import { useEscapeLayer } from '../../ui/escapeLayers';
 
 export interface FacebookFeedPreset {
   label: string;
@@ -295,6 +296,9 @@ const FacebookPublishDialog: React.FC<Props> = ({ data, busy = false, onCancel, 
   const firstImage = previewUrl || (draft.image_idx.length ? data.image_urls[draft.image_idx[0]] : '');
   const focusedFrame = draft.frames.find(frame => frame.image_idx === (focusedImage ?? draft.image_idx[0]));
   const title = [data.brand, data.model].filter(Boolean).join(' ') || `Товар #${data.productnumber}`;
+
+  // Esc — те саме, що клік повз вікно (ui/escapeLayers): гаситься, програма не «зменшується».
+  useEscapeLayer(true, validating ? undefined : onCancel);
 
   return (
     <div className="fixed inset-0 z-[120] flex items-center justify-center p-3 sm:p-5">

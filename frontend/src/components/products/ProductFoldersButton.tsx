@@ -5,22 +5,33 @@
  * Відкрита папка — це ще один фільтр: решта фільтрів діє всередині неї, тож на
  * кнопці видно «9 з 12», коли частину товарів папки сховали фільтри (наприклад,
  * продані при ввімкненому «непродані»), — щоб вони не зникали непомітно.
+ *
+ * Кожна папка й «Усі товари» пам'ятають свій пошук і фільтри (ProductsPage):
+ * ⌥1…⌥9 — папка за порядком у списку, ⌥0 — туди й назад (папка ↔ «Усі товари»),
+ * «↩ Назва» — повернутись у папку, з якої вийшли.
  */
 import React, { useEffect, useRef, useState } from 'react';
+import { flushSync } from 'react-dom';
+import { toast } from 'react-toastify';
 import { Button, Input, Modal, Popover, Tooltip, notification } from 'antd';
 import type { InputRef } from 'antd';
-import { CloseOutlined, DeleteOutlined, EditOutlined, FolderOpenOutlined, FolderOutlined, PlusOutlined } from '@ant-design/icons';
+import { CloseOutlined, DeleteOutlined, EditOutlined, FolderOpenOutlined, FolderOutlined, PlusOutlined, RollbackOutlined } from '@ant-design/icons';
 import { productFolderService, useProductFolders } from '../../services/productFolderService';
 import { notify } from '../../ui/feedback';
+import { modalOverlayOpen, useEscapeLayer } from '../../ui/escapeLayers';
+import { useIsActivePage } from '../../contexts/ActivePageContext';
+import { altKeyLabel } from '../../utils/dom';
 
 interface Props {
   activeId?: number;
+  /** Папка, з якої вийшли останньою: «↩» і ⌥0 з «Усіх товарів» ведуть у неї. */
+  backId?: number;
   /** Скільки товарів відкритої папки видно з поточними фільтрами (total списку). */
   shown?: number;
   onOpen: (id?: number) => void;
 }
 
-export const ProductFoldersButton: React.FC<Props> = ({ activeId, shown, onOpen }) => {
+export const ProductFoldersButton: React.FC<Props> = ({ activeId, backId, shown, onOpen }) => {
   const folders = useProductFolders();
   const [open, setOpen] = useState(false);
   const [newName, setNewName] = useState('');
@@ -29,6 +40,46 @@ export const ProductFoldersButton: React.FC<Props> = ({ activeId, shown, onOpen 
   const [busy, setBusy] = useState(false);
   const clickTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const active = folders.find((f) => f.id === activeId);
+  const back = activeId == null && backId != null ? folders.find((f) => f.id === backId) : undefined;
+  const isActivePage = useIsActivePage();
+
+  // Esc закриває список папок (перейменування Esc скасовує саме — див. поле нижче).
+  useEscapeLayer(open, () => { setOpen(false); setEditId(null); }, { menu: true });
+
+  // ⌥1…⌥9 — папка за порядком у списку; ⌥0 — туди й назад: з папки до «Усіх товарів»,
+  // з «Усіх товарів» — у папку, з якої вийшли. Фізична клавіша (e.code): з ⌥ на Mac
+  // e.key — це «¡™£…». Працює й у рядку пошуку (шукав — повернувся), але не тоді,
+  // коли поверх «Товарів» відкрите інше вікно (картка, діалог). Вільні: ⌥ ніде в
+  // програмі більше не використовується (⌘1–9 — вкладки, ⌘B/K/R/U — інше).
+  const keyState = useRef({ open, folders, activeId, back, onOpen });
+  keyState.current = { open, folders, activeId, back, onOpen };
+  useEffect(() => {
+    if (!isActivePage) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (!e.altKey || e.metaKey || e.ctrlKey || e.shiftKey) return;
+      const m = /^Digit([0-9])$/.exec(e.code);
+      if (!m) return;
+      const st = keyState.current;
+      if (modalOverlayOpen()) return;
+      const n = Number(m[1]);
+      const cur = st.folders.find((f) => f.id === st.activeId);
+      let target: { id?: number; name: string } | null = null;
+      if (n === 0) target = cur ? { name: 'Усі товари' } : (st.back ? { id: st.back.id, name: st.back.name } : null);
+      else if (st.folders[n - 1]) target = { id: st.folders[n - 1].id, name: st.folders[n - 1].name };
+      e.preventDefault();   // і не друкувати «¡™£…» у полі
+      if (!target) return;
+      if (target.id === st.activeId) { setOpen(false); return; }
+      // flushSync: поза React-подією пошук (він їде до App подією) інакше потрапляв
+      // у пізнішу чергу оновлень — список вантажився двічі, спершу без пошуку.
+      const to = target.id;
+      flushSync(() => { setOpen(false); st.onOpen(to); });
+      toast.info(target.id == null ? 'Усі товари' : `📁 ${target.name}`, {
+        toastId: 'folder-switch', autoClose: 1000, hideProgressBar: true,
+      });
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [isActivePage]);
 
   const create = async () => {
     const name = newName.trim();
@@ -92,7 +143,7 @@ export const ProductFoldersButton: React.FC<Props> = ({ activeId, shown, onOpen 
   };
 
   const content = (
-    <div className="w-72 max-w-[80vw]">
+    <div className="w-[22rem] max-w-[80vw]">
       {folders.length === 0 ? (
         <div className="px-1 pb-2 text-[13px] text-gray-500 dark:text-gray-400 leading-snug">
           Папок ще нема. Створіть першу — і кладіть туди товари через «Дії → У папку».
@@ -105,10 +156,11 @@ export const ProductFoldersButton: React.FC<Props> = ({ activeId, shown, onOpen 
               className="w-full flex items-center gap-2 px-2 py-1.5 rounded text-left text-[13px] text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"
               onClick={() => { onOpen(undefined); setOpen(false); }}
             >
-              <CloseOutlined className="text-[11px]" /> Усі товари
+              <CloseOutlined className="text-[11px]" /> <span className="flex-1">Усі товари</span>
+              <kbd className="text-[10px] text-gray-400 font-sans">{altKeyLabel('0')}</kbd>
             </button>
           )}
-          {folders.map((f) => (
+          {folders.map((f, i) => (
             <div
               key={f.id}
               className={`group flex items-center gap-2 px-2 py-1.5 rounded text-[13px] ${
@@ -150,6 +202,12 @@ export const ProductFoldersButton: React.FC<Props> = ({ activeId, shown, onOpen 
                     <span className="truncate">{f.name}</span>
                   </button>
                   <span className={`tabular-nums text-[12px] ${f.id === activeId ? 'opacity-80' : 'text-gray-400'}`}>{f.count}</span>
+                  {i < 9 && (
+                    <kbd className={`min-w-[1.75rem] text-right text-[10px] font-sans ${f.id === activeId ? 'opacity-70' : 'text-gray-400'}`}
+                      title={`Відкрити клавішами ${altKeyLabel(String(i + 1))}`}>
+                      {altKeyLabel(String(i + 1))}
+                    </kbd>
+                  )}
                   <span className={`flex items-center gap-1 transition-opacity ${f.id === activeId ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}>
                     <Tooltip title="Перейменувати">
                       <button type="button" className="px-0.5 opacity-70 hover:opacity-100"
@@ -167,6 +225,11 @@ export const ProductFoldersButton: React.FC<Props> = ({ activeId, shown, onOpen 
               )}
             </div>
           ))}
+        </div>
+      )}
+      {folders.length > 0 && (
+        <div className="px-1 pb-2 text-[11px] text-gray-400 dark:text-gray-500 leading-snug">
+          Кожна папка пам'ятає свій пошук і фільтри. {altKeyLabel('0')} — з папки до всіх товарів і назад.
         </div>
       )}
       <div className="flex gap-1.5">
@@ -219,9 +282,19 @@ export const ProductFoldersButton: React.FC<Props> = ({ activeId, shown, onOpen 
           icon={<CloseOutlined />}
           className="ml-px"
           onClick={() => onOpen(undefined)}
-          title="Закрити папку — до всіх товарів"
+          title={`До всіх товарів (${altKeyLabel('0')}). Пошук і фільтри папки збережуться — повернешся як було.`}
           aria-label="Закрити папку"
         />
+      )}
+      {back && (
+        <Button
+          icon={<RollbackOutlined />}
+          className="ml-1 max-w-[200px]"
+          onClick={() => onOpen(back.id)}
+          title={`Повернутись у «${back.name}» — з її пошуком і фільтрами (${altKeyLabel('0')})`}
+        >
+          <span className="truncate">{back.name}</span>
+        </Button>
       )}
     </span>
   );

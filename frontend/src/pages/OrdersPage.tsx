@@ -12,6 +12,7 @@ import LoadingSpinner from '../components/common/LoadingSpinner';
 import { DatePicker } from 'antd';
 import dayjs from 'dayjs';
 import 'dayjs/locale/uk';
+import { useEscapeLayer } from '../ui/escapeLayers';
 
 dayjs.locale('uk');
 const { RangePicker } = DatePicker;
@@ -459,6 +460,8 @@ const OrdersPage: React.FC<OrdersPageProps> = ({ currentSearchTerm }) => {
     document.addEventListener('mousedown', onDoc);
     return () => document.removeEventListener('mousedown', onDoc);
   }, []);
+  // Esc закриває меню колонок — як клік повз нього (ui/escapeLayers).
+  useEscapeLayer(colMenuOpen, () => setColMenuOpen(false), { menu: true });
   const handleColumnsContextMenu: React.MouseEventHandler<HTMLDivElement> = (e) => {
     e.preventDefault();
     setColMenuPos({ x: e.clientX, y: e.clientY });

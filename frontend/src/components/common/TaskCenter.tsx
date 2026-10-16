@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useSyncExternalStore } from 'react';
 import { taskManager, type Task } from '../../services/taskManager';
 import * as autofillBatch from '../../services/autofillBatch';
+import { useEscapeLayer } from '../../ui/escapeLayers';
 
 /** Плаваючий центр фонових задач (правий нижній кут). Дзвоник із badge (активні/помилки),
  *  розкривна панель зі списком останніх задач (виконується/готово/помилка). Монтується ОДИН
@@ -145,6 +146,8 @@ const TaskCenter: React.FC = () => {
   }, [open]);
 
   // Якщо нічого не відбувалось — не показуємо дзвоник зовсім (мінімалізм).
+  // Esc згортає панель задач (ui/escapeLayers).
+  useEscapeLayer(open, () => setOpen(false), { menu: true });
   if (!hasAny && !open) return null;
 
   const dot = (t: Task) =>

@@ -5,6 +5,7 @@ import { productService } from '../../services/productService';
 import { confirmDialog } from '../../ui/feedback';
 import LoadingSpinner from '../common/LoadingSpinner';
 import ProductNumberText from '../common/ProductNumberText';
+import { useEscapeLayer } from '../../ui/escapeLayers';
 
 interface Props {
   orderId: number | null;
@@ -101,6 +102,8 @@ const OrderDetailsModal: React.FC<Props> = ({ orderId, open, onClose, filterOpti
       .finally(() => setLoading(false));
   }, [open, orderId]);
 
+  // Esc — те саме, що клік повз вікно (ui/escapeLayers): гаситься, програма не «зменшується».
+  useEscapeLayer(open, onClose);
   if (!open) return null;
 
   return (
@@ -236,7 +239,7 @@ const OrderDetailsModal: React.FC<Props> = ({ orderId, open, onClose, filterOpti
                           <span className="inline-flex items-center gap-1 justify-end">
                             <input autoFocus type="number" value={itemPriceDraft}
                               onChange={(e) => setItemPriceDraft(e.target.value)}
-                              onKeyDown={(e) => { if (e.key === 'Enter') saveItemPrice(it.id!); if (e.key === 'Escape') setEditingItemId(null); }}
+                              onKeyDown={(e) => { if (e.key === 'Enter') saveItemPrice(it.id!); if (e.key === 'Escape') { e.stopPropagation(); setEditingItemId(null); } }}
                               className="w-24 px-2 py-0.5 text-right border rounded dark:bg-gray-800 dark:border-gray-600" />
                             <button onClick={() => saveItemPrice(it.id!)} disabled={savingItem} className="text-green-600 hover:text-green-700 px-1" title="Зберегти">✓</button>
                             <button onClick={() => setEditingItemId(null)} className="text-gray-400 hover:text-gray-600 px-1" title="Скасувати">✕</button>
@@ -265,7 +268,7 @@ const OrderDetailsModal: React.FC<Props> = ({ orderId, open, onClose, filterOpti
                           onBlur={() => setTimeout(() => setSugOpen(false), 150)}
                           placeholder="№ товару або модель — почни вводити…"
                           className="w-full px-2 py-1 border rounded dark:bg-gray-800 dark:border-gray-600"
-                          onKeyDown={(e) => { if (e.key === 'Enter' && sug.length === 0) addItem(); if (e.key === 'Escape') setSugOpen(false); }} />
+                          onKeyDown={(e) => { if (e.key === 'Enter' && sug.length === 0) addItem(); if (e.key === 'Escape' && sugOpen && sug.length > 0) { e.stopPropagation(); setSugOpen(false); } }} />
                         {sugOpen && sug.length > 0 && (
                           <ul className="absolute z-10 left-0 right-0 mt-1 max-h-60 overflow-auto bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-600 rounded shadow-lg text-sm">
                             {sug.map((p) => (

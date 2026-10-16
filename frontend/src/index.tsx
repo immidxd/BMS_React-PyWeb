@@ -8,10 +8,15 @@ import { AppThemeProvider } from './contexts/ThemeContext';
 import { RuntimeConfigProvider } from './contexts/RuntimeConfigContext';
 import './services/axiosConfig';
 import { installChunkErrorRecovery, isChunkLoadError } from './services/chunkReload';
+import { installEscapeLayers } from './ui/escapeLayers';
 
 // Вкладка, відкрита до перезбірки фронтенду, просить чанки зі старими хешами →
 // 404. Перехоплюємо і підхоплюємо свіжу збірку замість зависання.
 installChunkErrorRecovery();
+
+// Esc закриває верхнє вікно/меню і не «зменшує» програму (ui/escapeLayers.ts).
+// До рендера: його слухач у фазі перехоплення має йти першим.
+installEscapeLayers();
 
 class RootErrorBoundary extends React.Component<{ children: React.ReactNode }, { error: Error | null }> {
   constructor(props: { children: React.ReactNode }) {

@@ -5,6 +5,10 @@
  * Лише розбір — що робити з фото, вирішує місце вставки (картка товару).
  */
 
+import { isMacPlatform } from './dom';
+
+export { isEditableTarget } from './dom';
+
 const IMAGE_EXT = /\.(jpe?g|png|webp|gif|heic|heif|tiff?|bmp|avif)$/i;
 
 const MIME_EXT: Record<string, string> = {
@@ -60,21 +64,7 @@ export function readClipboardPhotos(dt: DataTransfer | null | undefined): Clipbo
   };
 }
 
-/** Поле, куди вставка тексту йде сама собою (input/textarea/contenteditable). */
-export function isEditableTarget(t: EventTarget | null): boolean {
-  const el = t as HTMLElement | null;
-  if (!el || typeof el.tagName !== 'string') return false;
-  const tag = el.tagName;
-  if (tag === 'TEXTAREA' || tag === 'SELECT') return true;
-  if (tag === 'INPUT') {
-    const type = ((el as HTMLInputElement).type || 'text').toLowerCase();
-    return !['button', 'checkbox', 'radio', 'submit', 'reset', 'file', 'image', 'range', 'color'].includes(type);
-  }
-  return !!el.isContentEditable;
-}
-
 /** «⌘V» на Mac, «Ctrl+V» деінде (Windows-збірка BMS). */
 export function pasteShortcutLabel(): string {
-  const p = (typeof navigator !== 'undefined' && (navigator.platform || navigator.userAgent)) || '';
-  return /Mac|iPhone|iPad/i.test(p) ? '⌘V' : 'Ctrl+V';
+  return isMacPlatform() ? '⌘V' : 'Ctrl+V';
 }

@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { CheckOutlined, CloseOutlined, LinkOutlined, ShoppingOutlined, WarningOutlined } from '@ant-design/icons';
+import { useEscapeLayer } from '../../ui/escapeLayers';
 
 export interface ShafaProductStatus {
   productnumber: string;
@@ -90,6 +91,9 @@ const ShafaBridgeDialog: React.FC<Props> = ({
       ? 'немає в наявності'
       : data.prom_presence || 'ще не відомо';
   const pricing = data.pricing;
+
+  // Esc — те саме, що клік повз вікно (ui/escapeLayers): гаситься, програма не «зменшується».
+  useEscapeLayer(true, busy ? undefined : onClose);
 
   return (
     <div className="bms-dialog-host fixed inset-0 z-[110] flex items-center justify-center p-4">

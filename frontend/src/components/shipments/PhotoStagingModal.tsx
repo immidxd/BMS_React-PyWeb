@@ -4,6 +4,7 @@ import type { Product } from '../../types/product';
 import PhotoCropEditor, { InlineCropper, centerSquareEdit, isSquare, loadImageSize } from '../common/PhotoCropEditor';
 import type { CropItem, PhotoEdit } from '../common/PhotoCropEditor';
 import ProductNumberText from '../common/ProductNumberText';
+import { useEscapeLayer } from '../../ui/escapeLayers';
 
 /**
  * «Розкласти фото» — з теки «до розбору» по картках товарів.
@@ -470,14 +471,17 @@ const PhotoStagingModal: React.FC<Props> = ({ open, onClose, products, defaultCa
   }, [category, restore]);
   const onRemove = useCallback((name: string) => { void remove([name]); }, [remove]);
 
-  // Enter — прикріпити; Esc — зняти виділення; Delete/Backspace поза полем — видалити вибрані;
+  // Esc (спільний стек ui/escapeLayers): спершу знімає виділення, потім закриває
+  // вікно — як клік повз нього. Редактор кадру — окремий шар зверху.
+  useEscapeLayer(open, () => { if (selected.size > 0) setSelected(new Set()); else onClose(); });
+
+  // Enter — прикріпити; Delete/Backspace поза полем — видалити вибрані;
   // C — кадр 1:1 для знімка під курсором.
   useEffect(() => {
     if (!open || cropFor) return;
     const onKey = (e: KeyboardEvent) => {
       if (document.querySelector('.bms-dialog-host')) return;   // поверх — редактор кадру/діалог
       const inField = document.activeElement === inputRef.current;
-      if (e.key === 'Escape') { setSelected(new Set()); }
       if (e.key === 'Enter' && (locked || inField)) { e.preventDefault(); void attach(); }
       if ((e.key === 'Delete' || e.key === 'Backspace') && !inField && selected.size > 0) { e.preventDefault(); void remove(Array.from(selected)); }
       if ((e.key === 'c' || e.key === 'C' || e.key === 'с' || e.key === 'С') && !inField && !e.metaKey && !e.ctrlKey && focused) {

@@ -1,4 +1,5 @@
 import React from 'react';
+import { useEscapeLayer } from '../../ui/escapeLayers';
 // Removed unused context import to potentially resolve linter issue
 // import { useFilterPanel } from '../contexts/FilterPanelContext'; 
 
@@ -22,6 +23,8 @@ const FilterPanel: React.FC<FilterPanelProps> = ({
   
   // Using the passed onClose function (which comes from context via MainLayout)
   // for both the X button and the mouse leave event.
+  // Esc закриває панель (ui/escapeLayers); у кожної вкладки своя панель — діє лише активна.
+  useEscapeLayer(isOpen, onClose, { menu: true });
 
   return (
     <>

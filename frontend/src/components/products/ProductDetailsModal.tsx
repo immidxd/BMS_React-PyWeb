@@ -24,6 +24,7 @@ import PromPublishDialog from './PromPublishDialog';
 import ShafaBridgeDialog, { type ShafaProductStatus } from './ShafaBridgeDialog';
 import OlxPublishDialog, { type OlxPreview } from './OlxPublishDialog';
 import { confirmDialog, notify } from '../../ui/feedback';
+import { useEscapeLayer } from '../../ui/escapeLayers';
 import { isEditableTarget, pasteShortcutLabel, readClipboardPhotos } from '../../utils/clipboardImages';
 import LoadingSpinner from '../common/LoadingSpinner';
 import SmartImage from '../common/SmartImage';
@@ -391,13 +392,8 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
         setDiscountOpen(false);
       }
     };
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setDiscountOpen(false); };
     document.addEventListener('mousedown', onDocClick);
-    document.addEventListener('keydown', onKey);
-    return () => {
-      document.removeEventListener('mousedown', onDocClick);
-      document.removeEventListener('keydown', onKey);
-    };
+    return () => document.removeEventListener('mousedown', onDocClick);
   }, [discountOpen]);
 
   useEffect(() => {
@@ -2443,10 +2439,20 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
   const navPrev = (!editMode && onPrev) ? onPrev : undefined;
   const navNext = (!editMode && onNext) ? onNext : undefined;
 
+  // Esc картки — у спільному стеку (ui/escapeLayers): картка обробляє його сама
+  // (шар за шаром), але лише коли вона згори — над нею може бути будь-яке вікно.
+  const escIsTop = useEscapeLayer(open, 'own');
+  // Поле акційної ціни — окремий шар над карткою: Esc закриває лише його.
+  useEscapeLayer(open && discountOpen, () => setDiscountOpen(false));
+  // Список «Оберіть завіз» (дописати рядок у журнал) — так само.
+  useEscapeLayer(open && adoptOpen, () => setAdoptOpen(false));
+
   // Keyboard: Esc closes (або виходить з edit-режиму), ←/→ gallery, < > картки.
   useEffect(() => {
     if (!open) return;
     const handleKey = (e: KeyboardEvent) => {
+      // Над карткою інше вікно (або вкладка не на екрані) — клавіші не її.
+      if (!escIsTop()) return;
       // Відкритий діалог системи feedback/Prom (клас .bms-dialog-host) обробляє
       // клавіші сам — картка позаду не реагує (Esc не закриє її «наскрізь»).
       if (document.querySelector('.bms-dialog-host')) return;
@@ -2494,7 +2500,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     window.addEventListener('keydown', handleKey, true);
     return () => window.removeEventListener('keydown', handleKey, true);
   }, [open, onClose, images.length, previewVisible, navPrev, navNext, editMode,
-      selectedPhotos.size, clearPhotoSelection, stagingOpen, numEditing, relink]);
+      selectedPhotos.size, clearPhotoSelection, stagingOpen, numEditing, relink, escIsTop]);
 
   // Вставка фото з буфера (⌘V / Ctrl+V) у відкриту картку. ⚠️ ХУК — до `if (!open)`.
   const cardRootRef = React.useRef<HTMLDivElement | null>(null);
@@ -2503,7 +2509,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     // Вставка стосується цієї картки: фокус у ній (або ніде — body) і поверх
     // немає іншого діалогу (кадр, «до розбору», стікер, фото на весь екран).
     const ours = (t: EventTarget | null) => {
-      if (document.querySelector('.bms-dialog-host')) return false;
+      if (!escIsTop() || document.querySelector('.bms-dialog-host')) return false;
       if (stagingOpen || labelOpen || previewVisible) return false;
       if (!(t instanceof Node) || t === document.body || t === document.documentElement || t === document) return true;
       return !!cardRootRef.current?.contains(t);
@@ -2542,7 +2548,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     };
     document.addEventListener('paste', onPaste);
     return () => document.removeEventListener('paste', onPaste);
-  }, [open, productId, editMode, photoLocked, stagingOpen, labelOpen, previewVisible, handlePastePhotos]);
+  }, [open, productId, editMode, photoLocked, stagingOpen, labelOpen, previewVisible, handlePastePhotos, escIsTop]);
 
   const p = product;
   const effectiveJournalState = journalState

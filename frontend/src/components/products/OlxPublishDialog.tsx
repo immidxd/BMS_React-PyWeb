@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import { CloseOutlined, ShoppingOutlined, WarningOutlined, LinkOutlined } from '@ant-design/icons';
+import { useEscapeLayer } from '../../ui/escapeLayers';
 
 /*
  * Діалог публікації товару на OLX — той самий сенс і стиль, що й у Prom:
@@ -130,6 +131,9 @@ const OlxPublishDialog: React.FC<Props> = ({ data, busy, onCancel, onConfirm }) 
       attributes: Object.entries(attrs).filter(([, v]) => v).map(([code, value]) => ({ code, value })),
     });
   };
+
+  // Esc — те саме, що клік повз вікно (ui/escapeLayers): гаситься, програма не «зменшується».
+  useEscapeLayer(true, busy ? undefined : onCancel);
 
   return (
     <div className="bms-dialog-host fixed inset-0 z-[120] flex items-center justify-center p-4">

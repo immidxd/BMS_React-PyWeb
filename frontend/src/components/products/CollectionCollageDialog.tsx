@@ -5,6 +5,7 @@ import {
 } from '@ant-design/icons';
 import SmartImage from '../common/SmartImage';
 import { saveCollectionCollage } from '../../services/imageTransfer';
+import { useEscapeLayer } from '../../ui/escapeLayers';
 
 export type CollectionPlatform = 'viber' | 'facebook';
 
@@ -305,6 +306,9 @@ const CollectionCollageDialog: React.FC<Props> = ({
 
   const shownCanvas = canvas || data?.canvas || { width: 1080, height: 1080 };
   const aspect = `${shownCanvas.width}/${shownCanvas.height}`;
+
+  // Esc — те саме, що клік повз вікно (ui/escapeLayers): гаситься, програма не «зменшується».
+  useEscapeLayer(true, busy ? undefined : onCancel);
 
   return (
     <div className="fixed inset-0 z-[130] flex items-center justify-center p-3 sm:p-5">
