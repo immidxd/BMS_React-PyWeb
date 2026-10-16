@@ -327,6 +327,7 @@ def create_draft(
         db,
         filters=config["filters"],
         cooldown_days=int(config["cooldown_days"]),
+        platform=platform,
     )
     if not picked["ok"]:
         raise ValueError((picked["warnings"] or ["Під цей добір немає товарів"])[0])
@@ -381,7 +382,11 @@ def generate_due_drafts(db: Session, *, now: Optional[datetime] = None) -> Dict[
     created: List[Dict[str, Any]] = []
     skipped: List[Dict[str, Any]] = []
     errors: List[Dict[str, Any]] = []
-    for config in config_rows(db):
+    # Пріоритетна мережа (Facebook) добирає першою: інакше товар, що щойно
+    # звільнився, щоразу забирала б та, що стоїть першою в списку налаштувань.
+    configs = sorted(config_rows(db),
+                     key=lambda row: 0 if row["platform"] == story_automation.PRIORITY_PLATFORM else 1)
+    for config in configs:
         value = dict(config)
         value["filters"] = value.pop("filters_json") or {}
         slot = due_slot(value, current)
@@ -458,8 +463,9 @@ def revalidate_draft(db: Session, draft: Dict[str, Any]) -> Dict[str, Any]:
     policy = draft.get("policy") or {}
     filters = policy.get("filters") or {}
     cooldown_days = int(policy.get("cooldown_days") or story_automation.DEFAULT_COOLDOWN_DAYS)
+    platform = str(draft.get("platform") or "").strip().lower() or None
     fresh = story_automation.candidate_rows(
-        db, filters, cooldown_days, pool=5000, exclude_draft_id=draft.get("id"),
+        db, filters, cooldown_days, platform=platform, pool=5000, exclude_draft_id=draft.get("id"),
     )
     eligible = {story_automation.normalize_number(row["productnumber"]): row for row in fresh}
 

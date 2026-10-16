@@ -226,3 +226,84 @@ def test_only_studio_indexes_count_as_studio(tmp_path, monkeypatch):
     assert official == {"ф100", "ф400"}   # Ф400 має і реальні, і студійні — рахується
     assert "ф200" not in official          # лише «як є»
     assert "ф300" not in official          # лише дефект
+
+
+# ── Ротація по мережах: пріоритет Facebook (рішення власника 16.10.2026) ──────
+#
+# До цього пауза була спільною: Story в Instagram стримувала Facebook на 30 днів.
+# Коли пул студійних фото вичерпався, Instagram, що добирав першим, забирав кожен
+# товар, що звільнявся, і Facebook із 14.10 стояв без жодної Story.
+
+def _shown_cte(sql: str) -> str:
+    return sql.split("shown AS (", 1)[1].split("), other AS (", 1)[0]
+
+
+def test_each_network_has_its_own_rotation(monkeypatch):
+    _patch_service(monkeypatch, "product_images", "get_official_photo_pnum_set",
+                   lambda *_a, **_k: frozenset({"ф1"}))
+    for platform, own, foreign in (("facebook", "facebook_publications", "instagram_publications"),
+                                   ("instagram", "instagram_publications", "facebook_publications")):
+        db = _RecordingSession()
+        sa.candidate_rows(db, {}, 30, platform=platform)
+        shown = _shown_cte(db.sql)
+        assert own in shown and foreign not in shown, platform
+        assert f"platform = '{platform}'" in shown, "чернетки іншої мережі не займають товар"
+
+
+def test_facebook_ignores_instagram_but_instagram_waits_for_facebook(monkeypatch):
+    """Пріоритет: Facebook бере будь-що зі свого пулу; Instagram не дублює
+    свіжий показ Facebook і з рівних бере те, що Facebook показав найдавніше."""
+    _patch_service(monkeypatch, "product_images", "get_official_photo_pnum_set",
+                   lambda *_a, **_k: frozenset({"ф1"}))
+    fb = _RecordingSession()
+    sa.candidate_rows(fb, {}, 30, platform="facebook")
+    where_fb = fb.sql.split("WHERE GREATEST", 1)[1]
+    assert "other.last_story_at" not in where_fb
+
+    ig = _RecordingSession()
+    sa.candidate_rows(ig, {}, 30, platform="instagram")
+    where_ig = ig.sql.split("WHERE GREATEST", 1)[1]
+    assert "other.last_story_at <= now() - make_interval(hours => :priority_gap_hours)" in where_ig
+    assert "other.last_story_at ASC NULLS LAST" in where_ig
+    assert ig.params["priority_gap_hours"] == sa.AFTER_PRIORITY_GAP_HOURS
+
+
+def test_facebook_picks_first_in_every_cycle(monkeypatch):
+    order = []
+    monkeypatch.setattr(sch, "config_rows", lambda _db: [
+        {**BASE, "platform": "instagram", "filters_json": {}, "items_per_run": 1},
+        {**BASE, "platform": "facebook", "filters_json": {}, "items_per_run": 1},
+    ])
+    monkeypatch.setattr(sch, "create_draft",
+                        lambda _db, **kw: order.append(kw["platform"]) or {"created": False, "draft": {"id": 1}})
+    sch.generate_due_drafts(object(), now=datetime(2026, 10, 16, 12, 0, tzinfo=timezone.utc))
+    assert order == ["facebook", "instagram"]
+
+
+def test_revalidation_checks_the_drafts_own_network(monkeypatch):
+    """Інакше Story Facebook відхилялась би через показ у Instagram — тобто
+    перед самим відправленням поверталась би стара спільна пауза."""
+    seen = {}
+
+    def fake_rows(_db, _filters, _cooldown, **kw):
+        seen.update(kw)
+        return []
+
+    monkeypatch.setattr(sch.story_automation, "candidate_rows", fake_rows)
+    _patch_service(monkeypatch, "product_images", "get_official_photo_pnum_set", lambda *_a, **_k: frozenset())
+    sch.revalidate_draft(object(), {"id": 7, "platform": "facebook", "productnumber": "#Ф1",
+                                    "policy": {"cooldown_days": 30}, "reserves": []})
+    assert seen["platform"] == "facebook" and seen["exclude_draft_id"] == 7
+
+
+def test_empty_pool_says_everything_is_on_pause_not_that_photos_are_missing(monkeypatch):
+    shown_at = datetime(2026, 9, 20, 9, 0, tzinfo=timezone.utc)
+
+    def fake_rows(_db, _filters, cooldown, **_kw):
+        return [] if cooldown else [{"productnumber": "#Ф1", "last_story_at": shown_at},
+                                    {"productnumber": "#Ф2", "last_story_at": shown_at.replace(day=25)}]
+
+    monkeypatch.setattr(sa, "candidate_rows", fake_rows)
+    msg = sa._exhausted_message(object(), {}, 30, "facebook")
+    assert msg == ("Усі 2 товарів зі студійним фото вже були в Stories у Facebook за останні 30 днів. "
+                   "Найближчий звільниться 20.10 о 12:00.")

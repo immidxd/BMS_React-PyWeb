@@ -9,6 +9,20 @@
 пул обходиться цілком, без випадковості, яку неможливо відтворити при розборі
 «а чому вийшло саме це».
 
+Ротація В КОЖНОЇ МЕРЕЖІ СВОЯ (рішення власника 16.10.2026, пріоритет — Facebook).
+До цього пауза `cooldown_days` була спільною: товар зі Story в Instagram 30 днів
+не йшов і у Facebook. Коли пул студійних фото (317 товарів) вичерпався, Instagram,
+який добирав першим, забирав кожен товар, що звільнявся, і Facebook із 14.10
+стояв без жодної Story. Тепер:
+* кожна мережа обходить УВЕСЬ пул за свої 30 днів — показати можна все й там, і там;
+* Facebook добирає першим і першим отримує новинки;
+* Instagram не бере товар, який Facebook показав за останню добу
+  (`AFTER_PRIORITY_GAP_HOURS`) — щоб та сама пара не йшла в обидві мережі разом,
+  — і з однаково «свіжих» бере те, що Facebook показав найдавніше.
+Ліміти Meta це не зачіпає: обсяг той самий, що працював на початку жовтня
+(≈10 Stories на день у кожній мережі), а темп тримає `auto_publish` — не
+більше однієї Story на мережу за 5-хв оберт.
+
 Модуль не імпортує жодного публікатора, R2 чи диспетчера.
 """
 
@@ -36,6 +50,10 @@ DEFAULT_COOLDOWN_DAYS = 30
 DEFAULT_LOCAL_TIME = "11:00"
 DEFAULT_TIMEZONE = "Europe/Kyiv"
 PLATFORMS = ("instagram", "facebook")
+# Хто добирає першим і чиї покази стримують іншого (див. докстрінг модуля).
+PRIORITY_PLATFORM = "facebook"
+AFTER_PRIORITY_GAP_HOURS = 24
+_PUBLICATIONS_TABLE = {"instagram": "instagram_publications", "facebook": "facebook_publications"}
 # Скільки кандидатів тягнемо з БД під одну Story. Запас потрібен на випадок,
 # коли в голови черги знімок таки не підійде при живій перевірці.
 #
@@ -136,25 +154,51 @@ def describe_filters(db: Session, filters: Dict[str, Any]) -> str:
     return " · ".join(parts) if parts else "усі доступні товари"
 
 
+def _story_events_sql(platform: str) -> str:
+    """Покази Story цієї мережі + її чернетки, що вже тримають товар."""
+    table = _PUBLICATIONS_TABLE[platform]
+    return f"""
+        SELECT product_number AS productnumber,
+               COALESCE(published_at, scheduled_at, created_at) AS occurred_at
+        FROM {table}
+        WHERE media_type='story' AND status NOT IN ('failed','error','cancelled')
+        UNION ALL
+        -- Затверджені чернетки теж займають товар: інакше два слоти
+        -- поспіль могли б обрати те саме, поки диспетчер ще не відзвітував.
+        SELECT productnumber, scheduled_for AS occurred_at
+        FROM story_automation_drafts
+        WHERE platform = '{platform}'
+          AND status IN ('awaiting_review','approved')
+          AND id <> :exclude_draft_id
+    """
+
+
 def candidate_rows(
     db: Session,
     filters: Dict[str, Any],
     cooldown_days: int,
     *,
+    platform: Optional[str] = None,
     pool: int = CANDIDATE_POOL,
     exclude_draft_id: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
-    """Придатні товари в порядку ротації. Тільки читання.
+    """Придатні товари в порядку ротації мережі `platform`. Тільки читання.
+
+    Без `platform` — стара спільна ротація (показ у будь-якій мережі стримує
+    обидві); робочі виклики завжди передають мережу.
 
     `exclude_draft_id` потрібен під час перевірки перед відправленням: чернетка
     вже тримає свій товар зайнятим, і без цього вона визнала б його непридатним
     сама через себе.
     """
+    if platform is not None and platform not in PLATFORMS:
+        raise ValueError(f"Невідома мережа: {platform}")
     conditions: List[str] = []
     params: Dict[str, Any] = {
         "cooldown_days": int(cooldown_days),
         "pool": max(1, min(int(pool), 5000)),
         "exclude_draft_id": int(exclude_draft_id) if exclude_draft_id else -1,
+        "priority_gap_hours": AFTER_PRIORITY_GAP_HOURS,
     }
     for key, clause in {**LIST_FILTERS, **RANGE_FILTERS}.items():
         if key in filters:
@@ -192,6 +236,29 @@ def candidate_rows(
         # Порожня множина — чесний нуль. Мовчазна публікація «як є» гірша за
         # пропущений слот: знімок із дому не забрати з чужої стрічки назад.
         conditions.append("FALSE")
+
+    if platform is None:
+        own_events = " UNION ALL ".join(_story_events_sql(p) for p in PLATFORMS)
+        other_events = "SELECT NULL::varchar AS productnumber, NULL::timestamptz AS occurred_at WHERE FALSE"
+        order_sql = "shown.last_story_at NULLS FIRST, p.dateadded DESC NULLS LAST, p.id"
+    else:
+        other = next(p for p in PLATFORMS if p != platform)
+        own_events = _story_events_sql(platform)
+        other_events = _story_events_sql(other)
+        if platform == PRIORITY_PLATFORM:
+            # Пріоритетна мережа не зважає на покази іншої взагалі.
+            order_sql = "shown.last_story_at NULLS FIRST, p.dateadded DESC NULLS LAST, p.id"
+        else:
+            # Не дублювати свіжий показ пріоритетної мережі; з рівних — те, що
+            # вона показала найдавніше (новинки вона показує першою).
+            conditions.append(
+                "(other.last_story_at IS NULL "
+                "OR other.last_story_at <= now() - make_interval(hours => :priority_gap_hours))"
+            )
+            order_sql = (
+                "shown.last_story_at NULLS FIRST, other.last_story_at ASC NULLS LAST, "
+                "p.dateadded DESC NULLS LAST, p.id"
+            )
     filter_sql = ("AND " + " AND ".join(conditions)) if conditions else ""
 
     rows = db.execute(text(f"""
@@ -207,28 +274,15 @@ def candidate_rows(
               AND o.order_status_id IN ({STATUS_CONFIRMED}, {STATUS_GIFT}, {STATUS_RETURNED})
             GROUP BY oi.product_id
         ), shown AS (
-            -- Коли цей номер востаннє був у Stories, на будь-якому майданчику.
-            -- Обидві мережі рахуються разом: покупець бачить одну крамницю.
+            -- Коли цей номер востаннє був у Stories ЦІЄЇ мережі.
             SELECT productnumber, MAX(occurred_at) AS last_story_at
-            FROM (
-                SELECT product_number AS productnumber,
-                       COALESCE(published_at, scheduled_at, created_at) AS occurred_at
-                FROM instagram_publications
-                WHERE media_type='story' AND status NOT IN ('failed','error','cancelled')
-                UNION ALL
-                SELECT product_number AS productnumber,
-                       COALESCE(published_at, scheduled_at, created_at) AS occurred_at
-                FROM facebook_publications
-                WHERE media_type='story' AND status NOT IN ('failed','error','cancelled')
-                UNION ALL
-                -- Затверджені чернетки теж займають товар: інакше два слоти
-                -- поспіль могли б обрати те саме, поки диспетчер ще не відзвітував.
-                SELECT productnumber,
-                       scheduled_for AS occurred_at
-                FROM story_automation_drafts
-                WHERE status IN ('awaiting_review','approved')
-                  AND id <> :exclude_draft_id
-            ) events
+            FROM ({own_events}) events
+            WHERE productnumber IS NOT NULL
+            GROUP BY productnumber
+        ), other AS (
+            -- Те саме для другої мережі — лише для черговості й паузи.
+            SELECT productnumber, MAX(occurred_at) AS last_story_at
+            FROM ({other_events}) events
             WHERE productnumber IS NOT NULL
             GROUP BY productnumber
         )
@@ -236,7 +290,7 @@ def candidate_rows(
                p.dateadded, p.sizeeu, p.season,
                b.brandname AS brand, t.typename AS type, g.gendername AS gender,
                p.model, p.official_photos_from,
-               shown.last_story_at
+               shown.last_story_at, other.last_story_at AS other_last_story_at
         FROM products p
         LEFT JOIN brands b ON b.id=p.brandid
         LEFT JOIN types t ON t.id=p.typeid
@@ -244,6 +298,7 @@ def candidate_rows(
         LEFT JOIN statuses s ON s.id=p.statusid
         LEFT JOIN sold ON sold.product_id=p.id
         LEFT JOIN shown ON shown.productnumber=p.productnumber
+        LEFT JOIN other ON other.productnumber=p.productnumber
         WHERE GREATEST(COALESCE(p.quantity,0)-COALESCE(sold.sold_count,0),0) > 0
           AND (s.statusname IS NULL OR s.statusname NOT IN ('Продано','Подаровано','Повернуто'))
           AND COALESCE(p.is_lost,FALSE)=FALSE
@@ -257,7 +312,7 @@ def candidate_rows(
               OR shown.last_story_at <= now() - (:cooldown_days || ' days')::interval
           )
           {filter_sql}
-        ORDER BY shown.last_story_at NULLS FIRST, p.dateadded DESC NULLS LAST, p.id
+        ORDER BY {order_sql}
         LIMIT :pool
     """), params).mappings().all()
     return [dict(row) for row in rows]
@@ -280,15 +335,41 @@ def _official_photo_ready(bms: Dict[str, Any]) -> bool:
     return kind == "official"
 
 
+def _exhausted_message(db: Session, filters: Dict[str, Any], cooldown_days: int,
+                       platform: Optional[str]) -> str:
+    """Чому порожньо — по-людськи: фото є, але все вже показано за паузу.
+
+    Раніше тут завжди писалось «немає жодного товару зі студійним фото», хоча
+    16.10.2026 таких товарів було 317 — просто всі на паузі після показу.
+    """
+    everyone = candidate_rows(db, filters, 0, platform=platform, pool=5000)
+    if not everyone:
+        return "Під цей добір немає жодного товару зі студійним фото."
+    import datetime as _dt
+    from zoneinfo import ZoneInfo
+    expiries = [row["last_story_at"] + _dt.timedelta(days=int(cooldown_days))
+                for row in everyone if row.get("last_story_at")]
+    where = {"instagram": " в Instagram", "facebook": " у Facebook"}.get(platform or "", "")
+    head = (f"Усі {len(everyone)} товарів зі студійним фото вже були в Stories{where} "
+            f"за останні {int(cooldown_days)} днів")
+    if not expiries:
+        if platform and platform != PRIORITY_PLATFORM:
+            return head + " або щойно вийшли у Facebook — Instagram візьме їх за добу."
+        return head + "."
+    nearest = min(expiries).astimezone(ZoneInfo(DEFAULT_TIMEZONE))
+    return head + f". Найближчий звільниться {nearest:%d.%m о %H:%M}."
+
+
 def select_for_slot(
     db: Session,
     *,
     filters: Dict[str, Any],
     cooldown_days: int,
+    platform: Optional[str] = None,
     reserve_count: int = RESERVE_COUNT,
 ) -> Dict[str, Any]:
     """Головний товар для Story плюс запас. Нічого не пише й не публікує."""
-    candidates = candidate_rows(db, filters, cooldown_days)
+    candidates = candidate_rows(db, filters, cooldown_days, platform=platform)
     chosen: List[Dict[str, Any]] = []
     no_photo = 0
     # Запит уже відсіяв усе без студійного фото, тож тут відсівається лише те,
@@ -306,7 +387,10 @@ def select_for_slot(
     if no_photo:
         warnings.append(f"Без студійного фото пропущено {no_photo} товарів.")
     if not chosen:
-        warnings.append("Під цей добір немає жодного товару зі студійним фото.")
+        warnings.append(
+            _exhausted_message(db, filters, cooldown_days, platform) if not candidates
+            else "Під цей добір немає жодного товару зі студійним фото."
+        )
     elif len(chosen) == 1:
         warnings.append("Запасних товарів немає: пул добору майже вичерпано.")
 

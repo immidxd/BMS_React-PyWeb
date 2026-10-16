@@ -243,7 +243,11 @@ const StoryAutomationPanel: React.FC = () => {
                   onChange={event => edit(config.platform, { local_time: event.target.value })}
                   className="mt-1 w-full rounded-lg border border-gray-200 px-2 py-1.5 text-xs dark:border-gray-600 dark:bg-gray-800" />
               </label>
-              <label className="text-[10px] font-medium text-gray-500">Без повтору
+              <label className="text-[10px] font-medium text-gray-500"
+                title={config.platform === 'facebook'
+                  ? 'Пауза — лише для Facebook. Facebook добирає першим і першим отримує новинки.'
+                  : 'Пауза — лише для Instagram. Товар, щойно показаний у Facebook, Instagram візьме не раніше ніж за добу.'}>
+                Без повтору в {config.platform === 'facebook' ? 'Facebook' : 'Instagram'}
                 <select value={config.cooldown_days}
                   onChange={event => edit(config.platform, { cooldown_days: Number(event.target.value) })}
                   className="mt-1 w-full rounded-lg border border-gray-200 px-2 py-1.5 text-xs dark:border-gray-600 dark:bg-gray-800">
