@@ -24,6 +24,7 @@ import PromPublishDialog from './PromPublishDialog';
 import ShafaBridgeDialog, { type ShafaProductStatus } from './ShafaBridgeDialog';
 import OlxPublishDialog, { type OlxPreview } from './OlxPublishDialog';
 import { confirmDialog, notify } from '../../ui/feedback';
+import { isEditableTarget, pasteShortcutLabel, readClipboardPhotos } from '../../utils/clipboardImages';
 import LoadingSpinner from '../common/LoadingSpinner';
 import SmartImage from '../common/SmartImage';
 import { thumbUrl, prefetchImage } from '../../services/imageUrls';
@@ -49,6 +50,7 @@ interface Props {
 }
 
 type GalleryKind = 'official' | 'real' | 'defect';
+const GALLERY_KIND_LABEL: Record<GalleryKind, string> = { official: 'Офіційні', real: 'Реальні', defect: 'Дефекти' };
 type PhotoTransform = 'rotate_left' | 'rotate_180' | 'rotate_right' | 'flip_horizontal';
 
 interface GalleryImage {
@@ -333,7 +335,9 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
   const [numDraft, setNumDraft] = useState('');
   const [numSaving, setNumSaving] = useState(false);
   // Кадр 1:1: або черга нових файлів перед заливкою, або одне фото, що вже в картці.
-  const [cropUpload, setCropUpload] = useState<{ pid: number; kind: GalleryKind; files: File[]; urls: string[]; items: CropItem[] } | null>(null);
+  // fromClipboard: вставка ⌘V — прев'ю показує ВСІ знімки (і квадратні), бо вміст
+  // буфера заздалегідь не видно.
+  const [cropUpload, setCropUpload] = useState<{ pid: number; kind: GalleryKind; files: File[]; urls: string[]; items: CropItem[]; fromClipboard?: boolean } | null>(null);
   const [cropExisting, setCropExisting] = useState<GalleryImage | null>(null);
   const [autofillRunning, setAutofillRunning] = useState(false);
   const [promPublishing, setPromPublishing] = useState(false);  // публікація в процесі (фон, до ~3.6хв)
@@ -1631,6 +1635,16 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     setCropUpload({ pid, kind, files: arr, urls, items });
   }, [productId, activeKind, uploadPhotos]);
 
+  // ⌘V / Ctrl+V: фото з буфера — та сама заливка, що й «Додати», але ЗАВЖДИ
+  // через прев'ю-кадр (і квадратні теж): що лежить у буфері, заздалегідь не
+  // видно, тож спершу показуємо, що саме ляже і в який набір. Esc — нічого не вантажимо.
+  const handlePastePhotos = React.useCallback((arr: File[]) => {
+    if (!productId || arr.length === 0) return;
+    const urls = arr.map((f) => URL.createObjectURL(f));
+    const items: CropItem[] = arr.map((f, i) => ({ key: String(i), src: urls[i], label: f.name }));
+    setCropUpload({ pid: productId, kind: activeKind, files: arr, urls, items, fromClipboard: true });
+  }, [productId, activeKind]);
+
   useEffect(() => { setNumEditing(false); setNumSaving(false); }, [productId, editMode]);
 
   const saveNumber = React.useCallback(async () => {
@@ -2482,6 +2496,54 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
   }, [open, onClose, images.length, previewVisible, navPrev, navNext, editMode,
       selectedPhotos.size, clearPhotoSelection, stagingOpen, numEditing, relink]);
 
+  // Вставка фото з буфера (⌘V / Ctrl+V) у відкриту картку. ⚠️ ХУК — до `if (!open)`.
+  const cardRootRef = React.useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!open || !productId) return;
+    // Вставка стосується цієї картки: фокус у ній (або ніде — body) і поверх
+    // немає іншого діалогу (кадр, «до розбору», стікер, фото на весь екран).
+    const ours = (t: EventTarget | null) => {
+      if (document.querySelector('.bms-dialog-host')) return false;
+      if (stagingOpen || labelOpen || previewVisible) return false;
+      if (!(t instanceof Node) || t === document.body || t === document.documentElement || t === document) return true;
+      return !!cardRootRef.current?.contains(t);
+    };
+    // Вебвʼю BMS на Mac (WKWebView, ⌘V через pywebview) шле paste і поза полем
+    // вводу — на body; знімок приходить файлом image/png (TIFF теж), файли з
+    // Finder — під своїми іменами. Перевірено 17.10.2026 на справжньому WKWebView.
+    const onPaste = (e: ClipboardEvent) => {
+      if (!ours(e.target)) return;
+      const clip = readClipboardPhotos(e.clipboardData);
+      const inField = isEditableTarget(e.target);
+      // У полі з текстом у буфері — звичайна вставка тексту (з Excel/Numbers у
+      // буфері лежить і текст, і картинка комірок — її не чіпаємо).
+      if (inField && clip.hasText) return;
+      if (clip.images.length === 0) {
+        if (editMode && !inField && (clip.otherFiles > 0 || clip.htmlImage)) {
+          notify.info({
+            message: 'У буфері немає фото',
+            description: clip.htmlImage
+              ? 'Скопійовано фрагмент сторінки, а не саме фото. Клацни по фото правою кнопкою → «Скопіювати зображення».'
+              : 'Скопійовані файли — не зображення.',
+          });
+        }
+        return;
+      }
+      e.preventDefault();
+      if (!editMode) {
+        notify.info({ message: 'Фото з буфера', description: 'Щоб додати фото, увімкни редагування картки (✎) і встав ще раз.' });
+        return;
+      }
+      if (photoLocked) {
+        notify.warning({ message: 'Фото ще зберігаються', description: 'Встав ще раз за мить.' });
+        return;
+      }
+      handlePastePhotos(clip.images);
+    };
+    document.addEventListener('paste', onPaste);
+    return () => document.removeEventListener('paste', onPaste);
+  }, [open, productId, editMode, photoLocked, stagingOpen, labelOpen, previewVisible, handlePastePhotos]);
+
   const p = product;
   const effectiveJournalState = journalState
     || (((p as any)?.journal_sync || null) as JournalSyncState | null);
@@ -2972,13 +3034,15 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
   const hasClothingMeas = !!(p && MEASUREMENTS.some(({ name, minKey }) => clothingMeas.includes(name) && (p as any)[minKey] != null));
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
+    <div ref={cardRootRef} className="fixed inset-0 z-50 flex items-center justify-center">
       {/* «З теки до розбору» — той самий модал, що в картці завозу; номер
           зафіксовано, знімки лягають лише в цей товар тим самим add_photos. */}
       {cropUpload && (
         <PhotoCropEditor items={cropUpload.items}
-          title={`Кадр 1:1 · ${cropUpload.files.length > 1 ? `${cropUpload.items.length} з ${cropUpload.files.length} неквадратні` : 'перед завантаженням'}`}
-          confirmLabel="Завантажити"
+          title={cropUpload.fromClipboard
+            ? `З буфера · ${cropUpload.files.length} фото → «${GALLERY_KIND_LABEL[cropUpload.kind]}»`
+            : `Кадр 1:1 · ${cropUpload.files.length > 1 ? `${cropUpload.items.length} з ${cropUpload.files.length} неквадратні` : 'перед завантаженням'}`}
+          confirmLabel={cropUpload.fromClipboard ? `Додати в «${GALLERY_KIND_LABEL[cropUpload.kind]}»` : 'Завантажити'}
           onCancel={() => { cropUpload.urls.forEach((u) => URL.revokeObjectURL(u)); setCropUpload(null); }}
           onDone={(res) => {
             const { pid, kind, files, urls } = cropUpload;
@@ -3836,6 +3900,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                             </button>
                             <button type="button" disabled={photoLocked}
                               onClick={() => addPhotoInputRef.current?.click()}
+                              title={`Вибрати файли. Або скопіюй фото (скриншот, «Скопіювати зображення», файли з Finder) і натисни ${pasteShortcutLabel()} у картці`}
                               className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[12px] bg-gray-900 text-white hover:bg-black disabled:opacity-50 transition-colors whitespace-nowrap">
                               <PlusOutlined style={{ fontSize: 11 }} /> Додати
                             </button>
@@ -3846,7 +3911,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
                           <div onClick={() => addPhotoInputRef.current?.click()}
                             className="flex flex-col items-center justify-center gap-1 py-6 rounded-lg border-2 border-dashed border-gray-300 dark:border-gray-600 text-gray-400 cursor-pointer hover:border-gray-400 dark:hover:border-gray-500">
                             <PictureOutlined style={{ fontSize: 28 }} />
-                            <span className="text-[12px]">Натисни «Додати», щоб завантажити фото</span>
+                            <span className="text-[12px]">Натисни «Додати» або встав фото з буфера ({pasteShortcutLabel()})</span>
                           </div>
                         ) : (
                           <>
