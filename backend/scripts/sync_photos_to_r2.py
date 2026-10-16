@@ -35,9 +35,11 @@ load_dotenv(_PROJECT_ROOT / ".env")
 sys.path.insert(0, str(_PROJECT_ROOT))
 try:
     from backend.services import r2_storage
+    from backend.services.product_images import _PRODUCT_CATEGORIES
 except ImportError:
     sys.path.insert(0, str(_PROJECT_ROOT / "backend"))
     from services import r2_storage  # type: ignore
+    from services.product_images import _PRODUCT_CATEGORIES  # type: ignore
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger("sync_r2")
@@ -48,13 +50,25 @@ MIRROR_ROOT = Path(os.environ.get(
 SYNC_EXT = ".webp"
 
 
+# Синхронізуємо лише фото товарів — категорійні папки, як індекс фото
+# (product_images._index_token). Решта бакета (studio/, derived/, tech-logos/…)
+# і локальний кеш `.derived/` не мають дзеркала в «Товар» — їх не заливаємо й
+# не вважаємо сиротами, інакше --delete-orphans знищив би їх.
+
+
 def local_keys() -> dict[str, Path]:
-    """{<ключ R2> : <локальний шлях>} для всіх webp у міорі."""
+    """{<ключ R2> : <локальний шлях>} для webp у категорійних папках міору."""
     out: dict[str, Path] = {}
-    for p in MIRROR_ROOT.rglob(f"*{SYNC_EXT}"):
-        if p.is_file() and not p.name.startswith("."):
-            out[p.relative_to(MIRROR_ROOT).as_posix()] = p
+    for cat in _PRODUCT_CATEGORIES:
+        for p in (MIRROR_ROOT / cat).rglob(f"*{SYNC_EXT}"):
+            if p.is_file() and not p.name.startswith("."):
+                out[p.relative_to(MIRROR_ROOT).as_posix()] = p
     return out
+
+
+def remote_keys() -> set[str]:
+    """Ключі фото товарів у R2 — лише категорійні префікси."""
+    return {k for cat in _PRODUCT_CATEGORIES for k in r2_storage.list_keys(f"{cat}/")}
 
 
 def main():
@@ -71,7 +85,7 @@ def main():
         sys.exit(2)
 
     local = local_keys()
-    remote = set(r2_storage.list_keys(""))
+    remote = remote_keys()
     to_upload = sorted(set(local) - remote) if not args.reupload else sorted(local)
     orphans = sorted(remote - set(local))
 
