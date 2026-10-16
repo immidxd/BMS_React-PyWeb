@@ -562,74 +562,128 @@ def test_invalid_schedule_never_silently_becomes_publish_now():
     assert past is None and "2 хвилини" in error
 
 
-def test_schedule_capacity_counts_album_messages_and_names_next_free_slot(monkeypatch):
+def _fake_scanner():
     class FakeClient:
+        def __init__(self):
+            self.sent = []
+            self.forwarded = []
+            self.next_id = 100
+            self.flood_sleep_threshold = 60
+
         async def get_entity(self, entity):
             return entity
 
-        async def __call__(self, _request):
-            return SimpleNamespace(
-                count=99,
-                messages=[SimpleNamespace(date=datetime(2026, 8, 27, 8, 0, tzinfo=timezone.utc))],
-            )
+        async def send_file(self, entity, files, **kwargs):
+            self.sent.append(kwargs)
+            self.next_id += 1
+            return [SimpleNamespace(id=self.next_id, photo=object(), grouped_id=77)]
 
-    monkeypatch.setattr(tp, "SCHEDULED_MESSAGE_LIMIT", 100)
-    scanner = SimpleNamespace(client=FakeClient())
+        async def forward_messages(self, **kwargs):
+            self.forwarded.append(kwargs)
+            return []
 
-    error = asyncio.run(tp._channel_schedule_capacity_error(scanner, 5))
-
-    assert error is not None
-    assert "99 із 100" in error
-    assert "потребує 5" in error
-    assert "27.08 о 11:00" in error
-    assert "Форум і тематичні гілки не змінено" in error
-
-
-def test_batch_stops_before_first_forum_post_when_schedule_is_full(monkeypatch):
     class FakeScanner:
         def __init__(self):
+            self.client = FakeClient()
             self.disconnected = 0
 
         async def disconnect(self):
             self.disconnected += 1
 
-    scanner = FakeScanner()
-    capacity_checks = []
-    published = []
+    return FakeScanner()
 
+
+class _FakeDb:
+    def execute(self, *_args, **_kwargs):
+        return SimpleNamespace(scalar=lambda: 0)
+
+    def commit(self):
+        pass
+
+    def rollback(self):
+        pass
+
+
+def _patch_publish(monkeypatch, scanner):
     async def fake_connect():
         return scanner, None
 
-    async def fake_capacity(_scanner, required):
-        capacity_checks.append(required)
-        return "Розклад Telegram заповнений"
-
-    async def fake_create(*_args, **_kwargs):
-        published.append(True)
-        return {"ok": True, "failed": []}
-
-    products = {
-        1: _p(id=1, productnumber="#Ф1"),
-        2: _p(id=2, productnumber="#Ф2"),
-    }
     monkeypatch.setattr(tp, "_connect", fake_connect)
-    monkeypatch.setattr(tp, "_channel_schedule_capacity_error", fake_capacity)
-    monkeypatch.setattr(tp, "create_post", fake_create)
-    monkeypatch.setattr(tp, "_load_product", lambda _db, pid: products.get(pid))
-    monkeypatch.setattr(tp, "_preflight_batch_item", lambda *_args: None)
+    monkeypatch.setattr(tp, "_load_product", lambda _db, pid: _p(id=pid, productnumber=f"#Ф{pid}"))
     monkeypatch.setattr(tp, "_photo_entries", lambda _bms: ([object()] * 5, "official"))
+    monkeypatch.setattr(tp, "_read_photo_bytes", lambda photos: [object() for _ in photos])
+    monkeypatch.setattr(tp, "_available_sizes", lambda _db, _pnum: [])
+    monkeypatch.setattr(tp, "get_threads", lambda _db: [])
+    monkeypatch.setattr(tp, "_record_post", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(tp, "save_template", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(tp, "BATCH_POST_GAP_SEC", 0)
+    monkeypatch.setattr(tp, "BATCH_DESTINATION_GAP_SEC", 0)
+
+
+def test_scheduled_channel_post_goes_to_bms_plan_not_straight_to_telegram(monkeypatch):
+    """Розклад Telegram мовчки губив форварди (16.10.2026: 20 із 95) і тримає лише
+    100 місць — тому заплановане спершу лягає в план BMS, а в Telegram його
+    ставить черга, яка потім перевіряє доставку."""
+    from services import telegram_channel_queue as queue
+
+    scanner = _fake_scanner()
+    _patch_publish(monkeypatch, scanner)
+    planned, topped = [], []
+    monkeypatch.setattr(queue, "plan_item", lambda _db, **kw: planned.append(kw) or {
+        "id": 7, "scheduled_at": kw["when"].isoformat(), "shifted": False})
+
+    async def fake_top_up(_db, _scanner, **_kw):
+        topped.append(_scanner)
+        return {"queued": 1}
+
+    monkeypatch.setattr(queue, "top_up", fake_top_up)
+    when = datetime.now(tp.KYIV_TZ) + timedelta(days=3)
+
+    result = asyncio.run(tp.create_post(_FakeDb(), 5, {
+        "caption": _sample_caption(), "to_channel": True, "channel_at": when.isoformat(),
+    }))
+
+    assert result["ok"] is True
+    assert scanner.client.forwarded == [], "у Telegram напряму не віддаємо"
+    assert planned[0]["source_ids"] == [101] and planned[0]["product_id"] == 5
+    assert topped == [scanner]
+    assert result["channel"]["queue_id"] == 7
+
+
+def test_batch_plans_whole_schedule_and_fills_telegram_once(monkeypatch):
+    """29 товарів по 5 фото (145 місць) раніше відбивались лімітом 100 ще до
+    старту. Тепер пакет іде весь, а розклад Telegram доповнюється один раз."""
+    from services import telegram_channel_queue as queue
+
+    scanner = _fake_scanner()
+    _patch_publish(monkeypatch, scanner)
+    monkeypatch.setattr(tp, "_preflight_batch_item", lambda *_args: None)
+    planned, topped, pending = [], [], []
+    monkeypatch.setattr(queue, "plan_item", lambda _db, **kw: planned.append(kw) or {
+        "id": len(planned), "scheduled_at": kw["when"].isoformat(), "shifted": False})
+
+    async def fake_top_up(_db, _scanner, **_kw):
+        topped.append(True)
+        return {"queued": 17, "left_planned": 12}
+
+    async def fake_pending(_db, _scanner, *_a):
+        pending.append(True)
+        return {}
+
+    monkeypatch.setattr(queue, "top_up", fake_top_up)
+    monkeypatch.setattr(queue, "apply_pending", fake_pending)
     tp._BATCH_CACHE.clear()
-    first_at = datetime.now(tp.KYIV_TZ) + timedelta(days=1)
-    request = [
-        {"product_id": 1, "payload": {"to_channel": True, "channel_at": first_at.isoformat()}},
-        {"product_id": 2, "payload": {"to_channel": True, "channel_at": (first_at + timedelta(minutes=2)).isoformat()}},
-    ]
+    first = datetime.now(tp.KYIV_TZ) + timedelta(days=1)
+    request = [{"product_id": i, "payload": {
+        "caption": _sample_caption(), "to_channel": True,
+        "channel_at": (first + timedelta(hours=3 * i)).isoformat()}} for i in range(1, 30)]
 
-    result = asyncio.run(tp.create_posts_batch(object(), request, "test-full-schedule"))
+    result = asyncio.run(tp.create_posts_batch(_FakeDb(), request, "test-29"))
 
-    assert result == {"ok": False, "error": "Розклад Telegram заповнений"}
-    assert capacity_checks == [10]
-    assert published == []
+    assert result["ok"] is True and result["status"] == "success"
+    assert len(planned) == 29 and topped == [True] and pending == [True]
+    assert result["channel_queue"] == {"queued": 17, "left_planned": 12}
+    assert scanner.client.flood_sleep_threshold == tp.BATCH_FLOOD_SLEEP_SEC
     assert scanner.disconnected == 1
 
 

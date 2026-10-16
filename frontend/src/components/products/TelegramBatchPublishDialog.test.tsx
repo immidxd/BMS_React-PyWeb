@@ -121,4 +121,97 @@ describe('TelegramBatchPublishDialog draft state', () => {
     expect(await screen.findByText('Усі картки прибрано з пакета')).toBeTruthy();
     expect(screen.queryByLabelText('Публікувати #Ф1')).toBeNull();
   });
+
+  it('shows why the package could not be prepared instead of «all cards removed»', async () => {
+    fetchMock.mockResolvedValue({
+      ok: false,
+      json: async () => ({ detail: 'За один безпечний пакет можна опублікувати до 60 унікальних товарів. Зараз після об\'єднання ростовок — 61.' }),
+    });
+    render(
+      <TelegramBatchPublishDialog productIds={[1]} busy={false} onCancel={jest.fn()} onPublish={jest.fn()} />,
+    );
+
+    expect(await screen.findByText(/до 60 унікальних товарів/)).toBeTruthy();
+    expect(screen.queryByText('Усі картки прибрано з пакета')).toBeNull();
+  });
+
+  it('spreads channel posts over days by default, not a burst minutes apart', async () => {
+    const items = [1, 2, 3, 4, 5].map(id => ({
+      product_id: id, productnumber: `Ф${id}`, source_product_ids: [id], ok: true,
+      preview: { ...preview, product_id: id, productnumber: `Ф${id}` },
+    }));
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ ...response, unique_count: 5, items }) });
+    const onPublish = jest.fn();
+    render(
+      <TelegramBatchPublishDialog productIds={[1, 2, 3, 4, 5]} busy={false} onCancel={jest.fn()} onPublish={onPublish} />,
+    );
+
+    fireEvent.click(await screen.findByText('Опублікувати 5'));
+
+    const times = onPublish.mock.calls[0][0].items.map((item: any) => new Date(item.payload.channel_at));
+    const tomorrow = new Date(); tomorrow.setDate(tomorrow.getDate() + 1);
+    expect(times.map((t: Date) => t.getHours())).toEqual([9, 12, 15, 18, 9]);
+    expect(times[0].getDate()).toBe(tomorrow.getDate());
+    expect(times[4].getDate()).not.toBe(times[3].getDate());
+  });
+
+  it('minimizes into a dock without losing the prepared cards, and restores', async () => {
+    const onCancel = jest.fn();
+    render(
+      <TelegramBatchPublishDialog productIds={[1]} busy={false} onCancel={onCancel} onPublish={jest.fn()} />,
+    );
+    const checkbox = await screen.findByLabelText('Публікувати #Ф1') as HTMLInputElement;
+    fireEvent.click(checkbox);
+    expect(checkbox.checked).toBe(false);
+
+    fireEvent.click(screen.getByLabelText('Згорнути'));
+
+    const dock = screen.getByRole('group', { name: /Згорнуте вікно: Пакет у Telegram/ });
+    expect(dock).toBeTruthy();
+    // Згорнуте вікно не повинне перехоплювати Escape в інших модалках.
+    expect(document.querySelector('.bms-dialog-host')).toBeNull();
+    expect(document.querySelector('.bms-minimizable.is-minimized')).toBeTruthy();
+
+    fireEvent.click(screen.getByTitle('Розгорнути'));
+
+    expect(screen.queryByRole('group', { name: /Згорнуте вікно/ })).toBeNull();
+    expect(document.querySelector('.bms-dialog-host')).toBeTruthy();
+    expect((screen.getByLabelText('Публікувати #Ф1') as HTMLInputElement).checked).toBe(false);
+    expect(onCancel).not.toHaveBeenCalled();
+  });
+
+  it('clicking outside the window folds it away instead of discarding the package', async () => {
+    const onCancel = jest.fn();
+    render(
+      <TelegramBatchPublishDialog productIds={[1]} busy={false} onCancel={onCancel} onPublish={jest.fn()} />,
+    );
+    await screen.findByLabelText('Публікувати #Ф1');
+
+    fireEvent.click(document.querySelector('.bms-minimizable > .absolute.inset-0') as Element);
+
+    expect(onCancel).not.toHaveBeenCalled();
+    expect(screen.getByRole('group', { name: /Згорнуте вікно/ })).toBeTruthy();
+  });
+
+  it('dock shows publishing progress and hides the close button while busy', async () => {
+    const { rerender } = render(
+      <TelegramBatchPublishDialog productIds={[1]} busy={false} onCancel={jest.fn()} onPublish={jest.fn()} />,
+    );
+    await screen.findByLabelText('Публікувати #Ф1');
+    fireEvent.click(screen.getByLabelText('Згорнути'));
+    expect(screen.getByLabelText('Закрити вікно')).toBeTruthy();
+
+    rerender(
+      <TelegramBatchPublishDialog productIds={[1]} busy onCancel={jest.fn()} onPublish={jest.fn()} />,
+    );
+    expect(screen.getByText('Публікую 1 пост…')).toBeTruthy();
+    expect(screen.queryByLabelText('Закрити вікно')).toBeNull();
+
+    // Публікація скінчилась, а вікно не закрили — щось не вдалося.
+    rerender(
+      <TelegramBatchPublishDialog productIds={[1]} busy={false} onCancel={jest.fn()} onPublish={jest.fn()} />,
+    );
+    expect(screen.getByText('Не все вдалося — розгорни, щоб глянути')).toBeTruthy();
+    expect(screen.getByLabelText('Потребує уваги')).toBeTruthy();
+  });
 });

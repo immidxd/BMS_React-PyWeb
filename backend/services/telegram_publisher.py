@@ -65,20 +65,20 @@ CAPTION_LIMIT = 1024
 ALBUM_LIMIT = 5
 ALBUM_HARD_LIMIT = 10          # межа самого Telegram — вище неї не пускаємо
 
-# Пакет навмисно невеликий: один товар може породити оригінал, до шести копій
-# у гілках і форвард у канал. MTProto не має сталої «квоти» — Telegram повертає
-# FLOOD_WAIT динамічно, тому BMS посилає послідовно й зупиняє хвіст черги при
-# першому rate-limit. Це суттєво безпечніше за паралельні Promise/корутини.
-# Telegram не публікує числа: FloodWait/SlowMode динамічні й залежать від віку
-# акаунта та історії. Тому стелю тримає не ліміт, а поведінка — пакет іде з
-# паузою BATCH_POST_GAP_SEC, а після першого ж FloodWait хвіст не надсилається
-# й позначається пропущеним. Це робить великий пакет безпечним: він не згорає,
-# а зупиняється. 25 постів ≈ 30 секунд самих лише пауз.
-BATCH_MAX_PRODUCTS = int(os.getenv("TELEGRAM_BATCH_MAX_PRODUCTS", "25"))
+# Один товар породжує оригінал, до шести копій у гілках і пост каналу. MTProto
+# не має сталої «квоти» — Telegram повертає FLOOD_WAIT динамічно (залежить від
+# віку акаунта та історії), тому BMS шле послідовно, з паузою BATCH_POST_GAP_SEC.
+# Короткий FloodWait (≤ BATCH_FLOOD_SLEEP_SEC) пакет ПЕРЕЧЕКУЄ — Telethon сам
+# повторює запит після паузи, яку назвав Telegram; довший — хвіст не
+# надсилається й позначається пропущеним. Тому стелю пакета тримає поведінка,
+# а не число: великий пакет не згорає, а в найгіршому разі зупиняється.
+# Канал більше не обмежує пакет: план живе в BMS (telegram_channel_queue), а в
+# розклад Telegram (100 місць) іде лише найближча частина.
+BATCH_MAX_PRODUCTS = int(os.getenv("TELEGRAM_BATCH_MAX_PRODUCTS", "60"))
+BATCH_FLOOD_SLEEP_SEC = int(os.getenv("TELEGRAM_BATCH_FLOOD_SLEEP_SEC", "300"))
 MAX_THREADS_PER_POST = int(os.getenv("TELEGRAM_MAX_THREADS_PER_POST", "6"))
 BATCH_POST_GAP_SEC = float(os.getenv("TELEGRAM_BATCH_POST_GAP_SEC", "1.25"))
 BATCH_DESTINATION_GAP_SEC = float(os.getenv("TELEGRAM_BATCH_DESTINATION_GAP_SEC", "0.45"))
-SCHEDULED_MESSAGE_LIMIT = int(os.getenv("TELEGRAM_SCHEDULED_MESSAGE_LIMIT", "100"))
 BATCH_CACHE_TTL_SEC = 6 * 60 * 60
 _PUBLISH_LOCK = asyncio.Lock()
 _BATCH_CACHE: "OrderedDict[str, Tuple[float, dict]]" = OrderedDict()
@@ -95,6 +95,14 @@ ARCHIVE_TITLE = "WORKSHOP (архів)"
 # ─────────────────────────────────────────────────────────────────────────────
 # Дані товару
 # ─────────────────────────────────────────────────────────────────────────────
+
+def _channel_queue():
+    try:
+        from services import telegram_channel_queue
+    except ImportError:
+        from backend.services import telegram_channel_queue
+    return telegram_channel_queue
+
 
 def _prom():
     """Логіка стану/пакування («Нові, без коробки») уже вивірена в Prom —
@@ -1233,7 +1241,7 @@ def product_status(db: Session, product_id: int) -> dict:
         JOIN products linked ON linked.id = tsp.product_id
         JOIN products requested ON requested.id = :pid
         WHERE linked.productnumber = requested.productnumber
-          AND tsp.state = 'scheduled'
+          AND tsp.state IN ('planned', 'queued')
         ORDER BY tsp.scheduled_at
     """), {"pid": product_id}).mappings().all()
     return {
@@ -1509,47 +1517,6 @@ def undelivered_to_channel(db: Session, since: Optional[str] = None) -> List[Dic
             for r in rows]
 
 
-async def _channel_schedule_capacity_error(scanner: Any, required: int) -> Optional[str]:
-    """Перевірити квоту Telegram до створення форумного оригіналу.
-
-    Telegram рахує кожне фото альбому як окреме заплановане повідомлення.
-    Тому 20 товарів по 5 фото вже займають усі 100 місць каналу.
-    """
-    if required <= 0:
-        return None
-    try:
-        from telethon.tl.functions.messages import GetScheduledHistoryRequest
-        from telethon.tl.types import PeerChannel
-
-        channel = await scanner.client.get_entity(PeerChannel(CHANNEL_CHAT_ID))
-        history = await scanner.client(GetScheduledHistoryRequest(peer=channel, hash=0))
-        messages = list(getattr(history, "messages", None) or [])
-        used = int(getattr(history, "count", len(messages)) or len(messages))
-    except Exception as exc:
-        logger.warning("Не вдалося перевірити місткість розкладу Telegram: %s", exc)
-        return (
-            "Не вдалося перевірити вільні місця в розкладі каналу Telegram. "
-            "Публікацію зупинено до створення постів у форумі — спробуй ще раз."
-        )
-
-    if used + required <= SCHEDULED_MESSAGE_LIMIT:
-        return None
-
-    available = max(0, SCHEDULED_MESSAGE_LIMIT - used)
-    dates = [getattr(message, "date", None) for message in messages]
-    dates = [value for value in dates if isinstance(value, datetime)]
-    next_free = ""
-    if dates:
-        first = min(dates).astimezone(KYIV_TZ)
-        next_free = f" Найближчі місця почнуть звільнятися {first:%d.%m о %H:%M}."
-    return (
-        f"У каналі Telegram уже зайнято {used} із {SCHEDULED_MESSAGE_LIMIT} місць "
-        f"для запланованих повідомлень; вільно {available}, а нове планування потребує {required}. "
-        "Кожне фото альбому Telegram рахує окремо."
-        f"{next_free} Форум і тематичні гілки не змінено."
-    )
-
-
 def _telegram_destination_error(exc: Exception) -> str:
     name = type(exc).__name__
     raw = str(exc).strip()
@@ -1685,13 +1652,6 @@ async def create_post(db: Session, product_id: int, payload: dict, *,
         from telethon.tl.types import PeerChannel
         from starlette.concurrency import run_in_threadpool
 
-        # Для одиночної публікації batch-preflight не виконувався. Перевіряємо
-        # Telegram ДО форумного оригіналу, щоб відмова каналу не лишила дублі.
-        if owns_scanner and channel_when is not None:
-            capacity_error = await _channel_schedule_capacity_error(scanner, len(photos))
-            if capacity_error:
-                return {"ok": False, "error": capacity_error}
-
         # Читання з диска + перекодування 5 кадрів у JPEG — це Pillow і сотні
         # мілісекунд CPU. У корутині воно б заморозило ВЕСЬ бекенд (uvicorn —
         # один цикл подій), тому йде в пул потоків.
@@ -1768,38 +1728,56 @@ async def create_post(db: Session, product_id: int, payload: dict, *,
                 "channel": CHANNEL_TITLE,
                 "error": "Не надсилали після FloodWait/SlowMode у попередній гілці",
             })
+        elif payload.get("to_channel") and channel_when is not None:
+            # Заплановане НЕ віддаємо Telegram напряму: його розклад тримає лише
+            # 100 повідомлень і мовчки губить частину форвардів (16.10.2026: 20
+            # із 95). План — у BMS, у розклад Telegram ставить, а після виходу
+            # перевіряє й за потреби досилає telegram_channel_queue.
+            queue = _channel_queue()
+            planned = queue.plan_item(
+                db, product_id=product_id, productnumber=pnum, when=channel_when,
+                source_ids=[m.id for m in root_msgs], silent=silent,
+            )
+            result["channel"] = {
+                "scheduled_at": planned["scheduled_at"], "queue_id": planned["id"],
+                "state": "planned", "shifted": planned["shifted"],
+            }
+            # У пакеті розклад Telegram доповнюється один раз наприкінці.
+            if owns_scanner:
+                try:
+                    await queue.top_up(db, scanner)
+                    result["channel"]["state"] = db.execute(text(
+                        "SELECT state FROM telegram_scheduled_posts WHERE id = :id"
+                    ), {"id": planned["id"]}).scalar() or "planned"
+                except Exception as exc:
+                    db.rollback()
+                    logger.warning("Розклад Telegram доповнить сторож: %s", exc)
         elif payload.get("to_channel"):
             if _scanner is not None:
                 await asyncio.sleep(BATCH_DESTINATION_GAP_SEC)
             channel = await scanner.client.get_entity(PeerChannel(CHANNEL_CHAT_ID))
-            when = channel_when
-            album_ids = [m.id for m in root_msgs]
             try:
-                await scanner.client.forward_messages(
-                    entity=channel, messages=album_ids, from_peer=forum, schedule=when,
+                sent = await scanner.client.forward_messages(
+                    entity=channel, messages=[m.id for m in root_msgs], from_peer=forum,
                     silent=silent,
                 )
-                if when:
-                    # Заплановане повідомлення живе в окремому просторі id і
-                    # отримає справжній лише після відправки — тому в
-                    # telegram_posts не пишемо, чекаємо на штатний скан.
-                    db.execute(text("""
-                        INSERT INTO telegram_scheduled_posts
-                            (product_id, product_number, chat_id, chat_title,
-                             scheduled_at, source_chat_id, source_message_id)
-                        VALUES (:pid, :pnum, :cid, :ctitle, :at, :scid, :smid)
-                    """), {"pid": product_id, "pnum": pnum, "cid": CHANNEL_CHAT_ID,
-                           "ctitle": CHANNEL_TITLE, "at": when,
-                           "scid": FORUM_CHAT_ID, "smid": head.id})
+                sent = [m for m in (sent if isinstance(sent, list) else [sent]) if m is not None]
+                head_sent = next((m for m in sent if getattr(m, "message", None)), None) \
+                    or (sent[0] if sent else None)
+                if head_sent is not None:
+                    # Пост каналу — одразу в базу: інакше до скану товар виглядає
+                    # недоставленим, а знімалка не знає про пост у каналі.
+                    _record_post(db, product_id=product_id, pnum=pnum, chat_id=CHANNEL_CHAT_ID,
+                                 chat_title=CHANNEL_TITLE, chat_type="channel", thread_id=None,
+                                 thread_title=None, message_id=head_sent.id, caption=caption,
+                                 grouped_id=getattr(head_sent, "grouped_id", None), sizes=sizes)
                     db.commit()
-                    result["channel"] = {"scheduled_at": when.isoformat()}
-                else:
-                    result["channel"] = {"scheduled_at": None, "sent": True}
+                result["channel"] = {"scheduled_at": None, "sent": True}
             except Exception as exc:
                 logger.warning("Форвард у канал не вдався: %s", exc)
                 result["failed"].append({
                     "channel": CHANNEL_TITLE,
-                    "stage": "channel_schedule" if when else "channel_send",
+                    "stage": "channel_send",
                     "error": _telegram_destination_error(exc),
                 })
 
@@ -1929,7 +1907,6 @@ async def create_posts_batch(db: Session, items: List[dict], batch_id: str) -> d
     normalized: List[Tuple[int, dict, str]] = []
     seen_numbers = set()
     scheduled: List[Tuple[int, datetime]] = []
-    scheduled_messages_required = 0
     for pos, item in enumerate(items):
         try:
             pid = int(item.get("product_id"))
@@ -1951,8 +1928,6 @@ async def create_posts_batch(db: Session, items: List[dict], batch_id: str) -> d
             when, _ = _validate_when(payload.get("channel_at"))
             if when:
                 scheduled.append((pos, when, pnum.lstrip("#") or str(pid)))
-                selected_photos, _kind = _selected_photo_entries(bms, payload)
-                scheduled_messages_required += len(selected_photos)
         normalized.append((pid, payload, pnum))
 
     # Однаковий/майже однаковий час для кількох форвардів створює некерований
@@ -1980,13 +1955,13 @@ async def create_posts_batch(db: Session, items: List[dict], batch_id: str) -> d
             return {"ok": False, "error": err}
         results: List[dict] = []
         stopped_reason: Optional[str] = None
+        channel_queue: Dict[str, Any] = {}
+        # Короткий FloodWait перечекуємо (Telethon сам повторить запит після
+        # паузи, яку назвав Telegram) — пакет не обривається на півдорозі.
+        client = getattr(scanner, "client", None)
+        if client is not None:
+            client.flood_sleep_threshold = BATCH_FLOOD_SLEEP_SEC
         try:
-            capacity_error = await _channel_schedule_capacity_error(
-                scanner, scheduled_messages_required,
-            )
-            if capacity_error:
-                return {"ok": False, "error": capacity_error}
-
             for index, (pid, payload, pnum) in enumerate(normalized):
                 if stopped_reason:
                     results.append({
@@ -2017,6 +1992,17 @@ async def create_posts_batch(db: Session, items: List[dict], batch_id: str) -> d
                     )
                 elif index + 1 < len(normalized):
                     await asyncio.sleep(BATCH_POST_GAP_SEC)
+            if scheduled:
+                # Найближча частина плану — одразу в розклад Telegram; решту
+                # доставить сторож у міру того, як звільнятимуться місця.
+                try:
+                    queue = _channel_queue()
+                    await queue.apply_pending(db, scanner)
+                    channel_queue = await queue.top_up(db, scanner)
+                except Exception as exc:
+                    db.rollback()
+                    logger.warning("Розклад Telegram доповнить сторож: %s", exc)
+                    channel_queue = {"note": "Розклад каналу доповнить сторож BMS"}
         finally:
             await scanner.disconnect()
 
@@ -2032,7 +2018,7 @@ async def create_posts_batch(db: Session, items: List[dict], batch_id: str) -> d
             status = "error"
         response = {
             "ok": True, "batch_id": batch_id, "status": status,
-            "counts": counts, "results": results,
+            "counts": counts, "results": results, "channel_queue": channel_queue,
         }
         _BATCH_CACHE[batch_id] = (time.monotonic(), response)
         _clean_batch_cache()

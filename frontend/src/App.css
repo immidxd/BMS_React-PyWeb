@@ -957,3 +957,142 @@ select option {
 @media (prefers-reduced-motion: reduce) {
   .bms-navbar-slide { animation-duration: 2s; }
 }
+
+/* ── Згортання вікон (components/common/MinimizedDock.tsx) ─────────────────
+   Згорнуте вікно лишається змонтованим, лише ховається: панель «стікає» в
+   правий нижній кут — туди, де з'являється плашка, поруч із дзвіником. */
+.bms-minimizable {
+  transition: opacity var(--bms-dur-med) var(--bms-ease), visibility 0s linear 0s;
+}
+.bms-minimizable.is-minimized {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity var(--bms-dur-med) var(--bms-ease), visibility 0s linear 260ms;
+}
+.bms-minimizable .bms-minimizable-panel {
+  transform-origin: 100% 100%;
+  transition: transform 260ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+.bms-minimizable.is-minimized .bms-minimizable-panel {
+  transform: translate(32vw, 44vh) scale(0.08);
+}
+
+/* Лоток плашок: ліворуч від дзвіника Центру завдань (bottom-4 right-4, 44px). */
+.bms-dock-tray {
+  position: fixed;
+  right: 70px;
+  bottom: 16px;
+  z-index: 150;
+  display: flex;
+  flex-direction: row-reverse;
+  flex-wrap: wrap-reverse;
+  align-items: flex-end;
+  gap: 8px;
+  max-width: calc(100vw - 86px);
+  pointer-events: none;
+}
+.bms-dock {
+  pointer-events: auto;
+  position: relative;
+  display: flex;
+  align-items: center;
+  height: 44px;
+  max-width: 340px;
+  border-radius: var(--bms-radius-full);
+  background: var(--bms-surface);
+  border: 1px solid var(--bms-border);
+  box-shadow: var(--bms-shadow-lg);
+  animation: bms-dock-in 260ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+.bms-dock-main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  height: 100%;
+  padding: 0 12px 0 5px;
+  border-radius: var(--bms-radius-full);
+  color: var(--bms-fg);
+  text-align: left;
+  transition: background var(--bms-dur-fast) var(--bms-ease);
+}
+.bms-dock-main:hover { background: var(--bms-surface-alt); }
+.bms-dock-main:focus-visible { outline: none; box-shadow: var(--bms-shadow-focus); }
+.bms-dock-icon {
+  position: relative;
+  flex-shrink: 0;
+  width: 34px;
+  height: 34px;
+  border-radius: var(--bms-radius-full);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: 15px;
+}
+.bms-dock-spinner {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.45);
+  border-top-color: #fff;
+  animation: bms-loading-spin 0.9s linear infinite;
+}
+.bms-dock-dot {
+  position: absolute;
+  top: -1px;
+  right: -1px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #f59e0b;
+  border: 2px solid var(--bms-surface);
+}
+.bms-dock-text { display: flex; flex-direction: column; min-width: 0; line-height: 1.15; }
+.bms-dock-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.bms-dock-subtitle {
+  font-size: 11px;
+  color: var(--bms-fg-subtle);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.bms-dock-expand {
+  flex-shrink: 0;
+  font-size: 12px;
+  color: var(--bms-fg-faint);
+  transition: color var(--bms-dur-fast) var(--bms-ease);
+}
+.bms-dock-main:hover .bms-dock-expand { color: var(--bms-fg); }
+.bms-dock-close {
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+  margin-right: 8px;
+  border-radius: var(--bms-radius-full);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--bms-fg-faint);
+  transition: background var(--bms-dur-fast) var(--bms-ease), color var(--bms-dur-fast) var(--bms-ease);
+}
+.bms-dock-close:hover { background: var(--bms-hover); color: var(--bms-fg); }
+
+@keyframes bms-dock-in {
+  from { opacity: 0; transform: translateY(8px) scale(0.92); }
+  to   { opacity: 1; transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bms-minimizable,
+  .bms-minimizable.is-minimized,
+  .bms-minimizable .bms-minimizable-panel { transition: none; }
+  .bms-dock { animation: none; }
+}

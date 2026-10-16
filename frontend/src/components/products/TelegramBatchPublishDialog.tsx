@@ -1,9 +1,15 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
-  CheckOutlined, ClockCircleOutlined, CloseOutlined, EditOutlined, SendOutlined,
+  CheckOutlined, ClockCircleOutlined, CloseOutlined, EditOutlined, MinusOutlined, SendOutlined,
   SettingOutlined, WarningOutlined,
 } from '@ant-design/icons';
 import SmartImage from '../common/SmartImage';
+import MinimizedDock, { portalBarrier } from '../common/MinimizedDock';
+import { confirmDialog } from '../../ui/feedback';
+import {
+  DEFAULT_DAY_TIMES, buildDaySlots, describeSlots, parseDayTimes, tomorrowInput,
+} from '../../utils/channelSlots';
 import TelegramPublishDialog, {
   TelegramConditionPublishConfirmation,
   type TelegramPreview, type TelegramPublishPayload,
@@ -50,9 +56,17 @@ interface Props {
 
 type TargetPreset = 'keep' | 'recommended' | 'channel' | 'root' | 'custom';
 type SoundPreset = 'keep' | 'silent' | 'sound';
-type TimePreset = 'keep' | 'stagger' | 'now';
+type TimePreset = 'keep' | 'days' | 'stagger' | 'now';
 
 const INPUT = 'px-2.5 py-1.5 rounded-lg text-xs border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-sky-500/30';
+
+/** 1 пост · 3 пости · 33 пости · 25 постів */
+function postsLabel(n: number): string {
+  const m10 = n % 10, m100 = n % 100;
+  const noun = m10 === 1 && m100 !== 11 ? 'пост'
+    : m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14) ? 'пости' : 'постів';
+  return `${n} ${noun}`;
+}
 
 function uuid(): string {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
@@ -103,15 +117,35 @@ const TelegramBatchPublishDialog: React.FC<Props> = ({ productIds, busy, onCance
   );
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // Пакет не вдалося навіть підготувати (напр. перевищено межу) — це НЕ те
+  // саме, що «усі картки прибрано», і показувати треба саму причину.
+  const [loadFailed, setLoadFailed] = useState(false);
   const [meta, setMeta] = useState<BatchPreviewResponse | null>(null);
   const [entries, setEntries] = useState<Entry[]>([]);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(true);
   const [conditionConfirmOpen, setConditionConfirmOpen] = useState(false);
+  // Згорнуте вікно лишається змонтованим (усі картки й правки цілі) — лише
+  // ховається в плашку поруч із дзвіником, щоб можна було глянути щось у програмі.
+  const [minimized, setMinimized] = useState(false);
+  const [attention, setAttention] = useState(false);
+  const wasBusyRef = useRef(busy);
+  useEffect(() => {
+    // Публікація скінчилась, а вікно досі тут — батько його не закрив, тобто
+    // щось не вдалося. Згорнута плашка підсвічується, щоб це не загубилось.
+    if (wasBusyRef.current && !busy && minimized) setAttention(true);
+    wasBusyRef.current = busy;
+  }, [busy, minimized]);
+  const minimize = () => setMinimized(true);
+  const restore = () => { setMinimized(false); setAttention(false); };
 
   const [targetPreset, setTargetPreset] = useState<TargetPreset>('keep');
   const [soundPreset, setSoundPreset] = useState<SoundPreset>('keep');
-  const [timePreset, setTimePreset] = useState<TimePreset>('stagger');
+  // Канал наповнюється роками за ритмом «кілька постів на день» — тому типово
+  // пакет розкладається по днях, а не пачкою з паузою в хвилини.
+  const [timePreset, setTimePreset] = useState<TimePreset>('days');
+  const [dayStart, setDayStart] = useState(tomorrowInput());
+  const [dayTimes, setDayTimes] = useState(DEFAULT_DAY_TIMES);
   const [sharedThreads, setSharedThreads] = useState<number[]>([]);
   const [sharedChannel, setSharedChannel] = useState(true);
   const [staggerMinutes, setStaggerMinutes] = useState(2);
@@ -145,6 +179,17 @@ const TelegramBatchPublishDialog: React.FC<Props> = ({ productIds, busy, onCance
             commonSelected: true,
             edited: false,
           }));
+        // Типово — по днях (див. timePreset): увімкнені картки одразу отримують
+        // слоти «з завтра, о 09/12/15/18», а не пачку о 08:00 з кроком 2 хв.
+        const slots = buildDaySlots(
+          tomorrowInput(), parseDayTimes(DEFAULT_DAY_TIMES), ready.filter(entry => entry.included).length,
+        );
+        let slotIndex = 0;
+        for (const entry of ready) {
+          if (!entry.included) continue;
+          const slot = slots[slotIndex++];
+          if (slot) entry.draft = { ...entry.draft, channel_at: slot.toISOString() };
+        }
         setEntries(ready);
         if (ready[0]) {
           setSharedThreads(ready[0].preview.suggested_threads.slice(0, ready[0].preview.max_threads_per_post ?? 6));
@@ -153,7 +198,11 @@ const TelegramBatchPublishDialog: React.FC<Props> = ({ productIds, busy, onCance
         const failed = data.items.filter(item => !item.ok);
         if (failed.length) setError(`${failed.length} карток не вдалося підготувати; вони не ввійдуть у пакет.`);
       })
-      .catch(err => { if (alive) setError(err.message || 'Не вдалося підготувати пакет'); })
+      .catch(err => {
+        if (!alive) return;
+        setError(err.message || 'Не вдалося підготувати пакет');
+        setLoadFailed(true);
+      })
       .finally(() => { if (alive) setLoading(false); });
     return () => { alive = false; };
     // Новий набір товарів відкриває новий екземпляр діалогу. Повторний fetch
@@ -170,6 +219,13 @@ const TelegramBatchPublishDialog: React.FC<Props> = ({ productIds, busy, onCance
     || baseDate.getTime() < Date.now() + 2 * 60_000
     || baseDate.getTime() > Date.now() + 365 * 24 * 60 * 60_000
   );
+  const scopedForTime = entries.filter(entry => entry.commonSelected && entry.included).length
+    || entries.filter(entry => entry.commonSelected).length;
+  const daySlots = useMemo(
+    () => buildDaySlots(dayStart, parseDayTimes(dayTimes), scopedForTime),
+    [dayStart, dayTimes, scopedForTime],
+  );
+  const daysInvalid = timePreset === 'days' && daySlots.length < scopedForTime;
   const firstPreview = entries[0]?.preview;
   const threads = useMemo(
     () => (firstPreview?.threads ?? []).filter(t => t.thread_id !== firstPreview?.root_topic.thread_id),
@@ -185,6 +241,13 @@ const TelegramBatchPublishDialog: React.FC<Props> = ({ productIds, busy, onCance
   const applyCommon = () => {
     const base = baseDate;
     let scopedIndex = 0;
+    let dayIndex = 0;
+    // «По днях» роздає слоти лише увімкненим карткам — вимкнена не має займати
+    // ранок понеділка, який потім лишиться порожнім у каналі.
+    const dayEligible = new Set(
+      entries.filter(entry => entry.commonSelected && entry.included).map(entry => entry.productId),
+    );
+    const useAllForDays = dayEligible.size === 0;
     setEntries(current => current.map(entry => {
       if (!entry.commonSelected) return entry;
       const draft = { ...entry.draft };
@@ -205,6 +268,11 @@ const TelegramBatchPublishDialog: React.FC<Props> = ({ productIds, busy, onCance
       }
 
       if (draft.to_channel && timePreset === 'now') draft.channel_at = null;
+      if (draft.to_channel && timePreset === 'days' && (useAllForDays || dayEligible.has(entry.productId))) {
+        const slot = daySlots[dayIndex];
+        if (slot) draft.channel_at = slot.toISOString();
+        dayIndex += 1;
+      }
       if (draft.to_channel && timePreset === 'stagger' && base && !Number.isNaN(base.getTime())) {
         const at = new Date(base);
         at.setMinutes(at.getMinutes() + scopedIndex * Math.max(1, staggerMinutes));
@@ -308,27 +376,51 @@ const TelegramBatchPublishDialog: React.FC<Props> = ({ productIds, busy, onCance
     publish();
   };
 
-  if (editing) {
-    return (
-      <TelegramPublishDialog
-        data={editing.preview}
-        busy={busy}
-        mode="draft"
-        initialPayload={editing.draft}
-        onPreviewChange={preview => updateEntry(editing.productId, { preview })}
-        onCancel={() => setEditingId(null)}
-        onConfirm={draft => {
-          updateEntry(editing.productId, { draft, edited: true });
-          setEditingId(null);
-        }}
-      />
-    );
-  }
+  const channelDates = included
+    .filter(entry => entry.draft.to_channel && entry.draft.channel_at)
+    .map(entry => new Date(entry.draft.channel_at as string))
+    .filter(date => !Number.isNaN(date.getTime()))
+    .sort((a, b) => a.getTime() - b.getTime());
+  const dockSubtitle = busy
+    ? `Публікую ${postsLabel(included.length)}…`
+    : attention
+      ? 'Не все вдалося — розгорни, щоб глянути'
+      : editing
+        ? `Редагую #${editing.preview.productnumber}`
+        : [postsLabel(included.length), describeSlots(channelDates)].filter(Boolean).join(' · ');
 
-  return (
-    <div className="bms-dialog-host fixed inset-0 z-[95] flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-black/45 backdrop-blur-[2px]" onClick={busy ? undefined : onCancel} />
-      <div className="relative w-full max-w-6xl max-h-[92vh] flex flex-col overflow-hidden rounded-2xl bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 shadow-2xl bms-fade-in">
+  const closeFromDock = async () => {
+    if (await confirmDialog({
+      title: 'Закрити пакет?',
+      body: 'Підготовлені картки, час і правки тексту буде втрачено.',
+      okText: 'Закрити пакет',
+      danger: true,
+    })) onCancel();
+  };
+
+  const editorView = editing ? (
+    <TelegramPublishDialog
+      data={editing.preview}
+      busy={busy}
+      mode="draft"
+      initialPayload={editing.draft}
+      minimized={minimized}
+      onMinimize={minimize}
+      onPreviewChange={preview => updateEntry(editing.productId, { preview })}
+      onCancel={() => setEditingId(null)}
+      onConfirm={draft => {
+        updateEntry(editing.productId, { draft, edited: true });
+        setEditingId(null);
+      }}
+    />
+  ) : null;
+
+  const listView = (
+    <div className={`${minimized ? '' : 'bms-dialog-host '}bms-minimizable ${minimized ? 'is-minimized' : ''} fixed inset-0 z-[95] flex items-center justify-center p-4`}
+         aria-hidden={minimized || undefined}>
+      {/* Клік повз вікно згортає його, а не викидає підготовлений пакет. */}
+      <div className="absolute inset-0 bg-black/45 backdrop-blur-[2px]" onClick={minimize} />
+      <div className="bms-minimizable-panel relative w-full max-w-6xl max-h-[92vh] flex flex-col overflow-hidden rounded-2xl bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 shadow-2xl">
         <div className="flex items-center gap-3 px-5 py-4 border-b border-gray-100 dark:border-gray-800">
           <span className="w-10 h-10 rounded-xl bg-[#229ED9] text-white flex items-center justify-center shrink-0">
             <SendOutlined style={{ fontSize: 18 }} />
@@ -339,7 +431,11 @@ const TelegramBatchPublishDialog: React.FC<Props> = ({ productIds, busy, onCance
               {meta ? `${meta.selected_count} рядків → ${entries.length} карток у пакеті${meta.unique_count > entries.length ? ` · ${meta.unique_count - entries.length} прибрано` : meta.merged_count ? ` · ${meta.merged_count} рядків ростовок об’єднано` : ''}` : 'Готую картки…'}
             </div>
           </div>
-          <button onClick={busy ? undefined : onCancel} className="p-2 rounded-lg text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800" aria-label="Закрити">
+          <button onClick={minimize} title="Згорнути — пакет збережеться, розгорнеш із плашки внизу"
+                  className="p-2 rounded-lg text-gray-400 hover:bg-gray-100 hover:text-gray-700 dark:hover:bg-gray-800 dark:hover:text-gray-200" aria-label="Згорнути">
+            <MinusOutlined />
+          </button>
+          <button onClick={busy ? undefined : onCancel} className="p-2 rounded-lg text-gray-400 hover:bg-gray-100 hover:text-gray-700 dark:hover:bg-gray-800 dark:hover:text-gray-200" aria-label="Закрити">
             <CloseOutlined />
           </button>
         </div>
@@ -395,7 +491,8 @@ const TelegramBatchPublishDialog: React.FC<Props> = ({ productIds, busy, onCance
                         Час каналу
                         <select value={timePreset} onChange={e => setTimePreset(e.target.value as TimePreset)} className={`${INPUT} mt-1 w-full`}>
                           <option value="keep">Не змінювати</option>
-                          <option value="stagger">За розкладом, із паузою</option>
+                          <option value="days">По днях (кілька постів на день)</option>
+                          <option value="stagger">Один за одним, із паузою в хвилинах</option>
                           <option value="now">Усі зараз (послідовно)</option>
                         </select>
                       </label>
@@ -421,6 +518,20 @@ const TelegramBatchPublishDialog: React.FC<Props> = ({ productIds, busy, onCance
                       </div>
                     )}
 
+                    {timePreset === 'days' && (
+                      <div className="mt-3 flex flex-wrap items-end gap-3">
+                        <label className="text-xs text-gray-500">З дня
+                          <input type="date" value={dayStart} onChange={e => setDayStart(e.target.value)} className={`${INPUT} mt-1 block`} />
+                        </label>
+                        <label className="text-xs text-gray-500">Щодня о
+                          <input value={dayTimes} onChange={e => setDayTimes(e.target.value)} placeholder={DEFAULT_DAY_TIMES} className={`${INPUT} mt-1 block w-56`} />
+                        </label>
+                        <span className={`pb-1.5 text-[11px] ${daysInvalid ? 'text-rose-500' : 'text-gray-500'}`}>
+                          {daysInvalid ? 'Вкажи хоча б одну годину, напр. 09:00, 15:00' : `${scopedForTime} постів → ${describeSlots(daySlots)}`}
+                        </span>
+                      </div>
+                    )}
+
                     {timePreset === 'stagger' && (
                       <div className="mt-3 flex flex-wrap items-end gap-3">
                         <label className="text-xs text-gray-500">Перший пост
@@ -437,7 +548,7 @@ const TelegramBatchPublishDialog: React.FC<Props> = ({ productIds, busy, onCance
 
                     <div className="mt-3 flex items-center justify-between gap-3">
                       <span className="text-[11px] text-gray-400">«ВСІ ПРОПОЗИЦІЇ» завжди лишається оригіналом — вимкнути його не можна.</span>
-                      <button onClick={applyCommon} disabled={commonCount === 0 || baseTimeInvalid}
+                      <button onClick={applyCommon} disabled={commonCount === 0 || baseTimeInvalid || daysInvalid}
                               className="px-3 py-2 rounded-lg bg-gray-900 dark:bg-gray-100 text-white dark:text-gray-900 text-xs font-semibold disabled:opacity-40">
                         Застосувати до {commonCount}
                       </button>
@@ -532,7 +643,7 @@ const TelegramBatchPublishDialog: React.FC<Props> = ({ productIds, busy, onCance
               </div>
             </>
           )}
-          {!loading && entries.length === 0 && (
+          {!loading && entries.length === 0 && !loadFailed && (
             <div className="py-20 text-center">
               <div className="text-sm font-medium text-gray-600 dark:text-gray-300">Усі картки прибрано з пакета</div>
               <div className="mt-1 text-xs text-gray-400">Закрий це вікно й вибери товари знову, якщо передумаєш.</div>
@@ -543,6 +654,11 @@ const TelegramBatchPublishDialog: React.FC<Props> = ({ productIds, busy, onCance
         <div className="flex items-center justify-between gap-3 px-5 py-3.5 border-t border-gray-100 dark:border-gray-800 bg-white dark:bg-gray-900">
           <span className="text-xs text-gray-400">
             Буде опубліковано: <b className="text-gray-700 dark:text-gray-200">{included.length}</b> постів · послідовно, з контролем помилок
+            {included.some(entry => entry.draft.to_channel && entry.draft.channel_at) && (
+              <span title="План каналу живе в BMS: після часу виходу BMS перевіряє канал і досилає те, що Telegram не відправив. Стан — «Публікації → Розклад каналу».">
+                {' '}· канал під наглядом BMS
+              </span>
+            )}
             {riskyIncluded.length > 0 && <span className="ml-1 font-semibold text-amber-600 dark:text-amber-400">· {riskyIncluded.length} потребують підтвердження стану</span>}
           </span>
           <div className="flex gap-2">
@@ -570,6 +686,27 @@ const TelegramBatchPublishDialog: React.FC<Props> = ({ productIds, busy, onCance
         />
       )}
     </div>
+  );
+
+  // Портал у body: розгорнути згорнуте вікно можна з будь-якої вкладки, а
+  // keep-alive ховає неактивну сторінку разом з усім, що в ній змонтовано.
+  return createPortal(
+    <div {...portalBarrier}>
+      {editorView ?? listView}
+      {minimized && (
+        <MinimizedDock
+          icon={<SendOutlined style={{ fontSize: 14 }} />}
+          accent="#229ED9"
+          title="Пакет у Telegram"
+          subtitle={dockSubtitle}
+          busy={busy}
+          attention={attention}
+          onRestore={restore}
+          onClose={closeFromDock}
+        />
+      )}
+    </div>,
+    document.body,
   );
 };
 

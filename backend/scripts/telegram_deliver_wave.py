@@ -20,7 +20,14 @@ SQLite-файлі можуть його пошкодити. Скрипт пра�
 
 Використання:
     python backend/scripts/telegram_deliver_wave.py            # лише план
-    python backend/scripts/telegram_deliver_wave.py --apply    # поставити в розклад
+    python backend/scripts/telegram_deliver_wave.py --apply    # ВИМКНЕНО (див. нижче)
+
+⚠️ З 16.10.2026 ЗАСТАРІЛО. Хвиля 10.09 показала, що й повторно поставлені так
+форварди Telegram губить (16 із 18 не вийшли). Тепер це робить черга каналу
+(`services/telegram_channel_queue.py`): «Публікації → Розклад каналу → Не вийшли
+→ Запланувати знову». Вона сама доставляє в межах ліміту, перевіряє канал після
+виходу й досилає. `--apply` тут більше не пише в розклад: рядки без
+`tg_scheduled_ids` черга не бачила б і не перевіряла.
 """
 import atexit
 import sys, os, asyncio, json, datetime as dt, warnings
@@ -38,7 +45,9 @@ FORUM, CHANNEL = 2373506200, 1201323714
 BUDGET = 90            # із 100, лишаємо запас
 SLOTS = [9, 12, 15, 18]
 DAYS = 5
-APPLY = "--apply" in sys.argv
+APPLY = False
+if "--apply" in sys.argv:
+    print("--apply вимкнено: використовуй «Публікації → Розклад каналу → Запланувати знову».")
 
 
 def _session_copy() -> str:

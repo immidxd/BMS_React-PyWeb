@@ -1673,7 +1673,8 @@ def telegram_preview_post(body: Dict[str, Any] = Body(...), db: Session = Depend
 
 @router.post("/api/publications/telegram/preview-posts-batch")
 def telegram_preview_posts_batch(body: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
-    """Зібрати до 10 УНІКАЛЬНИХ прев'ю. Рядки однієї ростовки об'єднуються."""
+    """Зібрати прев'ю УНІКАЛЬНИХ товарів (до TELEGRAM_BATCH_MAX_PRODUCTS).
+    Рядки однієї ростовки об'єднуються."""
     product_ids = body.get("product_ids")
     if not isinstance(product_ids, list) or not product_ids:
         raise HTTPException(status_code=400, detail="Не вибрано товари")
@@ -1731,6 +1732,73 @@ async def telegram_create_posts_batch(body: Dict[str, Any] = Body(...), db: Sess
 def telegram_product_status(product_id: int, db: Session = Depends(get_db)):
     """Де товар уже є в Telegram + що заплановано в канал."""
     return _tg_pub().product_status(db, product_id)
+
+
+# ── Розклад каналу BrandStore: план BMS → розклад Telegram → перевірка ────────
+
+def _tg_queue():
+    try:
+        from services import telegram_channel_queue
+    except ImportError:
+        from backend.services import telegram_channel_queue
+    return telegram_channel_queue
+
+
+@router.get("/api/publications/telegram/channel-queue")
+def telegram_channel_queue_list(
+    history_days: int = Query(14, ge=1, le=120),
+    db: Session = Depends(get_db),
+):
+    """Що заплановано, що вийшло (і ким доставлено), що потребує уваги. Лише БД."""
+    return _tg_queue().list_queue(db, history_days=history_days)
+
+
+@router.post("/api/publications/telegram/channel-queue/sync")
+async def telegram_channel_queue_sync():
+    """Прогнати сторожа зараз: зняти продане, доставити план, перевірити канал."""
+    r = await _tg_queue().tick(force=True, wait_lock=True)
+    if not r.get("ok"):
+        raise HTTPException(status_code=400, detail=r.get("error", "Не вдалося перевірити розклад"))
+    return r
+
+
+@router.post("/api/publications/telegram/channel-queue/{item_id}/cancel")
+async def telegram_channel_queue_cancel(item_id: int, db: Session = Depends(get_db)):
+    r = _tg_queue().cancel(db, item_id)
+    if not r.get("ok"):
+        raise HTTPException(status_code=400, detail=r.get("error"))
+    if r.get("needs_telegram"):
+        r["sync"] = await _tg_queue().tick(force=True, wait_lock=True)
+    return r
+
+
+@router.post("/api/publications/telegram/channel-queue/{item_id}/reschedule")
+async def telegram_channel_queue_reschedule(
+    item_id: int, body: Dict[str, Any] = Body(...), db: Session = Depends(get_db),
+):
+    """Новий час (і «ще раз» для того, що не вийшло). Сторож одразу доставить."""
+    r = _tg_queue().reschedule(db, item_id, body.get("at"))
+    if not r.get("ok"):
+        raise HTTPException(status_code=400, detail=r.get("error"))
+    if not body.get("defer_sync"):
+        r["sync"] = await _tg_queue().tick(force=True, wait_lock=True)
+    return r
+
+
+@router.post("/api/publications/telegram/channel-queue/{item_id}/send-now")
+async def telegram_channel_queue_send_now(item_id: int, db: Session = Depends(get_db)):
+    tp = _tg_pub()
+    async with tp._PUBLISH_LOCK:
+        scanner, err = await tp._connect()
+        if err:
+            raise HTTPException(status_code=400, detail=err)
+        try:
+            r = await _tg_queue().send_now(db, scanner, item_id)
+        finally:
+            await scanner.disconnect()
+    if not r.get("ok"):
+        raise HTTPException(status_code=400, detail=r.get("error"))
+    return r
 
 
 # ─────────────────────────────────────────────────────────────────────────────

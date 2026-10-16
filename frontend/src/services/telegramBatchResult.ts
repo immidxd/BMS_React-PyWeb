@@ -8,13 +8,25 @@ interface TelegramBatchItem {
   productnumber?: string;
   status?: string;
   error?: string;
-  result?: { failed?: TelegramFailure[] };
+  result?: { failed?: TelegramFailure[]; channel?: { queue_id?: number; scheduled_at?: string | null } | null };
 }
 
 interface TelegramBatchResult {
   status?: string;
   counts?: Record<string, number>;
   results?: TelegramBatchItem[];
+  channel_queue?: { queued?: number; left_planned?: number; note?: string };
+}
+
+/** «Канал: 29 у плані (17 уже в розкладі Telegram)» — щоб було видно, що пости не загубились. */
+export function formatChannelPlan(result: TelegramBatchResult): string {
+  const planned = (result.results || []).filter(item => item.result?.channel?.queue_id).length;
+  if (!planned) return '';
+  const queued = Math.min(planned, result.channel_queue?.queued ?? 0);
+  const tail = queued >= planned
+    ? 'усі вже в розкладі Telegram'
+    : `${queued} уже в розкладі Telegram, решту BMS поставить, щойно звільниться місце`;
+  return `Канал: ${planned} заплановано — ${tail}. Стан — «Публікації → Розклад каналу»`;
 }
 
 function productLabel(value?: string): string {
@@ -69,5 +81,13 @@ export function formatTelegramBatchResult(result: TelegramBatchResult): string {
   const issues = Array.from(grouped, ([problem, numbers]) =>
     `${problem} (${affectedLabel(numbers)})`,
   );
-  return [summary, ...issues].filter(Boolean).join(' — ');
+  return [summary, ...issues, formatChannelPlan(result)].filter(Boolean).join(' — ');
+}
+
+/** Рядок про канал для одиночної публікації: коли вийде і чи зсунуто час. */
+export function formatChannelNote(channel?: { scheduled_at?: string | null; sent?: boolean; shifted?: boolean } | null): string {
+  if (!channel) return '';
+  if (!channel.scheduled_at) return 'канал — переслано зараз';
+  const when = new Date(channel.scheduled_at).toLocaleString('uk-UA', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+  return `канал — ${when}${channel.shifted ? ' (зсунуто: ця хвилина вже зайнята іншим постом)' : ''}, під наглядом BMS`;
 }

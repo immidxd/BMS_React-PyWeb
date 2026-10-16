@@ -1106,6 +1106,28 @@ async def _auto_startup_publications_refresh():
     asyncio.create_task(_prom_periodic())
 
 
+# ── Сторож розкладу каналу BrandStore (services/telegram_channel_queue.py) ────
+# Раз на 5 хв: зняти продане, поставити найближче в розклад Telegram, перевірити,
+# що заплановане справді вийшло, і досилати те, що ні. Без роботи до Telegram не
+# підключається; хмару не чіпає (лише локальна БД).
+# ⚠️ Тестовий сервер (:8011) запускати з TELEGRAM_CHANNEL_QUEUE_TICK_SEC=0:
+# сесія Telegram і черга спільні з робочим BMS.
+@app.on_event("startup")
+async def _telegram_channel_queue_loop():
+    import asyncio
+    import os
+
+    if int(os.getenv("TELEGRAM_CHANNEL_QUEUE_TICK_SEC", "300")) <= 0:
+        return
+    if not all(os.getenv(k) for k in ("TELEGRAM_API_ID", "TELEGRAM_API_HASH", "TELEGRAM_PHONE")):
+        return
+    try:
+        from services import telegram_channel_queue
+    except ImportError:
+        from backend.services import telegram_channel_queue
+    asyncio.create_task(telegram_channel_queue.loop())
+
+
 # ── Списання Meta з виписки monobank (Статистика → «Реклама») ────────────────
 # До 04.10.2026 збирач запускався лише вручну й ішов тільки НАЗАД в історію, тож
 # статистика застигла на 30.08.2026. Тепер BMS сам дочитує свіжі списання раз на

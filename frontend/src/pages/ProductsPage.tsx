@@ -20,7 +20,7 @@ import { warehouseService, type WhLocation } from '../services/warehouseService'
 import LoadingSpinner from '../components/common/LoadingSpinner';
 import { useSelection } from '../services/selectionManager';
 import { taskManager } from '../services/taskManager';
-import { formatTelegramBatchResult } from '../services/telegramBatchResult';
+import { formatTelegramBatchResult, formatChannelNote } from '../services/telegramBatchResult';
 import { waitForPromImport, type PromImportProgress } from '../services/promImportMonitor';
 import {
   markPromImportAccepted, refreshPromLimitWatch, watchPromLimitStatus,
@@ -726,7 +726,11 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ currentSearchTerm }) => {
               duration: 10,
             });
           } else {
-            notify.success({ message: `#${pnum} опубліковано в Telegram`, duration: 6 });
+            notify.success({
+              message: `#${pnum} опубліковано в Telegram`,
+              description: formatChannelNote(result.channel) || undefined,
+              duration: 7,
+            });
           }
           setTelegramPreview(null);
           selection.clear();

@@ -792,6 +792,22 @@ class TelegramScanner:
                 result["failed"].append({"chat": chat_title, "msg_id": msg_id, "action": "process", "error": str(e)})
 
         db.commit()
+
+        # Заплановане в канал теж має знати про продаж: інакше в канал вийде
+        # проданий товар або (оригінал у форумі щойно видалено) форвард упаде.
+        try:
+            try:
+                from services import telegram_channel_queue as channel_queue
+            except ImportError:
+                from backend.services import telegram_channel_queue as channel_queue
+            changes = channel_queue.on_product_unpublished(db, prod_number)
+            if changes["cancelled"] or changes["refresh"]:
+                result["channel_queue"] = changes
+                await channel_queue.apply_pending(db, self)
+        except Exception as e:
+            db.rollback()
+            logger.warning(f"⚠️ Channel queue update after unpublish failed (сторож доробить): {e}")
+
         logger.info(f"✅ Unpublished product {product_id}: forwarded={result['forwarded']}, deleted={result['deleted']}, edited={result['edited']}, skipped={result['skipped']}")
         return result
 

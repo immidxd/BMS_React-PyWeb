@@ -1,5 +1,6 @@
 import CatalogAnalyticsPanel from '../components/publications/CatalogAnalyticsPanel';
 import StoryAutomationPanel from '../components/publications/StoryAutomationPanel';
+import TelegramChannelQueuePanel from '../components/publications/TelegramChannelQueuePanel';
 import StudioPanel from '../components/publications/studio/StudioPanel';
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
@@ -19,7 +20,7 @@ import FacebookPublishDialog, { FacebookMark, type FacebookDraftPayload, type Fa
 import { confirmDialog, alertDialog, notify } from '../ui/feedback';
 import LoadingSpinner from '../components/common/LoadingSpinner';
 import { taskManager } from '../services/taskManager';
-import { formatTelegramBatchResult } from '../services/telegramBatchResult';
+import { formatChannelNote, formatTelegramBatchResult } from '../services/telegramBatchResult';
 import ProductNumberText from '../components/common/ProductNumberText';
 
 /* ── Types ─────────────────────────────────────────────────────────── */
@@ -654,6 +655,7 @@ const DetailModal: React.FC<{
 // лишились самі цифри, бо це різні заняття — дивитись і публікувати.
 const PUB_TABS = [
   { key: 'list', label: 'Усі публікації' },
+  { key: 'channel', label: 'Розклад каналу' },
   { key: 'catalog', label: 'Інтернет-вітрина' },
   { key: 'stories', label: 'Сторіс' },
   { key: 'studio', label: 'Майстерня' },
@@ -1178,9 +1180,8 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
         lines.push(`Копії в гілки: ${d.threads_posted.map((t: any) => t.thread_title).join(', ')}`);
       }
       if (d.channel) {
-        lines.push(d.channel.scheduled_at
-          ? `Канал: заплановано на ${new Date(d.channel.scheduled_at).toLocaleString('uk-UA', { dateStyle: 'short', timeStyle: 'short' })}`
-          : 'Канал: переслано зараз');
+        const note = formatChannelNote(d.channel);
+        lines.push(note.charAt(0).toUpperCase() + note.slice(1));
       }
       if (d.failed?.length) {
         lines.push(`⚠️ Не вдалося: ${d.failed.map((f: any) => f.thread_title || f.channel || '?').join(', ')}`);
@@ -2230,6 +2231,7 @@ const PublicationsPage: React.FC<PublicationsPageProps> = ({ currentSearchTerm }
         )}
         </>)}
 
+        {pubTab === 'channel' && <TelegramChannelQueuePanel />}
         {pubTab === 'catalog' && <CatalogAnalyticsPanel showAutomation />}
         {pubTab === 'stories' && <StoryAutomationPanel />}
         {pubTab === 'studio' && <StudioPanel />}

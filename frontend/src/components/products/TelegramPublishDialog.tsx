@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   CloseOutlined, SendOutlined, WarningOutlined, PlusOutlined,
   DeleteOutlined, LockOutlined, ClockCircleOutlined, ThunderboltOutlined,
-  ExperimentOutlined, CheckOutlined, LoadingOutlined, SwapOutlined,
+  ExperimentOutlined, CheckOutlined, LoadingOutlined, SwapOutlined, MinusOutlined,
 } from '@ant-design/icons';
 import SmartImage from '../common/SmartImage';
 import TextFormattingToolbar from '../common/TextFormattingToolbar';
@@ -97,6 +97,9 @@ interface Props {
   /** Канонічне редагування фото змінює URL-версію і в батьківській картці,
    *  щоб пакетне прев'ю одразу показало нові пікселі. */
   onPreviewChange?: (preview: TelegramPreview) => void;
+  /** Є лише в пакеті: вікно можна згорнути в плашку, не втративши правок. */
+  onMinimize?: () => void;
+  minimized?: boolean;
 }
 
 const TG_BLUE = '#229ED9';
@@ -241,6 +244,7 @@ function renderMarkdown(src: string, keyPrefix = 'm'): React.ReactNode[] {
 
 const TelegramPublishDialog: React.FC<Props> = ({
   data, busy, onCancel, onConfirm, mode = 'publish', initialPayload, onPreviewChange,
+  onMinimize, minimized = false,
 }) => {
   const draftMode = mode === 'draft';
   const [emoji, setEmoji] = useState(initialPayload?.emoji ?? data.emoji ?? '👟');
@@ -442,10 +446,14 @@ const TelegramPublishDialog: React.FC<Props> = ({
   };
 
   return (
-    <div className="bms-dialog-host fixed inset-0 z-[100] flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-black/45 backdrop-blur-[2px]" onClick={dialogBusy ? undefined : closeDialog} />
+    // Згорнуте вікно не носить .bms-dialog-host: за цим класом інші модалки
+    // (картка товару) вирішують, чи їм обробляти Escape.
+    <div className={`${minimized ? '' : 'bms-dialog-host '}bms-minimizable ${minimized ? 'is-minimized' : ''} fixed inset-0 z-[100] flex items-center justify-center p-4`}
+         aria-hidden={minimized || undefined}>
+      <div className="absolute inset-0 bg-black/45 backdrop-blur-[2px]"
+           onClick={onMinimize ?? (dialogBusy ? undefined : closeDialog)} />
 
-      <div className="relative w-full max-w-4xl max-h-[90vh] flex flex-col rounded-2xl bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 shadow-2xl overflow-hidden bms-fade-in">
+      <div className="bms-minimizable-panel relative w-full max-w-4xl max-h-[90vh] flex flex-col rounded-2xl bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 shadow-2xl overflow-hidden">
         {/* Header */}
         <div className="flex items-center gap-3 px-5 py-4 border-b border-gray-100 dark:border-gray-800">
           <span className="w-9 h-9 rounded-xl flex items-center justify-center text-white shrink-0" style={{ backgroundColor: TG_BLUE }}>
@@ -470,6 +478,13 @@ const TelegramPublishDialog: React.FC<Props> = ({
               <span className="px-2 py-0.5 rounded-md text-[11px] font-semibold bg-violet-50 text-violet-700 border border-violet-200 dark:bg-violet-900/30 dark:text-violet-300 dark:border-violet-800">
                 Ростовка: {data.sizes.length} розмірів
               </span>
+            )}
+            {onMinimize && (
+              <button onClick={onMinimize} title="Згорнути — правки збережуться, розгорнеш із плашки внизу"
+                      className="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition-colors"
+                      aria-label="Згорнути">
+                <MinusOutlined className="text-sm" />
+              </button>
             )}
             <button onClick={dialogBusy ? undefined : closeDialog}
                     className="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition-colors"
