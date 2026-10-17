@@ -78,6 +78,13 @@ def get_catalog_stats(
 
     params: Dict[str, Any] = {"catalog_days": days, "limit": limit}
     event_where = _catalog_period_sql(days, "received_at")
+    # Свої акаунти (адміни, BrandStore, персонал складу) — не покупці: їхні ключі приносить
+    # синхрон аналітики каталогу (catalog_internal_visitors). Реєстру ще нема — як раніше.
+    try:
+        if db.execute(text("SELECT to_regclass('catalog_internal_visitors')")).scalar():
+            event_where += " AND visitor_key NOT IN (SELECT visitor_key FROM catalog_internal_visitors)"
+    except Exception:
+        db.rollback()
     sales_where = _catalog_period_sql(days, "o.order_date")
 
     try:

@@ -126,10 +126,14 @@ async function candidateRows(sql, config) {
       FROM catalog_events ce
       WHERE ce.productnumber IS NOT NULL
         AND (${periodDays}::int = 0 OR ce.received_at >= now() - make_interval(days => ${periodDays}::int))
+        -- Свої акаунти (адміни, BrandStore, персонал складу) у Топ-9 не голосують:
+        -- реєстр веде каталог (BMS_catalog/backend/analytics.py)
+        AND ce.visitor_key NOT IN (SELECT visitor_key FROM catalog_internal_visitors)
       GROUP BY ce.productnumber
     ), favorites AS (
       SELECT productnumber, COUNT(*)::int AS active_favorites
       FROM catalog_favorite_state
+      WHERE visitor_key NOT IN (SELECT visitor_key FROM catalog_internal_visitors)
       GROUP BY productnumber
     ), blocked AS (
       SELECT item.value AS productnumber

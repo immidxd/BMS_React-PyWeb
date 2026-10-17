@@ -104,6 +104,10 @@ def _candidate_rows(
     pool: int = MAX_POOL,
 ) -> List[Dict[str, Any]]:
     event_period = _period_clause(period_days, "ce.received_at")
+    # Свої акаунти (адміни, BrandStore, персонал складу) у Топ-9 не голосують: реєстр ключів
+    # приносить синхрон аналітики каталогу (catalog_internal_visitors)
+    if db.execute(text("SELECT to_regclass('catalog_internal_visitors')")).scalar():
+        event_period += " AND ce.visitor_key NOT IN (SELECT visitor_key FROM catalog_internal_visitors)"
     sales_period = _period_clause(period_days, "o.order_date")
     # The interactive preview only needs a small ranked pool.  The cloud
     # draft-only mirror deliberately asks for a broader eligibility snapshot
