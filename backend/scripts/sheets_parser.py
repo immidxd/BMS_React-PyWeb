@@ -138,7 +138,7 @@ POINT_SYNC_LOCK = threading.Lock()  # одна точкова/вкладкова
 #
 # Bump PARSER_VERSION whenever the orders parsing logic changes in a way that
 # would produce different output for the same input → forces a full reparse.
-PARSER_VERSION = 11  # v11: імпорт «Витрати на рекламу» з підсумкового блоку вкладки. v10: + Level 0T — дедуп zero-total ордерів за pnum_key+клієнт+вікно (Level 1K/2N вимагали total>0, тож total=0 щопрогону плодив дубль). v9: source_pnum_key (resolution-INDEPENDENT identity) + Level 1K дедуп + анонімний sweep + Level 2N. Корінь ghost-дублів закрито: той самий рядок аркуша не створює дубль навіть при нестабільному resolution / анонімному клієнті / legacy без gid / zero-total
+PARSER_VERSION = 12  # v12: кілька підказок розміру на номер («Ф1; Ф1;» + «Ф1 (39); Ф1 (40);» — кожна поява свій розмір), форс-репарс перелінковує такі рядки. v11: імпорт «Витрати на рекламу» з підсумкового блоку вкладки. v10: + Level 0T — дедуп zero-total ордерів за pnum_key+клієнт+вікно (Level 1K/2N вимагали total>0, тож total=0 щопрогону плодив дубль). v9: source_pnum_key (resolution-INDEPENDENT identity) + Level 1K дедуп + анонімний sweep + Level 2N. Корінь ghost-дублів закрито: той самий рядок аркуша не створює дубль навіть при нестабільному resolution / анонімному клієнті / legacy без gid / zero-total
 HASH_SKIP_ENABLED = os.getenv("PARSER_HASH_SKIP", "1") != "0"
 
 # ── Layer C: whole-file change gate ───────────────────────────────────────────
@@ -5183,7 +5183,61 @@ def _pick_order_candidate(candidates: list, order_date=None, item_price=None):
     return cands[0]
 
 
-def _resolve_order_product(session, pnum_clean: str, size_hints: dict,
+def _parse_size_hints(clarification: str) -> dict:
+    """Підказки розміру з 'Уточнення' → {'#НОМЕР': [розмір, …]} у порядку появи.
+
+    Один номер може мати КІЛЬКА підказок: каталог для ростовки пише «Ф1; Ф1;» +
+    «Ф1 (39); Ф1 (40);» — дві пари різних розмірів. Раніше тут був dict номер →
+    розмір: друга підказка затирала першу, обидві позиції сідали на рядок 40-го,
+    а 39-й лишався «Непродано». Яка поява номера бере яку — `_take_size_hint`.
+    """
+    # Format 1: "П321 (37);"  "Ф3320 (37-38);"       → pnum (size)
+    # Format 2: "Розмір: 38 (П321);"                  → keyword size (pnum)
+    # Build map: normalized_pnum → [size_hint, …]
+    size_hints: dict = {}  # pnum_upper → [size string, …]
+    for hint_part in clarification.split(";"):
+        hint_part = hint_part.strip()
+        if not hint_part:
+            continue
+        # Format 1: pnum (size) — e.g. "П321 (37)", "Ф2982 (39-40)"
+        m = re.match(r"#?([\wА-ЯҐЄІЇа-яґєії]+)\s*\(([^)]+)\)", hint_part)
+        if m:
+            hint_pnum = "#" + m.group(1).strip().lstrip("#")
+            hint_size = _normalize_size(m.group(2).strip())
+            if hint_size:
+                size_hints.setdefault(hint_pnum.upper(), []).append(hint_size)
+            continue
+        # Format 2: "Розмір: 38 (П321)" or "Розмір 38 (П321)" (keyword first)
+        m2 = re.search(
+            r"(?:розмір|розм\.?|size)[:\s]+([0-9][0-9.,]*(?:\s*[-–]\s*[0-9][0-9.,]*)?)"
+            r"\s*\(#?([\wА-ЯҐЄІЇа-яґєії]+)\)",
+            hint_part,
+            re.IGNORECASE,
+        )
+        if m2:
+            hint_size = _normalize_size(m2.group(1).strip())
+            hint_pnum = "#" + m2.group(2).strip().lstrip("#")
+            if hint_size:
+                size_hints.setdefault(hint_pnum.upper(), []).append(hint_size)
+    return size_hints
+
+
+def _take_size_hint(size_hints: dict, pnum_clean: str) -> Optional[str]:
+    """Підказка розміру для ЧЕРГОВОЇ появи номера в рядку замовлення.
+
+    i-та поява номера бере i-ту підказку, а остання діє й на всі зайві появи —
+    тож одна підказка, як і раніше, стосується кожної появи номера. Ключ — повний
+    номер: Ф1810-2 не бере підказок Ф1810. Список у `size_hints` вкорочується.
+    """
+    key_with    = _normalize_pnum(pnum_clean).upper()
+    key_without = pnum_clean.lstrip("#").upper()
+    hints = size_hints.get(key_with) or size_hints.get(key_without)
+    if not hints:
+        return None
+    return hints.pop(0) if len(hints) > 1 else hints[0]
+
+
+def _resolve_order_product(session, pnum_clean: str, size_hint: Optional[str],
                            order_date=None, item_price=None):
     """
     Find the correct Product for an order item.
@@ -5192,6 +5246,7 @@ def _resolve_order_product(session, pnum_clean: str, size_hints: dict,
     1. If there is a size hint for this pnum in 'Уточнення' (e.g. "Ф2982 (39)"),
        try to find a product with matching productnumber AND sizeeu.
        Size hint may be a range like "37-38" — try both values.
+       `size_hint` — підказка саме цієї появи номера (`_take_size_hint`).
     2. If no size hint or no match found with size, fall back to all products
        with this productnumber.
     3. Try clonednumbers match as last resort.
@@ -5203,18 +5258,14 @@ def _resolve_order_product(session, pnum_clean: str, size_hints: dict,
 
     # Normalize: ensure leading # for DB lookup
     pnum_with_hash = _normalize_pnum(pnum_clean)
-    key_with    = pnum_with_hash.upper()
-    key_without = pnum_clean.lstrip("#").upper()
 
     # ── Step 1: size-hint match ───────────────────────────────────────────────
-    hint = size_hints.get(key_with) or size_hints.get(key_without)
-
-    if hint:
+    if size_hint:
         # Collect candidate sizes from hint (handles "37-38", "39", "40.5")
-        size_candidates = [s.strip() for s in re.split(r"[-–]", hint) if s.strip()]
+        size_candidates = [s.strip() for s in re.split(r"[-–]", size_hint) if s.strip()]
         # Also add the full hint string itself (e.g. "37-38" as-is)
         if len(size_candidates) > 1:
-            size_candidates.append(hint.strip())
+            size_candidates.append(size_hint.strip())
 
         for sz in size_candidates:
             sized = session.query(Product).filter(
@@ -5386,34 +5437,8 @@ def _parse_orders_sheet(
         clarification  = col(row, "Уточнення")
 
         # ── Extract size hints from 'Уточнення' ───────────────────────────
-        # Format 1: "П321 (37);"  "Ф3320 (37-38);"       → pnum (size)
-        # Format 2: "Розмір: 38 (П321);"                  → keyword size (pnum)
-        # Build map: normalized_pnum → size_hint
-        size_hints: dict = {}  # pnum_upper → size string
-        for hint_part in clarification.split(";"):
-            hint_part = hint_part.strip()
-            if not hint_part:
-                continue
-            # Format 1: pnum (size) — e.g. "П321 (37)", "Ф2982 (39-40)"
-            m = re.match(r"#?([\wА-ЯҐЄІЇа-яґєії]+)\s*\(([^)]+)\)", hint_part)
-            if m:
-                hint_pnum = "#" + m.group(1).strip().lstrip("#")
-                hint_size = _normalize_size(m.group(2).strip())
-                if hint_size:
-                    size_hints[hint_pnum.upper()] = hint_size
-                continue
-            # Format 2: "Розмір: 38 (П321)" or "Розмір 38 (П321)" (keyword first)
-            m2 = re.search(
-                r"(?:розмір|розм\.?|size)[:\s]+([0-9][0-9.,]*(?:\s*[-–]\s*[0-9][0-9.,]*)?)"
-                r"\s*\(#?([\wА-ЯҐЄІЇа-яґєії]+)\)",
-                hint_part,
-                re.IGNORECASE,
-            )
-            if m2:
-                hint_size = _normalize_size(m2.group(1).strip())
-                hint_pnum = "#" + m2.group(2).strip().lstrip("#")
-                if hint_size:
-                    size_hints[hint_pnum.upper()] = hint_size
+        # normalized_pnum → [size_hint, …]; кожна поява номера бере свою (_take_size_hint)
+        size_hints = _parse_size_hints(clarification)
 
         order_date_col = col(row, "Дата замовлення")
         order_date = sheet_date
@@ -5774,7 +5799,8 @@ def _parse_orders_sheet(
             if not pnum_clean:
                 continue
 
-            product = _resolve_order_product(session, pnum_clean, size_hints,
+            product = _resolve_order_product(session, pnum_clean,
+                                             _take_size_hint(size_hints, pnum_clean),
                                              order_date=order_date, item_price=price)
 
             if not product:
