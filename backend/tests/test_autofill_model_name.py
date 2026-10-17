@@ -44,11 +44,11 @@ def test_article_codes_are_not_model_names(value):
 
 
 @pytest.mark.parametrize("value", [
-    "M ANACAPA BREEZE LOW",  # реально прочитане з бирки Merrell
+    "M ANACAPA BREEZE LOW",  # реально прочитане з етикетки Merrell
     "Air Max 90",            # число стоїть ОКРЕМИМ словом — це назва
     "Gazelle 85",
     # ⚠️ Справжні назви з АЛФАВІТНО-ЦИФРОВИМ токеном. Перша версія гарда
-    # відкидала їх як «код» — а це рівно те, що модель читає з бирки.
+    # відкидала їх як «код» — а це рівно те, що модель читає з етикетки.
     "Hurricane XLT2",        # Teva
     "R78 Voyage",            # Puma
     "ST Runner V4 NL",       # Puma
@@ -64,7 +64,7 @@ def test_real_model_names_pass(value):
 
 
 def test_model_name_is_offered_as_a_proposal(monkeypatch):
-    """Головне: прочитана з бирки назва більше не зникає у звіті."""
+    """Головне: прочитана з етикетки назва більше не зникає у звіті."""
     calls = []
 
     def fake_propose(db, pid, field, value, conf, **kw):

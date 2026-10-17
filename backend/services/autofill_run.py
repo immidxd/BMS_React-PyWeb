@@ -46,7 +46,7 @@ def run_one(db: Session, product_id: int, *, photos: int = 10,
         return {"ok": False, "not_found": True, "reason": "Товар не знайдено"}
 
     # Живі знімки (kind='real'), у порядку індексу. Студійні official для
-    # розпізнавання не годяться: на них немає ані бирки, ані реального стану.
+    # розпізнавання не годяться: на них немає ані етикетки, ані реального стану.
     # ⚠️ resolve_category шукає за НАЯВНИМИ файлами товару, а не лише за типом —
     # інакше товар, у якого є тільки живі знімки, «не знаходить» своєї папки.
     type_name = getattr(product.type, "typename", None) if product.type else None

@@ -318,7 +318,7 @@ const ProductDetailsModal: React.FC<Props> = ({ productId, open, onClose, onPrev
     () => OTHER_FIELDS.some((f) => !!proposals[f]),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [proposals]);
-  // Пропозиції матеріалів із піктограм ЄС на бирці — по позиціях: material:upper …
+  // Пропозиції матеріалів із піктограм ЄС на етикетці — по позиціях: material:upper …
   const materialProposalPositions = useMemo(
     () => MATERIAL_POSITIONS.filter(({ pos }) => !!proposals[`material:${pos}`]),
     [proposals]);

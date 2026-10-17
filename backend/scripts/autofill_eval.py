@@ -343,7 +343,7 @@ def cmd_score(args) -> int:
         pct = lambda n: f"{100*n/have:.0f}%"
         print(f"{field:22} {have:7} {hit:5} {pct(hit):>3} {miss:5} {pct(miss):>3} {skip:4} {pct(skip):>3}")
 
-    print("\n── читання з бирки (еталон = model/marking у БД) ──")
+    print("\n── читання з етикетки (еталон = model/marking у БД) ──")
     for key_pred, label in (("article_text", "артикул"), ("brand_text", "бренд")):
         got = sum(1 for r in results if (r["pred"] or {}).get(key_pred))
         print(f"   {label:10} прочитано на {got} з {len(results)} товарів")

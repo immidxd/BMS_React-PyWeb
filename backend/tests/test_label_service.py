@@ -71,7 +71,7 @@ def test_item_from_row_composes_lines():
 
 
 def test_clothing_label_shows_measurements_instead_of_insole():
-    # Футболка: груди (н/о) і довжина — те, що просять на бірці одягу.
+    # Футболка: груди (н/о) і довжина — те, що просять на етикетці товару для одягу.
     it = ls.item_from_row(_row(typename="Футболка", sizeeu=None, size_letter="XL", measurementscm=None,
                                measurements_pog_min=59.0, measurements_pog_max=59.0,
                                measurements_length_min=77.0, measurements_length_max=77.0))
